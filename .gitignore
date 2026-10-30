@@ -5,6 +5,7 @@ data/
 *.db-wal
 *.db-shm
 bin/
+*.exe
 .cache/
 *.log
 
@@ -19,3 +20,6 @@ Desktop.ini
 *.orig
 *.tmp
 .vscode/
+
+# scratch — local verification output (env-setting scripts, run logs), never committed
+zzscratch/

@@ -6,15 +6,19 @@
 package main
 
 import (
+	"bot/internal/bot"
 	"bot/internal/config"
 	"bot/internal/health"
+	"bot/internal/model"
 	"bot/internal/store"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // The signal set that stops the program (§10.2 Day 1 DoD: Ctrl-C on Windows
@@ -93,6 +97,28 @@ func LoadConfig() (config.Config, []string, map[string]string) {
 	return cfg, problems, raw
 }
 
+// logLevel — the §7 LOG_LEVEL into a slog.Level (§12: the depth of the JSON log). An unknown value is
+// already reported by config.LoadFrom and replaced by the default of §7, so this maps the four rows of
+// §16 change 15 and falls back to info.
+func logLevel(name string) slog.Level {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "error":
+		return slog.LevelError
+	case "warning":
+		return slog.LevelWarn
+	case "debug":
+		return slog.LevelDebug
+	default:
+		return slog.LevelInfo
+	}
+}
+
+// pollerWait — how long the stop path waits for the polling goroutine of §5 before db.Close. The reason
+// is §5: SetLastUpdateID of a processed update must land before Close checkpoints the WAL, otherwise the
+// restart reads an offset it has already answered (§13 риск «повторные ответы после рестарта»). The wait
+// is bounded on purpose — §12.1.4 MsgStuckShutdown must not turn Ctrl-C into a hung process.
+var pollerWait = 3 * time.Second
+
 func main() {
 	// §12.2, §15.5 log/slog: the JSON log layer of the bot arrives with the bot
 	// itself; the §10.2 Day 1 DoD messages go to the standard output.
@@ -156,6 +182,75 @@ func main() {
 		healthErr <- healthServer.Run(ctx)
 	}()
 	fmt.Println("health is listening on 127.0.0.1:", cfg.HealthPort, health.Path, "(§7 HEALTH_PORT, §8.1 HEALTHCHECK of compose)")
+	// §10 День 4: the bot itself. The JSON log of §12 is built here because run.go writes through it, and
+	// Sanitize of §12 keeps TELEGRAM_BOT_TOKEN out of every line — including the lines the Telegram
+	// library writes into its own logger (§10 День 4 hands that logger to bot.WithLogger).
+	var logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel(cfg.LogLevel)}))
+	// §10 День 3: the client of §4 over the OpenAI-compatible API of §16 change 17, built from the §7 rows
+	// it needs; the attempt count and the backoff stay the defaults of §10 День 3.
+	var client, clientErr = model.New(model.Options{
+		ChatURL:       cfg.ChatURL,
+		ModelsURL:     cfg.ModelsURL,
+		APIKey:        cfg.StrataKey,
+		Model:         cfg.StrataModel,
+		Timeout:       time.Duration(cfg.TimeoutSeconds) * time.Second,
+		MaxConcurrent: int(cfg.MaxConcurrentRequests),
+	})
+	if clientErr != nil {
+		fmt.Println("model.New:", clientErr, "(§10 День 3: the client is built from §7, exit code 1)")
+		db.Close()
+		os.Exit(1)
+	}
+	// §5 «bot_state last_update_id»: a restart continues after the last PROCESSED update and does not
+	// answer it a second time (§13 риск «повторные ответы после рестарта», §11 TestOffsetSurvivesRestart).
+	var startOffset, offsetFound, offsetErr = store.LastUpdateID(ctx, db)
+	if offsetErr != nil {
+		fmt.Println("store.LastUpdateID:", offsetErr, "(§5 bot_state: the restart must know the offset, exit code 1)")
+		db.Close()
+		os.Exit(1)
+	}
+	var dispatcher = bot.New(bot.Deps{
+		Cfg:         cfg,
+		DB:          db,
+		Model:       client,
+		Logger:      logger,
+		Token:       cfg.BotToken,
+		StartOffset: startOffset,
+		// §5 «bot_state last_update_id»: every processed update moves the offset through the writer of the
+		// store, so the restart of §8.1 continues after it instead of answering the same user twice.
+		Offset: func(writeCtx context.Context, updateID int64) error {
+			return store.SetLastUpdateID(writeCtx, db, updateID)
+		},
+	})
+	// §10 День 4 «bot.New(c.BotToken, opts) с WithServerURL для тестов, WithInitialOffset из bot_state,
+	// WithHTTPClient(pollTimeout) и workers»: NewTelegram calls getMe on its own (§10 День 4), and getMe
+	// is what answers 401 on a wrong token. A process that cannot poll must not sit next to a healthz that
+	// still says 200 (§12 reliability), so this is exit code 1 — with Sanitize already applied (§12 security).
+	var tg, tgErr = dispatcher.NewTelegram(bot.Options{})
+	if tgErr != nil {
+		fmt.Println("bot.New:", tgErr, "(§10 День 4: getMe did not answer — a wrong TELEGRAM_BOT_TOKEN or no route to api.telegram.org stops the start, exit code 1)")
+		db.Close()
+		os.Exit(1)
+	}
+	// §10 День 4 «меню команд через setMyCommands». A refusal of Telegram is not fatal: the commands of §6
+	// still work, only the menu of the client stays empty (§12 reliability), and the error is sanitized.
+	var menuCtx, cancelMenu = context.WithTimeout(ctx, bot.PublishCommandsTimeout)
+	if menuErr := dispatcher.PublishCommands(menuCtx, tg); menuErr != nil {
+		logger.Warn("setMyCommands refused, the menu of the client stays empty", "error", bot.Sanitize(menuErr, cfg.BotToken))
+	}
+	cancelMenu()
+	// §5 long polling: Start owns the goroutine. It returns when the context ends; a return that no signal
+	// caused means the poller died, and a dead poller is a bot that answers nothing while §8.1 still
+	// reports healthy — the process leaves with a clear error instead (§12 reliability).
+	var botDone = make(chan struct{}, 1)
+	go func() {
+		tg.Start(ctx)
+		select {
+		case botDone <- struct{}{}:
+		default:
+		}
+	}()
+	fmt.Println("bot is polling Telegram, bot_state last_update_id", startOffset, "found", offsetFound, "(§5, §10 День 4)")
 	// §9.4, §15.5 os/signal: NotifyContext is installed before anything starts, so Ctrl+C / SIGTERM
 	// can never be missed; cancel() is the explicit cancellation path when the run ends.
 	// §12.1.4 MsgStopped: the wait is on the context, not on a fixed window — the process stays
@@ -164,6 +259,15 @@ func main() {
 	var stoppedBySignal = true
 	select {
 	case <-ctx.Done():
+	case <-botDone:
+		// §12 reliability: the poller of §5 left without a stop signal. The bot answers nothing from now
+		// on, and the health endpoint of §8.1 would still say 200 — that is exactly the silent failure the
+		// §12 rules forbid, so the process exits with code 1 and the container restart policy of §8.1 gets
+		// a chance to bring it back.
+		fmt.Println("the polling of §5 stopped without a stop signal, exit code 1 (§12 reliability)")
+		cancel()
+		db.Close()
+		os.Exit(1)
 	case err := <-healthErr:
 		if err != nil {
 			fmt.Println("health:", err, "(§12 reliability: the start falls with a clear error, exit code 1)")
@@ -177,6 +281,16 @@ func main() {
 	// §10.2 Day 1 DoD: the stopped program prints "stopped by signal".
 	// §10 День 2 + §5: the store is closed before the process leaves, so the WAL is checkpointed and
 	// no -wal/-shm sidecar survives a restart (a correct db.Close leaves only bot.db, §5 table row).
+	// §10 День 4: Close has to happen after the polling goroutine is gone — an in-flight update writes
+	// SetLastUpdateID through the same handle, and a write after Close would fail (§5 bot_state). The wait
+	// is bounded by pollerWait, because §12.1.4 MsgStuckShutdown forbids a stop that hangs forever.
+	var pollerGone = false
+	select {
+	case <-botDone:
+		pollerGone = true
+	case <-time.After(pollerWait):
+	}
+	fmt.Println("poller stopped", pollerGone, "(§5: bot_state is written before db.Close checkpoints the WAL)")
 	db.Close()
 	fmt.Println("stopped by signal (§10.2 Day 1 DoD)")
 	os.Exit(0)

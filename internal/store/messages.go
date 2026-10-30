@@ -44,6 +44,11 @@ const (
 	EventModelError = "model_error"
 	EventFlood      = "flood"
 	EventCommand    = "command"
+	// EventLimit — the refusal of RATE_LIMIT_PER_MINUTE (§7). §5 keeps kind free TEXT precisely so a
+	// new service event does not need a migration; §12 reliability wants the refusal auditable.
+	EventLimit = "limit"
+	// EventTimeout — the reply budget of §7 (TG_REPLY_DEADLINE_SECONDS) was spent (§12 UX).
+	EventTimeout = "timeout"
 )
 
 // ErrDuplicateMessage — the second Append with the same (chat_id, telegram_message_id) hit

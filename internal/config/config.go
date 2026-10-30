@@ -448,6 +448,23 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	return cfg, problems
 }
 
+// Allows — the §7 allowlist rule: an empty ALLOWED_USER_IDS means a closed bot (DenyByDefault of
+// LoadFrom), so nobody is allowed until the id is registered. §16 change 13 keeps /start and /whoami
+// outside this check — without them a user of a closed bot could never learn their own id.
+func (c Config) Allows(userID int64) bool {
+	if len(c.UserIDs) == 0 {
+		return false
+	}
+	var i = 0
+	for i < len(c.UserIDs) {
+		if c.UserIDs[i] == userID {
+			return true
+		}
+		i++
+	}
+	return false
+}
+
 // Load — read the whole process ENV once and hand it to LoadFrom (§7: every
 // value comes from the process ENV, the config file is gone; §12 security: the
 // token of BotFather lives only in the ENV, .env is listed in .gitignore).

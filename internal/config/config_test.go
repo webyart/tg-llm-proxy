@@ -259,6 +259,31 @@ func TestOldNameOfTheRowIsRefusedByName(t *testing.T) {
 	}
 }
 
+// TestEnvIsTheNineteenRows — §7 says the loader reads EXACTLY the 19 names of the table, and README repeats
+// that number. The rename of §16 change 29 swapped one name for another and must not have changed the count
+// or duplicated a name, so the number is pinned here rather than left to a comment (§12 reliability: a
+// documented invariant without a check is a comment waiting to lie).
+func TestEnvIsTheNineteenRows(t *testing.T) {
+	if len(Env) != 19 {
+		t.Errorf("Env holds %d names, want the 19 rows of §7 (§16 change 29 swapped a name, it did not add one)", len(Env))
+	}
+	var seen = map[string]bool{}
+	var i = 0
+	for i < len(Env) {
+		if seen[Env[i]] {
+			t.Errorf("Env names %s twice — the rename left both spellings in the table (§16 change 29)", Env[i])
+		}
+		seen[Env[i]] = true
+		i += 1
+	}
+	if !seen["TELEGRAM_ALLOWED_USERS"] {
+		t.Error("TELEGRAM_ALLOWED_USERS is not in Env, so the allowlist of §7 has no row (§16 change 29)")
+	}
+	if len(RenamedOrder) != 1 || RenamedRows[RenamedOrder[0]] != "TELEGRAM_ALLOWED_USERS" {
+		t.Error("RenamedRows does not point the one old name at the row that replaced it (§16 change 29)")
+	}
+}
+
 // TestAllowlistCountsADuplicateOnce — the same id named twice inside one row is one entry: §12 security
 // bounds the list, and `Allows` must not be able to count an id twice (§7 table).
 func TestAllowlistCountsADuplicateOnce(t *testing.T) {

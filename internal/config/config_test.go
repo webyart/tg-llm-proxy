@@ -190,3 +190,73 @@ func TestLoadFromTokenShape(t *testing.T) {
 		t.Errorf("the shape of the token is not named: %v", problems)
 	}
 }
+
+// TestAliasFillsTheAllowlist — §16 change 28: a .env that carries the allowlist as
+// TELEGRAM_ALLOWED_USERS must actually configure the bot. Before the alias the row was neither applied
+// nor named, so the real user_id looked registered while the bot stayed closed (deny by default) — the
+// failure §12 reliability hates most: a configuration that seems set and is not.
+func TestAliasFillsTheAllowlist(t *testing.T) {
+	var raw = map[string]string{
+		"TELEGRAM_BOT_TOKEN":     "12345:test",
+		"TELEGRAM_ALLOWED_USERS": "666244095",
+	}
+	var cfg, problems = LoadFrom(raw)
+	if len(problems) > 0 {
+		t.Fatalf("an alias row is not a problem (§16 change 28): %v", problems)
+	}
+	if cfg.DenyByDefault {
+		t.Fatalf("DenyByDefault = true, want the bot open through the alias (§7, §16 change 28)")
+	}
+	if !cfg.Allows(666244095) {
+		t.Errorf("Allows(666244095) = false, want true: the alias filled nothing (§7 allowlist)")
+	}
+	if cfg.Allows(42) {
+		t.Error("Allows(42) = true, want false: the alias must not open the whole world")
+	}
+	if !RowIsSet(raw, "ALLOWED_USER_IDS") {
+		t.Error("RowIsSet(ALLOWED_USER_IDS) = false, want true: PrintMissing would lie about an unset row (§12 reliability)")
+	}
+	var notices = AliasNotices(raw)
+	if len(notices) != 1 || !strings.Contains(notices[0], "TELEGRAM_ALLOWED_USERS") || !strings.Contains(notices[0], "ALLOWED_USER_IDS") {
+		t.Errorf("AliasNotices = %v, want one line naming both the alias and the §7 row (§10 День 1 DoD: the echo is honest)", notices)
+	}
+}
+
+// TestAliasMergesWithTheCanonicalRow — both spellings are legitimate at once (§16 change 28): the loader
+// unions them, keeps the order «canonical first» and counts a repeated id once, so an id written in both
+// rows cannot double the allowlist (§12 security keeps the list bounded).
+func TestAliasMergesWithTheCanonicalRow(t *testing.T) {
+	var ids, note = UserIDs(map[string]string{
+		"ALLOWED_USER_IDS":       "11,22",
+		"TELEGRAM_ALLOWED_USERS": "22,33",
+	})
+	if note != "" {
+		t.Fatalf("UserIDs returned a problem for two valid rows: %q", note)
+	}
+	var want = []int64{11, 22, 33}
+	if len(ids) != len(want) {
+		t.Fatalf("UserIDs = %v, want %v (§16 change 28: the union, the duplicate once)", ids, want)
+	}
+	var i = 0
+	for i < len(want) {
+		if ids[i] != want[i] {
+			t.Errorf("UserIDs[%d] = %d, want %d (the canonical row goes first, §12 reliability)", i, ids[i], want[i])
+		}
+		i += 1
+	}
+}
+
+// TestAliasNamesTheRowOfABadEntry — §12 reliability: a malformed id is named under the ENV name it was
+// read from, otherwise the operator fixes the wrong line of .env.
+func TestAliasNamesTheRowOfABadEntry(t *testing.T) {
+	var ids, note = UserIDs(map[string]string{"TELEGRAM_ALLOWED_USERS": "666244095, oops"})
+	if len(ids) != 1 || ids[0] != 666244095 {
+		t.Errorf("UserIDs = %v, want the good entry kept (§12 reliability)", ids)
+	}
+	if !strings.Contains(note, "TELEGRAM_ALLOWED_USERS") {
+		t.Errorf("the problem does not name the alias it came from: %q", note)
+	}
+	if strings.Contains(note, "oops, oops") {
+		t.Errorf("the bad entry is named twice: %q", note)
+	}
+}

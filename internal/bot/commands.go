@@ -67,9 +67,7 @@ func (d *Dispatcher) start(ctx context.Context, ev Event, arg string) error {
 	var lines = []string{"Привет! Я прокси к локальной модели STRATA (§1). Команды:"}
 	lines = append(lines, d.helpLines()...)
 	if d.deps.Cfg.DenyByDefault {
-		lines = append(lines, fmt.Sprintf(
-			"Бот закрыт: ALLOWED_USER_IDS пуст (§7 deny by default). Твой user_id — %d, "+
-				"впиши его в ALLOWED_USER_IDS и перезапусти бот.", ev.UserID))
+		lines = append(lines, refuseClosed(ev.UserID))
 	}
 	return d.reply(ctx, ev.ChatID, strings.Join(lines, "\n"))
 }
@@ -115,6 +113,16 @@ func (d *Dispatcher) whoami(ctx context.Context, ev Event, arg string) error {
 	if ev.Username != "" {
 		lines = append(lines, "username: @"+ev.Username)
 	}
+	// §6 /whoami exists so that a user can learn the id of §7; it would be half an answer without saying
+	// whether that id is already in the allowlist and under which ENV name to add it (§16 change 13 and
+	// §16 change 28: the row has two spellings, the user must not guess which one the .env uses).
+	if d.deps.Cfg.Allows(ev.UserID) {
+		lines = append(lines, "в allowlist: да (§7 ALLOWED_USER_IDS)")
+	} else if d.deps.Cfg.DenyByDefault {
+		lines = append(lines, "в allowlist: нет — бот закрыт, добавь "+strconv.FormatInt(ev.UserID, 10)+" в "+AllowlistHint+" и перезапусти (§7, §16 change 13)")
+	} else {
+		lines = append(lines, "в allowlist: нет — добавь "+strconv.FormatInt(ev.UserID, 10)+" в "+AllowlistHint+" и перезапусти (§7)")
+	}
 	return d.reply(ctx, ev.ChatID, strings.Join(lines, "\n"))
 }
 
@@ -124,6 +132,24 @@ const HistoryDefault = 5
 // HistoryMax — the cap of /history: §6 lists "последние N сообщений", and an unbounded N would put
 // the whole history into one Telegram message of 4096 symbols (§12 UX).
 const HistoryMax = 50
+
+// AllowlistHint — §12 UX: a refused user must see under WHICH ENV name to write the id. §16 change 28
+// accepts the §7 row ALLOWED_USER_IDS under its other spelling TELEGRAM_ALLOWED_USERS as well, and a
+// person who copies this line into a .env that already uses the second name must not have to guess.
+const AllowlistHint = "ALLOWED_USER_IDS (он же TELEGRAM_ALLOWED_USERS)"
+
+// refuseClosed — the text of §7 «deny by default» for a closed bot (ALLOWED_USER_IDS empty in both
+// spellings). Shared by /start (§6) and the allowlist middleware, so the two can never describe the same
+// situation differently (§12 UX, §16 change 13).
+func refuseClosed(userID int64) string {
+	return fmt.Sprintf("Бот закрыт: ALLOWED_USER_IDS пуст (§7 deny by default). Твой user_id — %d, впиши его в %s и перезапусти бот.", userID, AllowlistHint)
+}
+
+// refuseNotListed — the text for a user who is known but absent from the allowlist (§7). The id is
+// printed because that is the only way to learn it without a second bot (§16 change 13).
+func refuseNotListed(userID int64) string {
+	return fmt.Sprintf("Тебя нет в ALLOWED_USER_IDS (§7). Твой user_id — %d, добавь его в %s.", userID, AllowlistHint)
+}
 
 // modelInfo — §6: имя модели, endpoint, доступность STRATA; `/model check` calls GET {base}/models
 // through the same client (§4 internal/health probes the same URL, §2).

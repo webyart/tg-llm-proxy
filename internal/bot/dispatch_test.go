@@ -165,6 +165,31 @@ func TestClosedBotRefusesAndAudits(t *testing.T) {
 	}
 }
 
+// TestAliasRowOpensTheBot — §16 change 28: the allowlist written as TELEGRAM_ALLOWED_USERS is the same
+// setting, so the user it names must be answered and must NOT land in events(kind='denied'). This is the
+// regression of a real .env: the row was there, the id was right, and the bot stayed closed in silence.
+func TestAliasRowOpensTheBot(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	if cfg.DenyByDefault {
+		t.Fatalf("the alias row must open the bot (§16 change 28)")
+	}
+	var m = &fakeModel{response: model.Response{Content: "ответ"}}
+	var r = &fakeReplier{}
+	var db = testStore(t)
+	var d = newTestDispatcher(t, cfg, m, r, db)
+
+	if err := dispatch(t, d, testEvent(100, 11, 601, "/ask привет")); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if m.callCount() != 1 || r.count() != 1 {
+		t.Fatalf("the user of the alias row must reach the model and be answered, got %d calls / %d replies", m.callCount(), r.count())
+	}
+	var denied, err = store.CountEvents(context.Background(), db, store.EventDenied)
+	if err != nil || denied != 0 {
+		t.Fatalf("events(kind='denied') must stay empty, got %d err=%v (§7)", denied, err)
+	}
+}
+
 // TestRateLimitRefusesAndAudits — §7 RATE_LIMIT_PER_MINUTE, §12 reliability: the refusal says how long
 // to wait and lands in events(kind='limit'), and the model is never reached (§12 protects the GPU).
 func TestRateLimitRefusesAndAudits(t *testing.T) {

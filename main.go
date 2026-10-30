@@ -54,8 +54,9 @@ func PrintConfig(cfg config.Config) {
 	fmt.Println("HEALTH_PORT", cfg.HealthPort, "(§7, §16 change 11: the module internal/health with GET /healthz, the HEALTHCHECK of compose)")
 	fmt.Println("LOG_LEVEL", cfg.LogLevel, "(§7, §12 security: the token and the full texts of the model stay out of the logs)")
 	if cfg.DenyByDefault {
-		// §7: an empty ALLOWED_USER_IDS means the closed bot, deny by default.
-		fmt.Println("ALLOWED_USER_IDS is empty: the bot is closed, deny by default, only /start and /whoami answer (§7, §16 change 13)")
+		// §7: an empty ALLOWED_USER_IDS means the closed bot, deny by default — empty means empty in BOTH
+		// spellings of §16 change 28, because LoadFrom merged them before setting DenyByDefault.
+		fmt.Println("ALLOWED_USER_IDS is empty (TELEGRAM_ALLOWED_USERS too, §16 change 28): the bot is closed, deny by default, only /start and /whoami answer (§7, §16 change 13)")
 		return
 	}
 	fmt.Println("ALLOWED_USER_IDS", len(cfg.UserIDs), "entries (§7, §12 security: the allowlist of the chat IDs)")
@@ -63,17 +64,24 @@ func PrintConfig(cfg config.Config) {
 
 // PrintMissing - print the name of every §7.2 variable that is not set
 // (§10.2 Day 1 DoD: a missing token gives a clear error; §12: the message
-// names the variable and the §-reference).
+// names the variable and the §-reference). RowIsSet also looks at the aliases of
+// §16 change 28, so a row the operator wrote as TELEGRAM_ALLOWED_USERS is not
+// announced as unset — a wrong "not set" line is worse than no line at all.
 func PrintMissing(raw map[string]string) {
 	var names = config.Env
 	var i = 0
 	for i < len(names) {
-		var value = strings.TrimSpace(raw[names[i]])
-		if value == "" {
+		if !config.RowIsSet(raw, names[i]) {
 			// §10.2 Day 1 DoD: the names of the unset variables are printed.
 			fmt.Println("ENV variable", names[i], "is not set (§7.2)")
 		}
 		i += 1
+	}
+	var notices = config.AliasNotices(raw)
+	var n = 0
+	for n < len(notices) {
+		fmt.Println(notices[n])
+		n += 1
 	}
 }
 

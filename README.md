@@ -121,7 +121,8 @@ without the dot the PATH of §3 dies with the child process.
 2. `.\scripts\env-check.ps1` — §2: Go ≥ 1.27, pwsh ≥ 7, git, Docker daemon, network. Red here means the
    later steps cannot be trusted, fix it first (§10 День 0 DoD).
 3. `Copy-Item .env.example .env` and fill the §7 table: `TELEGRAM_BOT_TOKEN` from BotFather,
-   `ALLOWED_USER_IDS` = your own numeric `user_id` (id@username in BotFather is NOT it — §14.1), the STRATA
+   `ALLOWED_USER_IDS` = your own numeric `user_id` (id@username in BotFather is NOT it — §14.1; the name
+   `TELEGRAM_ALLOWED_USERS` is accepted for the same row and the two are merged, §16 change 28), the STRATA
    URL/model/key. Nothing else has to be touched: the other 15 rows have the defaults of §7.
    `.env` is gitignored and never printed (§12 security).
 4. `.\scripts\strata-check.ps1` — is the model reachable at all (§6 `/model` check + one chat request)?
@@ -150,8 +151,9 @@ without the dot the PATH of §3 dies with the child process.
 
 - [ ] `/start` in a private chat → the greeting + the command list; a second `/start` changes nothing
       (`EnsureChat` of §5 is idempotent).
-- [ ] `/whoami` → the numeric `user_id` and `chat_id`; put the `user_id` into `ALLOWED_USER_IDS` if the bot
-      was closed, restart, and the refusal of §7 must disappear.
+- [ ] `/whoami` → the numeric `user_id`, `chat_id` and the line «в allowlist: да/нет»; when it says «нет»,
+      the answer names the ENV row to write the id into (`ALLOWED_USER_IDS`, or its alias
+      `TELEGRAM_ALLOWED_USERS`, §16 change 28) — restart after writing, and the refusal of §7 must disappear.
 - [ ] `/help`, `/ping` (the `pong <uptime>` grows), `/model`, `/model check` (the real `GET /models` of §14).
 - [ ] 10 messages of `/ask …` in one chat → 10 pairs of rows in `messages` (§5), the answer footer
       `⏱ latency · N→M токенов · модель … · попыток K`, and `/stats` counts the same numbers.
@@ -196,6 +198,12 @@ it with `config.NormalizeBase` to **exactly one** `/v1` and joins `{base}/v1/cha
 is still collapsed, and `scripts/strata-check.ps1` repeats the same rule).
 `ALLOWED_USER_IDS` empty → **closed bot, deny by default**: only `/start` and `/whoami`
 answer and everything else goes to `events(kind='denied')` (§7, §16 change 13).
+`TELEGRAM_ALLOWED_USERS` is accepted as the other spelling of the same row (§16 change 28): the loader
+merges both names and counts a repeated id once, the start echo says which alias was read, and `/whoami`
+prints the numeric `user_id` together with the line to write. Before that change a `.env` carrying only
+`TELEGRAM_ALLOWED_USERS` configured nothing at all and said nothing about it — the row was not a §7 name
+and not a v1.0 legacy row, so it fell between the two lists (§12 reliability: a setting that looks
+applied and is not is the worst kind of silent failure).
 `DB_PATH=./data/bot.db` is the local default for `run.ps1`; compose overrides it with
 `/data/bot.db` and the named volume `bot-data:/data` is mandatory (§16 change 9, §8.1).
 `MAX_MESSAGE_CHUNK` ≤ 4096 SYMBOLS (§12 UX, §16 change 7: кириллица = 2 bytes, the cut
@@ -241,9 +249,9 @@ goes by runes); `TG_REPLY_DEADLINE_SECONDS` must exceed `STRATA_TIMEOUT_SECONDS`
   log (§12 security, checked by `scripts/smoke.ps1`). Inside the container the same token works: a
   15-second `docker compose up -d` probe logged `bot is polling Telegram, bot_state last_update_id 0
   found false` with the container `Up (healthy)`. The interactive part of the §11 manual checklist (real
-  answers to the §6 commands in a real chat) still needs the real `user_id` in `ALLOWED_USER_IDS` — `.env`
-  holds the placeholder `1` today, so every real user gets the refusal of §7 plus an
-  `events(kind='denied')` row.
+  answers to the §6 commands in a real chat) now only needs the bot to be reachable: `.env` lists the real
+  `user_id` in the allowlist (`ALLOWED_USER_IDS`, and the name `TELEGRAM_ALLOWED_USERS` means the same row,
+  §16 change 28), so the refusal of §7 and the `events(kind='denied')` row are reserved for strangers.
 - Day 6: DONE — `internal/testutil/telegram.go` (the fake Bot API: `getMe`, `getUpdates` with the
   real offset semantics, `sendMessage`, `setMyCommands`, scripted 429 with `retry_after`, wrong-token
   counter, `Replay`), `test/integration/run_test.go` (`//go:build integration`, 8 cases),
@@ -263,6 +271,16 @@ goes by runes); `TG_REPLY_DEADLINE_SECONDS` must exceed `STRATA_TIMEOUT_SECONDS`
   `TestAskLogsTheFieldsOfDay7` / `TestAskLogsUnknownTokensAsNull` read those very JSON lines; `/stats` of §6
   is part of the registry and of the integration suite. The README now carries the пошаговая инструкция, the
   §11 manual check-list, the UTC note about `created_at` (§13) and the §15 v2 backlog.
+  **§16 change 28** (found in the real `.env`): the allowlist was written as `TELEGRAM_ALLOWED_USERS`, the
+  loader knew only the §7 name `ALLOWED_USER_IDS`, and the row fell between the two lists the loader
+  reports (§7 rows + the v1.0 legacy rows) — so the real `user_id` configured nothing and nothing was
+  printed about it. `TELEGRAM_ALLOWED_USERS` is now an accepted alias: `UserIDs` merges both spellings and
+  counts a repeated id once, `RowIsSet`/`PrintMissing` no longer call the row unset, `AliasNotices` prints
+  what was read, and a malformed entry is named under the name it came from (`/whoami` and the refusal
+  texts name both spellings, §12 UX). Covered by `TestAliasFillsTheAllowlist`,
+  `TestAliasMergesWithTheCanonicalRow`, `TestAliasNamesTheRowOfABadEntry` and
+  `TestAliasRowOpensTheBot` (the last one asserts the user reaches the model and
+  `events(kind='denied')` stays empty).
   Still open: the manual demo itself (the checklist above) and the last §1 criterion it proves — both need
   `api.telegram.org` from the process, which this host filters for the Windows binary and the container has.
 

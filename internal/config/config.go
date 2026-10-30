@@ -227,38 +227,133 @@ func Push(problems []string, msg string) []string {
 	return append(problems, msg)
 }
 
-// UserIDs — the ALLOWED_USER_IDS row: the chat IDs through a comma (§7 table).
+// Aliases — an ENV name that means a row of the §7 table under a different spelling. §16 change 28:
+// `TELEGRAM_ALLOWED_USERS` is the name a real `.env` carried for the allowlist of §7, and the loader of
+// §10 День 1 read only the 19 names of the table, so the row was neither applied nor named — a real
+// `user_id` sat in a file that silently did nothing (the worst failure of §12 reliability: the
+// configuration looks set and is not). An alias is NOT a 20th row: `Env` stays the 19 names of §7, the
+// loader MERGES both spellings into `Config.UserIDs`, and the echo of §10 День 1 DoD says which alias
+// was read, so nobody has to guess where an id came from.
+var Aliases = map[string]string{
+	"TELEGRAM_ALLOWED_USERS": "ALLOWED_USER_IDS",
+}
+
+// AliasOrder — the fixed scan order of the aliases. A map iteration would merge the two spellings in a
+// different order on every run and print the echo differently with it (§12 reliability).
+var AliasOrder = []string{"TELEGRAM_ALLOWED_USERS"}
+
+// AliasRows — the aliases that carry a value in raw, in AliasOrder (§16 change 28).
+func AliasRows(raw map[string]string) []string {
+	var found = []string{}
+	var i = 0
+	for i < len(AliasOrder) {
+		var alias = AliasOrder[i]
+		if strings.TrimSpace(raw[alias]) != "" {
+			found = append(found, alias)
+		}
+		i += 1
+	}
+	return found
+}
+
+// AliasNotices — the lines the start prints when an alias is in play (§10 День 1 DoD: the configuration
+// is echoed back, so an alias must be visible too). These are notices, not problems: writing the row
+// under its other name is legitimate, and §12 reliability forbids turning a working configuration into
+// an exit code 1.
+func AliasNotices(raw map[string]string) []string {
+	var notices = []string{}
+	var rows = AliasRows(raw)
+	var i = 0
+	for i < len(rows) {
+		var alias = rows[i]
+		notices = append(notices, fmt.Sprintf("ENV %s is read as the §7 row %s (§16 change 28: the same allowlist under its other name, the loader merges both)", alias, Aliases[alias]))
+		i += 1
+	}
+	return notices
+}
+
+// RowIsSet — does the §7 row carry a value, directly or through an alias? PrintMissing uses it, so a
+// row that the operator wrote under the alias name is not reported as unset (§12 reliability: a missing
+// variable message that is wrong is worse than no message).
+func RowIsSet(raw map[string]string, name string) bool {
+	if strings.TrimSpace(raw[name]) != "" {
+		return true
+	}
+	var i = 0
+	for i < len(AliasOrder) {
+		var alias = AliasOrder[i]
+		if Aliases[alias] == name && strings.TrimSpace(raw[alias]) != "" {
+			return true
+		}
+		i += 1
+	}
+	return false
+}
+
+// UserIDs — the ALLOWED_USER_IDS row: the chat IDs through a comma (§7 table), merged with the alias
+// `TELEGRAM_ALLOWED_USERS` of §16 change 28 when the operator wrote the allowlist under that name.
 // An empty row means the closed bot, deny by default: it answers only /start
 // and /whoami and writes events(kind='denied') (§7 behavior, §16 change 13 —
 // otherwise a fresh user could not learn his own id and enter the allowlist).
-// A malformed entry is named, the good entries are still kept (§12 reliability).
+// A malformed entry is named with the ENV name it was read from, the good entries are still kept
+// (§12 reliability); a repeated id is kept once, because the two spellings of §16 change 28 easily
+// carry the same `user_id` and `Allows` must not count it twice.
 func UserIDs(raw map[string]string) ([]int64, string) {
 	var ids = []int64{}
 	var bad = []string{}
-	var text = strings.TrimSpace(raw["ALLOWED_USER_IDS"])
-	if text == "" {
-		return ids, ""
-	}
-	var parts = strings.Split(text, ",")
-	var i = 0
-	for i < len(parts) {
-		var part = strings.TrimSpace(parts[i])
-		if part != "" {
-			var value, err = strconv.ParseInt(part, 10, 64)
-			if err != nil || value <= 0 {
-				bad = Push(bad, fmt.Sprintf("the entry %s of ENV ALLOWED_USER_IDS is not a positive chat id (§7 table)", part))
-			} else if len(ids) < UserIDsMax {
-				ids = append(ids, value)
-			} else {
-				bad = Push(bad, fmt.Sprintf("ENV ALLOWED_USER_IDS is longer than %d entries (§12 security keeps the allowlist bounded)", UserIDsMax))
-			}
+
+	// The canonical §7 row first, then every alias that carries a value: the order is what makes the
+	// merged list reproducible (§12 reliability).
+	var names = []string{"ALLOWED_USER_IDS"}
+	var a = 0
+	for a < len(AliasOrder) {
+		var alias = AliasOrder[a]
+		if strings.TrimSpace(raw[alias]) != "" {
+			names = append(names, alias)
 		}
-		i += 1
+		a += 1
+	}
+
+	var n = 0
+	for n < len(names) {
+		var name = names[n]
+		var parts = strings.Split(strings.TrimSpace(raw[name]), ",")
+		var i = 0
+		for i < len(parts) {
+			var part = strings.TrimSpace(parts[i])
+			if part != "" {
+				var value, err = strconv.ParseInt(part, 10, 64)
+				if err != nil || value <= 0 {
+					bad = Push(bad, fmt.Sprintf("the entry %s of ENV %s is not a positive chat id (§7 table)", part, name))
+				} else if HasUserID(ids, value) {
+					// The same id under both spellings (§16 change 28) — kept once, said nothing about.
+				} else if len(ids) < UserIDsMax {
+					ids = append(ids, value)
+				} else {
+					bad = Push(bad, fmt.Sprintf("ENV %s is longer than %d entries (§12 security keeps the allowlist bounded)", name, UserIDsMax))
+				}
+			}
+			i += 1
+		}
+		n += 1
 	}
 	if len(bad) == 0 {
 		return ids, ""
 	}
-	return ids, fmt.Sprintf("ENV ALLOWED_USER_IDS has %d malformed entries: %s; the good entries are kept (§12 reliability)", len(bad), strings.Join(bad, "; "))
+	return ids, fmt.Sprintf("ENV %s has %d malformed entries: %s; the good entries are kept (§12 reliability)", strings.Join(names, " and "), len(bad), strings.Join(bad, "; "))
+}
+
+// HasUserID — is the id already in the allowlist? The linear scan is fine here: §12 security bounds the
+// list at UserIDsMax entries, and the loader runs once at the start (§10 День 1).
+func HasUserID(ids []int64, id int64) bool {
+	var i = 0
+	for i < len(ids) {
+		if ids[i] == id {
+			return true
+		}
+		i += 1
+	}
+	return false
 }
 
 // DefaultStrataModel — the STRATA_MODEL row of the §7 table. §14.2 item 6 still

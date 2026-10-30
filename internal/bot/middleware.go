@@ -63,12 +63,9 @@ func (d *Dispatcher) allowed(next HandlerFunc) HandlerFunc {
 		}
 		d.logEvent(ctx, ev.UserID, store.EventDenied, cmd.Name)
 		if d.deps.Cfg.DenyByDefault {
-			return d.reply(ctx, ev.ChatID, fmt.Sprintf(
-				"Бот закрыт: ALLOWED_USER_IDS пуст (§7 deny by default). Твой user_id — %d, "+
-					"впиши его в ALLOWED_USER_IDS и перезапусти бот.", ev.UserID))
+			return d.reply(ctx, ev.ChatID, refuseClosed(ev.UserID))
 		}
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf(
-			"Тебя нет в ALLOWED_USER_IDS (§7). Твой user_id — %d.", ev.UserID))
+		return d.reply(ctx, ev.ChatID, refuseNotListed(ev.UserID))
 	}
 }
 

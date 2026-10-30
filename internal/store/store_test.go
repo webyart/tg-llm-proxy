@@ -334,6 +334,228 @@ func TestStrictPragmasRejectsMultiStatement(t *testing.T) {
 	}
 }
 
+// TestOpenRejectsBadDSNLeavesPlainFile — §10 День 2 DoD: an `_journal_mode=666` typo surfaces from
+// db.Ping() and the file stays journal_mode=delete with no -wal/-shm. The rejection runs in the
+// validation phase of connect, before PRAGMA journal_mode is applied (§5 spike 11).
+func TestOpenRejectsBadDSNLeavesPlainFile(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/bot.db"
+	dsn := "file:" + EscapePath(path) + "?_journal_mode=666"
+	db, err := sql.Open(sqliteDriver, dsn)
+	if err != nil {
+		t.Fatalf("sql.Open is expected to stay silent (§5 spike 11): %v", err)
+	}
+	if err := db.Ping(); err == nil {
+		db.Close()
+		t.Fatalf("the Ping accepted _journal_mode=666")
+	}
+	db.Close()
+
+	if _, err := os.Stat(path + "-wal"); err == nil {
+		t.Fatalf("-wal exists after a rejected DSN (§10 День 2 DoD: it must not)")
+	}
+	if _, err := os.Stat(path + "-shm"); err == nil {
+		t.Fatalf("-shm exists after a rejected DSN (§10 День 2 DoD: it must not)")
+	}
+	plain, err := sql.Open(sqliteDriver, "file:"+EscapePath(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plain.Close()
+	mode, err := Pragma(context.Background(), plain, JournalModePragma)
+	if err != nil {
+		t.Fatalf("the file of the rejected DSN cannot be read: %v", err)
+	}
+	if mode != "delete" {
+		t.Fatalf("journal_mode of the rejected file = %q, §10 День 2 DoD: the file stays delete", mode)
+	}
+}
+
+// TestMemoryStoreSharedAcrossPool — §10 День 2 DoD: rows written on one pooled connection are seen
+// on the others, which only works through cache=shared (§5).
+func TestMemoryStoreSharedAcrossPool(t *testing.T) {
+	db, err := OpenMemory(context.Background(), "sharedpool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("INSERT INTO chats (chat_id, user_id) VALUES (11, 7)"); err != nil {
+		t.Fatal(err)
+	}
+	// rows1 holds the first connection while rows2 opens the second (§5 spike 9 check).
+	rows1, err := db.Query("SELECT chat_id FROM chats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows1.Close()
+	rows2, err := db.Query("SELECT chat_id FROM chats")
+	if err != nil {
+		t.Fatalf("the second pooled connection lost the table (§5 cache=shared): %v", err)
+	}
+	defer rows2.Close()
+	for _, pair := range []struct {
+		rows *sql.Rows
+		name string
+	}{{rows1, "connection A"}, {rows2, "connection B"}} {
+		var seen []int
+		for pair.rows.Next() {
+			var id int
+			if err := pair.rows.Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			seen = append(seen, id)
+		}
+		if err := pair.rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		if len(seen) != 1 || seen[0] != 11 {
+			t.Fatalf("%s sees %v, §5 keeps one shared cache of the same rows", pair.name, seen)
+		}
+	}
+	if open := db.Stats().OpenConnections; open < 2 {
+		t.Fatalf("the pool kept %d open connections, §11 MaxOpenConns(4) allows two at once", open)
+	}
+}
+
+// TestMemoryDSNNeedsCacheShared — §10 День 2 DoD: the §11 DSN of §5 with cache=shared keeps the
+// schema across the pool.
+func TestMemoryDSNNeedsCacheShared(t *testing.T) {
+	db, err := sql.Open(sqliteDriver, "file:memshared?mode=memory&cache=shared&_foreign_keys=1&_busy_timeout=5000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(MaxOpenConns)
+	db.SetMaxIdleConns(MaxIdleConns)
+	if err := ApplySchema(context.Background(), db); err != nil {
+		t.Fatalf("the schema of §5 did not reach the shared memory pool: %v", err)
+	}
+	if _, err := db.Exec("INSERT INTO chats (chat_id, user_id) VALUES (3, 7)"); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM chats").Scan(&count); err != nil {
+		t.Fatalf("the shared cache pool lost the table (§5 cache=shared): %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("the shared cache sees %d rows (§5 keeps 1)", count)
+	}
+}
+
+// TestPrivateMemoryNotSharedAcrossPool — §10 День 2 DoD: without cache=shared a memory database
+// belongs to one connection, so the second pooled connection answers `no such table` (§5 spike 9).
+func TestPrivateMemoryNotSharedAcrossPool(t *testing.T) {
+	db, err := sql.Open(sqliteDriver, "file:membroken?mode=memory&_foreign_keys=1&_busy_timeout=5000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(MaxOpenConns)
+	db.SetMaxIdleConns(MaxIdleConns)
+	if err := ApplySchema(context.Background(), db); err != nil {
+		t.Fatalf("the first connection created the schema: %v", err)
+	}
+	rows1, err := db.Query("SELECT COUNT(*) FROM chats") // holds connection A open
+	if err != nil {
+		t.Fatalf("the connection that created the schema lost it: %v", err)
+	}
+	defer rows1.Close()
+	_, err = db.Query("SELECT COUNT(*) FROM chats")
+	if err == nil {
+		t.Fatalf("a memory database without cache=shared was visible on the second connection (§5 spike 9)")
+	}
+	if !strings.Contains(err.Error(), "no such table") {
+		t.Fatalf("the second connection failed with an unexpected error: %v", err)
+	}
+}
+
+// TestMemoryPoolKeepsIdleConn — §10 День 2 DoD: with MaxIdleConns(2) the pooled database survives
+// repeated rounds; with idle=0 the pool closes the connection on returning it and the shared-cache
+// memory database disappears with it (§5 spike 9 — the reason §11 pins idle at 2).
+func TestMemoryPoolKeepsIdleConn(t *testing.T) {
+	ctx := context.Background()
+	dsn, err := MemoryDSN("idle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open(sqliteDriver, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(MaxOpenConns)
+	db.SetMaxIdleConns(MaxIdleConns)
+	if err := ApplySchema(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("INSERT INTO chats (chat_id, user_id) VALUES (9, 7)"); err != nil {
+		t.Fatal(err)
+	}
+	// §11: the returned connection stays idle in the pool instead of being closed (DBStats has no
+	// MaxIdleConns field on this toolchain — MaxIdleClosed is the counter that proves it).
+	stats := db.Stats()
+	if stats.MaxIdleClosed != 0 {
+		t.Fatalf("MaxIdleClosed = %d, §11 pins MaxIdleConns(2): the pool must not close idle connections", stats.MaxIdleClosed)
+	}
+	if stats.MaxOpenConnections != MaxOpenConns {
+		t.Fatalf("MaxOpenConnections = %d, §11 pins %d", stats.MaxOpenConnections, MaxOpenConns)
+	}
+	for round := 0; round < 5; round++ {
+		var count int
+		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM chats").Scan(&count); err != nil {
+			t.Fatalf("the pooled database vanished after round %d (§5 spike 9): %v", round, err)
+		}
+		if count != 1 {
+			t.Fatalf("round %d sees %d rows, §5 keeps 1", round, count)
+		}
+	}
+
+	// The same DSN with idle=0 is the shape §11 forbids: the pool closes the connection between the
+	// statements, and the shared-cache memory database disappears with it — the schema of §5 cannot
+	// even be applied (§5 spike 9).
+	brokenDSN, err := MemoryDSN("idlezero")
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken, err := sql.Open(sqliteDriver, brokenDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer broken.Close()
+	broken.SetMaxOpenConns(1)
+	broken.SetMaxIdleConns(0)
+	err = ApplySchema(ctx, broken)
+	if err == nil {
+		t.Fatalf("idle=0 applied the schema of §5 cleanly, §5 spike 9 says the pool drops the memory database")
+	}
+	if !strings.Contains(err.Error(), "no such table") {
+		t.Fatalf("idle=0 failed with an unexpected error: %v", err)
+	}
+	if broken.Stats().MaxIdleClosed == 0 {
+		t.Fatalf("MaxIdleClosed = 0 with idle=0, §11: the pool closes the returned connection")
+	}
+}
+
+// TestMemoryStoreNoWAL — §10 День 2 DoD: WAL is silently unavailable in memory (§5), so the memory
+// pool reports `memory` and Open accepts exactly that answer (§5 table row).
+func TestMemoryStoreNoWAL(t *testing.T) {
+	db, err := OpenMemory(context.Background(), "nowal")
+	if err != nil {
+		t.Fatalf("OpenMemory must not fall on the WAL request of §5: %v", err)
+	}
+	defer db.Close()
+	mode, err := Pragma(context.Background(), db, JournalModePragma)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != "memory" {
+		t.Fatalf("journal_mode = %q in memory, §5 reports memory", mode)
+	}
+	if _, err := Pragma(context.Background(), db, BusyTimeoutPragma); err != nil {
+		t.Fatalf("busy_timeout stays readable in memory (§11 keeps it in the DSN): %v", err)
+	}
+}
+
 func openTemp(t *testing.T) (*sql.DB, string) {
 	t.Helper()
 	dir := t.TempDir()

@@ -23,6 +23,19 @@ next.
   Also the user PATH (`HKCU\Environment!Path`) was extended with `C:\Program Files\Git\cmd`
   (setx, len 529 → 554) → new processes/VS Code terminals will resolve `git` without Setup.ps1.
 
+## Repositoriи — репозitoriyi-и caches for work (verified 2026-10-30)
+
+| kind | location | state |
+|---|---|---|
+| git (work repo) | `C:\Tools\tg-llm-proxy` + `.git/` | init'd, branch `main`, 1 commit `ed46cf2`, **no remotes** (`git remote -v` empty) — push per §6 later |
+| parent folders | `C:\Tools` — NOT a repo (no parent `.git`) | this project folder IS the work repo (no nested/monorepo ambiguity) |
+| authorship | `git config --local` only: `arti` + `arti@localhost` | no global `.gitconfig` on machine → other repos untouched |
+| Go module cache | `GOPATH=C:\Users\arti\go` (default, global) | Setup.ps1 switches to project-local `.cache\gopath` (§3) |
+| Go build cache | `GOCACHE=%LOCALAPPDATA%\go-build` (default) | Setup.ps1 → `.cache\gocache` (§3) |
+| go proxy | `GOPROXY=https://proxy.golang.org,direct` | §3; `go version` fetched OK |
+| Docker image build | `dl.build` (Docker 29.2.1, demon running, compose v5.6.1) | §3 Day 2: `docker build --cache-dir .cache/gocache` |
+| ignored (not in repo) | `PLAN.md`, `docs/PLAN.md`, `.cache/`, `.env`, `data/`, `bin/`, `*.db*`, `*.log` | proven by `git check-ignore -v` (rules in `.gitignore` lines 2–13) |
+
 ## Environment (verified 2026-10-30, §2 env-check green)
 
 | component | value | note |

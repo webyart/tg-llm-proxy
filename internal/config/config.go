@@ -31,7 +31,7 @@ var Env = []string{
 	"MAX_CONTEXT_CHARS",
 	"MAX_INPUT_CHARS",
 	"SYSTEM_PROMPT",
-	"ALLOWED_USER_IDS",
+	"TELEGRAM_ALLOWED_USERS",
 	"RATE_LIMIT_PER_MINUTE",
 	"MAX_CONCURRENT_MODEL_REQUESTS",
 	"PROXY_FREE_TEXT",
@@ -39,6 +39,20 @@ var Env = []string{
 	"PARSE_MODE",
 	"HEALTH_PORT",
 	"LOG_LEVEL",
+}
+
+// HasRow — is the name one of the 19 rows of the §7 table? The §16 change 29 rename is pinned from both
+// sides with it: TELEGRAM_ALLOWED_USERS is a row, ALLOWED_USER_IDS is not one any more (a test checks both,
+// because `Env` is what PrintMissing walks and what a reader of §7 expects to find).
+func HasRow(name string) bool {
+	var i = 0
+	for i < len(Env) {
+		if Env[i] == name {
+			return true
+		}
+		i += 1
+	}
+	return false
 }
 
 // The defaults of the §7 table. §16 change 8 fixes the invariant of the URL join:
@@ -72,7 +86,7 @@ const DefaultLogLevel = "info"
 // 4096 SYMBOLS, so MAX_MESSAGE_CHUNK cannot pass it (§16 change 7: кириллица costs
 // two bytes, therefore the cut goes by runes and never by bytes). §16 change 11
 // gives HEALTH_PORT to the new module internal/health (GET /healthz, the HEALTHCHECK
-// of compose and smoke.ps1). §12 security keeps ALLOWED_USER_IDS a bounded list.
+// of compose and smoke.ps1). §12 security keeps TELEGRAM_ALLOWED_USERS a bounded list.
 const ChunkMax = int64(4096)
 const PortMax = int64(65535)
 const TGBigID = int64(9223372036854)
@@ -227,120 +241,81 @@ func Push(problems []string, msg string) []string {
 	return append(problems, msg)
 }
 
-// Aliases — an ENV name that means a row of the §7 table under a different spelling. §16 change 28:
-// `TELEGRAM_ALLOWED_USERS` is the name a real `.env` carried for the allowlist of §7, and the loader of
-// §10 День 1 read only the 19 names of the table, so the row was neither applied nor named — a real
-// `user_id` sat in a file that silently did nothing (the worst failure of §12 reliability: the
-// configuration looks set and is not). An alias is NOT a 20th row: `Env` stays the 19 names of §7, the
-// loader MERGES both spellings into `Config.UserIDs`, and the echo of §10 День 1 DoD says which alias
-// was read, so nobody has to guess where an id came from.
-var Aliases = map[string]string{
-	"TELEGRAM_ALLOWED_USERS": "ALLOWED_USER_IDS",
+// RenamedRows — an ENV name that WAS a row of the §7 table and is not one any more. §16 change 28 made
+// `TELEGRAM_ALLOWED_USERS` an alias of `ALLOWED_USER_IDS`; §16 change 29 reversed that: the name a real
+// `.env` carries is `TELEGRAM_ALLOWED_USERS`, so THAT is the row of §7 and `ALLOWED_USER_IDS` left the
+// loader. A name that leaves the table still has to be named when it carries a value — an old file with
+// `ALLOWED_USER_IDS=…` must not become a silently closed bot (the exact failure §16 change 28 was about).
+// So the value is NOT applied: one row, one spelling, nothing to merge, and the start stops with exit
+// code 1 on the message below (§7: the loader reads exactly the 19 names of the table).
+var RenamedRows = map[string]string{
+	"ALLOWED_USER_IDS": "TELEGRAM_ALLOWED_USERS",
 }
 
-// AliasOrder — the fixed scan order of the aliases. A map iteration would merge the two spellings in a
-// different order on every run and print the echo differently with it (§12 reliability).
-var AliasOrder = []string{"TELEGRAM_ALLOWED_USERS"}
+// RenamedOrder — the fixed scan order of RenamedRows: a map iteration would put the problems of a start in
+// a different order on every run (§12 reliability).
+var RenamedOrder = []string{"ALLOWED_USER_IDS"}
 
-// AliasRows — the aliases that carry a value in raw, in AliasOrder (§16 change 28).
-func AliasRows(raw map[string]string) []string {
+// Renamed — name every renamed row that still carries a value and point at the name that replaced it.
+// The value itself is never printed, so an old row that happens to look secret-shaped cannot leak through
+// this message (§12 security).
+func Renamed(raw map[string]string) []string {
 	var found = []string{}
 	var i = 0
-	for i < len(AliasOrder) {
-		var alias = AliasOrder[i]
-		if strings.TrimSpace(raw[alias]) != "" {
-			found = append(found, alias)
+	for i < len(RenamedOrder) {
+		var name = RenamedOrder[i]
+		if strings.TrimSpace(raw[name]) != "" {
+			found = Push(found, fmt.Sprintf("ENV %s is not a row of the §7 table any more: §16 change 29 renamed the row to %s, so the value of %s is ignored — write the allowlist under the new name (§7: the loader reads exactly the 19 names of the table)", name, RenamedRows[name], name))
 		}
 		i += 1
 	}
 	return found
 }
 
-// AliasNotices — the lines the start prints when an alias is in play (§10 День 1 DoD: the configuration
-// is echoed back, so an alias must be visible too). These are notices, not problems: writing the row
-// under its other name is legitimate, and §12 reliability forbids turning a working configuration into
-// an exit code 1.
-func AliasNotices(raw map[string]string) []string {
-	var notices = []string{}
-	var rows = AliasRows(raw)
-	var i = 0
-	for i < len(rows) {
-		var alias = rows[i]
-		notices = append(notices, fmt.Sprintf("ENV %s is read as the §7 row %s (§16 change 28: the same allowlist under its other name, the loader merges both)", alias, Aliases[alias]))
-		i += 1
-	}
-	return notices
-}
-
-// RowIsSet — does the §7 row carry a value, directly or through an alias? PrintMissing uses it, so a
-// row that the operator wrote under the alias name is not reported as unset (§12 reliability: a missing
-// variable message that is wrong is worse than no message).
+// RowIsSet — does the §7 row carry a value? PrintMissing uses it (§10 День 1 DoD: the name of every unset
+// §7.2 variable is printed, and a wrong «not set» line is worse than no line). Since §16 change 29 the row
+// has exactly one spelling, so this is one lookup and nothing to look through.
 func RowIsSet(raw map[string]string, name string) bool {
-	if strings.TrimSpace(raw[name]) != "" {
-		return true
-	}
-	var i = 0
-	for i < len(AliasOrder) {
-		var alias = AliasOrder[i]
-		if Aliases[alias] == name && strings.TrimSpace(raw[alias]) != "" {
-			return true
-		}
-		i += 1
-	}
-	return false
+	return strings.TrimSpace(raw[name]) != ""
 }
 
-// UserIDs — the ALLOWED_USER_IDS row: the chat IDs through a comma (§7 table), merged with the alias
-// `TELEGRAM_ALLOWED_USERS` of §16 change 28 when the operator wrote the allowlist under that name.
+// UserIDs — the TELEGRAM_ALLOWED_USERS row: the chat IDs through a comma (§7 table, §16 change 29 — this
+// name is the row itself, `ALLOWED_USER_IDS` of §16 change 28 is gone from the loader and is refused by
+// name through Renamed).
 // An empty row means the closed bot, deny by default: it answers only /start
 // and /whoami and writes events(kind='denied') (§7 behavior, §16 change 13 —
 // otherwise a fresh user could not learn his own id and enter the allowlist).
 // A malformed entry is named with the ENV name it was read from, the good entries are still kept
-// (§12 reliability); a repeated id is kept once, because the two spellings of §16 change 28 easily
-// carry the same `user_id` and `Allows` must not count it twice.
+// (§12 reliability); a repeated id is kept once, because a list that names the same `user_id` twice must
+// not be counted twice by `Allows`.
 func UserIDs(raw map[string]string) ([]int64, string) {
 	var ids = []int64{}
 	var bad = []string{}
 
-	// The canonical §7 row first, then every alias that carries a value: the order is what makes the
-	// merged list reproducible (§12 reliability).
-	var names = []string{"ALLOWED_USER_IDS"}
-	var a = 0
-	for a < len(AliasOrder) {
-		var alias = AliasOrder[a]
-		if strings.TrimSpace(raw[alias]) != "" {
-			names = append(names, alias)
-		}
-		a += 1
-	}
-
-	var n = 0
-	for n < len(names) {
-		var name = names[n]
-		var parts = strings.Split(strings.TrimSpace(raw[name]), ",")
-		var i = 0
-		for i < len(parts) {
-			var part = strings.TrimSpace(parts[i])
-			if part != "" {
-				var value, err = strconv.ParseInt(part, 10, 64)
-				if err != nil || value <= 0 {
-					bad = Push(bad, fmt.Sprintf("the entry %s of ENV %s is not a positive chat id (§7 table)", part, name))
-				} else if HasUserID(ids, value) {
-					// The same id under both spellings (§16 change 28) — kept once, said nothing about.
-				} else if len(ids) < UserIDsMax {
-					ids = append(ids, value)
-				} else {
-					bad = Push(bad, fmt.Sprintf("ENV %s is longer than %d entries (§12 security keeps the allowlist bounded)", name, UserIDsMax))
-				}
+	var name = "TELEGRAM_ALLOWED_USERS"
+	var parts = strings.Split(strings.TrimSpace(raw[name]), ",")
+	var i = 0
+	for i < len(parts) {
+		var part = strings.TrimSpace(parts[i])
+		if part != "" {
+			var value, err = strconv.ParseInt(part, 10, 64)
+			if err != nil || value <= 0 {
+				bad = Push(bad, fmt.Sprintf("the entry %s of ENV %s is not a positive chat id (§7 table)", part, name))
+			} else if HasUserID(ids, value) {
+				// The same id named twice in one row — kept once, said nothing about: `Allows` must not
+				// count it twice, and a duplicate in a list of ids is not a mistake worth a line of output.
+			} else if len(ids) < UserIDsMax {
+				ids = append(ids, value)
+			} else {
+				bad = Push(bad, fmt.Sprintf("ENV %s is longer than %d entries (§12 security keeps the allowlist bounded)", name, UserIDsMax))
 			}
-			i += 1
 		}
-		n += 1
+		i += 1
 	}
 	if len(bad) == 0 {
 		return ids, ""
 	}
-	return ids, fmt.Sprintf("ENV %s has %d malformed entries: %s; the good entries are kept (§12 reliability)", strings.Join(names, " and "), len(bad), strings.Join(bad, "; "))
+	return ids, fmt.Sprintf("ENV %s has %d malformed entries: %s; the good entries are kept (§12 reliability)", name, len(bad), strings.Join(bad, "; "))
 }
 
 // HasUserID — is the id already in the allowlist? The linear scan is fine here: §12 security bounds the
@@ -445,6 +420,16 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 		staleIndex += 1
 	}
 
+	// §16 change 29: `ALLOWED_USER_IDS` used to be the name of the allowlist row and is not one any more.
+	// A row that left the table is refused by name too, exactly like a v1.0 leftover: a stale `.env` must
+	// not leave the bot closed while looking configured (§12 reliability).
+	var renamed = Renamed(raw)
+	var renamedIndex = 0
+	for renamedIndex < len(renamed) {
+		problems = Push(problems, renamed[renamedIndex])
+		renamedIndex += 1
+	}
+
 	var token = strings.TrimSpace(raw["TELEGRAM_BOT_TOKEN"])
 	if token == "" {
 		problems = Push(problems, "ENV TELEGRAM_BOT_TOKEN is not set: the bot cannot start (§7 behavior: the absence of the token falls on the start with a clear error; §10 День 1 DoD: exit code 1)")
@@ -543,7 +528,7 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	return cfg, problems
 }
 
-// Allows — the §7 allowlist rule: an empty ALLOWED_USER_IDS means a closed bot (DenyByDefault of
+// Allows — the §7 allowlist rule: an empty TELEGRAM_ALLOWED_USERS means a closed bot (DenyByDefault of
 // LoadFrom), so nobody is allowed until the id is registered. §16 change 13 keeps /start and /whoami
 // outside this check — without them a user of a closed bot could never learn their own id.
 func (c Config) Allows(userID int64) bool {

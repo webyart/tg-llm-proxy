@@ -51,7 +51,7 @@ func TestNormalize(t *testing.T) {
 // TestAskWritesExactlyOneUserRowAndOneAssistantRow — §10 День 3 «одна запись assistant» plus §5: the
 // question is stored too, and the tokens/model of §5 come from the Response.
 func TestAskWritesExactlyOneUserRowAndOneAssistantRow(t *testing.T) {
-	var cfg = testConfig(t, map[string]string{"ALLOWED_USER_IDS": "11"})
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
 	var m = &fakeModel{response: model.Response{Content: "ответ", TokensIn: ptr(10), TokensOut: ptr(7), Model: "qwen"}}
 	var r = &fakeReplier{}
 	var db = testStore(t)
@@ -91,7 +91,7 @@ func TestAskWritesExactlyOneUserRowAndOneAssistantRow(t *testing.T) {
 // TestDuplicateUpdateAnswersOnce — §2 п.7: the UNIQUE index of §5 is the second line of defence when
 // Telegram (or a restart) hands the same update a second time.
 func TestDuplicateUpdateAnswersOnce(t *testing.T) {
-	var cfg = testConfig(t, map[string]string{"ALLOWED_USER_IDS": "11"})
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
 	var m = &fakeModel{response: model.Response{Content: "ответ"}}
 	var r = &fakeReplier{}
 	var db = testStore(t)
@@ -123,7 +123,7 @@ func TestDuplicateUpdateAnswersOnce(t *testing.T) {
 // попадает в events(kind='denied')»), with §16 change 13: /start and /whoami still answer, otherwise a
 // closed bot could never reveal the id needed to open it.
 func TestClosedBotRefusesAndAudits(t *testing.T) {
-	var cfg = testConfig(t, nil) // ALLOWED_USER_IDS empty → DenyByDefault (§7)
+	var cfg = testConfig(t, nil) // TELEGRAM_ALLOWED_USERS empty → DenyByDefault (§7)
 	if !cfg.DenyByDefault {
 		t.Fatalf("an empty allowlist must mean a closed bot (§7)")
 	}
@@ -165,13 +165,14 @@ func TestClosedBotRefusesAndAudits(t *testing.T) {
 	}
 }
 
-// TestAliasRowOpensTheBot — §16 change 28: the allowlist written as TELEGRAM_ALLOWED_USERS is the same
-// setting, so the user it names must be answered and must NOT land in events(kind='denied'). This is the
-// regression of a real .env: the row was there, the id was right, and the bot stayed closed in silence.
-func TestAliasRowOpensTheBot(t *testing.T) {
+// TestAllowlistRowOpensTheBot — §16 change 29: TELEGRAM_ALLOWED_USERS is the row of §7, so the user it
+// names must be answered and must NOT land in events(kind='denied'). This is the regression of a real
+// .env: the row was there under exactly this name, the id was right, and the bot stayed closed in silence
+// because the loader of §10 День 1 knew a different spelling.
+func TestAllowlistRowOpensTheBot(t *testing.T) {
 	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
 	if cfg.DenyByDefault {
-		t.Fatalf("the alias row must open the bot (§16 change 28)")
+		t.Fatalf("the row of §7 must open the bot (§16 change 29)")
 	}
 	var m = &fakeModel{response: model.Response{Content: "ответ"}}
 	var r = &fakeReplier{}
@@ -182,7 +183,7 @@ func TestAliasRowOpensTheBot(t *testing.T) {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	if m.callCount() != 1 || r.count() != 1 {
-		t.Fatalf("the user of the alias row must reach the model and be answered, got %d calls / %d replies", m.callCount(), r.count())
+		t.Fatalf("the user the row names must reach the model and be answered, got %d calls / %d replies", m.callCount(), r.count())
 	}
 	var denied, err = store.CountEvents(context.Background(), db, store.EventDenied)
 	if err != nil || denied != 0 {
@@ -193,7 +194,7 @@ func TestAliasRowOpensTheBot(t *testing.T) {
 // TestRateLimitRefusesAndAudits — §7 RATE_LIMIT_PER_MINUTE, §12 reliability: the refusal says how long
 // to wait and lands in events(kind='limit'), and the model is never reached (§12 protects the GPU).
 func TestRateLimitRefusesAndAudits(t *testing.T) {
-	var cfg = testConfig(t, map[string]string{"ALLOWED_USER_IDS": "11", "RATE_LIMIT_PER_MINUTE": "2"})
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "RATE_LIMIT_PER_MINUTE": "2"})
 	var m = &fakeModel{response: model.Response{Content: "ответ"}}
 	var r = &fakeReplier{}
 	var db = testStore(t)
@@ -223,7 +224,7 @@ func TestRateLimitRefusesAndAudits(t *testing.T) {
 // TestPanicRecoveryKeepsTheBotAlive — §12 надёжность «panic recovery в обработчике»: the panic becomes
 // an error and a notice, and the same dispatcher keeps serving the next update.
 func TestPanicRecoveryKeepsTheBotAlive(t *testing.T) {
-	var cfg = testConfig(t, map[string]string{"ALLOWED_USER_IDS": "11"})
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
 	var m = &fakeModel{panicky: true}
 	var r = &fakeReplier{}
 	var db = testStore(t)
@@ -250,7 +251,7 @@ func TestPanicRecoveryKeepsTheBotAlive(t *testing.T) {
 // TestAnswersOfOneChatKeepTheirOrder — §12 «per-chat lock гарантирует порядок ответов» and §10 День 6
 // «нет перепутанных ответов»: the second question waits for the slow first answer.
 func TestAnswersOfOneChatKeepTheirOrder(t *testing.T) {
-	var cfg = testConfig(t, map[string]string{"ALLOWED_USER_IDS": "11"})
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
 	var m = &fakeModel{contentFor: func(req model.Request) string {
 		var last = req.Messages[len(req.Messages)-1]
 		return "ответ на " + last.Content
@@ -284,7 +285,7 @@ func TestAnswersOfOneChatKeepTheirOrder(t *testing.T) {
 // TestFreeTextAndUnknownCommand — §6 «Обработка прочего текста»: with PROXY_FREE_TEXT=true a plain
 // message and an unknown command both become /ask; with it false they get the command hint.
 func TestFreeTextAndUnknownCommand(t *testing.T) {
-	var allowed = map[string]string{"ALLOWED_USER_IDS": "11"}
+	var allowed = map[string]string{"TELEGRAM_ALLOWED_USERS": "11"}
 
 	var onCfg = testConfig(t, merge(map[string]string{"PROXY_FREE_TEXT": "true"}, allowed))
 	var onModel = &fakeModel{response: model.Response{Content: "ответ"}}
@@ -318,7 +319,7 @@ func TestFreeTextAndUnknownCommand(t *testing.T) {
 // TestModelFailureWritesOnlyAnEvent — §10 День 3: a failed call leaves NO assistant row, only the
 // event of §5 and the notice of §12 UX.
 func TestModelFailureWritesOnlyAnEvent(t *testing.T) {
-	var cfg = testConfig(t, map[string]string{"ALLOWED_USER_IDS": "11"})
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
 	var cases = []struct {
 		name     string
 		err      error
@@ -363,7 +364,7 @@ func TestModelFailureWritesOnlyAnEvent(t *testing.T) {
 // update is processed, and a late (out-of-order) update must not downgrade it, because a downgrade
 // makes Telegram hand the same update back after a restart (§13 риск «повторные ответы»).
 func TestOffsetIsPersistedAndMonotonic(t *testing.T) {
-	var cfg = testConfig(t, map[string]string{"ALLOWED_USER_IDS": "11"})
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
 	var db = testStore(t)
 	var d = newTestDispatcher(t, cfg, nil, nil, db)
 

@@ -54,7 +54,7 @@ func (d *Dispatcher) stored(next HandlerFunc) HandlerFunc {
 }
 
 // allowed — §7 deny-by-default with §16 change 13: /start and /whoami answer even a closed bot,
-// otherwise a user could never read their own id to get into ALLOWED_USER_IDS. The refusal is
+// otherwise a user could never read their own id to get into TELEGRAM_ALLOWED_USERS. The refusal is
 // audited as events(kind='denied') (§10 День 4 DoD).
 func (d *Dispatcher) allowed(next HandlerFunc) HandlerFunc {
 	return func(ctx context.Context, ev Event, cmd Command) error {

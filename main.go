@@ -54,19 +54,19 @@ func PrintConfig(cfg config.Config) {
 	fmt.Println("HEALTH_PORT", cfg.HealthPort, "(§7, §16 change 11: the module internal/health with GET /healthz, the HEALTHCHECK of compose)")
 	fmt.Println("LOG_LEVEL", cfg.LogLevel, "(§7, §12 security: the token and the full texts of the model stay out of the logs)")
 	if cfg.DenyByDefault {
-		// §7: an empty ALLOWED_USER_IDS means the closed bot, deny by default — empty means empty in BOTH
-		// spellings of §16 change 28, because LoadFrom merged them before setting DenyByDefault.
-		fmt.Println("ALLOWED_USER_IDS is empty (TELEGRAM_ALLOWED_USERS too, §16 change 28): the bot is closed, deny by default, only /start and /whoami answer (§7, §16 change 13)")
+		// §7: an empty TELEGRAM_ALLOWED_USERS means the closed bot, deny by default (§16 change 29: the row
+		// has one name — the name a real .env carries; the old spelling is refused by name in LoadFrom).
+		fmt.Println("TELEGRAM_ALLOWED_USERS is empty (§7): the bot is closed, deny by default, only /start and /whoami answer (§16 change 13)")
 		return
 	}
-	fmt.Println("ALLOWED_USER_IDS", len(cfg.UserIDs), "entries (§7, §12 security: the allowlist of the chat IDs)")
+	fmt.Println("TELEGRAM_ALLOWED_USERS", len(cfg.UserIDs), "entries (§7, §12 security: the allowlist of the chat IDs)")
 }
 
 // PrintMissing - print the name of every §7.2 variable that is not set
 // (§10.2 Day 1 DoD: a missing token gives a clear error; §12: the message
-// names the variable and the §-reference). RowIsSet also looks at the aliases of
-// §16 change 28, so a row the operator wrote as TELEGRAM_ALLOWED_USERS is not
-// announced as unset — a wrong "not set" line is worse than no line at all.
+// names the variable and the §-reference). RowIsSet checks the one name of the row
+// of §16 change 29, so a wrong "not set" line — which is worse than no line at all —
+// cannot come from a second spelling that the loader would have to know about.
 func PrintMissing(raw map[string]string) {
 	var names = config.Env
 	var i = 0
@@ -76,12 +76,6 @@ func PrintMissing(raw map[string]string) {
 			fmt.Println("ENV variable", names[i], "is not set (§7.2)")
 		}
 		i += 1
-	}
-	var notices = config.AliasNotices(raw)
-	var n = 0
-	for n < len(notices) {
-		fmt.Println(notices[n])
-		n += 1
 	}
 }
 

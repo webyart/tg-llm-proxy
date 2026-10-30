@@ -66,7 +66,7 @@ func TestRegistryCoversTheTableOfSection6(t *testing.T) {
 
 // TestPingAndWhoami — §6 `pong <uptime>` and `user_id, chat_id`.
 func TestPingAndWhoami(t *testing.T) {
-	var cfg = testConfig(t, map[string]string{"ALLOWED_USER_IDS": "11"})
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
 	var r = &fakeReplier{}
 	var d = newTestDispatcher(t, cfg, nil, r, testStore(t))
 
@@ -120,7 +120,7 @@ func TestStartRegistersTheChat(t *testing.T) {
 // TestModelCommand — §6: имя модели, endpoint, доступность STRATA; `/model check` goes through
 // model.Models (§14.2 GET /models), and a failure is audited as events(kind='model_error').
 func TestModelCommand(t *testing.T) {
-	var cfg = testConfig(t, map[string]string{"ALLOWED_USER_IDS": "11"})
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
 	var m = &fakeModel{models: []string{"qwen2.5-7b", "qwen2.5-14b"}}
 	var r = &fakeReplier{}
 	var db = testStore(t)
@@ -169,7 +169,7 @@ func TestModelCommand(t *testing.T) {
 // chat_resets, история остаётся»: after /reset the model must not see the old rows, /history must
 // still list them, and /stats keeps counting them.
 func TestResetHidesTheContextButKeepsHistory(t *testing.T) {
-	var cfg = testConfig(t, map[string]string{"ALLOWED_USER_IDS": "11"})
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
 	var m = &fakeModel{contentFor: func(req model.Request) string { return "ответ на " + req.Messages[len(req.Messages)-1].Content }}
 	var r = &fakeReplier{}
 	var db = testStore(t)
@@ -222,7 +222,7 @@ func TestResetHidesTheContextButKeepsHistory(t *testing.T) {
 
 // TestHistoryDefaultAndArgument — §6 «последние N сообщений (default 5)», /reset does not affect it.
 func TestHistoryDefaultAndArgument(t *testing.T) {
-	var cfg = testConfig(t, map[string]string{"ALLOWED_USER_IDS": "11"})
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
 	var r = &fakeReplier{}
 	var db = testStore(t)
 	var d = newTestDispatcher(t, cfg, nil, r, db)
@@ -280,7 +280,7 @@ func TestHistoryDefaultAndArgument(t *testing.T) {
 // TestStatsCounters — §6 «число сообщений, токенов, ошибок». Errors come from events of §5 through
 // the user the chat belongs to, because events are keyed by user_id and not by chat_id.
 func TestStatsCounters(t *testing.T) {
-	var cfg = testConfig(t, map[string]string{"ALLOWED_USER_IDS": "11"})
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
 	var r = &fakeReplier{}
 	var db = testStore(t)
 	var d = newTestDispatcher(t, cfg, nil, r, db)
@@ -318,7 +318,7 @@ func TestStatsCounters(t *testing.T) {
 // is the same path (PROXY_FREE_TEXT=true of §7), an unknown command falls back to /help when the flag
 // is off (§6 «Обработка прочего текста»).
 func TestAskWithoutTextAndFreeText(t *testing.T) {
-	var cfg = testConfig(t, map[string]string{"ALLOWED_USER_IDS": "11"})
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
 	var m = &fakeModel{contentFor: func(req model.Request) string {
 		return "модель видит: " + req.Messages[len(req.Messages)-1].Content
 	}}
@@ -348,7 +348,7 @@ func TestAskWithoutTextAndFreeText(t *testing.T) {
 		t.Fatalf("§6: the reply carries the latency footer, got %q", r.joined())
 	}
 
-	var closed = testConfig(t, map[string]string{"ALLOWED_USER_IDS": "11", "PROXY_FREE_TEXT": "false"})
+	var closed = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "PROXY_FREE_TEXT": "false"})
 	var m2 = &fakeModel{}
 	var r2 = &fakeReplier{}
 	var d2 = newTestDispatcher(t, closed, m2, r2, testStoreNamed(t, t.Name()+"-nofree"))
@@ -368,7 +368,7 @@ func TestAskWithoutTextAndFreeText(t *testing.T) {
 // a machine), so this test reads the same JSON a run would have written. The second half is §12 security
 // from the other side: the measured line must not carry the texts — those are rows of §5, not log noise.
 func TestAskLogsTheFieldsOfDay7(t *testing.T) {
-	var cfg = testConfig(t, map[string]string{"ALLOWED_USER_IDS": "11"})
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
 	var m = &fakeModel{response: model.Response{
 		Content:   "текст ответа модели, который в лог попасть не должен",
 		Model:     "qwen-test-7b",
@@ -401,7 +401,7 @@ func TestAskLogsTheFieldsOfDay7(t *testing.T) {
 // TestAskLogsUnknownTokensAsNull — the same line when STRATA returns no usage (§14 риск «usage полей нет»):
 // the numbers stay unknown instead of becoming a confident zero (§12 UX says «токены не возвращены»).
 func TestAskLogsUnknownTokensAsNull(t *testing.T) {
-	var cfg = testConfig(t, map[string]string{"ALLOWED_USER_IDS": "11"})
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
 	var m = &fakeModel{response: model.Response{Content: "ответ без токенов", Model: "qwen-test-7b", Latency: 20 * time.Millisecond, Attempts: 1}}
 	var logs = &bytes.Buffer{}
 	var d = newTestDispatcher(t, cfg, m, &fakeReplier{}, testStoreNamed(t, t.Name()), slog.New(slog.NewJSONHandler(logs, nil)))

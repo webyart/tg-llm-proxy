@@ -240,7 +240,7 @@ func TestEventsAndStatsErrors(t *testing.T) {
 	if _, err := Append(ctx, db, Message{ChatID: 41, UserID: 8, Role: RoleUser, Content: "вопрос"}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
-	if err := LogEvent(ctx, db, 8, EventDenied, "user 8 is not in ALLOWED_USER_IDS"); err != nil {
+	if err := LogEvent(ctx, db, 8, EventDenied, "user 8 is not in TELEGRAM_ALLOWED_USERS"); err != nil {
 		t.Fatalf("LogEvent denied: %v", err)
 	}
 	if err := LogEvent(ctx, db, 8, EventModelError, "strata 500 after 2 attempts"); err != nil {

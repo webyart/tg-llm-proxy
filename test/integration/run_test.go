@@ -36,7 +36,7 @@ const (
 	// chatID / userID — the private chat of §6 that every scripted update belongs to.
 	chatID = int64(4242)
 	userID = int64(1717)
-	// outsider — a user_id that is NOT in ALLOWED_USER_IDS (§6 allowlist, §10 День 4 DoD «чужой user id
+	// outsider — a user_id that is NOT in TELEGRAM_ALLOWED_USERS (§6 allowlist, §10 День 4 DoD «чужой user id
 	// получает отказ и попадает в events(kind='denied')»).
 	outsider = int64(9999)
 
@@ -67,7 +67,7 @@ func integrationEnv(t *testing.T, dbPath string, strataBase string, extra map[st
 		"STRATA_TIMEOUT_SECONDS":        "3",
 		"TG_REPLY_DEADLINE_SECONDS":     "10",
 		"DB_PATH":                       dbPath,
-		"ALLOWED_USER_IDS":              strconv.FormatInt(userID, 10),
+		"TELEGRAM_ALLOWED_USERS":        strconv.FormatInt(userID, 10),
 		"RATE_LIMIT_PER_MINUTE":         "0", // the limiter of §12 is unit-tested; here it must not throttle
 		"MAX_CONCURRENT_MODEL_REQUESTS": "2",
 		"MAX_MESSAGE_CHUNK":             "1200",
@@ -416,7 +416,7 @@ func TestAskOverFakeTelegram(t *testing.T) {
 	secretLeak(t, "the whole log of the run", run.logs.String())
 }
 
-// TestDeniedUser — §7 ALLOWED_USER_IDS over the real transport (§10 День 4 DoD: «неallowlist → events
+// TestDeniedUser — §7 TELEGRAM_ALLOWED_USERS over the real transport (§10 День 4 DoD: «неallowlist → events
 // kind='denied', no answer»): the update is consumed, the offset moves, nothing reaches the model and no
 // message leaves (§12 security: the rejection must not tell the stranger that the bot exists).
 func TestDeniedUser(t *testing.T) {
@@ -443,7 +443,7 @@ func TestDeniedUser(t *testing.T) {
 	waitFor(t, "the denied update reached the handler", func() bool { return storedOffset(t, db) == 62 })
 	quiet()
 	if strata.ChatCalls() != 0 {
-		t.Errorf("the fake STRATA got %d requests from a user outside §7 ALLOWED_USER_IDS (§10 День 4 DoD)", strata.ChatCalls())
+		t.Errorf("the fake STRATA got %d requests from a user outside §7 TELEGRAM_ALLOWED_USERS (§10 День 4 DoD)", strata.ChatCalls())
 	}
 	// §7 line 502 answers only /start and /whoami to a stranger; the middleware of §16 change 13 adds the
 	// onboarding hint («Твой user_id — N») rather than silence, because a user who cannot read his own id
@@ -455,7 +455,7 @@ func TestDeniedUser(t *testing.T) {
 		t.Errorf("the stranger received the answer of the model (§7 deny by default): %q", tgAPI.Texts()[1])
 	}
 	if !strings.Contains(tgAPI.Texts()[1], strconv.FormatInt(outsider, 10)) {
-		t.Errorf("the refusal hides the user_id the stranger needs to get into §7 ALLOWED_USER_IDS: %q", tgAPI.Texts()[1])
+		t.Errorf("the refusal hides the user_id the stranger needs to get into §7 TELEGRAM_ALLOWED_USERS: %q", tgAPI.Texts()[1])
 	}
 	if countEvents(t, db, store.EventDenied) != 1 {
 		t.Errorf("events(kind='denied') = %d, want 1 (§5 service event of §6 п.2)", countEvents(t, db, store.EventDenied))

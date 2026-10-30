@@ -53,7 +53,7 @@ func (d *Dispatcher) registry() []Command {
 		{Name: CommandReset, Description: "очистить контекст чата", Handler: d.reset},
 		{Name: CommandHistory, Description: "последние N сообщений (по умолчанию 5)", Handler: d.history},
 		{Name: CommandStats, Description: "счётчики чата: сообщения, токены, ошибки", Handler: d.stats},
-		{Name: CommandWhoAmI, Description: "user_id и chat_id для ALLOWED_USER_IDS", AlwaysAllowed: true, Handler: d.whoami},
+		{Name: CommandWhoAmI, Description: "user_id и chat_id для TELEGRAM_ALLOWED_USERS", AlwaysAllowed: true, Handler: d.whoami},
 	}
 }
 
@@ -101,7 +101,7 @@ func (d *Dispatcher) ping(ctx context.Context, ev Event, arg string) error {
 }
 
 // whoami — §6, and §16 change 13: allowed even when the bot is closed, because this is how a user
-// learns the id to put into ALLOWED_USER_IDS.
+// learns the id to put into TELEGRAM_ALLOWED_USERS.
 func (d *Dispatcher) whoami(ctx context.Context, ev Event, arg string) error {
 	var lines = []string{fmt.Sprintf("user_id: %d", ev.UserID), fmt.Sprintf("chat_id: %d", ev.ChatID)}
 	if ev.ChatType != "" {
@@ -114,10 +114,10 @@ func (d *Dispatcher) whoami(ctx context.Context, ev Event, arg string) error {
 		lines = append(lines, "username: @"+ev.Username)
 	}
 	// §6 /whoami exists so that a user can learn the id of §7; it would be half an answer without saying
-	// whether that id is already in the allowlist and under which ENV name to add it (§16 change 13 and
-	// §16 change 28: the row has two spellings, the user must not guess which one the .env uses).
+	// whether that id is already in the allowlist and under which ENV name to add it (§16 change 13;
+	// §16 change 29 made the name of that row TELEGRAM_ALLOWED_USERS, so there is exactly one to name).
 	if d.deps.Cfg.Allows(ev.UserID) {
-		lines = append(lines, "в allowlist: да (§7 ALLOWED_USER_IDS)")
+		lines = append(lines, "в allowlist: да (§7 TELEGRAM_ALLOWED_USERS)")
 	} else if d.deps.Cfg.DenyByDefault {
 		lines = append(lines, "в allowlist: нет — бот закрыт, добавь "+strconv.FormatInt(ev.UserID, 10)+" в "+AllowlistHint+" и перезапусти (§7, §16 change 13)")
 	} else {
@@ -133,22 +133,22 @@ const HistoryDefault = 5
 // the whole history into one Telegram message of 4096 symbols (§12 UX).
 const HistoryMax = 50
 
-// AllowlistHint — §12 UX: a refused user must see under WHICH ENV name to write the id. §16 change 28
-// accepts the §7 row ALLOWED_USER_IDS under its other spelling TELEGRAM_ALLOWED_USERS as well, and a
-// person who copies this line into a .env that already uses the second name must not have to guess.
-const AllowlistHint = "ALLOWED_USER_IDS (он же TELEGRAM_ALLOWED_USERS)"
+// AllowlistHint — §12 UX: a refused user must see under WHICH ENV name to write the id. §16 change 29
+// made TELEGRAM_ALLOWED_USERS the row of §7, so the hint names exactly one thing — the name the operator
+// will find when they open .env.
+const AllowlistHint = "TELEGRAM_ALLOWED_USERS"
 
-// refuseClosed — the text of §7 «deny by default» for a closed bot (ALLOWED_USER_IDS empty in both
-// spellings). Shared by /start (§6) and the allowlist middleware, so the two can never describe the same
-// situation differently (§12 UX, §16 change 13).
+// refuseClosed — the text of §7 «deny by default» for a closed bot (TELEGRAM_ALLOWED_USERS empty, §7).
+// Shared by /start (§6) and the allowlist middleware, so the two can never describe the same situation
+// differently (§12 UX, §16 change 13).
 func refuseClosed(userID int64) string {
-	return fmt.Sprintf("Бот закрыт: ALLOWED_USER_IDS пуст (§7 deny by default). Твой user_id — %d, впиши его в %s и перезапусти бот.", userID, AllowlistHint)
+	return fmt.Sprintf("Бот закрыт: TELEGRAM_ALLOWED_USERS пуст (§7 deny by default). Твой user_id — %d, впиши его в %s и перезапусти бот.", userID, AllowlistHint)
 }
 
 // refuseNotListed — the text for a user who is known but absent from the allowlist (§7). The id is
 // printed because that is the only way to learn it without a second bot (§16 change 13).
 func refuseNotListed(userID int64) string {
-	return fmt.Sprintf("Тебя нет в ALLOWED_USER_IDS (§7). Твой user_id — %d, добавь его в %s.", userID, AllowlistHint)
+	return fmt.Sprintf("Тебя нет в TELEGRAM_ALLOWED_USERS (§7). Твой user_id — %d, добавь его в %s.", userID, AllowlistHint)
 }
 
 // modelInfo — §6: имя модели, endpoint, доступность STRATA; `/model check` calls GET {base}/models

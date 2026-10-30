@@ -1,0 +1,43 @@
+# docker-compose.yml — §8.1: the bot service with a named volume for SQLite, env_file, and the
+# detached `test` profile of §9 (`docker compose --profile test run --rm test`).
+#
+# /data is a NAMED volume, never a Windows bind-mount: §8.1 measures that a 9p/virtiofs mount of a
+# Windows directory under WAL risks a corrupt database, and store.Open writes bot.db through the
+# whitelist DSN of §5 that assumes a real Linux filesystem.
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: run
+    image: tg-llm-proxy-bot:latest
+    # §8.1: the §7 table comes from .env, compose pins the container path of the database.
+    env_file:
+      - path: .env
+        # §14.1: the Telegram token is still an open question, so `docker compose up` must not fail
+        # with «no .env file» while the placeholder of §10 День 5 is in use.
+        required: false
+    environment:
+      DB_PATH: /data/bot.db
+    volumes:
+      - bot-data:/data
+    restart: unless-stopped
+    # §8.1: a local STRATA/Ollama on the Windows host is reachable under this name (§14 item 7).
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    # The image already carries HEALTHCHECK (§8.1); compose surfaces its state in `docker ps`.
+
+  test:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: test
+    image: tg-llm-proxy-test:latest
+    # No volume: the sources are baked into the test image, so nothing of the Windows tree is
+    # mounted into the race run (§8.1, same 9p/WAL reason as /data above).
+    environment:
+      GOMAXPROCS: "4"
+
+volumes:
+  bot-data:

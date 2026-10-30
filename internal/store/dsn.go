@@ -27,7 +27,6 @@ package store
 import (
 	"fmt"
 	"net/url"
-	"path/filepath"
 	"strings"
 )
 
@@ -235,12 +234,16 @@ func query(shorthands []Key) string {
 }
 
 // EscapePath — §5 «Как нормализовать путь» (spikes 7 and 8, measured on this Windows host):
-// filepath.ToSlash + url.PathEscape. PathEscape escapes '/' as well, so the escape is applied to
-// every path SEGMENT and the separators stay visible: `file:/data/bot.db` keeps the exact shape of
-// the §5 reference, while a space, `[brackets]`, `~`, кириллица, the ':' of a Windows drive and any
-// stray URI sign reach SQLite percent-encoded (SQLite percent-decodes the URI path, spike 7).
+// the separator is normalised to '/' and url.PathEscape is applied to every path SEGMENT (escaping
+// the whole string would escape the '/' of the separators too and `file:/data/bot.db` would lose the
+// exact shape of the §5 reference). Spike 7 measured that `C:\dir\sub\bot.db` and `C:/dir/sub/bot.db`
+// open the SAME file, so '\\' is treated as a separator on every platform: filepath.ToSlash would
+// normalise it only on Windows, and the production target of §8.1 is a Linux container, where the
+// backslashes would survive as %5C in the file name. A space, `[brackets]`, `~`, кириллица, the ':'
+// of a Windows drive and any stray URI sign reach SQLite percent-encoded (SQLite percent-decodes the
+// URI path, spike 7).
 func EscapePath(path string) string {
-	slash := filepath.ToSlash(path)
+	slash := strings.ReplaceAll(path, "\\", "/")
 	segments := strings.Split(slash, "/")
 	for i, segment := range segments {
 		segments[i] = url.PathEscape(segment)

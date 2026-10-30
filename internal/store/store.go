@@ -113,7 +113,11 @@ func prepareParent(path string) error {
 	if IsMemory(path) {
 		return nil
 	}
-	dir := filepath.Dir(path)
+	// The same normalisation EscapePath applies (§5 spike 7): on Linux '\\' is not a separator for
+	// filepath.Dir, so the parent of `sub\bot.db` would be computed as the CWD while the file itself
+	// lands in sub/ — the directory SQLite needs would never be created.
+	slash := strings.ReplaceAll(path, "\\", "/")
+	dir := filepath.Dir(slash)
 	if dir == "" || dir == "." {
 		return nil
 	}

@@ -7,18 +7,22 @@ package main
 
 import (
 	"bot/internal/config"
+	"bot/internal/health"
 	"bot/internal/store"
 	"context"
 	"fmt"
 	"os"
 	"os/signal"
 	"strings"
-	"time"
+	"syscall"
 )
 
 // The signal set that stops the program (§10.2 Day 1 DoD: Ctrl-C on Windows
-// and the SIGTERM of the process supervisors, §12.1.4 MsgStopped).
-var stopSignals = []os.Signal{os.Interrupt}
+// and the SIGTERM of the process supervisors, §12.1.4 MsgStopped). `docker stop` sends SIGTERM
+// (§8.1 restart: unless-stopped, the compose down of the §10 День 5 DoD), so it is part of the set:
+// without it the container is SIGKILLed when the stop grace period ends, and db.Close never
+// checkpoints the WAL of §5.
+var stopSignals = []os.Signal{os.Interrupt, syscall.SIGTERM}
 
 // PrintConfig - the §10.2 Day 1 DoD "echo the read configuration back": print
 // every §7.2 variable with the §-reference of its meaning, one variable per
@@ -143,26 +147,33 @@ func main() {
 	fmt.Println("store is open:", cfg.DBPath, "journal_mode", journalMode, "foreign_keys", foreignKeys,
 		"migrations applied", len(store.MigrationSQL), "(§5 schema through go:embed, §10 День 2)")
 	fmt.Println("program is running, PID", os.Getpid(), "(§10.2 Day 1 DoD)")
-	var waited = 0
-	// §9.4, §15.5 os/signal: NotifyContext is installed before anything starts
-	// so that Ctrl+C / Ctrl+Break can never be missed, and cancel() is the
-	// explicit cancellation path of the context when the running window ends.
-	// §12.1.4 MsgStopped and MsgStuckShutdown (the schedule of the bot must
-	// unwind inside 2 seconds of the signal) are exercised by the §12 tests,
-	// which use the goroutine pattern of §9.4; the stub keeps the window here.
-	var interrupted = false
-	for waited < 2000 {
-		time.Sleep(50)
-		waited += 50
-		if ctx.Err() != nil {
-			// §12.1.4 MsgStopped: the stop signal cancelled the context, so the
-			// schedule of the bot unwinds here instead of hanging on the signal.
-			interrupted = true
-			break
+	// §10 День 5 + §8.1: internal/health answers GET /healthz on HEALTH_PORT, which is what the
+	// compose HEALTHCHECK probes (wget on 127.0.0.1) and what keeps the container process alive
+	// under restart: unless-stopped. The port of §7 is pinned by config.LoadFrom at ≤65535.
+	var healthServer = health.New(cfg.HealthPort)
+	var healthErr = make(chan error, 1)
+	go func() {
+		healthErr <- healthServer.Run(ctx)
+	}()
+	fmt.Println("health is listening on 127.0.0.1:", cfg.HealthPort, health.Path, "(§7 HEALTH_PORT, §8.1 HEALTHCHECK of compose)")
+	// §9.4, §15.5 os/signal: NotifyContext is installed before anything starts, so Ctrl+C / SIGTERM
+	// can never be missed; cancel() is the explicit cancellation path when the run ends.
+	// §12.1.4 MsgStopped: the wait is on the context, not on a fixed window — the process stays
+	// running until a stop signal arrives (the §10.2 Day 1 DoD "stays running"), and a health
+	// listener that dies takes the run down with a clear error instead of a silent healthy shell.
+	var stoppedBySignal = true
+	select {
+	case <-ctx.Done():
+	case err := <-healthErr:
+		if err != nil {
+			fmt.Println("health:", err, "(§12 reliability: the start falls with a clear error, exit code 1)")
+			db.Close()
+			os.Exit(1)
 		}
+		stoppedBySignal = false
 	}
 	cancel()
-	fmt.Println("waited ms", waited, "interrupted", interrupted, "(§12.1.4 MsgStopped, §12.1.4 MsgStuckShutdown)")
+	fmt.Println("stopped by signal", stoppedBySignal, "(§12.1.4 MsgStopped, §12.1.4 MsgStuckShutdown)")
 	// §10.2 Day 1 DoD: the stopped program prints "stopped by signal".
 	// §10 День 2 + §5: the store is closed before the process leaves, so the WAL is checkpointed and
 	// no -wal/-shm sidecar survives a restart (a correct db.Close leaves only bot.db, §5 table row).

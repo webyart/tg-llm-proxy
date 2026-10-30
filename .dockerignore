@@ -10,4 +10,5 @@ PLAN.md
 *.db-wal
 *.db-shm
 *.log
+*.exe
 README.md

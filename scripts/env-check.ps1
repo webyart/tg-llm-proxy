@@ -39,7 +39,8 @@ if ($gitFound) {
     Check 'git on PATH' ($gitVer -ne '') "$gitVer" $false
 }
 elseif (Test-Path -LiteralPath $gitExe) {
-    Check 'git on PATH' $false "git.exe exists ($gitExe), but not in this session PATH — dot-source . .\scripts\Setup.ps1 or open new terminal/VS Code session" $false
+    $gitVerAbs = (& $gitExe '--version' 2>&1 | Select-Object -First 1)
+    Check 'git (absolute resolve)' $true "$gitVerAbs via $gitExe — PATH-resolve failed in this pwsh session (command cache); HKCU\Environment!Path has git dir → new terminals / VS Code resolve `git`. Current session: dot-source . .\scripts\Setup.ps1" $true
 }
 else {
     Check 'git on PATH' $false 'git not installed — winget install --id Git.Git --accept-package-agreements --accept-source-agreements' $false

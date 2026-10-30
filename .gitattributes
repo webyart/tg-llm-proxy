@@ -1,0 +1,10 @@
+# Line-endings — repo always LF (Docker/Linux build); core.autocrlf=false (repo-local config)
+* text=auto eol=lf
+*.go text eol=lf
+*.md text eol=lf
+*.ps1 text eol=lf
+*.mod text eol=lf
+*.db binary
+*.db-wal binary
+*.db-shm binary
+*.png binary

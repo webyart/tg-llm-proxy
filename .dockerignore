@@ -1,0 +1,13 @@
+# .dockerignore — §10 Day 1: bin/, data/, *.db (+ gitignored: .env, .cache) не included in build context
+.git/
+.env
+.cache/
+bin/
+data/
+docs/
+PLAN.md
+*.db
+*.db-wal
+*.db-shm
+*.log
+README.md

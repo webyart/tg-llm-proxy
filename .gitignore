@@ -1,0 +1,21 @@
+# Ignore — §10 Day 1: не подcommitи local artifacts (token, SQLite DB, Go cache)
+.env
+data/
+*.db
+*.db-wal
+*.db-shm
+bin/
+.cache/
+*.log
+
+# PLAN.md — planning document, stays local (not committed; README links §7)
+PLAN.md
+docs/PLAN.md
+
+# OS / editor noise
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.orig
+*.tmp
+.vscode/

@@ -122,7 +122,8 @@ without the dot the PATH of §3 dies with the child process.
    later steps cannot be trusted, fix it first (§10 День 0 DoD).
 3. `Copy-Item .env.example .env` and fill the §7 table: `TELEGRAM_BOT_TOKEN` from BotFather,
    `ALLOWED_USER_IDS` = your own numeric `user_id` (id@username in BotFather is NOT it — §14.1; the name
-   `TELEGRAM_ALLOWED_USERS` is accepted for the same row and the two are merged, §16 change 28), the STRATA
+   `TELEGRAM_ALLOWED_USERS` is accepted for the same row and the two are merged, §16 change 28 — this repo's
+   `.env` uses that alias and carries no `ALLOWED_USER_IDS` line at all), the STRATA
    URL/model/key. Nothing else has to be touched: the other 15 rows have the defaults of §7.
    `.env` is gitignored and never printed (§12 security).
 4. `.\scripts\strata-check.ps1` — is the model reachable at all (§6 `/model` check + one chat request)?
@@ -204,6 +205,11 @@ prints the numeric `user_id` together with the line to write. Before that change
 `TELEGRAM_ALLOWED_USERS` configured nothing at all and said nothing about it — the row was not a §7 name
 and not a v1.0 legacy row, so it fell between the two lists (§12 reliability: a setting that looks
 applied and is not is the worst kind of silent failure).
+**This repository's `.env` keeps the row under the alias only** — `TELEGRAM_ALLOWED_USERS=<user_id>`, with
+no `ALLOWED_USER_IDS` line (verified 2026-10-30: `docker compose config` shows that one name, the start
+echoes `ALLOWED_USER_IDS 1 entries` plus the alias notice, and `PrintMissing` does not claim a row that is
+in fact set). The §7 table and `.env.example` still name `ALLOWED_USER_IDS`, because that is the plan's
+spelling; the alias exists so an existing file keeps working, not as a second row of §7.
 `DB_PATH=./data/bot.db` is the local default for `run.ps1`; compose overrides it with
 `/data/bot.db` and the named volume `bot-data:/data` is mandatory (§16 change 9, §8.1).
 `MAX_MESSAGE_CHUNK` ≤ 4096 SYMBOLS (§12 UX, §16 change 7: кириллица = 2 bytes, the cut

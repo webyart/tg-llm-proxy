@@ -31,10 +31,10 @@ func PrintConfig(cfg config.Config) {
 	// The secrets of §12.1.1 are never printed, only their length.
 	fmt.Println("TELEGRAM_BOT_TOKEN", "is set, length", len(cfg.BotToken), "(§7, §12 security: the token of BotFather is never printed, only its length)")
 	fmt.Println("STRATA_API_KEY", "is set, length", len(cfg.StrataKey), "(§7, §12 security: only the length is printed)")
-	fmt.Println("STRATA_BASE_URL", cfg.StrataBase, "(§7.1 BaseURL(), §16.3.3: stored without the /v1 suffix)")
+	fmt.Println("STRATA_BASE_URL", cfg.StrataBase, "(§7.1, §16 change 26: normalized to exactly one /v1)")
 	fmt.Println("STRATA_MODEL", cfg.StrataModel, "(§7, §14 item 2: the model of Strata that answers)")
-	fmt.Println("STRATA_MODELS_URL", cfg.ModelsURL, "(§7, §16 change 8: joined as {base}/models)")
-	fmt.Println("STRATA_CHAT_COMPLETIONS_URL", cfg.ChatURL, "(§7, §16 change 8: joined as {base}/chat/completions)")
+	fmt.Println("STRATA_MODELS_URL", cfg.ModelsURL, "(§7, §16 change 8: joined as {base}/models over NormalizeBase)")
+	fmt.Println("STRATA_CHAT_COMPLETIONS_URL", cfg.ChatURL, "(§7, §16 change 8: joined as {base}/chat/completions over NormalizeBase)")
 	fmt.Println("STRATA_TIMEOUT_SECONDS", cfg.TimeoutSeconds, "(§7, §10 День 3: the timeout of one attempt)")
 	fmt.Println("TG_REPLY_DEADLINE_SECONDS", cfg.ReplyDeadlineSeconds, "(§7, §10 День 3: the total budget of the model retries + timeout + the answer into Telegram)")
 	fmt.Println("DB_PATH", cfg.DBPath, "(§7, §16 change 9: the default is a local Windows path, compose overrides /data/bot.db)")

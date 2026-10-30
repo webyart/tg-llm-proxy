@@ -41,12 +41,19 @@ var Env = []string{
 	"LOG_LEVEL",
 }
 
-// The defaults of the §7 table. §16 change 8 keeps STRATA_BASE_URL without the
-// "/v1" suffix: the §7 URL rule stores the base as it is and the client joins
-// the endpoint paths itself, a stored suffix would give "/v1/v1/chat/completions".
-// §16 change 9 makes DB_PATH default to the local "./data/bot.db", because the
-// compose default "/data/bot.db" is not a valid path for run.ps1 on Windows.
+// The defaults of the §7 table. §16 change 8 fixes the invariant of the URL join:
+// the joined URL carries EXACTLY ONE "/v1", never "/v1/v1/chat/completions".
+// §16 change 26 records the measurement that made the direction of the rule
+// obvious: a real OpenAI-compatible STRATA answers POST /v1/chat/completions with
+// 200 and POST /chat/completions with 404, so the suffix is part of the endpoint,
+// not noise to be cut. §16 change 9 makes DB_PATH default to the local
+// "./data/bot.db", because the compose default "/data/bot.db" is not a valid path
+// for run.ps1 on Windows.
 const DefaultBaseURL = "http://host.docker.internal:8000"
+
+// V1Path — the OpenAI-compatible path prefix of §7 that NormalizeBase pins to
+// exactly one occurrence (scripts/strata-check.ps1 repeats the same rule, §9).
+const V1Path = "/v1"
 const DefaultDBPath = "./data/bot.db"
 const DefaultSystemPrompt = "You are a helpful assistant."
 const DefaultTimeoutSeconds = int64(60)
@@ -75,7 +82,8 @@ const UserIDsMax = 1024
 // rows of §7 (BotToken, StrataKey, ..., LogLevel), so a rename can never happen
 // again: the loader fills exactly these fields and §10 День 1 DoD echoes them back.
 // ChatURL and ModelsURL are not rows of §7 — the §7 URL rule joins them from
-// StrataBase (§16 change 8: the base is stored without the "/v1" suffix). BotToken
+// StrataBase through NormalizeBase (§16 change 8: exactly one "/v1", §16 change 26:
+// the suffix is what a real OpenAI-compatible server actually serves). BotToken
 // and StrataKey are secrets: §12 security forbids logging them and demands the
 // leak check before a commit (§14.1 item 1: the token of BotFather never enters
 // the chat or a commit).
@@ -104,22 +112,36 @@ type Config struct {
 	LogLevel              string
 }
 
-// CutBase — the §7 rule "STRATA_BASE_URL is stored WITHOUT the /v1 suffix"
-// (§16 change 8: joining a base that already carries /v1 gives the path
-// "/v1/v1/chat/completions"; §16 change 9: compose passes
-// http://strata:8080/v1). The cut here makes the stored value and the joined
-// URLs agree with the §7 table, and scripts/strata-check.ps1 repeats the rule.
-func CutBase(base string) string {
-	var cut = strings.TrimSuffix(base, "/")
-	cut = strings.TrimSuffix(cut, "/v1")
-	cut = strings.TrimSuffix(cut, "/")
-	return cut
+// NormalizeBase — the §7 URL rule (§16 change 8, §16 change 26): the base the user
+// wrote is normalized so the endpoint it points at is reached EXACTLY ONCE through
+// "/v1". Three shapes are accepted and all produce one working URL:
+//
+//	http://strata:8080          → http://strata:8080/v1
+//	http://strata:8080/v1       → http://strata:8080/v1      (the §16 change 9 compose value)
+//	http://strata:8080/v1/v1/   → http://strata:8080/v1      (the "/v1/v1" bug of §16 change 8)
+//	http://host:8000/gateway    → http://host:8000/gateway/v1 (a proxied prefix stays)
+//
+// Measured on the real endpoint of §14 item 5 (§16 change 26): POST {base}/v1/chat/completions
+// → 200, POST {base}/chat/completions → 404, GET {base}/v1/models → 200 with the model list,
+// GET {base}/models → 404. Cutting the suffix therefore produced a URL the server rejects.
+// scripts/strata-check.ps1 repeats this rule with the same three shapes.
+func NormalizeBase(base string) string {
+	var cut = strings.TrimSuffix(strings.TrimSpace(base), "/")
+	for strings.HasSuffix(cut, V1Path) {
+		cut = strings.TrimSuffix(strings.TrimSuffix(cut, V1Path), "/")
+	}
+	if cut == "" {
+		return V1Path
+	}
+	return cut + V1Path
 }
 
-// JoinURL — the URL joins of §7: ChatCompletions = Join(base,
-// "/chat/completions") and ModelsURL = Join(base, "/models") (§16 change 8).
+// JoinURL — the URL joins of §7: ChatURL = Join(base, "/chat/completions") and
+// ModelsURL = Join(base, "/models") over NormalizeBase, so a base written with or
+// without "/v1" gives the same working pair and never "/v1/v1/..." (§16 change 8,
+// §16 change 26).
 func JoinURL(base string, path string) string {
-	return CutBase(base) + path
+	return NormalizeBase(base) + path
 }
 
 // Num — one integer row of the §7 table: the default when the variable is not
@@ -343,7 +365,7 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	if base == "" {
 		base = DefaultBaseURL
 	}
-	cfg.StrataBase = CutBase(base)
+	cfg.StrataBase = NormalizeBase(base)
 	cfg.ChatURL = JoinURL(base, "/chat/completions")
 	cfg.ModelsURL = JoinURL(base, "/models")
 

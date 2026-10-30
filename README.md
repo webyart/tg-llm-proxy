@@ -4,10 +4,16 @@ Prototype per the plan (`PLAN.md` — local planning doc, not committed, see §1
 
 Status: **Day 0 done** (§10 Day 0: environment checks), **Day 1 done** —
 git repo + ignore-файлов + scripts created; `go build` passes with
-`cmd/bot/main.go` + `internal/config` (the ENV → Config loader of §7, 19 rows,
+`main.go` (package main, see «§4 deviation») + `internal/config` (the ENV → Config loader of §7, 19 rows,
 validation with the list of problems, §10 Day 1 DoD: echoes the configuration back
 and stops cleanly on Ctrl-C with exit code 0; an unset `TELEGRAM_BOT_TOKEN` →
-clear error + exit code 1).
+clear error + exit code 1). **Day 4 done** — `internal/bot` (long polling of §5 over
+`go-telegram/bot` v1.27.0, the dispatcher + command registry + middleware of §6) is wired into
+`main.go`: the process now polls Telegram, answers the §6 commands, and stops on Ctrl-C/SIGTERM
+with the offset of §5 written before `db.Close` checkpoints the WAL. The bot cannot be reached
+from this machine right now (`api.telegram.org` is filtered → `getMe` stops the start with exit 1),
+which is exactly why the §11 Integration level runs against the fake Telegram of
+`internal/testutil/telegram.go` instead of the real API (§16 change 16: `bot.WithServerURL`).
 
 ## Git-репозитория (§10 Day 1)
 
@@ -63,11 +69,19 @@ tg-llm-proxy/
 ├── internal/config/   # config.go + limits.go — the §7 ENV loader (Day 1: done)
 ├── internal/store/    # schema of §5 via go:embed, Open/PRAGMA, messages + bot_state (Day 2: done)
 ├── internal/model/    # client.go + openai.go — the STRATA client of §10 День 3 (retries, budget)
+├── internal/ratelimit/ # rate limiter + per-chat lock of §12 (§10 День 4 middleware)
+├── internal/bot/      # §6 + §10 День 4: registry (commands.go), normalization + middleware
+│                      # (dispatch.go, middleware.go), context builder (context.go), answers with the
+│                      # 429/flood sleep + chunking (reply.go), the library adapter run.go
+│                      # (New/getMe, WithServerURL, WithInitialOffset, workers, errors handler)
 ├── internal/health/   # /healthz of §9 (Day 5: done)
-├── internal/testutil/ # the httptest fake STRATA of §11 (serves /v1/..., §16 change 26)
+├── internal/testutil/ # httptest fakes of §11: strata.go (the /v1 endpoint) + telegram.go
+│                      # (getMe/getUpdates/sendMessage/setMyCommands + the offset semantics + 429)
+├── test/integration/  # //go:build integration — §11 «бот ↔ фейковый STRATA ↔ фейковый Telegram»
 ├── Dockerfile         # multi-stage (§8.1: golang builder → alpine + ca-certificates, USER 65534) — Day 5: done
-├── docker-compose.yml # bot + named volume bot-data:/data + the `test` profile for -race (§8.1)
-├── scripts/           # env-check.ps1, Setup.ps1, strata-check.ps1 (§10 День 3) + build/run/... (pending)
+├── docker-compose.yml # bot + named volume bot-data:/data + 127.0.0.1 healthz publish + `test` profile for -race (§8.1)
+├── scripts/           # Setup, env-check, strata-check, build, test, test-race, lint, run, smoke,
+│                      # docker-build, docker-up, docker-down (§9)
 ├── bin/               # runtime binaries (gitignored)
 ├── data/              # bot.db (gitignored)
 ├── zzscratch/         # local verification scratch (gitignored, never committed)
@@ -88,9 +102,82 @@ The layout of `internal/` matches §4; only the entry-point folder differs. Movi
 .\scripts\env-check.ps1        # §2: green before work (Go/git/pwsh/Docker/network)
 git status                     # repo state
 .\scripts\strata-check.ps1     # §10 День 3: is STRATA ready? (§6 /model check + a chat probe)
-go test ./...                  # §11: config, store, model (against the httptest fake)
-# later (Day 4+): go build -o bin/bot.exe && .\scripts\run.ps1 --foreground
+.\scripts\lint.ps1             # §9: gofmt + go vet (also with -tags integration)
+.\scripts\test.ps1             # §11 Unit + Store levels (no -race on this host, §3.1)
+.\scripts\smoke.ps1 -Unit      # §11 Integration: fake Telegram + fake STRATA, then the leak scan of §12
+.\scripts\build.ps1            # §9: go mod tidy + bin\bot.exe + the §7.1 «empty ENV must exit 1» check
+.\scripts\run.ps1              # §9: loads .env (values never printed), builds, runs — Ctrl-C stops it
+# container of §8.1: .\scripts\docker-build.ps1; .\scripts\docker-up.ps1 (waits for /healthz = 200);
+# .\scripts\test-race.ps1 (the -race run lives in the image, §3.1); .\scripts\docker-down.ps1
 ```
+
+## Пошаговая инструкция (§10 День 7)
+
+The whole path from an empty folder to a bot that answers, in the order the steps actually depend on each
+other. Every line is a command from the repository root in pwsh; `.` before `Setup.ps1` is not decoration —
+without the dot the PATH of §3 dies with the child process.
+
+1. `. .\scripts\Setup.ps1` — git on PATH + `GOPROXY`/`GOCACHE`/`GOPATH` of §3 for this session.
+2. `.\scripts\env-check.ps1` — §2: Go ≥ 1.27, pwsh ≥ 7, git, Docker daemon, network. Red here means the
+   later steps cannot be trusted, fix it first (§10 День 0 DoD).
+3. `Copy-Item .env.example .env` and fill the §7 table: `TELEGRAM_BOT_TOKEN` from BotFather,
+   `ALLOWED_USER_IDS` = your own numeric `user_id` (id@username in BotFather is NOT it — §14.1), the STRATA
+   URL/model/key. Nothing else has to be touched: the other 15 rows have the defaults of §7.
+   `.env` is gitignored and never printed (§12 security).
+4. `.\scripts\strata-check.ps1` — is the model reachable at all (§6 `/model` check + one chat request)?
+   A red here with the rest green means STRATA, not the code (§13 риск «сервер недоступен»).
+5. `.\scripts\lint.ps1`, `.\scripts\test.ps1`, `.\scripts\smoke.ps1 -Unit` — the three green levels of §11
+   that do not need a network: Unit + Store on the host, Integration against the fake Telegram and the fake
+   STRATA, then the leak scan of §12 over the whole source tree.
+6. `.\scripts\test-race.ps1 -Tagged` — §11 Concurrency inside the §8.1 test image (§3.1: the host has no
+   C toolchain, so `-race` physically cannot run here).
+7. Local run: `.\scripts\run.ps1` — loads `.env` into the process ENV, builds `bin\bot.exe`
+   (`CGO_ENABLED=0`), prints the §7 configuration back, starts polling, stops on Ctrl-C with exit 0.
+   On THIS machine the start ends at `getMe` with exit 1, because `api.telegram.org` is filtered for the
+   Windows process — that is the §10 День 4 behaviour, not a bug: without Telegram the bot must not start.
+8. Container run (the way that has a network here): `.\scripts\docker-build.ps1`, then
+   `.\scripts\docker-up.ps1` — compose starts `tg-llm-proxy-bot` with `DB_PATH=/data/bot.db` in the named
+   volume `bot-data` (§8.1) and waits for the health check; `docker compose logs -f bot` for the JSON log
+   of §12; `.\scripts\docker-down.ps1` to stop (add `-Volumes -ConfirmVolumes` only when the history of §5
+   is really meant to go).
+9. Talk to the bot with the §6 commands (the manual check-list below). The first message from a new user is
+   `/start` — it registers the chat of §5; while `ALLOWED_USER_IDS` does not contain that `user_id`,
+   `/whoami` still answers and prints the id to add (§16 change 13).
+10. `.\scripts\docker-down.ps1` + `git status` before a commit: `bin/`, `data/`, `*.db*`, `.env`,
+    `zzscratch/` are all ignored (§10 День 1); `scripts/smoke.ps1` has already proven no token is in a file.
+
+## Ручной чек-лист демо (§11 «Manual», реальный Telegram + реальный STRATA)
+
+- [ ] `/start` in a private chat → the greeting + the command list; a second `/start` changes nothing
+      (`EnsureChat` of §5 is idempotent).
+- [ ] `/whoami` → the numeric `user_id` and `chat_id`; put the `user_id` into `ALLOWED_USER_IDS` if the bot
+      was closed, restart, and the refusal of §7 must disappear.
+- [ ] `/help`, `/ping` (the `pong <uptime>` grows), `/model`, `/model check` (the real `GET /models` of §14).
+- [ ] 10 messages of `/ask …` in one chat → 10 pairs of rows in `messages` (§5), the answer footer
+      `⏱ latency · N→M токенов · модель … · попыток K`, and `/stats` counts the same numbers.
+- [ ] two `/ask` in a row from two different chats → both answers arrive, the context of each chat stays
+      its own (the per-chat lock and the context builder of §12).
+- [ ] `/ask` with a Russian answer longer than `MAX_MESSAGE_CHUNK` → several messages, each ≤ 4096 symbols,
+      nothing cut mid-word, no dangling `\` at the end of a chunk (§12 UX, §16 change 7).
+- [ ] `docker compose restart` in the middle of a conversation → no repeated answers, no duplicated rows
+      (§5 `bot_state` + `uq_messages_chat_tg_id`; §10 День 6 proved both in `test/integration`).
+- [ ] stop STRATA (or point `STRATA_BASE_URL` at a dead port) → `/ask` answers the «модель недоступна»
+      notice of §12, `events(kind='model_error')` grows, `/ping` still works; restart STRATA → `/ask`
+      recovers without a bot restart (§13 риск «STRATA лежит»).
+- [ ] flood: `/ask` ~30 times in a few seconds → Telegram's 429 is logged as `retry_after`, the chat waits
+      and the answer still arrives (§10 День 4, `events(kind='flood')` grows).
+- [ ] a stranger writes `/ask` → the refusal of §7 and `events(kind='denied')`; `/start` and `/whoami`
+      stay open (§16 change 13).
+- [ ] Ctrl-C / `docker compose down` during a long `/ask` → the process exits, WAL of §5 is checkpointed,
+      the next start continues from the stored offset (§12.1.4).
+
+### Часовой пояс: `created_at` — это UTC (§5, §13)
+
+`messages.created_at` and `chats.last_active_at` are written by SQLite as `datetime('now')`, i.e. **UTC**
+without a timezone marker, and `store` returns the text exactly as it is stored — `/history` and `/stats`
+therefore show UTC too. The container has `tzdata` (§8.1) so that a reader can convert deliberately
+(`docker compose exec bot date`), and the JSON log of §12 carries its own RFC3339Nano timestamp, which is
+the machine-readable half of the same story: a log line and a DB row can be lined up only in UTC.
 
 ## ENV (§7) — see `.env.example` (full table in PLAN.md §7)
 
@@ -128,21 +215,94 @@ goes by runes); `TG_REPLY_DEADLINE_SECONDS` must exceed `STRATA_TIMEOUT_SECONDS`
   of §11), `scripts/strata-check.ps1`, интеграционный тест §10 День 3 DoD: успех / timeout / 500 /
   пустой ответ / 500→успех после ретрая — ровно одна строка `assistant` в БД
 - Day 5 (partly): DONE — `Dockerfile` multi-stage (§8.1), `docker-compose.yml` with the named
-  volume `bot-data:/data` and the `test` profile for `-race`, `internal/health` (`/healthz` of §9)
-- Day 4 (next): `go-telegram/bot` v1.27.0 + long polling `b.Start(ctx)`, dispatcher and the command
-  registry of §6, middleware (allowlist, rate limit, per-chat lock, panic recovery). The library is
-  **not** in `go.mod` yet: the first `go mod tidy` needs network (§16 change 20)
-- Day 6: integration tests with `bot.WithServerURL` (fake Telegram API) + `-race` in the container,
-  `smoke.ps1`, the remaining PowerShell scripts (`build`, `test`, `test-race`, `lint`, `run`)
-- Day 7: `slog` JSON logs, `/stats`, README walkthrough, manual demo
+  volume `bot-data:/data` and the `test` profile for `-race`, `internal/health` (`/healthz` of §9),
+  the §9 scripts (`build`, `test`, `test-race`, `lint`, `run`, `docker-build`, `docker-up`,
+  `docker-down`); the healthz port is published on `127.0.0.1` only (§12 security: not on a public iface).
+  Verified on this host with a 15-second live probe: `docker compose up -d` → container `Up (healthy)`
+  (the in-container `wget` of the §8.1 HEALTHCHECK answers 200) and `/data/bot.db` + `-wal`/`-shm` appear
+  in the named volume. Caveat measured here: the HOST-side probe of §9
+  («GET http://localhost:8080/healthz») is refused through the port proxy of Docker Desktop even while the
+  container is healthy, so `docker-up.ps1`/`smoke.ps1` accept the `docker inspect` health state and treat
+  the host probe as WARN (§12 reliability: the check must not lie about the bot).
+- Day 4: DONE — `internal/bot` over `go-telegram/bot` v1.27.0: the registry of §6 (`commands.go`),
+  normalization `@BotName`/case + the middleware chain (allowlist with `/start`+`/whoami` always allowed,
+  rate limit, per-chat lock, panic recovery — `dispatch.go`, `middleware.go`), the context builder of §7
+  (`context.go`), MarkdownV2/HTML escaping then the rune-wise cut, the `⏱ latency, tokens` footer,
+  `RetryAfter` sleep per chat + `events(kind='flood')` (`reply.go`), and the adapter `run.go`
+  (`bot.New` + `getMe`, `WithServerURL` for tests, `WithInitialOffset` from `bot_state`,
+  `WithHTTPClient(pollTimeout)`, `WithWorkers`, `WithErrorsHandler`, `setMyCommands` at start, `Sanitize`
+  of every library error). `main.go` wires config → store → model client → bot → healthz and stops
+  gracefully: the poller is awaited before `db.Close` (§5 WAL), a dead poller exits 1 instead of a
+  healthy-but-deaf container (§12). The DoD cases «denied user → events kind='denied'»,
+  «/ask@BotName works», «restart does not repeat answers» are green as integration tests (§11).
+  **Network split measured on this machine**: from the Windows host `api.telegram.org` is unreachable, so a
+  local `scripts/run.ps1` stops at `getMe` with exit 1 (§10 День 4: «без сети/токена бот не стартует»), and
+  the URL inside that error is already sanitized — `https://api.telegram.org/bot***/getMe`, no token in the
+  log (§12 security, checked by `scripts/smoke.ps1`). Inside the container the same token works: a
+  15-second `docker compose up -d` probe logged `bot is polling Telegram, bot_state last_update_id 0
+  found false` with the container `Up (healthy)`. The interactive part of the §11 manual checklist (real
+  answers to the §6 commands in a real chat) still needs the real `user_id` in `ALLOWED_USER_IDS` — `.env`
+  holds the placeholder `1` today, so every real user gets the refusal of §7 plus an
+  `events(kind='denied')` row.
+- Day 6: DONE — `internal/testutil/telegram.go` (the fake Bot API: `getMe`, `getUpdates` with the
+  real offset semantics, `sendMessage`, `setMyCommands`, scripted 429 with `retry_after`, wrong-token
+  counter, `Replay`), `test/integration/run_test.go` (`//go:build integration`, 8 cases),
+  `scripts/smoke.ps1`, and `scripts/test-race.ps1 -Tagged` green: `go vet` + `gofmt` + `go test -race
+  -tags integration ./... -count=2` inside the §8.1 test image — no data races (§11 Concurrency,
+  §10 День 6 DoD). The race detector earned its keep once: the integration harness had been polling a
+  plain `bytes.Buffer` of the run log while the library answers every update in its own goroutine
+  (`ProcessUpdate` → `go r(ctx, b, upd)` in v1.27.0) — the sink is now `syncLog` (mutex-guarded), which is
+  a test-only fix, production hands slog an `os.Stdout`.
+  Idempotency of §10 День 6 is proved on both levels: `TestOffsetSurvivesRestart` (the offset of §5 means
+  the update never comes back) and `TestRedeliveredUpdateIsAnsweredOnce` (the crash *before* `bot_state`
+  was written: the same update arrives again, `store.Append` hits `uq_messages_chat_tg_id`, the answer is
+  silence — no second `sendMessage`, no second model call, one extra log line).
+- Day 7 (partly): DONE — the JSON log of §10 День 7 got the fields the plan names: every answered `/ask`
+  writes `chat_id`, `user_id`, `model`, `latency_ms`, `attempts`, `tokens_in`, `tokens_out` through the
+  `slog` JSON handler of `main.go` (an unknown usage stays `null`, §14 риск «usage полей нет»), and
+  `TestAskLogsTheFieldsOfDay7` / `TestAskLogsUnknownTokensAsNull` read those very JSON lines; `/stats` of §6
+  is part of the registry and of the integration suite. The README now carries the пошаговая инструкция, the
+  §11 manual check-list, the UTC note about `created_at` (§13) and the §15 v2 backlog.
+  Still open: the manual demo itself (the checklist above) and the last §1 criterion it proves — both need
+  `api.telegram.org` from the process, which this host filters for the Windows binary and the container has.
 
 ## Not implemented yet (honest list)
 
 Implemented: the §7 configuration loader, the SQLite layer of §5, the STRATA client of §10 День 3,
-`/healthz` of §9 and the Docker image. Not implemented yet: no Telegram calls at all (no polling, no
-dispatcher, no commands of §6), so the bot does not answer anyone yet; no rate limit, no per-chat
-lock, no idempotency of §10 День 6, no `slog` logs and no `/stats`. The model client never touches
-SQLite — the write invariant of §10 День 3 («assistant ровно один раз») is enforced by the caller,
-and that caller arrives with День 4. Secrets stay out of the output: `TELEGRAM_BOT_TOKEN` and
-`STRATA_API_KEY` print only their length, the fake STRATA records the Authorization header but no
-test prints it (§12 security, §16 change 25).
+the dispatcher/registry/middleware and the Telegram adapter of §10 День 4, the §11 Integration level with
+the fake Telegram + fake STRATA and the `-race` run of §11 Concurrency (both green in the container of
+§8.1), `/healthz` of §9, the Docker image of §8.1 and the §9 scripts. Not implemented yet: no
+`scripts/db_inspect.ps1` (README §5 — the chat history can currently be read only through `/history` or
+`/stats`), no `scripts/test-restart.ps1` (the §10 День 4 kill/restart case is covered by the integration
+tests `TestOffsetSurvivesRestart` and `TestRedeliveredUpdateIsAnsweredOnce`; a process-level kill needs a
+reachable Telegram), the manual demo of §11 (the §10 День 7 checklist above has to be walked by a human in a
+real chat), and the real-network proof while `api.telegram.org` is filtered on this host. Secrets stay
+out of the output: `TELEGRAM_BOT_TOKEN` and `STRATA_API_KEY` print only their length, every library error
+goes through `bot.Sanitize` (a live run shows `https://api.telegram.org/bot***/getMe`), the fakes record
+the Authorization header but no test prints it, and `scripts/smoke.ps1` greps the whole source tree for
+the token value before a commit (§12 security, §16 change 25).
+
+## Бэклог v2 (§15, «запись v2-бэклога» of §10 День 7)
+
+Not a todo list for v1 — these are the things §15 deliberately left out of the prototype, plus what this
+implementation made concrete enough to name.
+
+- Стриминг ответов: правка одного сообщения раз в ~1 с вместо одного `sendMessage` (the chunking of
+  `internal/bot/reply.go` already owns the size logic a stream would reuse).
+- Вебхуки + HTTPS (`StartWebhook` of the library exists) вместо long polling; `bot_state` offset then
+  becomes the idempotency key of the incoming side instead of the poll cursor.
+- Команды `/image`, `/voice`, вложения и файлы (§15) — the registry of §6 takes a new entry without
+  touching the dispatcher, that is what `UsesModel`/`AlwaysAllowed` are for.
+- Пресеты системного промпта (`/persona`) и выбор модели (`/model select`); инструменты/функции модели и
+  RAG поверх локальных документов.
+- `/admin`: сводка по всем чатам, очередь и приоритеты запросов (v1 counts one chat, §6 `/stats`).
+- Версионированные миграции (`schema_version` рядом с `bot_state`), бэкап SQLite, `PRAGMA integrity_check`
+  по расписанию; v1 applies `001_init.sql` through `go:embed` and nothing else (§5).
+- CI (gofmt/vet/test/`-race`) and publishing the image to a registry — today the §9 scripts are the pipeline.
+- `Config.Get()` — overrides per chat / per `user_id` (§16 change 25.1 kept the loader at the 19 rows of §7;
+  the first consumer would have been a per-chat `PARSE_MODE`, which v1 does not need).
+- Time budgets and TTLs as their own module: the limits of §7 live next to the loader in
+  `internal/config/limits.go`; the TTL of the `bot_state` rows and a per-request budget bookkeeping move to v2.
+- The v1.0 field names (`LLM_CHAT_*`, the token budgets, the deep links, `PORT`, `DB_DBPATH`, …) stay out of
+  the loader until a consumer exists — §16 change 25.1 says an ENV row without a reader is a liability.
+

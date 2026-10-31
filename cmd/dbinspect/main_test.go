@@ -60,7 +60,7 @@ func TestCountsReportIsOneKeyValuePairPerLine(t *testing.T) {
 	var ctx, db = fileDBWith(t)
 
 	var buf bytes.Buffer
-	if err := countsReport(&buf, ctx, db, `C:\data\bot.db`, "wal"); err != nil {
+	if err := countsReport(&buf, ctx, db, `C:\data\bot.db`, "wal", store.ReadOnlyModePlain); err != nil {
 		t.Fatalf("countsReport: %v", err)
 	}
 	var out = buf.String()
@@ -73,6 +73,7 @@ func TestCountsReportIsOneKeyValuePairPerLine(t *testing.T) {
 	}
 
 	var want = []string{
+		"open_mode=mode_ro",
 		"journal_mode=wal",
 		"integrity=ok",
 		"last_update_id=920551547",
@@ -94,6 +95,13 @@ func TestCountsReportIsOneKeyValuePairPerLine(t *testing.T) {
 	if !strings.HasPrefix(out, "path=C:\\data\\bot.db\n") {
 		t.Errorf("the block must name the file it read, it printed:\n%s", out)
 	}
+	// That path does not exist, so the honest answer about the WAL side file of §5 is «absent» — the key is
+	// printed either way, because a snapshot of the §8.1 volume and a snapshot of the host file of §9 are two
+	// different shapes of one database (§12 reliability: a key that is missing sometimes is a key nobody trusts).
+	if !strings.Contains(out, "wal_side_file=absent\n") {
+		t.Errorf("the block must say whether the -wal of §5 sits next to the file, it printed:\n%s", out)
+	}
+
 }
 
 func TestCountsReportNamesAMissingOffsetRow(t *testing.T) {
@@ -109,7 +117,7 @@ func TestCountsReportNamesAMissingOffsetRow(t *testing.T) {
 	defer db.Close()
 
 	var buf bytes.Buffer
-	if err := countsReport(&buf, ctx, db, path, "wal"); err != nil {
+	if err := countsReport(&buf, ctx, db, path, "wal", store.ReadOnlyModePlain); err != nil {
 		t.Fatalf("countsReport: %v", err)
 	}
 	var out = buf.String()
@@ -118,6 +126,15 @@ func TestCountsReportNamesAMissingOffsetRow(t *testing.T) {
 	}
 	if !strings.Contains(out, "last_update_id=0\n") {
 		t.Errorf("a fresh database prints offset 0, it printed:\n%s", out)
+	}
+	// The handle this database is read through is still the plain one, and the WAL of §5 IS next to it: store.Open
+	// holds the file open, so the -wal exists. The key is not decoration — it is what tells the restart check of
+	// §10 День 4 that it is looking at a live WAL rather than at a checkpointed volume of §8.1.
+	if !strings.Contains(out, "open_mode=mode_ro\n") {
+		t.Errorf("the block must name the handle the numbers came through, it printed:\n%s", out)
+	}
+	if !strings.Contains(out, "wal_side_file=present\n") {
+		t.Errorf("a database open for writing has a -wal of §5 next to it, the block printed:\n%s", out)
 	}
 }
 
@@ -133,5 +150,31 @@ func TestCountKeyKeepsTheKeysGreppable(t *testing.T) {
 		if got := countKey(testCase.in); got != testCase.want {
 			t.Errorf("countKey(%q) = %q, want %q", testCase.in, got, testCase.want)
 		}
+	}
+}
+
+// TestModeNoteNamesTheLimitsOfTheImmutableOpen — the human report prints a number and the handle it came
+// through. The plain handle needs no warning; the immutable one must name the file it looked for (§9: the
+// shape that reaches it is a checkpointed WAL file on a read-only mount, measured 2026-10-31 on the named
+// volume of §8.1) and must warn that journal_mode read through it describes the handle, not the file.
+func TestModeNoteNamesTheLimitsOfTheImmutableOpen(t *testing.T) {
+	var plain = modeNote(store.ReadOnlyModePlain)
+	if !strings.Contains(plain, "mode=ro") {
+		t.Errorf("the plain note must name mode=ro, it says: %s", plain)
+	}
+	if journalCaveat(store.ReadOnlyModePlain) != "" {
+		t.Errorf("the plain open attaches the WAL of §5, so it needs no journal_mode caveat, it says: %q", journalCaveat(store.ReadOnlyModePlain))
+	}
+
+	var snapshot = modeNote(store.ReadOnlyModeImmutable)
+	for _, want := range []string{"immutable", "-wal", "clean stop"} {
+		if !strings.Contains(snapshot, want) {
+			t.Errorf("the snapshot note must name %s (why this open happened and what it means), it says: %s", want, snapshot)
+		}
+	}
+
+	var caveat = journalCaveat(store.ReadOnlyModeImmutable)
+	if !strings.Contains(caveat, "delete") || !strings.Contains(caveat, "nothing about the journal mode of the file") {
+		t.Errorf("the snapshot caveat must say that journal_mode through this handle describes the handle, it says: %s", caveat)
 	}
 }

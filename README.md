@@ -167,9 +167,15 @@ without the dot the PATH of §3 dies with the child process.
     widens it, `-Integrity` runs `PRAGMA integrity_check` of §15 (exit 2 when the file is not sound). The read
     goes through `mode=ro` (the maintenance DSN of §5): it can look at the database of a RUNNING bot, cannot
     write a row to it and cannot re-mode its journal (`internal/store/inspect.go`, `TestReadOnlyCannotWrite`).
-    A container keeps its database in the named volume, so read it there:
-    `docker compose cp bot:/data/bot.db .\zzscratch\bot.db` and then
-    `.\scripts\db_inspect.ps1 -Path .\zzscratch\bot.db`.
+    The report also names the handle it read through — the `open mode` line, and the `open_mode`/`wal_side_file`
+    keys of `-Counts` — because a WAL file read through the second open (`mode=ro&immutable=1`) answers
+    `journal_mode=delete`, which is a fact about the handle and not about the file (§12 reliability). A container
+    keeps its database in the named volume, so read the volume as it is:
+    `docker run --rm -v tg-llm-proxy_bot-data:/data:ro tg-llm-proxy-test sh -c "go run ./cmd/dbinspect -path /data/bot.db -counts"`.
+    That `:ro` mount is exactly the shape the second open exists for: after `docker compose stop` the volume holds
+    `bot.db` alone (the WAL of §5 checkpointed), and a plain `mode=ro` answers SQLITE_CANTOPEN on it because the
+    `-shm` cannot be created. `docker compose cp bot:/data/bot.db .\zzscratch\bot.db` and then
+    `.\scripts\db_inspect.ps1 -Path .\zzscratch\bot.db` still works too.
 11. `.\scripts\docker-down.ps1` + `git status` before a commit: `bin/`, `data/`, `*.db*`, `.env`,
     `zzscratch/` are all ignored (§10 День 1); `scripts/smoke.ps1` has already proven no token is in a file.
 
@@ -355,6 +361,30 @@ goes by runes); `TG_REPLY_DEADLINE_SECONDS` must exceed `STRATA_TIMEOUT_SECONDS`
   `TELEGRAM_BOT_TOKEN` in them (§12 security). What the script deliberately does not check is named in its own
   header: repeated answers are the unique index of §5 plus the integration tests, and the SIGTERM case of
   §12.1.4 belongs to `docker compose stop` of §8.1, because Windows has no signal for a detached process (§3.1).
+  **The container path of §8.1 was walked the same day, and with it that SIGTERM half.**
+  `.\scripts\docker-build.ps1` + `.\scripts\docker-up.ps1`: the container reached `healthy`, and its log said
+  «bot is polling Telegram, bot_state last_update_id 0 found false» — inside the container Telegram needs no
+  proxy at all (the §2 workaround is an affair of the Windows host), and `host.docker.internal:8080` of §8.1
+  answers 401 to a `wget` sent without the key, which is the proof that the network path exists.
+  `docker compose stop` then gave the graceful death: **exit 0 in 0.5 s** (the 10 s of grace of §12.1.4 were
+  never needed), `restart=0` under `restart: unless-stopped`, and the last three lines of the log being
+  «stopped by signal true», «poller stopped true» (§5: `bot_state` lands before `db.Close` checkpoints the WAL)
+  and «stopped by signal» of §10 День 1 DoD. After that the volume held `bot.db` alone — no `-wal`, no `-shm`,
+  which is the checkpoint of §5 — and the next start resumed on the state that volume carried (a volume that has
+  never answered anyone carries no offset row, and the §9 viewer says so: «no poll offset stored yet»).
+  Two defects fell out of the walk, and both are fixed (§16 change 31):
+  **(1)** the viewer of §9 could not read such a volume at all: `mode=ro` on a WAL file whose `-shm` cannot be
+  created answers SQLITE_CANTOPEN (14) although the file is plainly readable. `internal/store` now has a second
+  open — `store.OpenReadOnlySnapshot` over `mode=ro&immutable=1` — and it offers it ONLY when no `-wal` sits next
+  to the file: with no `-wal` the main file IS the whole state of §5, while with a `-wal` an immutable read would
+  hide committed pages, and that case is refused with its own message. Every number names the handle it came
+  through (`open_mode=mode_ro_immutable`, `wal_side_file=absent`, the `open mode` line of the human report),
+  because through that handle `PRAGMA journal_mode` answers `delete` even for a WAL file — measured in the
+  container and asserted by `TestImmutableReaderSeesTheSameNumbersAndCallsJournalModeDelete`.
+  **(2)** `scripts/docker-build.ps1` promised both Dockerfile targets and built one: the `test` service of §9
+  hides behind `profiles: ["test"]`, which `docker compose build` skips, so after a source edit the `-race` image
+  stayed four hours old and the reader inside it printed yesterday's code. The script builds the profile too and
+  prints the age of both images.
 
 ## Not implemented yet (honest list)
 

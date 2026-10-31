@@ -153,6 +153,146 @@ func TestOpenReadOnlyMissingFile(t *testing.T) {
 	}
 }
 
+// TestWALSideFileIsThereWhileTheWriterIsOpenAndGoneAfterAClose — the decision rule of OpenReadOnlySnapshot in
+// one test: the -wal of §5 exists while a writer holds the file, and a clean Close checkpoints and deletes it.
+// Measured in the container of §8.1 on 2026-10-31 (`docker compose stop` of §12.1.4 left bot.db alone in the
+// named volume), and it is what makes an immutable read legitimate: with no -wal file the main file already
+// holds every committed page, so the reader is not looking at an old state.
+func TestWALSideFileIsThereWhileTheWriterIsOpenAndGoneAfterAClose(t *testing.T) {
+	var ctx = context.Background()
+	var path = filepath.Join(t.TempDir(), "wal-side-file.db")
+	var db, openErr = Open(ctx, path)
+	if openErr != nil {
+		t.Fatalf("Open(%s): %v", path, openErr)
+	}
+	if writeErr := SetLastUpdateID(ctx, db, 920551556); writeErr != nil {
+		t.Fatalf("SetLastUpdateID: %v", writeErr)
+	}
+	if !WALSideFilePresent(path) {
+		t.Fatalf("no %s next to a database a writer is holding open — the WAL of §5 is not what this layer thinks it is", WALSideFile(path))
+	}
+	if closeErr := db.Close(); closeErr != nil {
+		t.Fatalf("Close: %v", closeErr)
+	}
+	if WALSideFilePresent(path) {
+		t.Errorf("%s is still next to a database whose writer closed cleanly — the checkpoint of §5 did not delete it, and the immutable reader of §9 would then be reading a state that is not the whole state", WALSideFile(path))
+	}
+}
+
+// TestImmutableReaderSeesTheSameNumbersAndCallsJournalModeDelete — the substance of the fallback: the same
+// numbers as the plain reader, and the one value that differs. The journal_mode answer is asserted rather than
+// described: it is the reason cmd/dbinspect prints the open mode next to every number (§12 reliability), and
+// the assertion pins what an immutable handle reports even for a WAL-mode file (measured in the container of
+// §8.1 on 2026-10-31).
+func TestImmutableReaderSeesTheSameNumbersAndCallsJournalModeDelete(t *testing.T) {
+	var ctx = context.Background()
+	var path, runtime = fileDB(t)
+	var plainOffset, plainFound, plainErr = LastUpdateID(ctx, runtime)
+	if plainErr != nil {
+		t.Fatalf("LastUpdateID through the runtime handle: %v", plainErr)
+	}
+	if !WALSideFilePresent(path) {
+		t.Fatalf("the writer is still open, so %s must exist before testing the immutable handle", WALSideFile(path))
+	}
+	if closeErr := runtime.Close(); closeErr != nil {
+		t.Fatalf("Close: %v (§5: the clean close is what checkpoints the WAL)", closeErr)
+	}
+
+	var snapshot, openErr = openReadOnlyImmutable(ctx, path)
+	if openErr != nil {
+		t.Fatalf("openReadOnlyImmutable(%s): %v", path, openErr)
+	}
+	defer snapshot.Close()
+
+	var mode, pragmaErr = Pragma(ctx, snapshot, "journal_mode")
+	if pragmaErr != nil {
+		t.Fatalf("Pragma journal_mode through the immutable handle: %v", pragmaErr)
+	}
+	if mode != "delete" {
+		t.Errorf("the immutable handle answers journal_mode=%q, want \"delete\" — the caveat cmd/dbinspect prints rests on this being the handle's answer and not the file's (§9, §12 reliability)", mode)
+	}
+
+	var offset, found, offsetErr = LastUpdateID(ctx, snapshot)
+	if offsetErr != nil {
+		t.Fatalf("LastUpdateID through the immutable handle: %v", offsetErr)
+	}
+	if offset != plainOffset || found != plainFound {
+		t.Errorf("the immutable reader sees offset %d (found %t) where the writer left %d (found %t) — with no -wal file the main file IS the state, so a difference here is a broken open of §5", offset, found, plainOffset, plainFound)
+	}
+	var counts, countsErr = TableCounts(ctx, snapshot)
+	if countsErr != nil {
+		t.Fatalf("TableCounts through the immutable handle: %v", countsErr)
+	}
+	if len(counts) == 0 {
+		t.Error("the immutable reader found no tables in a database the writer created — the migrations of §5 live in the main file")
+	}
+}
+
+// TestOpenReadOnlySnapshotUsesThePlainOpenFirst — on a path a writable process can reach, the fallback is not
+// used at all: the caller gets the accurate handle that attaches the WAL of §5.
+func TestOpenReadOnlySnapshotUsesThePlainOpenFirst(t *testing.T) {
+	var path, _ = fileDB(t)
+	var db, mode, openErr = OpenReadOnlySnapshot(context.Background(), path)
+	if openErr != nil {
+		t.Fatalf("OpenReadOnlySnapshot(%s): %v", path, openErr)
+	}
+	defer db.Close()
+	if mode != ReadOnlyModePlain {
+		t.Errorf("the snapshot open chose %s over %s on a writable path — the reader would lose the pages of §5 that are still in the WAL", mode, ReadOnlyModePlain)
+	}
+	if _, _, offsetErr := LastUpdateID(context.Background(), db); offsetErr != nil {
+		t.Errorf("the snapshot handle cannot read bot_state: %v", offsetErr)
+	}
+}
+
+// TestOpenReadOnlySnapshotNeverCreatesAFile — the fallback must not turn «there is no database here» into a
+// zero-byte database: both opens are mode=ro, and a missing path is reported as a missing path, without dragging
+// the immutable story into a message about a file that was never created.
+func TestOpenReadOnlySnapshotNeverCreatesAFile(t *testing.T) {
+	var path = filepath.Join(t.TempDir(), "never-created.db")
+	var _, mode, openErr = OpenReadOnlySnapshot(context.Background(), path)
+	if openErr == nil {
+		t.Fatal("OpenReadOnlySnapshot opened a database that does not exist — the viewer would print an empty history as truth (§5 case D)")
+	}
+	if mode != "" {
+		t.Errorf("a refused open must not report a mode, it reported %q", mode)
+	}
+	if !strings.Contains(openErr.Error(), "does not exist") {
+		t.Errorf("the refusal says %q, want it to name the missing file", openErr)
+	}
+	if strings.Contains(openErr.Error(), string(ReadOnlyModeImmutable)) {
+		t.Errorf("the refusal talks about the immutable fallback for a missing file — the -wal check of §9 never ran here, so the operator would chase the wrong thing: %v", openErr)
+	}
+	if _, statErr := os.Stat(path); statErr == nil {
+		t.Error("the refused snapshot open left a file behind (§5 case D: a viewer must not touch the directory)")
+	}
+}
+
+// TestReadOnlyImmutableDSNIsTheReaderDSNPlusOneParameter — the second DSN differs from the first by exactly the
+// URI parameter that makes the open possible on a read-only mount, and keeps every rule that keeps the viewer
+// honest: no _txlock (a reader must not take the write lock of a live bot), no _journal_mode (journal_mode
+// belongs to the file, §5), no cache=shared (illegal with mode=ro, §5 case D), no memory path, no query mark.
+func TestReadOnlyImmutableDSNIsTheReaderDSNPlusOneParameter(t *testing.T) {
+	var dsn, err = ReadOnlyImmutableDSN(`C:\Tools\data\bot.db`)
+	if err != nil {
+		t.Fatalf("ReadOnlyImmutableDSN: %v", err)
+	}
+	if !strings.Contains(dsn, "mode=ro&immutable=1&_busy_timeout="+ReadOnlyBusyTimeout) {
+		t.Errorf("the snapshot DSN is %q, want mode=ro&immutable=1&_busy_timeout=%s — the underscore spelling is the driver namespace and does not mean this (measured 2026-10-31 in the container)", dsn, ReadOnlyBusyTimeout)
+	}
+	for _, banned := range []string{"_txlock", "_journal_mode", "_pragma", "cache=shared", "_foreign_keys", "_immutable"} {
+		if strings.Contains(dsn, banned) {
+			t.Errorf("the snapshot DSN carries %s (%q) — the rules of the plain reader plus one parameter, nothing else", banned, dsn)
+		}
+	}
+	if _, memErr := ReadOnlyImmutableDSN(":memory:"); memErr == nil {
+		t.Error("the snapshot DSN accepted the memory path of §5 — that opens a fresh EMPTY database and calls it the history")
+	}
+	if _, badErr := ReadOnlyImmutableDSN(`C:\data\bo?t.db`); badErr == nil {
+		t.Error("the snapshot DSN accepted a path carrying ? (§5: the DSN whitelist rejects it, and so does the reader)")
+	}
+}
+
 // TestReadOnlyReadsEverythingTheScriptPrints — the whole read side of §9 db_inspect over the file of a
 // running bot: chats with their message count, the newest messages with the §10 День 7 metadata, events and
 // their per-kind counts, the bot_state offset, the per-table counts and integrity_check. Every value here is

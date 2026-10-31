@@ -44,14 +44,24 @@ const ReadOnlyBusyTimeout = RuntimeBusyTimeout
 //
 // A memory path is refused: `mode=memory` under mode=ro would open a FRESH empty database and present it
 // as «the bot's history is empty» — the loudest kind of lie this tool could tell (§12 reliability).
-func ReadOnlyDSN(path string) (string, error) {
+// readOnlyPathGuard — the path rules of §5 for any read-only open: a memory path and a query-bearing path are
+// refused the same way, and the message names the function that refused (§9: the operator has to see which
+// open was rejected). Extracted because the plain and the immutable reader are two opens over one path.
+func readOnlyPathGuard(caller, path string) error {
 	if IsMemory(path) {
-		return "", fmt.Errorf("store.ReadOnlyDSN: %q is a memory database (§5: a read-only open of mode=memory creates a fresh EMPTY database — the history of a running process is not readable this way)", path)
+		return fmt.Errorf("store.%s: %q is a memory database (§5: a read-only open of mode=memory creates a fresh EMPTY database — the history of a running process is not readable this way)", caller, path)
 	}
 	if _, buildErr := BuildDSN(path); buildErr != nil {
 		// The message of BuildDSN already names the §5 rule and quotes the path; it is wrapped so the
 		// operator sees which open was refused (§9: db_inspect and the bot read the same DB_PATH).
-		return "", fmt.Errorf("store.ReadOnlyDSN: %w (§5: the same path rules as the runtime DSN)", buildErr)
+		return fmt.Errorf("store.%s: %w (§5: the same path rules as the runtime DSN)", caller, buildErr)
+	}
+	return nil
+}
+
+func ReadOnlyDSN(path string) (string, error) {
+	if guardErr := readOnlyPathGuard("ReadOnlyDSN", path); guardErr != nil {
+		return "", guardErr
 	}
 	return "file:" + EscapePath(path) + "?mode=ro&_busy_timeout=" + ReadOnlyBusyTimeout, nil
 }
@@ -60,30 +70,128 @@ func ReadOnlyDSN(path string) (string, error) {
 // NOT verify the runtime pragmas: both would write to the file, and §5 keeps the file's journal_mode a
 // once-per-database decision. A missing file is reported as a missing file rather than as the driver's
 // SQLITE_CANTOPEN, because what the operator needs to hear is «there is no database here yet».
+//
+// This open is the strict one: it is what the tests of §11 use and what a writable path always gets. The
+// reader that also copes with a WAL file on a read-only mount is OpenReadOnlySnapshot below.
 func OpenReadOnly(ctx context.Context, path string) (*sql.DB, error) {
 	dsn, dsnErr := ReadOnlyDSN(path)
 	if dsnErr != nil {
 		return nil, dsnErr
 	}
+	return openReader(ctx, path, dsn, "OpenReadOnly")
+}
+
+// WALSideFile — the -wal of §5 next to a database file: SQLite names it by appending "-wal". Whether that file
+// exists decides what a reader is allowed to see (§5: a committed transaction lives in the WAL until the
+// checkpoint moves it into the main file).
+func WALSideFile(path string) string { return path + "-wal" }
+
+// WALSideFilePresent — is the WAL of §5 sitting next to the file? Absent means the main file holds every
+// committed page: SQLite deletes the -wal only after moving its pages into the main file, and store.Close of §5
+// is what checkpoints it (measured 2026-10-31 in the container of §8.1: after `docker compose stop` of §12.1.4
+// the named volume held bot.db alone — 36 KB, no -wal and no -shm).
+func WALSideFilePresent(path string) bool {
+	_, statErr := os.Stat(WALSideFile(path))
+	return statErr == nil
+}
+
+// ReadOnlyImmutableDSN — the second reader DSN of §5: the same mode=ro and the same busy timeout, plus the
+// SQLite URI parameter `immutable=1`. The spelling matters: the underscore is the driver's namespace, and
+// `_immutable=1` is not this parameter — measured in the container on 2026-10-31, where `_immutable=1` kept
+// answering the same error as the plain open while `immutable=1` opened the file.
+//
+// WHY A SECOND READER EXISTS. mode=ro on a WAL database needs the -shm of §5: the reader either attaches the
+// existing shared memory or creates it. On a read-only mount that creation is impossible, and SQLite answers
+// `unable to open database file (14)` — SQLITE_CANTOPEN — for a file that is plainly there and readable. The
+// shape is not hypothetical: reading the named volume of §8.1 with `-v tg-llm-proxy_bot-data:/data:ro` hits it
+// exactly after a clean stop, when the -wal and the -shm are gone. The operator asked for the history of a
+// container that is not running, and «cannot open» is not the honest answer.
+//
+// WHAT THIS HANDLE CANNOT SEE. It never touches the WAL machinery, so a committed transaction still sitting in
+// a -wal file stays invisible — and PRAGMA journal_mode answers "delete" through it even for a WAL file (both
+// measured in the container on 2026-10-31). That is why this DSN is not the default and why the open is
+// reported by name: see OpenReadOnlySnapshot and ReadOnlyMode.
+func ReadOnlyImmutableDSN(path string) (string, error) {
+	if guardErr := readOnlyPathGuard("ReadOnlyImmutableDSN", path); guardErr != nil {
+		return "", guardErr
+	}
+	return "file:" + EscapePath(path) + "?mode=ro&immutable=1&_busy_timeout=" + ReadOnlyBusyTimeout, nil
+}
+
+// ReadOnlyMode — which of the two read-only opens the reader ended up with. The name belongs in the report and
+// is not decoration: the two handles differ in what they can see and in what PRAGMA journal_mode answers, so a
+// number taken through one of them has to say which one (§12 reliability).
+type ReadOnlyMode string
+
+const (
+	// ReadOnlyModePlain — mode=ro: the accurate reader, it attaches the WAL of §5 and is what a writable path
+	// (the host file of scripts/db_inspect.ps1, scripts/test-restart.ps1) always gets.
+	ReadOnlyModePlain ReadOnlyMode = "mode=ro"
+	// ReadOnlyModeImmutable — mode=ro+immutable: the snapshot reader of a WAL file whose -wal is absent, on a
+	// mount that forbids creating the -shm. Complete for that file (nothing is left in a WAL that does not
+	// exist), but blind to a live writer and wrong about journal_mode.
+	ReadOnlyModeImmutable ReadOnlyMode = "mode=ro+immutable"
+)
+
+// OpenReadOnlySnapshot — the read-only open of §9 that both a script and a human can rely on in either shape
+// of the file: the accurate plain open when it works, the immutable one when the WAL side file of §5 is absent
+// and the mount refuses the plain one. The second open is offered ONLY with no -wal next to the file, and that
+// condition is not a detail: while a -wal exists it can hold committed pages, and an immutable read would
+// report an old history as the current one (§12 reliability: an incomplete history must not look complete).
+// With no -wal file the main file IS the whole state (§5).
+//
+// The mode is part of the contract: cmd/dbinspect prints it beside every number read through that handle,
+// because `journal_mode=delete` taken through an immutable open of a WAL file is a fact about the handle, not
+// about the database.
+func OpenReadOnlySnapshot(ctx context.Context, path string) (*sql.DB, ReadOnlyMode, error) {
+	db, plainErr := OpenReadOnly(ctx, path)
+	if plainErr == nil {
+		return db, ReadOnlyModePlain, nil
+	}
+	if WALSideFilePresent(path) {
+		return nil, "", fmt.Errorf("store.OpenReadOnlySnapshot: %w — and %s exists, so the immutable open of §5 is not offered here: it reads the main file only and would hide the pages of §5 that have not reached it yet", plainErr, WALSideFile(path))
+	}
+
+	snapshot, snapshotErr := openReadOnlyImmutable(ctx, path)
+	if snapshotErr != nil {
+		return nil, "", fmt.Errorf("store.OpenReadOnlySnapshot: the plain reader failed: %w; the immutable reader of the same file failed too: %s", plainErr, snapshotErr)
+	}
+	return snapshot, ReadOnlyModeImmutable, nil
+}
+
+// openReadOnlyImmutable — the immutable handle over the path: ReadOnlyImmutableDSN plus the same one-connection
+// body as the plain reader. Package-private on purpose: the decision to use it belongs to
+// OpenReadOnlySnapshot, which is the place that knows about the -wal.
+func openReadOnlyImmutable(ctx context.Context, path string) (*sql.DB, error) {
+	dsn, dsnErr := ReadOnlyImmutableDSN(path)
+	if dsnErr != nil {
+		return nil, dsnErr
+	}
+	return openReader(ctx, path, dsn, "openReadOnlyImmutable")
+}
+
+// openReader — the body the two read-only opens share: refuse a missing file by name (§5 case D), keep one
+// connection (a viewer is not a server — the pool of 4 of §11 exists for parallel model calls, and a reader
+// holding four handles only adds read locks a live writer has to route around), and treat Ping as the real
+// check (§5 spike 11: sql.Open is silent).
+func openReader(ctx context.Context, path, dsn, caller string) (*sql.DB, error) {
 	if _, statErr := os.Stat(path); statErr != nil {
 		if errors.Is(statErr, os.ErrNotExist) {
-			return nil, fmt.Errorf(`store.OpenReadOnly: "%s" does not exist (§5 case D: mode=ro never creates a file — the bot has not started with this DB_PATH yet, or §7 points at another path)`, path)
+			return nil, fmt.Errorf(`store.%s: "%s" does not exist (§5 case D: mode=ro never creates a file — the bot has not started with this DB_PATH yet, or §7 points at another path)`, caller, path)
 		}
-		return nil, fmt.Errorf(`store.OpenReadOnly: "%s" cannot be inspected: %w`, path, statErr)
+		return nil, fmt.Errorf(`store.%s: "%s" cannot be inspected: %w`, caller, path, statErr)
 	}
 
 	db, openErr := sql.Open(sqliteDriver, dsn)
 	if openErr != nil {
-		return nil, fmt.Errorf("store.OpenReadOnly: the reader DSN %s was rejected: %w (§5: a bad DSN is a configuration problem, the text names it)", dsn, openErr)
+		return nil, fmt.Errorf("store.%s: the reader DSN %s was rejected: %w (§5: a bad DSN is a configuration problem, the text names it)", caller, dsn, openErr)
 	}
-	// One connection, idle kept open: this is a viewer, not a server (§11's pool of 4 exists for parallel
-	// model calls; a reader holding four handles only adds read locks a live writer must route around).
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
 	if pingErr := db.PingContext(ctx); pingErr != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("store.OpenReadOnly: the reader DSN %s opens a handle that does not answer: %w (§5 spike 11: sql.Open is silent, the Ping is the real check)", dsn, pingErr)
+		return nil, fmt.Errorf("store.%s: the reader DSN %s opens a handle that does not answer: %w (§5 spike 11: sql.Open is silent, the Ping is the real check)", caller, dsn, pingErr)
 	}
 	return db, nil
 }

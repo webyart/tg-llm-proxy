@@ -11,8 +11,12 @@
 //
 // What it guarantees, and what it refuses:
 //
-//	store.OpenReadOnly — mode=ro, so no statement of this program can change the database of a running bot
-//	                   (§5 case D), and journal_mode is left alone (§5: it belongs to the file).
+//	store.OpenReadOnlySnapshot — a read-only open: mode=ro, or mode=ro&immutable=1 when no -wal of §5 sits next
+//	                   to the file and the mount refuses the plain one (the named volume of §8.1 read through
+//	                   `-v …:/data:ro` after a clean stop). Either way no statement of this program can change
+//	                   the database of a running bot (§5 case D), and journal_mode is left alone (§5: it belongs
+//	                   to the file) — but the mode is PRINTED, because a journal_mode read through an immutable
+//	                   handle describes the handle, not the file (§12 reliability).
 //	No migration, no PRAGMA write, no _txlock: a viewer does not take the write lock of a live bot.
 //	Nothing here prints a value of §7 — the database holds chat texts (§12 security forbids tokens and full
 //	model texts in the LOGS, and this output is a human reading a file, not a log).
@@ -85,7 +89,7 @@ func main() {
 // run — the report. One read-only handle for every section (§5: a viewer holds one connection), and each
 // section is printed even when it is empty: «0 rows» is information, a missing section is not.
 func run(ctx context.Context, path string, chatID int64, limit int, integrity bool, counts bool) error {
-	db, openErr := store.OpenReadOnly(ctx, path)
+	db, mode, openErr := store.OpenReadOnlySnapshot(ctx, path)
 	if openErr != nil {
 		return &exitError{1, openErr.Error()}
 	}
@@ -107,16 +111,17 @@ func run(ctx context.Context, path string, chatID int64, limit int, integrity bo
 		if journalErr != nil {
 			return &exitError{1, "journal_mode: " + journalErr.Error()}
 		}
-		return countsReport(os.Stdout, ctx, db, path, journal)
+		return countsReport(os.Stdout, ctx, db, path, journal, mode)
 	}
 	if journalErr != nil {
 		journal = "не прочитан: " + journalErr.Error()
 	}
 
-	fmt.Printf("Database (§5, read-only through mode=ro — §9 scripts/db_inspect.ps1)\n")
+	fmt.Printf("Database (§5, read-only — §9 scripts/db_inspect.ps1)\n")
 	fmt.Printf("  path          %s\n", path)
 	fmt.Printf("  size          %s, modified %s\n", humanBytes(info.Size()), info.ModTime().Format(time.RFC3339))
-	fmt.Printf("  journal_mode  %s (§5: belongs to the file; the viewer never changes it)\n", journal)
+	fmt.Printf("  open mode     %s\n", modeNote(mode))
+	fmt.Printf("  journal_mode  %s (§5: belongs to the file; the viewer never changes it)%s\n", journal, journalCaveat(mode))
 	fmt.Println()
 
 	return sections(ctx, db, chatID, limit, integrity)
@@ -128,7 +133,11 @@ func run(ctx context.Context, path string, chatID int64, limit int, integrity bo
 // the human sections call, because a check that re-implements a query drifts from the query the operator
 // reads (§12 reliability). Unlike the human report, integrity_check always runs here: the whole point of
 // comparing snapshots across a hard kill is to see that the file is still sound (§5 WAL, §12.1.4).
-func countsReport(w io.Writer, ctx context.Context, db *sql.DB, path, journal string) error {
+//
+// `open_mode` and `wal_side_file` are part of the block for the same reason §5 keeps `bot_state_offset_found`
+// beside the offset: a number read through one of the two read-only handles of §9 means something slightly
+// different, and a script that compares snapshots has to compare them on the same terms (§12 reliability).
+func countsReport(w io.Writer, ctx context.Context, db *sql.DB, path, journal string, mode store.ReadOnlyMode) error {
 	var offset, found, offsetErr = store.LastUpdateID(ctx, db)
 	if offsetErr != nil {
 		return &exitError{1, offsetErr.Error()}
@@ -147,6 +156,12 @@ func countsReport(w io.Writer, ctx context.Context, db *sql.DB, path, journal st
 	}
 
 	fmt.Fprintf(w, "path=%s\n", path)
+	// Which handle the numbers came through, and whether the WAL of §5 is sitting next to the file. A snapshot
+	// taken through the immutable open reports journal_mode of the handle ("delete" even for a WAL file,
+	// measured in the container on 2026-10-31), and that is the one difference a script must not average away
+	// when it compares two snapshots of the same volume (§12 reliability).
+	fmt.Fprintf(w, "open_mode=%s\n", countKey(string(mode)))
+	fmt.Fprintf(w, "wal_side_file=%s\n", map[bool]string{true: "present", false: "absent"}[store.WALSideFilePresent(path)])
 	fmt.Fprintf(w, "journal_mode=%s\n", countKey(journal))
 	fmt.Fprintf(w, "integrity=%s\n", countKey(verdict))
 	fmt.Fprintf(w, "last_update_id=%d\n", offset)
@@ -182,6 +197,26 @@ func countKey(name string) string {
 		}
 	}
 	return out.String()
+}
+
+// modeNote — the open mode in the human report. The plain open is the normal case and needs one line; the
+// immutable open needs the reason and the limit of what it can see, because a reader who is not told may take
+// the numbers of a stopped container for the numbers of a running bot (§12 UX: the caveat belongs next to the
+// number, not in a manual nobody reads).
+func modeNote(mode store.ReadOnlyMode) string {
+	if mode != store.ReadOnlyModeImmutable {
+		return "mode=ro (§5: the accurate reader — it attaches the WAL of §5, so committed pages still in the WAL are visible)"
+	}
+	var side = store.WALSideFile("bot.db") // «bot.db-wal»: the name the reader looked for, spelled out in the note
+	return "mode=ro&immutable=1 (§9: the plain open was refused by a read-only mount and no " + side + " file sits next to the database, so the main file already holds every committed page of §5 — this is the state after a clean stop of §12.1.4, not after a kill; through this handle the WAL machinery is not attached, so journal_mode below describes the handle)"
+}
+
+// journalCaveat — the second half of the journal_mode line, empty for the plain open.
+func journalCaveat(mode store.ReadOnlyMode) string {
+	if mode != store.ReadOnlyModeImmutable {
+		return ""
+	}
+	return " — measured through the immutable handle: it answers \"delete\" for a WAL file too (measured 2026-10-31 in the container of §8.1), so this line says nothing about the journal mode of the file"
 }
 
 // sections — the five reports over the open handle, in the order an operator asks questions: is the poller

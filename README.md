@@ -331,6 +331,12 @@ goes by runes); `TG_REPLY_DEADLINE_SECONDS` must exceed `STRATA_TIMEOUT_SECONDS`
   — silently, because getUpdates has already deleted the update and `bot_state` only moves after `Dispatch`.
   `telegramHandler` now has its own recover, and `TestUpdatesWithoutMessageSurviveTheHandler` fails with that
   exact nil dereference against the old code.
+  A STRATA outage in the same walk (07:17 local, `dial tcp 127.0.0.1:8080: connectex … actively refused`)
+  showed the third gap: the user was answered and `events(kind='model_error')` held the reason, while the §12
+  log held only «the update arrived» lines — the failure was invisible to whoever reads the log. A failed
+  model call is an ERROR line with `chat_id` and the sanitized reason now
+  (`TestModelFailureIsLoggedWithItsReason`), and `cmd/dbinspect` no longer clips `events.detail` at 60 runes,
+  which is exactly where that reason used to disappear.
 
 ## Not implemented yet (honest list)
 

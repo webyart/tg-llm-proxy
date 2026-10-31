@@ -194,6 +194,17 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 		if errors.Is(modelErr, context.Canceled) {
 			return modelErr // the process is stopping (§12.1.4): nothing to promise the user
 		}
+		// §12 надёжность / §10 День 7: the reason of a failure used to exist only in the events table of §5.
+		// Measured 2026-10-31: STRATA refused the connection (`dial tcp 127.0.0.1:8080: connectex …`) while
+		// the user was answered and the row was written, and `Get-Content -Tail` of the §12 log showed three
+		// arriving updates and nothing else — the operator had to open the database to learn that the model
+		// was down. One error line per failed call, and the reason goes through Sanitize because a library
+		// error is allowed to carry the URL of §7 with the token of Telegram inside (§12 security).
+		d.deps.Logger.Error("the model did not answer",
+			"chat_id", ev.ChatID,
+			"user_id", ev.UserID,
+			"error", Sanitize(modelErr, d.deps.Token),
+		)
 		if errors.Is(modelErr, context.DeadlineExceeded) {
 			d.logEvent(replyCtx, ev.UserID, store.EventTimeout, fmt.Sprintf("budget %ds", d.deps.Cfg.ReplyDeadlineSeconds))
 			return d.reply(ctx, ev.ChatID, fmt.Sprintf(msgTimeoutFormat, d.deps.Cfg.TimeoutSeconds))

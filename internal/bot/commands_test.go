@@ -417,3 +417,37 @@ func TestAskLogsUnknownTokensAsNull(t *testing.T) {
 		t.Errorf("the latency of §5 latency_ms is missing: %s", line)
 	}
 }
+
+// TestModelFailureIsLoggedWithItsReason — §12 надёжность + §10 День 7. Measured 2026-10-31: STRATA was not
+// listening on 127.0.0.1:8080, and the §12 log of that minute held three «the update arrived» lines and not
+// one word about the failure — the reason lived only in events.detail of §5, so answering «why did the bot
+// not answer» meant opening the database. The failed call must therefore leave an ERROR line naming the chat
+// of §5 and the reason, while the audit row of §5 stays where it is; Sanitize still owns the text, because an
+// error that travelled through the library may carry the token of §7 (§12 security).
+func TestModelFailureIsLoggedWithItsReason(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	var m = &fakeModel{err: errors.New(`Post "http://127.0.0.1:8080/v1/chat/completions": dial tcp 127.0.0.1:8080: ` +
+		`connectex: No connection could be made because the target machine actively refused it. (after 2 attempts, §10 День 3)`)}
+	var logs = &bytes.Buffer{}
+	var db = testStoreNamed(t, t.Name())
+	var d = newTestDispatcher(t, cfg, m, &fakeReplier{}, db, slog.New(slog.NewJSONHandler(logs, nil)))
+
+	if err := dispatch(t, d, testEvent(102, 11, 382, "/ask это я")); err != nil {
+		t.Fatalf("/ask: %v", err)
+	}
+
+	var line = logs.String()
+	if !strings.Contains(line, `"level":"ERROR"`) || !strings.Contains(line, "the model did not answer") {
+		t.Fatalf("a failed model call must be visible in the §12 log, got: %s", line)
+	}
+	if !strings.Contains(line, `"chat_id":102`) || !strings.Contains(line, "connectex") {
+		t.Fatalf("the log line must name the chat of §5 and the reason of the failure, got: %s", line)
+	}
+	if strings.Contains(line, cfg.BotToken) {
+		t.Fatalf("§12 security: the token reached the log: %s", line)
+	}
+	var events, evErr = store.CountEvents(context.Background(), db, store.EventModelError)
+	if evErr != nil || events != 1 {
+		t.Fatalf("the audit row of §5 must stay next to the log line: events(kind='model_error') = %d err=%v", events, evErr)
+	}
+}

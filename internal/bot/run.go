@@ -172,12 +172,47 @@ func (d *Dispatcher) matchUpdate(upd *models.Update) bool {
 // telegramHandler — the single entry point of both paths (§10 День 4): the registered MatchFunc for
 // text messages and WithDefaultHandler for everything else.
 func (d *Dispatcher) telegramHandler(ctx context.Context, _ *tgbot.Bot, upd *models.Update) {
+	// §12 reliability / §10 День 7: the first question in a live incident is always «did the update arrive
+	// at all», and until today the process answered it only by silence. One debug line per update, with the
+	// id and the length of the text rather than the text itself (§12 security: LOG_LEVEL=debug must not
+	// start logging the conversations of the users).
+	var updateID int64
+	var textLen = 0
+	if upd != nil {
+		updateID = upd.ID
+		if upd.Message != nil {
+			textLen = len([]rune(upd.Message.Text))
+		}
+	}
+	// §12 надёжность: the net the panic middleware of §10 День 4 cannot provide. `recovered` lives inside
+	// Dispatch, so everything in this function that runs BEFORE Dispatch is unprotected — and by then the
+	// library has already read the update, which means Telegram will not send it back: getUpdates deletes
+	// what it returned, and §5 last_update_id is written only after Dispatch (§5 «Offset long polling»).
+	// Measured 2026-10-31 on this machine: the «carries no text» line below read upd.Message.Chat.ID before
+	// eventOf had checked Message for nil, so the first callback_query (or my_chat_member, or edited_message,
+	// i.e. anything the MatchFunc of §10 День 4 does not claim) panicked in the goroutine of the library and
+	// ended the process — an update lost with no row in §5 and no line in the log to explain the silence.
+	// One defer turns that silent loss into one error line; the update itself is still gone, which is why the
+	// wording says «lost» rather than «skipped».
+	defer func() {
+		var r = recover()
+		if r == nil {
+			return
+		}
+		d.deps.Logger.Error("the update handler panicked before Dispatch, the update is lost",
+			"update_id", updateID, "panic", fmt.Sprint(r))
+	}()
+	d.deps.Logger.Debug("the update arrived", "update_id", updateID, "text_len", textLen)
 	var ev, ok = eventOf(upd)
 	if !ok {
 		// §6: a photo, a sticker, a callback carries no text — answering it would confuse the chat and
 		// would store a row §5 has no place for. Debug would be enough, but §12 надёжность wants to
 		// see that updates arrive and are skipped.
-		d.deps.Logger.Info("the update carries no text, skipped", "update_id", upd.ID, "chat_id", upd.Message.Chat.ID)
+		var chatID int64
+		if upd != nil && upd.Message != nil {
+			chatID = upd.Message.Chat.ID
+		}
+		d.deps.Logger.Info("the update carries no text, skipped", "update_id", updateID, "chat_id", chatID)
 		return
 	}
 	d.noteChatUser(ev.ChatID, ev.UserID) // the flood audit of §10 День 4 attributes events to a user

@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-telegram/bot/models"
+
 	"bot/internal/model"
 	"bot/internal/store"
 )
@@ -396,5 +398,90 @@ func TestTokenNeverLeaksIntoTheLog(t *testing.T) {
 	}
 	if !strings.Contains(text, "***") {
 		t.Fatalf("the token must be replaced by a marker, got %q", text)
+	}
+}
+
+// TestUpdatesWithoutMessageSurviveTheHandler — §12 надёжность, §6 п.7, §10 День 4. The MatchFunc claims
+// only a Message with a non-empty Text, so everything else — callback_query, my_chat_member,
+// edited_message, a photo, and the nil update that a default handler can be handed — arrives in
+// telegramHandler unprotected, and it arrives AFTER getUpdates has already deleted it from the queue of
+// Telegram: the library will not offer it again, and §5 last_update_id is written only after Dispatch.
+// Measured 2026-10-31 on this machine, where the «carries no text» line read upd.Message.Chat.ID before
+// eventOf had looked at Message: the first such update panicked in the goroutine of the library, the
+// process died, and the update disappeared with no row in §5 and no log line to explain the silence —
+// which is how an answered /ask turned into nothing at all. So: the panic must not escape the handler, the
+// handler must not invent a row for an update §5 has no place for, and the offset must not move for an
+// update that was not processed. The last part of the test is the reason the net is a net and not a filter:
+// the update that DOES carry text still goes all the way through the same function.
+func TestUpdatesWithoutMessageSurviveTheHandler(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	var r = &fakeReplier{}
+	var db = testStore(t)
+	var d = newTestDispatcher(t, cfg, nil, r, db)
+
+	var cases = []struct {
+		name string
+		upd  *models.Update
+	}{
+		{"callback_query", &models.Update{ID: 20, CallbackQuery: &models.CallbackQuery{ID: "cb-1"}}},
+		{"my_chat_member", &models.Update{ID: 21, MyChatMember: &models.ChatMemberUpdated{}}},
+		{"edited_message", &models.Update{ID: 22, EditedMessage: &models.Message{ID: 5, Chat: models.Chat{ID: 100}, Text: "правка"}}},
+		{"message without text", &models.Update{ID: 23, Message: &models.Message{ID: 6, Chat: models.Chat{ID: 100}}}},
+		{"nil update", nil},
+	}
+	var i = 0
+	for i < len(cases) {
+		var c = cases[i]
+		d.telegramHandler(context.Background(), nil, c.upd) // a panic that escapes here kills the process (§12)
+		i++
+	}
+
+	var counts, countErr = store.TableCounts(context.Background(), db)
+	if countErr != nil {
+		t.Fatalf("store.TableCounts: %v", countErr)
+	}
+	var k = 0
+	for k < len(counts) {
+		if counts[k].Rows != 0 {
+			t.Fatalf("an update without a message must write nothing (§5 has no row for it): %s has %d rows", counts[k].Name, counts[k].Rows)
+		}
+		k++
+	}
+	var found = false
+	var err error
+	if _, found, err = store.LastUpdateID(context.Background(), db); err != nil || found {
+		t.Fatalf("nothing was processed, so bot_state must stay empty (§5), found=%v err=%v", found, err)
+	}
+	if len(r.sent) != 0 {
+		t.Fatalf("an update without a message must not be answered (§6 п.7), %d sends", len(r.sent))
+	}
+
+	d.telegramHandler(context.Background(), nil, &models.Update{ID: 24, Message: &models.Message{
+		ID:   7,
+		Chat: models.Chat{ID: 100, Type: models.ChatTypePrivate},
+		From: &models.User{ID: 11, Username: "tester"},
+		Text: "/ask привет",
+	}})
+
+	var after, afterErr = store.TableCounts(context.Background(), db)
+	if afterErr != nil {
+		t.Fatalf("store.TableCounts after /ask: %v", afterErr)
+	}
+	var rows = map[string]int64{}
+	k = 0
+	for k < len(after) {
+		rows[after[k].Name] = after[k].Rows
+		k++
+	}
+	if rows["chats"] != 1 || rows["events"] != 1 || rows["messages"] != 2 {
+		t.Fatalf("/ask through the same handler must behave as before the net (§6, §10 День 3): chats=%d events=%d messages=%d",
+			rows["chats"], rows["events"], rows["messages"])
+	}
+	var offset int64
+	if offset, found, err = store.LastUpdateID(context.Background(), db); err != nil || !found || offset != 24 {
+		t.Fatalf("bot_state must hold the processed update 24 (§5), got %d found=%v err=%v", offset, found, err)
+	}
+	if len(r.sent) != 1 {
+		t.Fatalf("/ask must answer once (§6), %d sends", len(r.sent))
 	}
 }

@@ -175,6 +175,12 @@ without the dot the PATH of §3 dies with the child process.
 
 ## Ручной чек-лист демо (§11 «Manual», реальный Telegram + реальный STRATA)
 
+Перед обходом удобно поставить `LOG_LEVEL=debug` в `.env` и рестартнуть бота: тогда на каждый апдейт в JSON-логе
+появляется строка «the update arrived» с `update_id` и длиной текста (`internal/bot/run.go`; самого текста в логе
+нет — §12 security), и щелчок в Telegram становится сопоставим с конкретной строкой лога. После обхода row
+возвращается к `info`: `main_test.go` фиксирует, что на `info` этой строки нет, а ERROR-строки остаются, — то
+есть переключение описано тестами, а не догадкой.
+
 - [ ] `/start` in a private chat → the greeting + the command list; a second `/start` changes nothing
       (`EnsureChat` of §5 is idempotent).
 - [ ] `/whoami` → the numeric `user_id`, `chat_id` and the line «в allowlist: да/нет»; when it says «нет»,

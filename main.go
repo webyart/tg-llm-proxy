@@ -44,6 +44,10 @@ func PrintConfig(cfg config.Config) {
 	fmt.Println("STRATA_CHAT_COMPLETIONS_URL", cfg.ChatURL, "(§7, §16 change 8: joined as {base}/chat/completions over NormalizeBase)")
 	fmt.Println("STRATA_TIMEOUT_SECONDS", cfg.TimeoutSeconds, "(§7, §10 День 3: the timeout of one attempt)")
 	fmt.Println("TG_REPLY_DEADLINE_SECONDS", cfg.ReplyDeadlineSeconds, "(§7, §10 День 3: the total budget of the model retries + timeout + the answer into Telegram)")
+	fmt.Println("STREAMING_ENABLED", cfg.Streaming, "(§7, §16 change 34: §15 «стриминг ответов» — one message rewritten as the model writes; off by default because it changes the UX of every answer)")
+	fmt.Println("STREAM_EDIT_INTERVAL_MS", cfg.StreamEditIntervalMS, "(§7, §15: the cadence of the rewrites — Telegram tolerates about one edit per second per chat, §10 День 4 flood)")
+	fmt.Println("STREAM_IDLE_TIMEOUT_SECONDS", cfg.StreamIdleSeconds, "(§7, §15: the pause between two SSE events past which the stream is dead; measured gap of a healthy stream is ~20 ms)")
+	fmt.Println("STREAM_TOTAL_DEADLINE_SECONDS", cfg.StreamTotalSeconds, "(§7, §15: the ceiling of one streamed answer, thinking included — the GPU of §12 is bounded)")
 	fmt.Println("DB_PATH", cfg.DBPath, "(§7, §16 change 9: the default is a local Windows path, compose overrides /data/bot.db)")
 	fmt.Println("CONTEXT_MESSAGES", cfg.ContextMessages, "(§7, §16 change 10: the glued history is now bounded by the count and by MAX_CONTEXT_CHARS)")
 	fmt.Println("MAX_CONTEXT_CHARS", cfg.MaxContextChars, "(§7, §12 UX: the budget of the glued history)")
@@ -210,6 +214,14 @@ func main() {
 		Model:         cfg.StrataModel,
 		Timeout:       time.Duration(cfg.TimeoutSeconds) * time.Second,
 		MaxConcurrent: int(cfg.MaxConcurrentRequests),
+		// §15 (§16 change 34): the budgets of one streamed answer come from §7 too. The progress cadence of the
+		// client is the cadence of the chat: a thinking model may refresh the placeholder no more often than
+		// Telegram tolerates being edited (§10 День 4 flood).
+		Stream: model.StreamSettings{
+			Idle:     time.Duration(cfg.StreamIdleSeconds) * time.Second,
+			Total:    time.Duration(cfg.StreamTotalSeconds) * time.Second,
+			Progress: time.Duration(cfg.StreamEditIntervalMS) * time.Millisecond,
+		},
 	})
 	if clientErr != nil {
 		fmt.Println("model.New:", clientErr, "(§10 День 3: the client is built from §7, exit code 1)")

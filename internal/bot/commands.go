@@ -196,7 +196,20 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 		return err
 	}
 
-	var resp, modelErr = d.deps.Model.Complete(replyCtx, model.Request{Messages: messages})
+	// §15 (§16 change 34): with STREAMING_ENABLED=true and everything it needs in place (a client that can
+	// stream, a sender that can edit) the answer arrives as ONE message that is rewritten as the model writes
+	// it. The two paths return the same Response and the same invariant holds underneath: exactly one assistant
+	// row of §5, written after the final answer, never per token (§10 День 3).
+	var streamer, sender, canStream = d.streamingPossible()
+	var session *streamSession
+	var resp model.Response
+	var modelErr error
+	if canStream {
+		session = d.newStreamSession(replyCtx, ev.ChatID, sender)
+		resp, modelErr = streamer.Stream(replyCtx, model.Request{Messages: messages}, session.handler())
+	} else {
+		resp, modelErr = d.deps.Model.Complete(replyCtx, model.Request{Messages: messages})
+	}
 	if modelErr != nil {
 		// §10 День 3: a failed call writes NO assistant row — only the event of §5 and the notice.
 		if errors.Is(modelErr, context.Canceled) {
@@ -222,19 +235,42 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 			"user_id", ev.UserID,
 			"error", Sanitize(modelErr, d.deps.Token),
 		)
+		// §15: part of the answer can already be on the screen. The message that carries it says so out loud,
+		// because §10 День 3 writes NO assistant row for a failed call and a half answer that looks finished is
+		// worse than no answer (§12 UX). The reason is not cut here: brokenView of stream.go fits the notice into
+		// ONE message of MAX_MESSAGE_CHUNK (§7), and only the part of the reason past that limit disappears.
+		if session != nil && session.sawText() {
+			session.broken(auditCtx, d, Sanitize(modelErr, d.deps.Token))
+		}
 		if errors.Is(modelErr, context.DeadlineExceeded) {
 			// The number in the user text and the detail in the events row must name the SAME budget — the
 			// one that really expired. Measured 2026-10-31 (STRATA_TIMEOUT_SECONDS=15, TG_REPLY_DEADLINE_SECONDS=30):
 			// the row read «budget 30s» while the user was answered «не ответила за 15 с» — one failure described
 			// by two different numbers in the two places an operator compares (the events table of §5 and the
 			// chat of §12 UX). replyCtx.Err() tells them apart: nil means the model call gave up first.
+			// §15 added two more budgets that can expire (STREAM_IDLE_TIMEOUT_SECONDS,
+			// STREAM_TOTAL_DEADLINE_SECONDS of §7), and their sentinels say which one it was — a stream that went
+			// silent and a stream that ran too long are different failures, and neither is STRATA_TIMEOUT_SECONDS.
 			var spent = "STRATA_TIMEOUT_SECONDS"
 			var seconds = d.deps.Cfg.TimeoutSeconds
-			if replyCtx.Err() != nil {
+			switch {
+			case errors.Is(modelErr, model.ErrStreamStalled):
+				spent, seconds = "STREAM_IDLE_TIMEOUT_SECONDS", d.deps.Cfg.StreamIdleSeconds
+			case errors.Is(modelErr, model.ErrStreamTooLong):
+				spent, seconds = "STREAM_TOTAL_DEADLINE_SECONDS", d.deps.Cfg.StreamTotalSeconds
+			case replyCtx.Err() != nil:
 				spent = "TG_REPLY_DEADLINE_SECONDS"
 				seconds = d.deps.Cfg.ReplyDeadlineSeconds
 			}
-			d.logEvent(auditCtx, ev.UserID, store.EventTimeout, fmt.Sprintf("%s %ds spent", spent, seconds))
+			var detail = fmt.Sprintf("%s %ds spent", spent, seconds)
+			if session != nil {
+				// §15: how much of the answer the user actually read. Without it the events row says «the answer
+				// was too long» and cannot say whether the model wrote 40 symbols or 4000 before it stopped.
+				var edits, skipped, failures = session.stats()
+				detail += fmt.Sprintf(", %d runes delivered, %d edits, %d skipped, %d delivery failures",
+					Runes(resp.Content), edits, skipped, failures)
+			}
+			d.logEvent(auditCtx, ev.UserID, store.EventTimeout, detail)
 			return d.reply(ctx, ev.ChatID, fmt.Sprintf(msgTimeoutFormat, seconds, spent))
 		}
 		if errors.Is(modelErr, model.ErrEmptyAnswer) {
@@ -268,6 +304,14 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 	// operator greps for. The TEXT stays out of it (§12 security) — the question and the answer are rows of
 	// §5, stdout only carries the measurement. A usage the provider did not return stays `null` rather than
 	// becoming a confident zero, which is what the footer of §6 says too («токены не возвращены»).
+	//
+	// §15 adds the delivery side: an answer that arrived in 4 seconds and produced zero edits reached the chat
+	// through the fallback of deliver(), and without these numbers this line says «everything is fine» about a
+	// stream that never streamed.
+	var edits, skipped, failures = 0, 0, 0
+	if session != nil {
+		edits, skipped, failures = session.stats()
+	}
 	d.deps.Logger.Info("the model answered",
 		"chat_id", ev.ChatID,
 		"user_id", ev.UserID,
@@ -276,11 +320,21 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 		"attempts", resp.Attempts,
 		"tokens_in", tokensOrNull(resp.TokensIn),
 		"tokens_out", tokensOrNull(resp.TokensOut),
+		"streamed", session != nil,
+		"edits", edits,
+		"edits_skipped_by_cadence", skipped,
+		"delivery_failures", failures,
 	)
 
 	// §6: «ответ модели + ⏱ latency, tokens». The footer travels in the same text so the chunking of
 	// §12 UX applies to it too.
-	return d.Send(replyCtx, ev.ChatID, resp.Content+"\n\n"+latencyLine(resp, d.deps.Cfg.StrataModel))
+	var full = resp.Content + "\n\n" + latencyLine(resp, d.deps.Cfg.StrataModel)
+	if session == nil {
+		return d.Send(replyCtx, ev.ChatID, full)
+	}
+	// §15: the message the chat watched grow takes the first chunk, and only the tail of MAX_MESSAGE_CHUNK
+	// continues as new messages — a chat that followed one message being rewritten must not see it split in two.
+	return session.deliver(replyCtx, d, full)
 }
 
 // reset — §6 «очистить контекст чата» + подтверждение. §5 deletes nothing: /history still sees the rows.

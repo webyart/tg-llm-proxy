@@ -187,7 +187,11 @@ func testStoreNamed(t *testing.T, name string) *sql.DB {
 // store.SetLastUpdateID of §5, so the offset assertions read the same row a restart would read. The
 // optional logger is for §10 День 7 («логи slog (JSON) с chat_id, latency_ms, model»): a test that cares
 // about the log shape passes a JSON handler, everyone else keeps the silent default of New.
-func newTestDispatcher(t *testing.T, cfg config.Config, m *fakeModel, r *fakeReplier, db *sql.DB, logger ...*slog.Logger) *Dispatcher {
+//
+// The model and the replier are the INTERFACES of §4/§6 rather than the fakes below, because §15 tests need a
+// model that can stream and a replier that can edit — an optional capability is only reachable through the
+// interface it is asserted against (streamingPossible of stream.go).
+func newTestDispatcher(t *testing.T, cfg config.Config, m model.Client, r Replier, db *sql.DB, logger ...*slog.Logger) *Dispatcher {
 	t.Helper()
 	if db == nil {
 		db = testStore(t)

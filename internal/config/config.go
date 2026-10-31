@@ -26,6 +26,11 @@ var Env = []string{
 	"STRATA_API_KEY",
 	"STRATA_TIMEOUT_SECONDS",
 	"TG_REPLY_DEADLINE_SECONDS",
+	// The four rows of the §15 «стриминг ответов» (§16 change 34), placed next to the budgets they belong to.
+	"STREAMING_ENABLED",
+	"STREAM_EDIT_INTERVAL_MS",
+	"STREAM_IDLE_TIMEOUT_SECONDS",
+	"STREAM_TOTAL_DEADLINE_SECONDS",
 	"DB_PATH",
 	"CONTEXT_MESSAGES",
 	"MAX_CONTEXT_CHARS",
@@ -41,9 +46,10 @@ var Env = []string{
 	"LOG_LEVEL",
 }
 
-// HasRow — is the name one of the 19 rows of the §7 table? The §16 change 29 rename is pinned from both
-// sides with it: TELEGRAM_ALLOWED_USERS is a row, ALLOWED_USER_IDS is not one any more (a test checks both,
-// because `Env` is what PrintMissing walks and what a reader of §7 expects to find).
+// HasRow — is the name one of the rows of the §7 table (19 since plan v1.1, 23 since §16 change 34 added the
+// streaming rows)? The §16 change 29 rename is pinned from both sides with it: TELEGRAM_ALLOWED_USERS is a row,
+// ALLOWED_USER_IDS is not one any more (a test checks both, because `Env` is what PrintMissing walks and what a
+// reader of §7 expects to find).
 func HasRow(name string) bool {
 	var i = 0
 	for i < len(Env) {
@@ -82,6 +88,25 @@ const DefaultParseMode = "MarkdownV2"
 const DefaultHealthPort = int64(8080)
 const DefaultLogLevel = "info"
 
+// The four §15 rows of §16 change 34. STREAMING_ENABLED defaults to FALSE: the streaming path rewrites one
+// Telegram message instead of sending one, which is a visible change of behaviour for every chat, so the
+// operator turns it on deliberately (§12 надёжность: a feature that changes the UX of every answer arrives
+// behind a row, not behind a deploy). The other three are the budgets of one streamed answer, and the numbers
+// come from the measurement of §14: ~48 SSE events per second, ~20 ms apart, and an answer of the size the
+// live volume holds measured 1m56s — a second per edit is the cadence §15 asks for, and five minutes is the
+// ceiling past which «the model is still writing» stops being an answer.
+const DefaultStreaming = false
+const DefaultStreamEditIntervalMS = int64(1000)
+const DefaultStreamIdleSeconds = int64(30)
+const DefaultStreamTotalSeconds = int64(300)
+
+// The bounds of the §15 rows. The floor of the edit interval is what Telegram tolerates: editing one message
+// more than once a second is how a bot reaches the flood of §10 День 4, and 250 ms is the shortest interval
+// this project is willing to write into a table. The ceiling of the interval is a minute of silence in a chat
+// that is waiting for an answer, which is not streaming any more.
+const StreamEditIntervalMin = int64(250)
+const StreamEditIntervalMax = int64(60000)
+
 // The bounds that the plan fixes by name. §12 UX: the reply limit of Telegram is
 // 4096 SYMBOLS, so MAX_MESSAGE_CHUNK cannot pass it (§16 change 7: кириллица costs
 // two bytes, therefore the cut goes by runes and never by bytes). §16 change 11
@@ -102,14 +127,23 @@ const UserIDsMax = 1024
 // leak check before a commit (§14.1 item 1: the token of BotFather never enters
 // the chat or a commit).
 type Config struct {
-	BotToken              string
-	StrataKey             string
-	StrataBase            string
-	ChatURL               string
-	ModelsURL             string
-	StrataModel           string
-	TimeoutSeconds        int64
-	ReplyDeadlineSeconds  int64
+	BotToken             string
+	StrataKey            string
+	StrataBase           string
+	ChatURL              string
+	ModelsURL            string
+	StrataModel          string
+	TimeoutSeconds       int64
+	ReplyDeadlineSeconds int64
+	// The four §15 rows of §16 change 34. Streaming turns the answer of /ask into one message that is
+	// rewritten as the model writes; StreamEditIntervalMS is the cadence of those rewrites; StreamIdleSeconds
+	// is the pause between two SSE events past which the stream is considered dead; StreamTotalSeconds is the
+	// ceiling of one streamed answer. The semantics of TimeoutSeconds and ReplyDeadlineSeconds do NOT change
+	// (§7 rows keep their meaning): the stream has budgets of its own.
+	Streaming             bool
+	StreamEditIntervalMS  int64
+	StreamIdleSeconds     int64
+	StreamTotalSeconds    int64
 	DBPath                string
 	ContextMessages       int64
 	MaxContextChars       int64
@@ -464,6 +498,36 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	problems = Push(problems, badDeadline)
 	if deadline <= timeout {
 		problems = Push(problems, "ENV TG_REPLY_DEADLINE_SECONDS is not greater than STRATA_TIMEOUT_SECONDS: the total budget of the retries, the timeout and the answer into Telegram must exceed the timeout of one attempt (§7 rows, §10 День 3 invariant)")
+	}
+
+	// The four §15 rows of §16 change 34. A stream needs budgets of its own because the two existing ones
+	// answer a different question: «how long may ONE non-streamed call take» and «how long may the user wait
+	// before the answer starts». Measured on §14: the first SSE event of a healthy stream arrives in 4–6 ms
+	// while the answer itself can take minutes — a stall and a long answer cannot share one number.
+	var streaming, badStreaming = Flag(raw, "STREAMING_ENABLED", DefaultStreaming)
+	cfg.Streaming = streaming
+	problems = Push(problems, badStreaming)
+
+	var editInterval, badEditInterval = Num(raw, "STREAM_EDIT_INTERVAL_MS", DefaultStreamEditIntervalMS, StreamEditIntervalMin, StreamEditIntervalMax)
+	cfg.StreamEditIntervalMS = editInterval
+	problems = Push(problems, badEditInterval)
+
+	var streamIdle, badStreamIdle = Num(raw, "STREAM_IDLE_TIMEOUT_SECONDS", DefaultStreamIdleSeconds, 1, 3600)
+	cfg.StreamIdleSeconds = streamIdle
+	problems = Push(problems, badStreamIdle)
+
+	var streamTotal, badStreamTotal = Num(raw, "STREAM_TOTAL_DEADLINE_SECONDS", DefaultStreamTotalSeconds, 10, 3600)
+	cfg.StreamTotalSeconds = streamTotal
+	problems = Push(problems, badStreamTotal)
+	if streamTotal <= streamIdle {
+		problems = Push(problems, "ENV STREAM_TOTAL_DEADLINE_SECONDS is not greater than STREAM_IDLE_TIMEOUT_SECONDS: a stall detector may not outlive the answer it watches (§7 rows, §15)")
+	}
+	// The promise «сообщение не зависает» of §12 UX is bounded by TG_REPLY_DEADLINE_SECONDS: the placeholder of
+	// a streamed answer has to be posted while that budget is still open. A stream allowed to stay silent for
+	// the whole idle budget, with a reply deadline shorter than it, contradicts the promise by configuration —
+	// and the measurement of §14 (first event in 4–6 ms) says such a case is a wrong table, not a slow model.
+	if streaming && deadline <= streamIdle {
+		problems = Push(problems, "ENV TG_REPLY_DEADLINE_SECONDS is not greater than STREAM_IDLE_TIMEOUT_SECONDS while STREAMING_ENABLED=true: the answer must START arriving inside the reply budget of §7, and a stream that may stay silent for the whole idle budget breaks that promise by configuration (§12 UX, §15)")
 	}
 
 	var dbPath = strings.TrimSpace(raw["DB_PATH"])

@@ -73,12 +73,15 @@ tg-llm-proxy/
 ├── internal/config/   # config.go + limits.go — the §7 ENV loader (Day 1: done)
 ├── internal/store/    # schema of §5 via go:embed, Open/PRAGMA, messages + bot_state (Day 2: done) +
 │                      # inspect.go — the read-only side (mode=ro, no _journal_mode/_txlock) of §9
-├── internal/model/    # client.go + openai.go — the STRATA client of §10 День 3 (retries, budget)
+├── internal/model/    # client.go + openai.go + stream.go — the STRATA client of §10 День 3 (retries, budget)
+│                      # + the Streamer of §16 change 34 (SSE, idle/total budgets, reasoning_content kept apart)
 ├── internal/ratelimit/ # rate limiter + per-chat lock of §12 (§10 День 4 middleware)
 ├── internal/bot/      # §6 + §10 День 4: registry (commands.go), normalization + middleware
 │                      # (dispatch.go, middleware.go), context builder (context.go), answers with the
 │                      # 429/flood sleep + chunking (reply.go), the library adapter run.go
-│                      # (New/getMe, WithServerURL, WithInitialOffset, workers, errors handler)
+│                      # (New/getMe, WithServerURL, WithInitialOffset, workers, errors handler),
+│                      # the streaming session of §16 change 34 (stream.go: placeholder → cadenced edits →
+│                      # final edit + the tail as the ordinary messages; run.go is the StreamSender)
 ├── internal/health/   # /healthz of §9 (Day 5: done)
 ├── internal/testutil/ # httptest fakes of §11: strata.go (the /v1 endpoint) + telegram.go
 │                      # (getMe/getUpdates/sendMessage/setMyCommands + the offset semantics + 429)
@@ -231,6 +234,21 @@ without the dot the PATH of §3 dies with the child process.
       2026-10-31:** the WAL answer is one row of §5 of 6063 chars (`length(content)`), so ≥ 2 pieces at
       `MAX_MESSAGE_CHUNK=3500` (a second answer: 4334 chars → 2 pieces), and a human saw several messages
       with no visible mid-word cut.
+- [ ] `STREAMING_ENABLED=true` (§15 of the backlog, §16 change 34) → `/ask` posts ONE «Модель думает…» message,
+      rewrites it no more often than `STREAM_EDIT_INTERVAL_MS`, and turns it into the answer of §6 with its footer;
+      an answer longer than `MAX_MESSAGE_CHUNK` keeps its head in that message and gets the rest as the ordinary
+      messages, while `messages` of §5 still holds exactly one assistant row with the whole `content` and no
+      reasoning of the model. What this list has to measure by hand and no fake can give: the edit rate real
+      Telegram tolerates in one chat (`events(kind='flood')` of §10 День 4), that an interim rewrite of a half
+      answer never comes back as 400 «can't parse entities» (that is why every edit but the last is sent without
+      parse mode), and what `STREAM_IDLE_TIMEOUT_SECONDS` / `STREAM_TOTAL_DEADLINE_SECONDS` do to a real stall.
+      **Not walked yet:** the fakes hold the shape but not the Telegram numbers — `internal/model/stream_test.go`
+      (the reader: gaps, `[DONE]`, a stream that never says `[DONE]`, an endpoint that answered plain JSON instead
+      of SSE, usage in the last event, a budget cut mid-stream), `internal/bot/stream_test.go` (7 tests / 9
+      subtests: the placeholder budget, the edit cadence, the fallback) and `test/integration`
+      (`TestStreamedAnswerEditsOneMessage`: the real handler, the real client of §4 and the real §7 loader over the
+      fakes — one `sendMessage`, every `editMessageText` addressed to that very id, MarkdownV2 only on the last
+      rewrite, one assistant row of §5 holding the joined pieces).
 - [x] `docker compose restart` in the middle of a conversation → no repeated answers, no duplicated rows
       (§5 `bot_state` + `uq_messages_chat_tg_id`; §10 День 6 proved both in `test/integration`).
       **Walked 2026-10-31 on the host** as three `taskkill /F` between instances: the offset of §5 was read
@@ -424,7 +442,8 @@ the machine-readable half of the same story: a log line and a DB row can be line
 ## ENV (§7) — see `.env.example` (full table in PLAN.md §7)
 
 The loader `internal/config` (imported by `cmd/bot` as `bot/internal/config`) reads
-the process ENV once and accepts **exactly the 19 names of the §7 table** — a name
+the process ENV once and accepts **exactly the rows of the §7 table — 23 names since
+§16 change 34 added the four streaming rows** — a name
 that is not a row of §7 is reported by name and pointed at the table (§16 change 25.1
 moves the v1.0 extras `LLM_CHAT_*`, the token budgets and the deep link to the §15 backlog).
 
@@ -454,6 +473,15 @@ is in fact set.
 `/data/bot.db` and the named volume `bot-data:/data` is mandatory (§16 change 9, §8.1).
 `MAX_MESSAGE_CHUNK` ≤ 4096 SYMBOLS (§12 UX, §16 change 7: кириллица = 2 bytes, the cut
 goes by runes); `TG_REPLY_DEADLINE_SECONDS` must exceed `STRATA_TIMEOUT_SECONDS` (§10 Day 3).
+The four rows of §16 change 34 (`STREAMING_ENABLED`, `STREAM_EDIT_INTERVAL_MS`,
+`STREAM_IDLE_TIMEOUT_SECONDS`, `STREAM_TOTAL_DEADLINE_SECONDS`) belong to the budgets, not to the looks: the flag
+defaults to `false` because a streamed answer rewrites ONE message and therefore changes how every answer of
+§12 UX looks, so an operator turns it on deliberately. The loader refuses two combinations with a message that
+names both rows and their numbers: `STREAM_TOTAL_DEADLINE_SECONDS` ≤ `STREAM_IDLE_TIMEOUT_SECONDS` (a stall
+detector may not outlive the answer it watches), and with the flag on `TG_REPLY_DEADLINE_SECONDS` ≤
+`STREAM_IDLE_TIMEOUT_SECONDS` — the answer must START arriving inside the reply budget, which is the promise
+«сообщение не зависает» of §12 UX. Verified by the loader tests of §11 (`internal/config`); the streaming
+behaviour itself by `internal/bot/stream_test.go`.
 
 ## Progress (§10)
 
@@ -661,14 +689,17 @@ the token value before a commit (§12 security, §16 change 25).
 Not a todo list for v1 — these are the things §15 deliberately left out of the prototype, plus what this
 implementation made concrete enough to name.
 
-- Стриминг ответов: правка одного сообщения раз в ~1 с вместо одного `sendMessage` (the chunking of
-  `internal/bot/reply.go` already owns the size logic a stream would reuse). Замер 2026-10-31 через
-  `zzscratch/asktime` — тот же STRATA и тот же вопрос, который догоняет §15: **1m55.99s, 6034 runes,
-  140 → 7248 tokens**. В `STRATA_TIMEOUT_SECONDS 60` такой ответ не влезает ни при каком числе повторов
-  (§10 День 3: кончился бюджет — повторов уже нет), так что стрим здесь нужен не только ради UX, а чтобы
-  длинный ответ вообще случился. Решение от 2026-10-31: идти к этому пункту, а не поднимать
-  `STRATA_TIMEOUT_SECONDS` (§11 note выше) — поэтому вопрос `row=6` остаётся в томе живым примером и будет
-  перебираться каждым стартом процесса, пока ответа не станет возможно.
+- Стриминг ответов: правка одного сообщения раз в ~1 с вместо одного `sendMessage`. **Сделано досрочно —
+  §16 change 34** (2026-10-31): четыре строки §7 (`STREAMING_ENABLED=false` по умолчанию,
+  `STREAM_EDIT_INTERVAL_MS=1000`, `STREAM_IDLE_TIMEOUT_SECONDS=30`, `STREAM_TOTAL_DEADLINE_SECONDS=300`),
+  `model.Streamer` рядом с `model.Client`, `internal/model/stream.go` (SSE, два бюджета, `reasoning_content`
+  отдельно) и `internal/bot/stream.go` (сессия ответа), `run.go` как `StreamSender`, `chunksOf` из `reply.go`
+  для обеих дорожек. Замер 2026-10-31 через `zzscratch/asktime` — тот же STRATA и тот же вопрос, который
+  догоняет §15: **1m55.99s, 6034 runes, 140 → 7248 tokens**. В `STRATA_TIMEOUT_SECONDS 60` такой ответ не
+  влезает ни при каком числе повторов (§10 День 3: кончился бюджет — повторов уже нет), поэтому у потока свои
+  два бюджета: пауза между SSE-событиями и потолок всего ответа. Пункт остаётся в бэклоге до ручного обхода
+  §11 на реальном Telegram (чек-лист выше) — фэйки §11 держат форму, а не числа Telegram; вопрос `row=6`
+  остаётся в томе живым примером.
 - Вебхуки + HTTPS (`StartWebhook` of the library exists) вместо long polling; `bot_state` offset then
   becomes the idempotency key of the incoming side instead of the poll cursor.
 - Команды `/image`, `/voice`, вложения и файлы (§15) — the registry of §6 takes a new entry without

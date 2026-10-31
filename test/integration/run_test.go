@@ -119,6 +119,13 @@ func newClient(t *testing.T, cfg config.Config, strata *testutil.Strata) model.C
 		Attempts:      2,
 		Backoff:       100 * time.Millisecond,
 		MaxConcurrent: int(cfg.MaxConcurrentRequests),
+		// §15 (§16 change 34): the budgets of a streamed answer are wired here exactly as main.go wires them;
+		// a helper left at the library defaults would test a client the process never builds.
+		Stream: model.StreamSettings{
+			Idle:     time.Duration(cfg.StreamIdleSeconds) * time.Second,
+			Total:    time.Duration(cfg.StreamTotalSeconds) * time.Second,
+			Progress: time.Duration(cfg.StreamEditIntervalMS) * time.Millisecond,
+		},
 	})
 	if err != nil {
 		t.Fatalf("model.New: %v (§4: the client is built from the §7 URLs)", err)
@@ -849,4 +856,121 @@ func TestRedeliveredUpdateIsAnsweredOnce(t *testing.T) {
 	secretLeak(t, "the log of the redelivery", second.logs.String())
 	secretLeak(t, "the chat of the redelivery", textOf(tgAPI))
 	second.stop()
+}
+
+// TestStreamedAnswerEditsOneMessage — §15 «Streaming Answers» of §16 change 34 from the outside: the real
+// handler of run.go, the real client of §4, and the streaming fake of §11. Everything §6..§10 already proved
+// about an answer stays true for one that arrives by pieces: a single message per question (§12 UX «не
+// спамит»), MarkdownV2 escaping before anything reaches Telegram (§16 change 15 — a stream is not a
+// privileged path), the history row holding the model's text without the footer (§5), and the budgets of §7
+// validated as a pair. What §15 adds is the shape of the delivery: a placeholder posted unformatted, then
+// rewrites of that same message id, then the footer on the last rewrite.
+func TestStreamedAnswerEditsOneMessage(t *testing.T) {
+	var ctx = context.Background()
+	var path = dbFile(t)
+	var tgAPI = testutil.NewTelegram(t, secretToken)
+	var strata = testutil.NewStrata(t, secretStrataKey, testutil.StrataReply{
+		Model: "gpt-4o-mini", TokensIn: 3, TokensOut: 7,
+		// The thinking channel of §14: counted, shown in the status, never part of the answer.
+		StreamReasoning: []string{"думаю", " ещё думаю"},
+		StreamGap:       300 * time.Millisecond, // six events at the §7 cadence floor: the placeholder gets rewritten several times
+		StreamContent:   []string{"Один ", "два ", "три.", " (важно)"},
+		StreamUsage:     true,
+	})
+	// PARSE_MODE=MarkdownV2 because a streamed answer goes through the same escaping as any other one
+	// (§16 change 15 — the stream is not a privileged path). STREAM_EDIT_INTERVAL_MS is the floor of the §7
+	// table: a faster cadence is refused by config, and the progress gate of the client follows it. The idle
+	// budget stays below TG_REPLY_DEADLINE_SECONDS, which §7 validates as a pair.
+	var cfg = integrationEnv(t, path, strata.BaseURL(), map[string]string{
+		"PARSE_MODE": "MarkdownV2", "STREAMING_ENABLED": "true", "STREAM_EDIT_INTERVAL_MS": "250",
+		"STREAM_IDLE_TIMEOUT_SECONDS": "4",
+	})
+	var db = openStore(t, path)
+
+	var run = startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{
+		ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second, Workers: 2,
+	}, storedOffset(t, db))
+	waitFor(t, "the menu of §10 День 4", func() bool { return len(tgAPI.Commands()) == 9 })
+
+	tgAPI.PushText(140, chatID, userID, "/ask один")
+	// The last rewrite is what the user keeps on screen, so that is the moment the test waits for — the
+	// history row appears a moment before it, the answer being stored before it is sent (§5, §6).
+	waitFor(t, "the streamed answer was rewritten with the footer of §6", func() bool {
+		var edits = tgAPI.Edits()
+		return len(edits) > 0 && strings.Contains(edits[len(edits)-1].Text, "токенов")
+	})
+	quiet()
+	var sent = tgAPI.Sent()
+	var edits = tgAPI.Edits()
+	if len(sent) != 1 {
+		t.Fatalf("the chat received %d messages for one streamed question, want 1 (§12 UX, §15 placeholder): %s",
+			len(sent), strings.Join(tgAPI.Texts(), " | "))
+	}
+	if sent[0].Text != bot.StreamPlaceholder {
+		t.Errorf("the message posted first was %q, want the placeholder %q (§15: «Думаю…» before the first token)",
+			sent[0].Text, bot.StreamPlaceholder)
+	}
+	if sent[0].ParseMode != "" {
+		t.Errorf("the placeholder was sent with parse_mode %q, want none (§15: the same message later holds «(3 847 символов)», which no parser accepts)", sent[0].ParseMode)
+	}
+	if len(edits) < 2 {
+		t.Fatalf("the placeholder was rewritten %d times, want at least 2 (§15: the answer grows in place — the §11 idiom «edits of the placeholder id»): %s",
+			len(edits), strings.Join(tgAPI.EditStrings(), " | "))
+	}
+
+	// Every rewrite addresses the id the placeholder was posted with. The fake answers 400 for an id it never
+	// handed out, so a bot editing nothing would already have failed above; this names the id the process held.
+	var sawThinking = false
+	var i = 0
+	for i < len(edits) {
+		if edits[i].MessageID != sent[0].MessageID {
+			t.Errorf("rewrite %d addressed message %d, want the placeholder %d (§15: one message per answer)",
+				i+1, edits[i].MessageID, sent[0].MessageID)
+		}
+		if strings.Contains(edits[i].Text, "Модель думает") {
+			sawThinking = true
+		}
+		i++
+	}
+	if !sawThinking {
+		t.Errorf("no rewrite told the user the model is thinking (§15 UX «думает… с индикатором» while only reasoning arrives): %s",
+			strings.Join(tgAPI.EditStrings(), " | "))
+	}
+	if edits[0].ParseMode != "" {
+		t.Errorf("rewrite 1 carried parse_mode %q, want none (§15: a progress view is never escaped into a parser)", edits[0].ParseMode)
+	}
+	// The last rewrite is the answer: escaped (§16 change 15) and carrying the footer of §6 — and it is the
+	// only rewrite that asks for formatting at all.
+	var last = edits[len(edits)-1]
+	if last.ParseMode != "MarkdownV2" {
+		t.Errorf("the final rewrite carried parse_mode %q, want MarkdownV2 (§15: the finished answer goes through the standard formatting path)", last.ParseMode)
+	}
+	if !strings.Contains(last.Text, `\(важно\)`) {
+		t.Errorf("the final rewrite is not escaped for MarkdownV2 (§16 change 15 holds for a streamed answer too): %q", last.Text)
+	}
+	if !strings.Contains(last.Text, "3→7 токенов") {
+		t.Errorf("the final rewrite lost the footer of §6 (§15: the usage of the stream reaches the user like any other answer): %q", last.Text)
+	}
+	if strings.Contains(strings.Join(tgAPI.EditStrings(), " "), "ещё думаю") {
+		t.Errorf("the model's reasoning reached the chat (§14: reasoning_content is counted and shown as a status, never as the answer)")
+	}
+
+	// §5: the history holds the model's text as the model wrote it — pieces joined, no footer, no escaping,
+	// no reasoning; §15 must not let the placeholder text leak into the stored answer either.
+	var stored = rowsOf(t, db)
+	if stored[0].Content != "один" {
+		t.Errorf("the stored question = %q, want «один» (§5 user row)", stored[0].Content)
+	}
+	if stored[1].Content != "Один два три. (важно)" {
+		t.Errorf("the stored answer = %q, want «Один два три. (важно)» (§5: joined pieces; footer, escaping and reasoning are not stored)", stored[1].Content)
+	}
+	if stored[1].Model == "" {
+		t.Errorf("the stored answer names no model (§5 model column, §15 usage arrives in the last SSE event): %+v", stored[1])
+	}
+	if tgAPI.Calls("sendMessage") != 1 {
+		t.Errorf("sendMessage was called %d times for one streamed question, want 1 (§12 UX: the rest are rewrites of the placeholder)", tgAPI.Calls("sendMessage"))
+	}
+	secretLeak(t, "the log of the streamed run", run.logs.String())
+	secretLeak(t, "the chat of the streamed run", textOf(tgAPI))
+	run.stop()
 }

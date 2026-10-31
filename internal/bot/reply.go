@@ -126,15 +126,27 @@ func trailingEscapes(runes []rune) int {
 	return n
 }
 
+// chunksOf — the outgoing text of §6 reduced to the pieces one Telegram chat can receive: escaped once with the
+// PARSE_MODE of §7, then cut to MAX_MESSAGE_CHUNK (§16 change 7: «экранирование до разбиения», because a chunk
+// that ends with a lone backslash is the 400 Telegram answers «не понимает форматирование»). MarkdownV2 is the
+// only mode whose escaping marks change the length of a piece mid-word, so it is the mode the escape-aware cut
+// is written for; HTML and plain cut on whitespace alone.
+//
+// This is a function of its own because §15 needs the SAME pieces: a streamed answer ends as one edited message
+// plus the tail, and two copies of the chunking rule is how §12 UX starts disagreeing with itself.
+func (d *Dispatcher) chunksOf(text string) []string {
+	var escaped = Escape(text, d.deps.Cfg.ParseMode)
+	if d.deps.Cfg.ParseMode != ParseMarkdownV2 {
+		return Chunk(escaped, int(d.deps.Cfg.MaxMessageChunk))
+	}
+	return ChunkEscaped(escaped, int(d.deps.Cfg.MaxMessageChunk))
+}
+
 // Send — an answer of §6 through the Replier: escaped once, then chunked to MAX_MESSAGE_CHUNK (§7)
 // and sent in order. §10 День 6 adds the idempotency of the outgoing side here (a chunk that was
 // already delivered must not be delivered twice).
 func (d *Dispatcher) Send(ctx context.Context, chatID int64, text string) error {
-	var escaped = Escape(text, d.deps.Cfg.ParseMode)
-	var chunks = ChunkEscaped(escaped, int(d.deps.Cfg.MaxMessageChunk))
-	if d.deps.Cfg.ParseMode != ParseMarkdownV2 {
-		chunks = Chunk(escaped, int(d.deps.Cfg.MaxMessageChunk))
-	}
+	var chunks = d.chunksOf(text)
 	var i = 0
 	for i < len(chunks) {
 		if err := d.deps.Replier.Send(ctx, chatID, chunks[i]); err != nil {

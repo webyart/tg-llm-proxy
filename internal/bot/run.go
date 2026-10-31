@@ -331,6 +331,54 @@ func (r *telegramReplier) Send(ctx context.Context, chatID int64, text string) e
 	}
 }
 
+// SendStreamMessage — the placeholder of §15: the one message that will be rewritten while the model writes.
+// It goes WITHOUT the parse mode of §7 on purpose: §15 keeps a growing message plain text, and the mode is put
+// back by the final rewrite of deliver() once the text is complete and escaped (the half-open MarkdownV2 entity
+// of §12 UX is what a formatting placeholder mid-stream is). The id it returns is what every rewrite addresses.
+func (r *telegramReplier) SendStreamMessage(ctx context.Context, chatID int64, text string) (int64, error) {
+	if r.bot == nil {
+		return 0, errors.New("the telegram bot is not attached (§10 День 4: NewTelegram must run before the first reply)")
+	}
+	var msg, err = r.bot.SendMessage(ctx, &tgbot.SendMessageParams{
+		ChatID: chatID,
+		Text:   text,
+	})
+	if err != nil {
+		return 0, err
+	}
+	if msg == nil || msg.ID == 0 {
+		// An answer with no id is a placeholder nothing can be rewritten into. §15 names that rather than
+		// editing nothing and calling the answer streamed (§16 change 34: the log and the chat must not claim a
+		// stream that never existed).
+		return 0, errors.New("Telegram answered the placeholder of §15 with no message id")
+	}
+	return int64(msg.ID), nil
+}
+
+// EditStreamMessage — one rewrite of the placeholder. `parse` says whether the text is finished and escaped:
+// true carries the PARSE_MODE of §7, false sends NO parse mode at all. The naming trap of §16 change 27 again:
+// an empty models.ParseMode is the field this library omits from the request, and an absent parse_mode is what
+// Telegram reads as «render this as text» — which is exactly what a half-written answer needs.
+//
+// There is no 429 loop here the way Send has one. §7 STREAM_EDIT_INTERVAL_MS is the flood protection of §15 and
+// a refused rewrite is dropped by the session rather than waited out: the GPU slot of §12 must not be held by a
+// chat Telegram is throttling, and the full answer is still delivered at the end of the stream.
+func (r *telegramReplier) EditStreamMessage(ctx context.Context, chatID int64, messageID int64, text string, parse bool) error {
+	if r.bot == nil {
+		return errors.New("the telegram bot is not attached (§10 День 4: NewTelegram must run before the first reply)")
+	}
+	var params = &tgbot.EditMessageTextParams{
+		ChatID:    chatID,
+		MessageID: int(messageID),
+		Text:      text,
+	}
+	if parse {
+		params.ParseMode = parseModeOf(r.cfg.ParseMode)
+	}
+	var _, err = r.bot.EditMessageText(ctx, params)
+	return err
+}
+
 // parseModeOf — §7 PARSE_MODE «MarkdownV2 | HTML | plain» to the library constants. The naming trap of
 // v1.27.0 (§16 change 27): ParseModeMarkdown carries the value "MarkdownV2", so the switch is written
 // against the §7 names and not against the names of the library.

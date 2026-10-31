@@ -18,6 +18,7 @@ package testutil
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -36,6 +37,20 @@ type SentMessage struct {
 	ChatID    int64
 	Text      string
 	ParseMode string
+	// MessageID is the id the fake handed back in the result of sendMessage — the id §15 addresses every
+	// rewrite to (§16 change 34). It is never 0: a real Telegram id is not 0, and run.go refuses an answer
+	// with no id precisely so that a stream cannot pretend it was rewritten into nothing.
+	MessageID int
+}
+
+// SentEdit — one editMessageText the fake received (§15, §16 change 34). The rewrite of a streamed answer is
+// the half of §15 the Replier fakes of internal/bot cannot show: they record texts, but only the Bot API sees
+// whether the id and the parse mode came with them.
+type SentEdit struct {
+	ChatID    int64
+	MessageID int
+	Text      string
+	ParseMode string // «» means the request carried no parse_mode at all — what a half-written answer needs
 }
 
 // TelegramFailure — one-shot error answer in the envelope of the Bot API. Code 429 with RetryAfter is
@@ -68,6 +83,8 @@ type Telegram struct {
 	pending     []models.Update
 	delivered   []models.Update // confirmed by an offset — Replay puts them back
 	sent        []SentMessage
+	edits       []SentEdit   // the rewrites of §15 (§16 change 34)
+	sentIDs     map[int]bool // the ids this fake handed out: an edit of an id it never gave is a wiring bug
 	calls       map[string]int
 	commands    []models.BotCommand
 	failures    []TelegramFailure
@@ -90,6 +107,7 @@ func NewTelegram(t *testing.T, token string) *Telegram {
 		BotID:       777,
 		MaxBlock:    150 * time.Millisecond,
 		calls:       map[string]int{},
+		sentIDs:     map[int]bool{},
 		wake:        make(chan struct{}, 1),
 		nextSendID:  1,
 	}
@@ -180,6 +198,29 @@ func (s *Telegram) Texts() []string {
 // the user still reads one message).
 func (s *Telegram) Joined() string { return strings.Join(s.Texts(), "\n") }
 
+// Edits — the rewrites of §15 the fake received, in order (§16 change 34). `Calls("editMessageText")` counts
+// them; this says what each one addressed and carried.
+func (s *Telegram) Edits() []SentEdit {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out = make([]SentEdit, len(s.edits))
+	copy(out, s.edits)
+	return out
+}
+
+// EditStrings — only the texts of Edits. The whole point of §15 is that these are ONE message seen at
+// several moments of its growth, not several messages (§12 UX «не спамит»).
+func (s *Telegram) EditStrings() []string {
+	var edits = s.Edits()
+	var out = make([]string, 0, len(edits))
+	var i = 0
+	for i < len(edits) {
+		out = append(out, edits[i].Text)
+		i++
+	}
+	return out
+}
+
 // Commands — what setMyCommands published (§10 День 4: «setMyCommands при старте»).
 func (s *Telegram) Commands() []models.BotCommand {
 	s.mu.Lock()
@@ -254,11 +295,14 @@ func (s *Telegram) handle(w http.ResponseWriter, r *http.Request) {
 		s.handleGetUpdates(w, r)
 	case "sendMessage":
 		s.handleSendMessage(w, r)
+	case "editMessageText":
+		// §15 (§16 change 34): the rewriting half of a streamed answer. Only run.go calls it.
+		s.handleEditMessageText(w, r)
 	case "setMyCommands":
 		s.handleSetMyCommands(w, r)
 	default:
 		// §6 v1 needs no other method; answering ok would hide a wrong call (§12 reliability).
-		writeError(w, http.StatusNotFound, "the fake does not serve "+method+" — v1 of §6 uses getMe, getUpdates, sendMessage, setMyCommands", 0)
+		writeError(w, http.StatusNotFound, "the fake does not serve "+method+" — v1 of §6 uses getMe, getUpdates, sendMessage, setMyCommands, and §15 adds editMessageText", 0)
 	}
 }
 
@@ -353,7 +397,8 @@ func (s *Telegram) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	var id = s.nextSendID
 	s.nextSendID++
-	s.sent = append(s.sent, SentMessage{ChatID: chatID, Text: text, ParseMode: r.FormValue("parse_mode")})
+	s.sentIDs[id] = true
+	s.sent = append(s.sent, SentMessage{ChatID: chatID, Text: text, ParseMode: r.FormValue("parse_mode"), MessageID: id})
 	s.mu.Unlock()
 
 	// models.Message has a custom UnmarshalJSON that decides "accessible" by the `date` field, so the
@@ -362,6 +407,57 @@ func (s *Telegram) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		ID:   id,
 		Date: int(time.Now().Unix()),
 		Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate},
+	})
+}
+
+// handleEditMessageText — the rewrite of §15 (§16 change 34). Recorded exactly as the Bot API sees it: the id
+// being rewritten, the chat it lives in, the text, and whether the request carried a parse_mode. The id is
+// checked against the ids this fake handed out, because that is the one thing about a stream that a fake must
+// be strict about: a bot that rewrites an id it never received a reply for is editing somebody else's message
+// (or nothing at all), and real Telegram answers 400 «message to edit not found».
+func (s *Telegram) handleEditMessageText(w http.ResponseWriter, r *http.Request) {
+	var chatID, err = strconv.ParseInt(strings.TrimSpace(r.FormValue("chat_id")), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "chat_id is required (§15: the rewrite goes to one chat)", 0)
+		return
+	}
+	var messageID, parseErr = strconv.ParseInt(strings.TrimSpace(r.FormValue("message_id")), 10, 64)
+	if parseErr != nil {
+		writeError(w, http.StatusBadRequest, "message_id is required (§15: a rewrite addresses the placeholder it was given)", 0)
+		return
+	}
+	var text = r.FormValue("text")
+	if text == "" {
+		writeError(w, http.StatusBadRequest, "text is required (§12 UX: an empty answer is not an answer)", 0)
+		return
+	}
+	s.mu.Lock()
+	var known = s.sentIDs[int(messageID)]
+	if known {
+		s.edits = append(s.edits, SentEdit{
+			ChatID:    chatID,
+			MessageID: int(messageID),
+			Text:      text,
+			ParseMode: r.FormValue("parse_mode"),
+		})
+	}
+	s.mu.Unlock()
+	if !known {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("the fake never handed out message id %d to edit (§15: an edit must address the id sendMessage returned)", messageID), 0)
+		return
+	}
+
+	// Telegram answers the edited message, not `true`. The date is what makes models.Message parseable
+	// (its UnmarshalJSON decides «accessible» by `date`), same reason as in handleSendMessage; `edit_date`
+	// is what the Bot API puts on a rewritten message. models.Message has no parse_mode field, which is why
+	// the mode of the REQUEST is what the fake records (§11: the fake is what knows how it left).
+	writeOK(w, models.Message{
+		ID:       int(messageID),
+		Date:     int(time.Now().Unix()),
+		EditDate: int(time.Now().Unix()),
+		Chat:     models.Chat{ID: chatID, Type: models.ChatTypePrivate},
+		Text:     text,
+		Entities: []models.MessageEntity{},
 	})
 }
 

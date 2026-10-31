@@ -259,13 +259,13 @@ func TestOldNameOfTheRowIsRefusedByName(t *testing.T) {
 	}
 }
 
-// TestEnvIsTheNineteenRows — §7 says the loader reads EXACTLY the 19 names of the table, and README repeats
-// that number. The rename of §16 change 29 swapped one name for another and must not have changed the count
-// or duplicated a name, so the number is pinned here rather than left to a comment (§12 reliability: a
-// documented invariant without a check is a comment waiting to lie).
-func TestEnvIsTheNineteenRows(t *testing.T) {
-	if len(Env) != 19 {
-		t.Errorf("Env holds %d names, want the 19 rows of §7 (§16 change 29 swapped a name, it did not add one)", len(Env))
+// TestEnvIsTheRowsOfTheTable — §7 says the loader reads EXACTLY the names of the table, and README repeats
+// that number. The rename of §16 change 29 swapped one name for another and did not change the count; §16
+// change 34 added the four streaming rows of §15 and made it 23, which is pinned here rather than left to a
+// comment (§12 reliability: a documented invariant without a check is a comment waiting to lie).
+func TestEnvIsTheRowsOfTheTable(t *testing.T) {
+	if len(Env) != 23 {
+		t.Errorf("Env holds %d names, want the 23 rows of §7 (19 since plan v1.1 + 4 of §16 change 34)", len(Env))
 	}
 	var seen = map[string]bool{}
 	var i = 0
@@ -278,6 +278,13 @@ func TestEnvIsTheNineteenRows(t *testing.T) {
 	}
 	if !seen["TELEGRAM_ALLOWED_USERS"] {
 		t.Error("TELEGRAM_ALLOWED_USERS is not in Env, so the allowlist of §7 has no row (§16 change 29)")
+	}
+	// §16 change 34: the rows of §15 are rows of the table, so the Legacy/Renamed machinery that refuses a
+	// name must not refuse them.
+	for _, name := range []string{"STREAMING_ENABLED", "STREAM_EDIT_INTERVAL_MS", "STREAM_IDLE_TIMEOUT_SECONDS", "STREAM_TOTAL_DEADLINE_SECONDS"} {
+		if !seen[name] || !HasRow(name) {
+			t.Errorf("%s is not a row of §7, so the budgets of §15 cannot be configured (§16 change 34)", name)
+		}
 	}
 	if len(RenamedOrder) != 1 || RenamedRows[RenamedOrder[0]] != "TELEGRAM_ALLOWED_USERS" {
 		t.Error("RenamedRows does not point the one old name at the row that replaced it (§16 change 29)")
@@ -317,4 +324,85 @@ func TestAllowlistNamesTheRowOfABadEntry(t *testing.T) {
 	if strings.Contains(note, "oops, oops") {
 		t.Errorf("the bad entry is named twice: %q", note)
 	}
+}
+
+// TestStreamRowsOfFifteen — the four rows of §16 change 34: the defaults when the table says nothing, the
+// bounds named in the problem when a row is out of them, and the two cross-row rules the table cannot leave
+// open — a stall detector that outlives the answer it watches, and a reply budget shorter than the silence the
+// stream is allowed to keep.
+func TestStreamRowsOfFifteen(t *testing.T) {
+	var cfg, problems = LoadFrom(map[string]string{"TELEGRAM_BOT_TOKEN": "123:abc"})
+	if len(problems) != 0 {
+		t.Fatalf("a plain configuration reported problems: %v", problems)
+	}
+	if cfg.Streaming != DefaultStreaming {
+		t.Errorf("STREAMING_ENABLED = %v, want the flag off by default (§12: a visible UX change arrives behind a row, not behind a deploy)", cfg.Streaming)
+	}
+	if cfg.StreamEditIntervalMS != DefaultStreamEditIntervalMS || cfg.StreamIdleSeconds != DefaultStreamIdleSeconds || cfg.StreamTotalSeconds != DefaultStreamTotalSeconds {
+		t.Errorf("stream budgets = %d/%d/%d, want the §7 defaults %d/%d/%d",
+			cfg.StreamEditIntervalMS, cfg.StreamIdleSeconds, cfg.StreamTotalSeconds,
+			DefaultStreamEditIntervalMS, DefaultStreamIdleSeconds, DefaultStreamTotalSeconds)
+	}
+
+	var bad, badProblems = LoadFrom(map[string]string{
+		"TELEGRAM_BOT_TOKEN":      "123:abc",
+		"STREAM_EDIT_INTERVAL_MS": "100", "STREAM_IDLE_TIMEOUT_SECONDS": "0", "STREAM_TOTAL_DEADLINE_SECONDS": "99999",
+	})
+	if bad.StreamEditIntervalMS != DefaultStreamEditIntervalMS || bad.StreamIdleSeconds != DefaultStreamIdleSeconds || bad.StreamTotalSeconds != DefaultStreamTotalSeconds {
+		t.Errorf("out-of-bounds stream rows were applied: %d/%d/%d (§10 День 1: the default stands and the problem is reported)",
+			bad.StreamEditIntervalMS, bad.StreamIdleSeconds, bad.StreamTotalSeconds)
+	}
+	if len(badProblems) != 3 {
+		t.Errorf("three out-of-bounds rows reported %d problem(s): %v (§10 День 1 collects every broken row)", len(badProblems), badProblems)
+	}
+
+	var crossed, crossedProblems = LoadFrom(map[string]string{
+		"TELEGRAM_BOT_TOKEN":          "123:abc",
+		"STREAM_IDLE_TIMEOUT_SECONDS": "400", "STREAM_TOTAL_DEADLINE_SECONDS": "300",
+	})
+	if !hasProblemNamed(crossedProblems, "STREAM_TOTAL_DEADLINE_SECONDS is not greater") {
+		t.Errorf("idle 400s against a total of 300s reported: %v (§15: a stall may not outlive the answer)", crossedProblems)
+	}
+	if crossed.StreamTotalSeconds != 300 || crossed.StreamIdleSeconds != 400 {
+		t.Errorf("the cross-row rule changed values (%d/%d) instead of reporting the contradiction", crossed.StreamTotalSeconds, crossed.StreamIdleSeconds)
+	}
+
+	// With the flag on, the reply budget of §7 must outlive the silence the stream may keep, or the promise
+	// «сообщение не зависает» of §12 UX cannot be kept. The measurement of §14 puts the first SSE event at
+	// 4–6 ms, so this rule fires on a wrong table, not on a slow model.
+	var on, onProblems = LoadFrom(map[string]string{
+		"TELEGRAM_BOT_TOKEN": "123:abc",
+		"STREAMING_ENABLED":  "true", "STREAM_IDLE_TIMEOUT_SECONDS": "120", "TG_REPLY_DEADLINE_SECONDS": "90",
+	})
+	if !hasProblemNamed(onProblems, "TG_REPLY_DEADLINE_SECONDS is not greater than STREAM_IDLE_TIMEOUT_SECONDS") {
+		t.Errorf("a stream that may stay silent 120s inside a 90s reply budget reported: %v (§12 UX)", onProblems)
+	}
+	if !on.Streaming {
+		t.Error("STREAMING_ENABLED=true was not applied (§15)")
+	}
+	// The same table with the flag off reports nothing: the plain path of §10 День 3 never uses those budgets,
+	// so a configuration that only pretends to stream is not a problem of the path it does not take.
+	var off, offProblems = LoadFrom(map[string]string{
+		"TELEGRAM_BOT_TOKEN": "123:abc",
+		"STREAMING_ENABLED":  "false", "STREAM_IDLE_TIMEOUT_SECONDS": "120", "TG_REPLY_DEADLINE_SECONDS": "90",
+	})
+	if hasProblemNamed(offProblems, "STREAM_IDLE_TIMEOUT_SECONDS") {
+		t.Errorf("the idle rule fired with the stream switched off: %v (§16 change 34)", offProblems)
+	}
+	if off.Streaming {
+		t.Error("STREAMING_ENABLED=false must leave the plain path of §10 День 3 (§15)")
+	}
+}
+
+// hasProblemNamed — does one of the collected problems carry this phrase? The loader of §10 День 1 collects
+// EVERY broken row into one list, so a test asserts on the whole list it got and not on its first item.
+func hasProblemNamed(problems []string, phrase string) bool {
+	var i = 0
+	for i < len(problems) {
+		if strings.Contains(problems[i], phrase) {
+			return true
+		}
+		i += 1
+	}
+	return false
 }

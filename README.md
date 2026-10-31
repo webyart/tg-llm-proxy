@@ -365,7 +365,14 @@ without the dot the PATH of §3 dies with the child process.
       side. The question is still pending in the volume, and every start of the process will try it again. No age
       cap on a replayed question is deliberately in v1 — §12 promises an answer to a question the user never got,
       and an age cap would break that promise silently — but the cost of the rule is now measured too: one model
-      call per pending question per start, which is what those three `timeout` rows are.
+      call per pending question per start of the process, which is what those three `timeout` rows are.
+      **Decided on 2026-10-31: `STRATA_TIMEOUT_SECONDS` stays 60, and the scan gets no age cap either.** The question
+      of `row=6` therefore stays pending in the volume and is tried again at every start of the process — sixty
+      seconds of the local model per start, printed by both counters of §12 and written as one `timeout` row of §5 —
+      because the thing that makes an answer of 7248 tokens possible is the §15 «стриминг ответов» item rather than
+      a bigger number: an answer of that size has to fit inside the budget of ONE call (§10 День 3 stops retrying the
+      moment that budget is spent), and the same value is also what keeps a slot of
+      `MAX_CONCURRENT_MODEL_REQUESTS` of §7 busy while the model writes it.
       The guard itself stays as fixed on 2026-10-31 — it is what makes any redelivery that *does* happen safe, and
       `TestRedeliveredUnansweredQuestionIsAnswered` / `TestRedeliveredAnsweredQuestionStaysSilentWhenTheChatMovedOn`
       hold both directions of it (§10 День 6 note below).
@@ -659,7 +666,9 @@ implementation made concrete enough to name.
   `zzscratch/asktime` — тот же STRATA и тот же вопрос, который догоняет §15: **1m55.99s, 6034 runes,
   140 → 7248 tokens**. В `STRATA_TIMEOUT_SECONDS 60` такой ответ не влезает ни при каком числе повторов
   (§10 День 3: кончился бюджет — повторов уже нет), так что стрим здесь нужен не только ради UX, а чтобы
-  длинный ответ вообще случился.
+  длинный ответ вообще случился. Решение от 2026-10-31: идти к этому пункту, а не поднимать
+  `STRATA_TIMEOUT_SECONDS` (§11 note выше) — поэтому вопрос `row=6` остаётся в томе живым примером и будет
+  перебираться каждым стартом процесса, пока ответа не станет возможно.
 - Вебхуки + HTTPS (`StartWebhook` of the library exists) вместо long polling; `bot_state` offset then
   becomes the idempotency key of the incoming side instead of the poll cursor.
 - Команды `/image`, `/voice`, вложения и файлы (§15) — the registry of §6 takes a new entry without

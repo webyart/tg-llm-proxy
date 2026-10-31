@@ -65,6 +65,14 @@ const ResumeScanLimit = 20
 // One consequence worth naming before someone reads it as a bug: the replay goes through `allowed` of §7 like any
 // other update, so a chat that left TELEGRAM_ALLOWED_USERS while its question was waiting gets the refusal text
 // it would have got live, not an answer. That is the allowlist working, not the scan misbehaving.
+//
+// One decision worth recording here, taken on 2026-10-31 after the second live run of §8.1: `STRATA_TIMEOUT_SECONDS`
+// of §7 stays 60 and this scan gets no age cap. A question whose answer is longer than one call budget is therefore
+// retried at every start of the process — sixty seconds of the local model per start, one events(kind='timeout') row
+// of §5 per start, and §12 printing `answered 0 … left 1` about it — until the §15 «стриминг ответов» item makes an
+// answer of 7248 tokens fit inside one call at all. A bigger number would answer that one question and leave every
+// longer one in exactly the same place, while also holding a slot of MAX_CONCURRENT_MODEL_REQUESTS §7 open for as
+// long as the model takes to write.
 func (d *Dispatcher) ResumeInterruptedQuestions(ctx context.Context) (answered int, pending int, err error) {
 	if d.deps.DB == nil {
 		return 0, 0, nil

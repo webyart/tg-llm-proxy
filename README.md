@@ -59,7 +59,7 @@ it is what makes the §10 DoD cases repeatable, not a substitute for the missing
 | C-compiler | none | OK — pure-Go `modernc.org/sqlite` (§2) |
 | sqlite3 CLI | absent | expected (§5) → `scripts/db_inspect.ps1` exists and is that Go-tool (`cmd/dbinspect`, read-only `mode=ro`) |
 | go proxy | `https://proxy.golang.org,direct` | §3; caches `.cache/gocache`, `.cache/gopath` |
-| STRATA (the model of §7) | `http://127.0.0.1:8080/v1`, answers now | measured 2026-10-31: `GET /v1/models` → 200 (`qwen3.8-flash-next-nvfp4-nvfp4-nvidia`), `POST /v1/chat/completions` → 200 in 2.3 s, tokens 59/45 (`scripts/strata-check.ps1`); a container reaches the same service as `host.docker.internal:8080` (§8.1) |
+| STRATA (the model of §7) | `http://127.0.0.1:8080/v1`, answers now | measured 2026-10-31: `GET /v1/models` → 200 (serves `qwen3.8-flash-next-iq3_s`, and `.env` names exactly that id in `STRATA_MODEL` — the served id changed that day, the previous `qwen3.8-flash-next-nvfp4-nvfp4-nvidia` still answered `POST` 200 although `/v1/models` no longer listed it), `POST /v1/chat/completions` → 200 in 0.7 s, tokens 59/35 (`scripts/strata-check.ps1`); a container reaches the same service as `host.docker.internal:8080` (§8.1) |
 
 ## Layout (§4)
 

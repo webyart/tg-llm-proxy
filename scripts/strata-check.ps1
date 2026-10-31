@@ -14,8 +14,11 @@ Usage:
   pwsh -NoLogo -File scripts\strata-check.ps1 -Base http://127.0.0.1:8000 -Model qwen2.5-7b-instruct
   pwsh -NoLogo -File scripts\strata-check.ps1 -SkipChat      # only the model list (§6 /model check)
 
-Values are taken in this order: parameter, process ENV, .env file (§7 loader reads the ENV the same
-way). The key is NEVER printed (§12 security).
+Values are taken in this order: the parameter of the command line, the §7 table of the .env file, the ENV
+of the shell, the default of §7. The file comes before the ENV because LoadEnv of run.ps1 writes the rows
+of .env over the inherited ENV of the bot process, so .env is what the bot answers to — a check that read
+the ENV first would describe the shell instead of that process (measured 2026-10-31, see Pick below).
+Every value names its source on the output. The key is NEVER printed (§12 security).
 
 Exit: 0 — the endpoint answered 2xx on both probes and the chat answer was not empty;
       1 — any FAIL below explains what to fix.
@@ -65,14 +68,37 @@ function NormalizeBase([string]$raw) {
     return $cut + '/v1'
 }
 
-if (-not $Base) { $Base = $env:STRATA_BASE_URL }
-if (-not $Base) { $Base = ReadEnv 'STRATA_BASE_URL' }
-if (-not $Base) { $Base = 'http://host.docker.internal:8000' }   # the §7 default
-if (-not $Model) { $Model = $env:STRATA_MODEL }
-if (-not $Model) { $Model = ReadEnv 'STRATA_MODEL' }
-if (-not $Model) { $Model = 'qwen2.5-7b-instruct' }              # the §7 default
-if (-not $Key) { $Key = $env:STRATA_API_KEY }
-if (-not $Key) { $Key = ReadEnv 'STRATA_API_KEY' }
+# Pick — the value of a §7 row by the same precedence run.ps1 uses: the .env file of §7 first, then the
+# ENV of the shell, then the caller's default. The order is not decoration: LoadEnv of run.ps1 writes the
+# rows of .env over the inherited ENV of the child process, so the bot answers to what .env says. A check
+# that reads the ambient ENV first describes the shell, not the process that has to work. Measured
+# 2026-10-31: STRATA_MODEL of .env was changed to the model the endpoint serves, while this session still
+# carried the previous value from an earlier run.ps1 — the script warned about a model nobody had
+# configured. The source is returned with the value and printed, so the line cannot be ambiguous.
+function Pick([string]$name) {
+    $fromFile = ReadEnv $name
+    if ($fromFile) { return [pscustomobject]@{ Name = $name; Value = $fromFile; Source = "$envPath" } }
+    $fromEnv = [Environment]::GetEnvironmentVariable($name)
+    if ($fromEnv) { return [pscustomobject]@{ Name = $name; Value = $fromEnv; Source = 'ENV of this shell' } }
+    return [pscustomobject]@{ Name = $name; Value = ''; Source = 'not set' }
+}
+
+$basePick = Pick 'STRATA_BASE_URL'
+$modelPick = Pick 'STRATA_MODEL'
+$keyPick = Pick 'STRATA_API_KEY'
+$healthPick = Pick 'HEALTH_PORT'
+
+# A parameter of the command line replaces the picked value and its source, so the printed origin stays
+# true when the caller overrides the §7 table for one probe.
+if ($Base) { $basePick = [pscustomobject]@{ Name = 'STRATA_BASE_URL'; Value = $Base; Source = '-Base of the command line' } }
+if ($Model) { $modelPick = [pscustomobject]@{ Name = 'STRATA_MODEL'; Value = $Model; Source = '-Model of the command line' } }
+if ($Key) { $keyPick = [pscustomobject]@{ Name = 'STRATA_API_KEY'; Value = $Key; Source = '-Key of the command line' } }
+
+if (-not $Base) { $Base = $basePick.Value }
+if (-not $Base) { $Base = 'http://host.docker.internal:8000'; $basePick.Source = 'the §7 default' }   # §7
+if (-not $Model) { $Model = $modelPick.Value }
+if (-not $Model) { $Model = 'qwen2.5-7b-instruct'; $modelPick.Source = 'the §7 default' }            # §7
+if (-not $Key) { $Key = $keyPick.Value }
 
 $v1 = NormalizeBase $Base
 $modelsUrl = $v1 + '/models'
@@ -82,17 +108,17 @@ if ($Key) { $headers['Authorization'] = "Bearer $Key" }
 
 Write-Output ''
 Write-Output "strata-check — repo: $repoRoot"
-Write-Output "base (as configured): $Base   ->  probes at $v1 (§7.5: the stored value carries no /v1)"
-Write-Output ("key: " + $(if ($Key) { 'set (not printed, §12 security)' } else { 'empty (§7 STRATA_API_KEY may be empty)' }))
+Write-Output "base (as configured): $Base   ->  probes at $v1 (§7.5: the stored value carries no /v1) — from $($basePick.Source)"
+Write-Output "model (as configured): $Model — from $($modelPick.Source); the §7 row must name an id the endpoint serves"
+Write-Output ("key: " + $(if ($Key) { "set (not printed, §12 security) — from $($keyPick.Source)" } else { 'empty (§7 STRATA_API_KEY may be empty)' }))
 
 # --- 0. HEALTH_PORT of §7 must not be the port of STRATA (§12 reliability) ---
 # Measured on this machine: STRATA answered on 127.0.0.1:8080 while .env still carried HEALTH_PORT=8080, so
 # the bot could not bind /healthz (the start now stops and names the port) and `docker compose up` could not
 # publish it either ("ports are not available"). This is a configuration collision, not a STRATA failure, so
 # it is a WARN here — strata-check answers for the endpoint, the port row belongs to the bot.
-$healthPort = $env:HEALTH_PORT
-if (-not $healthPort) { $healthPort = ReadEnv 'HEALTH_PORT' }
-if (-not $healthPort) { $healthPort = '8080' }   # the §7 default
+$healthPort = $healthPick.Value
+if (-not $healthPort) { $healthPort = '8080'; $healthPick.Source = 'the §7 default' }   # §7
 $probeUri = $null
 try { $probeUri = [Uri]$v1 } catch { $probeUri = $null }
 if ($probeUri -and $probeUri.Port -gt 0 -and "$healthPort" -eq "$($probeUri.Port)") {

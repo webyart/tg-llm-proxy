@@ -115,6 +115,7 @@ git status                     # repo state
 .\scripts\build.ps1            # §9: go mod tidy + bin\bot.exe + the §7.1 «empty ENV must exit 1» check
 .\scripts\run.ps1              # §9: loads .env (values never printed), builds, runs — Ctrl-C stops it
 .\scripts\db_inspect.ps1       # §9: reads DB_PATH of §7 through mode=ro — chats/messages/events/bot_state
+.\scripts\test-restart.ps1     # §10 День 4 at process level: hard kill between two instances, the §5 offset must survive
 # container of §8.1: .\scripts\docker-build.ps1; .\scripts\docker-up.ps1 (waits for /healthz = 200);
 # .\scripts\test-race.ps1 (the -race run lives in the image, §3.1); .\scripts\docker-down.ps1
 ```
@@ -337,6 +338,17 @@ goes by runes); `TG_REPLY_DEADLINE_SECONDS` must exceed `STRATA_TIMEOUT_SECONDS`
   model call is an ERROR line with `chat_id` and the sanitized reason now
   (`TestModelFailureIsLoggedWithItsReason`), and `cmd/dbinspect` no longer clips `events.detail` at 60 runes,
   which is exactly where that reason used to disappear.
+  **The kill case of §10 День 4 is now proven at process level too.** `scripts/test-restart.ps1` (GREEN on
+  2026-10-31: 19 checks, 0 FAIL, 0 WARN) starts the bot, waits for `/healthz` = 200 on `HEALTH_PORT` of §7,
+  kills it with `taskkill /F` — not a polite stop, §10 День 4 asks about a death the program did not choose —
+  and reads the §5 numbers again through `cmd/dbinspect -counts` (a new `key=value` mode of the same read-only
+  viewer, so a script compares numbers instead of parsing a table): `journal_mode=wal`, `integrity=ok` and
+  `last_update_id` unchanged while **no bot was running** to checkpoint the WAL for the reader, then a second
+  instance that resumes on exactly that offset. Two more scans cover the failures of the same day: no panic
+  text in the logs of either run (the update-without-`message` case above) and no value of
+  `TELEGRAM_BOT_TOKEN` in them (§12 security). What the script deliberately does not check is named in its own
+  header: repeated answers are the unique index of §5 plus the integration tests, and the SIGTERM case of
+  §12.1.4 belongs to `docker compose stop` of §8.1, because Windows has no signal for a detached process (§3.1).
 
 ## Not implemented yet (honest list)
 
@@ -345,11 +357,14 @@ the dispatcher/registry/middleware and the Telegram adapter of §10 День 4, 
 the fake Telegram + fake STRATA and the `-race` run of §11 Concurrency (both green in the container of
 §8.1), `/healthz` of §9, the Docker image of §8.1, the §9 scripts and the read-only viewer of §5
 (`cmd/dbinspect` + `scripts/db_inspect.ps1`, so the history is readable without a Telegram account and
-without `sqlite3` CLI). Not implemented yet: no `scripts/test-restart.ps1` (the §10 День 4 kill/restart case
-is covered by the integration
-tests `TestOffsetSurvivesRestart` and `TestRedeliveredUpdateIsAnsweredOnce`; a process-level kill needs a
-reachable Telegram — the host has one since 2026-10-31, so the reason for not writing the script is gone, the
-script is not), the manual demo of §11 (the §10 День 7 checklist: `/ping` and `/ask` were walked in a real chat
+without `sqlite3` CLI, plus the `-counts` key=value mode a script can compare) and `scripts/test-restart.ps1`
+— the §10 День 4 kill/restart case at the level of a real process, GREEN on 2026-10-31 with 19 checks:
+`taskkill /F` between two instances, `journal_mode=wal` / `integrity=ok` / `last_update_id` unchanged read
+while no bot is running, the second instance resuming on that very offset, no panic text and no token value in
+the logs. The repeated-answer half of that case stays with `uq_messages_chat_tg_id` of §5 and the integration
+tests `TestOffsetSurvivesRestart` and `TestRedeliveredUpdateIsAnsweredOnce`; the SIGTERM half of §12.1.4 stays
+with `docker compose stop` of §8.1, because Windows has no signal for a detached process (§3.1).
+Not implemented yet: the manual demo of §11 (the §10 День 7 checklist: `/ping` and `/ask` were walked in a real chat
 on 2026-10-31, the rest of the list — `/help`, `/model`, `/forget`, a denied user, a restart without repeated
 answers — has not been walked by a human yet). Secrets stay
 out of the output: `TELEGRAM_BOT_TOKEN` and `STRATA_API_KEY` print only their length, every library error

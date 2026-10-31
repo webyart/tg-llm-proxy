@@ -23,6 +23,7 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -57,6 +58,7 @@ func main() {
 	var limit = flag.Int("limit", 20, "how many rows of each list to print (§9 -limit)")
 	var chat = flag.Int64("chat", 0, "restrict the chats and messages sections to one chat_id (§5 chats.chat_id); 0 means every chat")
 	var integrity = flag.Bool("integrity", false, "run PRAGMA integrity_check of §15 and exit 2 when the file is not sound")
+	var counts = flag.Bool("counts", false, "print the machine-readable block of key=value numbers instead of the human report (scripts/test-restart.ps1 of §9 compares two such blocks across a kill/restart); integrity_check is always part of this block")
 	var timeout = flag.Duration("timeout", 15*time.Second, "how long the whole read may take (the reader itself waits 5 s per lock, §5 ReadOnlyBusyTimeout)")
 	flag.Parse()
 
@@ -70,7 +72,7 @@ func main() {
 	var ctx, cancel = context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	if err := run(ctx, *path, *chat, *limit, *integrity); err != nil {
+	if err := run(ctx, *path, *chat, *limit, *integrity, *counts); err != nil {
 		var code = 1
 		var text = err.Error()
 		if coded, ok := err.(*exitError); ok {
@@ -82,7 +84,7 @@ func main() {
 
 // run — the report. One read-only handle for every section (§5: a viewer holds one connection), and each
 // section is printed even when it is empty: «0 rows» is information, a missing section is not.
-func run(ctx context.Context, path string, chatID int64, limit int, integrity bool) error {
+func run(ctx context.Context, path string, chatID int64, limit int, integrity bool, counts bool) error {
 	db, openErr := store.OpenReadOnly(ctx, path)
 	if openErr != nil {
 		return &exitError{1, openErr.Error()}
@@ -98,6 +100,15 @@ func run(ctx context.Context, path string, chatID int64, limit int, integrity bo
 	// about this connection. foreign_keys/busy_timeout are deliberately NOT printed: they describe the
 	// reader's own connection and would read as «the bot has foreign_keys off», which is a lie.
 	var journal, journalErr = store.Pragma(ctx, db, "journal_mode")
+	if counts {
+		// The machine block is read by a script that asserts `journal_mode=wal` (§5: WAL is what makes the
+		// hard kill of §10 День 4 survivable). A reader that cannot name it must say so — printing an empty
+		// value would let the script compare two empty strings and call it a pass (§12 reliability).
+		if journalErr != nil {
+			return &exitError{1, "journal_mode: " + journalErr.Error()}
+		}
+		return countsReport(os.Stdout, ctx, db, path, journal)
+	}
 	if journalErr != nil {
 		journal = "не прочитан: " + journalErr.Error()
 	}
@@ -109,6 +120,68 @@ func run(ctx context.Context, path string, chatID int64, limit int, integrity bo
 	fmt.Println()
 
 	return sections(ctx, db, chatID, limit, integrity)
+}
+
+// countsReport — the machine-readable twin of the human report: one `key=value` line per number. A PowerShell
+// check (scripts/test-restart.ps1, §10 День 4 «kill → рестарт → офсет не потерян») compares two snapshots of
+// the same file instead of parsing a table it did not design; the numbers come from the SAME store functions
+// the human sections call, because a check that re-implements a query drifts from the query the operator
+// reads (§12 reliability). Unlike the human report, integrity_check always runs here: the whole point of
+// comparing snapshots across a hard kill is to see that the file is still sound (§5 WAL, §12.1.4).
+func countsReport(w io.Writer, ctx context.Context, db *sql.DB, path, journal string) error {
+	var offset, found, offsetErr = store.LastUpdateID(ctx, db)
+	if offsetErr != nil {
+		return &exitError{1, offsetErr.Error()}
+	}
+	var tables, tableErr = store.TableCounts(ctx, db)
+	if tableErr != nil {
+		return &exitError{1, tableErr.Error()}
+	}
+	var kinds, kindErr = store.EventCounts(ctx, db)
+	if kindErr != nil {
+		return &exitError{1, kindErr.Error()}
+	}
+	var verdict, integrityErr = store.IntegrityCheck(ctx, db)
+	if integrityErr != nil {
+		return &exitError{1, integrityErr.Error()}
+	}
+
+	fmt.Fprintf(w, "path=%s\n", path)
+	fmt.Fprintf(w, "journal_mode=%s\n", countKey(journal))
+	fmt.Fprintf(w, "integrity=%s\n", countKey(verdict))
+	fmt.Fprintf(w, "last_update_id=%d\n", offset)
+	// found=false means the bot_state row does not exist yet — a fresh database, where the poller starts from
+	// 0 (§5). The script has to tell «offset 0» from «no offset row at all», so both numbers are printed.
+	fmt.Fprintf(w, "bot_state_offset_found=%t\n", found)
+	for _, table := range tables {
+		fmt.Fprintf(w, "table_%s=%d\n", countKey(table.Name), table.Rows)
+	}
+	for _, kind := range kinds {
+		fmt.Fprintf(w, "events_%s=%d\n", countKey(kind.Kind), kind.Count)
+	}
+	if verdict != "ok" {
+		// The counts were read, so a broken file is a bad ANSWER and not an unreadable file: exit 2 is the
+		// code scripts/db_inspect.ps1 already reserves for it (§10 День 2 DoD: о битом файле нельзя молчать).
+		return &exitError{2, fmt.Sprintf("integrity_check answered %q (§15) — make a backup before touching it", firstLine(verdict))}
+	}
+	return nil
+}
+
+// countKey — a key of the machine block, and the value of a word-like field (journal_mode, integrity) put
+// through the same filter. §5 keeps `events.kind` free TEXT on purpose (messages.go: a new refusal reason
+// must not need a migration), so a kind could carry a space or a dot, and the reader of this block greps
+// `^[a-z0-9_]+=`. Everything outside that alphabet becomes "_"; no value is ever dropped.
+func countKey(name string) string {
+	var out strings.Builder
+	for _, symbol := range name {
+		switch {
+		case symbol >= 'a' && symbol <= 'z', symbol >= 'A' && symbol <= 'Z', symbol >= '0' && symbol <= '9', symbol == '_':
+			out.WriteRune(symbol)
+		default:
+			out.WriteRune('_')
+		}
+	}
+	return out.String()
 }
 
 // sections — the five reports over the open handle, in the order an operator asks questions: is the poller

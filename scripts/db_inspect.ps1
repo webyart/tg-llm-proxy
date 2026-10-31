@@ -19,6 +19,7 @@ Usage:
   .\scripts\db_inspect.ps1 -Limit 100           # more rows
   .\scripts\db_inspect.ps1 -Chat 4242           # one chat (chats + messages sections)
   .\scripts\db_inspect.ps1 -Integrity           # PRAGMA integrity_check of §15
+  .\scripts\db_inspect.ps1 -Counts              # one key=value line per number (the block scripts/test-restart.ps1 compares)
   .\scripts\db_inspect.ps1 -Path .\zzscratch\x.db
   .\scripts\db_inspect.ps1 -Rebuild             # force the go build of bin\dbinspect.exe
 
@@ -32,6 +33,7 @@ param(
     [int]$Limit = 20,
     [long]$Chat = 0,
     [switch]$Integrity,
+    [switch]$Counts,
     [switch]$Rebuild
 )
 
@@ -104,6 +106,7 @@ try {
     $toolArgs = @('-path', $Path, '-limit', $Limit)
     if ($Chat -ne 0) { $toolArgs += @('-chat', $Chat) }
     if ($Integrity) { $toolArgs += '-integrity' }
+    if ($Counts) { $toolArgs += '-counts' }
     & $exe @toolArgs
     $code = $LASTEXITCODE
     if ($code -eq 0) {

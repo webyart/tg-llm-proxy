@@ -187,29 +187,58 @@ without the dot the PATH of §3 dies with the child process.
 возвращается к `info`: `main_test.go` фиксирует, что на `info` этой строки нет, а ERROR-строки остаются, — то
 есть переключение описано тестами, а не догадкой.
 
-- [ ] `/start` in a private chat → the greeting + the command list; a second `/start` changes nothing
-      (`EnsureChat` of §5 is idempotent).
-- [ ] `/whoami` → the numeric `user_id`, `chat_id` and the line «в allowlist: да/нет»; when it says «нет»,
+- [x] `/start` in a private chat → the greeting + the command list; a second `/start` changes nothing
+      (`EnsureChat` of §5 is idempotent). **Walked 2026-10-31** with two real accounts: two chats in §5,
+      `events(detail='start')` ×2.
+- [x] `/whoami` → the numeric `user_id`, `chat_id` and the line «в allowlist: да/нет»; when it says «нет»,
       the answer names the ENV row to write the id into (`TELEGRAM_ALLOWED_USERS`, §16 change 29) — restart
-      after writing, and the refusal of §7 must disappear.
-- [ ] `/help`, `/ping` (the `pong <uptime>` grows), `/model`, `/model check` (the real `GET /models` of §14).
-- [ ] 10 messages of `/ask …` in one chat → 10 pairs of rows in `messages` (§5), the answer footer
+      after writing, and the refusal of §7 must disappear. **Walked 2026-10-31 весь круг:** the second
+      account first got the refusal (`events(kind='denied')` = 1), its id went into the §7 row, the bot
+      restarted on the same offset of §5, and its `/ask` answered — no new `denied` row appeared.
+- [x] `/help`, `/ping` (the `pong <uptime>` grows), `/model`, `/model check` (the real `GET /models` of §14).
+      **Walked 2026-10-31:** `help` ×3, `ping` ×64, `model` ×6 in `events.detail`; `strata-check.ps1` on the
+      same machine answered `GET /v1/models` 200 and `POST /v1/chat/completions` 200 in 2.18 s.
+- [x] 10 messages of `/ask …` in one chat → 10 pairs of rows in `messages` (§5), the answer footer
       `⏱ latency · N→M токенов · модель … · попыток K`, and `/stats` counts the same numbers.
-- [ ] two `/ask` in a row from two different chats → both answers arrive, the context of each chat stays
-      its own (the per-chat lock and the context builder of §12).
-- [ ] `/ask` with a Russian answer longer than `MAX_MESSAGE_CHUNK` → several messages, each ≤ 4096 symbols,
-      nothing cut mid-word, no dangling `\` at the end of a chunk (§12 UX, §16 change 7).
-- [ ] `docker compose restart` in the middle of a conversation → no repeated answers, no duplicated rows
+      **Walked 2026-10-31:** 30 `ask` commands → the pairs of §5 (41 rows across two chats), the same
+      numbers the viewer prints as `tokens` and `ms` (`db_inspect -Chat`), `stats` ×3.
+- [x] two `/ask` in a row from two different chats → both answers arrive, the context of each chat stays
+      its own (the per-chat lock and the context builder of §12). **Walked 2026-10-31:** «запомни: моё
+      любимое число 42» is recalled in its own chat (`tokens_in` 1400) and unknown in the other («не знаю»,
+      `tokens_in` 149), and «О чём мы говорили?» lists only the topics of its own chat.
+- [x] `/ask` with a Russian answer longer than `MAX_MESSAGE_CHUNK` → several messages, each ≤ 4096 symbols,
+      nothing cut mid-word, no dangling `\` at the end of a chunk (§12 UX, §16 change 7). **Walked
+      2026-10-31:** the WAL answer is one row of §5 of 6063 chars (`length(content)`), so ≥ 2 pieces at
+      `MAX_MESSAGE_CHUNK=3500` (a second answer: 4334 chars → 2 pieces), and a human saw several messages
+      with no visible mid-word cut.
+- [x] `docker compose restart` in the middle of a conversation → no repeated answers, no duplicated rows
       (§5 `bot_state` + `uq_messages_chat_tg_id`; §10 День 6 proved both in `test/integration`).
+      **Walked 2026-10-31 on the host** as three `taskkill /F` between instances: the offset of §5 was read
+      back unchanged each time (920551619 → 920551634 → 920551657) and nothing was answered twice; the
+      container half was walked the same day with `docker compose stop` (§8.1, exit 0 in 0.5 s).
 - [ ] stop STRATA (or point `STRATA_BASE_URL` at a dead port) → `/ask` answers the «модель недоступна»
       notice of §12, `events(kind='model_error')` grows, `/ping` still works; restart STRATA → `/ask`
-      recovers without a bot restart (§13 риск «STRATA лежит»).
+      recovers without a bot restart (§13 риск «STRATA лежит»). Not walked by a human on 2026-10-31 — the
+      STRATA of §14 was alive for the whole demo; the fake half stays proven by `test/integration`.
 - [ ] flood: `/ask` ~30 times in a few seconds → Telegram's 429 is logged as `retry_after`, the chat waits
-      and the answer still arrives (§10 День 4, `events(kind='flood')` grows).
-- [ ] a stranger writes `/ask` → the refusal of §7 and `events(kind='denied')`; `/start` and `/whoami`
-      stay open (§16 change 13).
+      and the answer still arrives (§10 День 4, `events(kind='flood')` grows). Not walked by a human yet.
+      What WAS walked 2026-10-31 is the other guard: with `RATE_LIMIT_PER_MINUTE=5` a burst of ten `/ask`
+      gave 5 answers and 5 refusals naming the seconds (`events(kind='limit')` = 5). Note for the next walk:
+      the limiter of §12 covers only the commands with `UsesModel` (`middleware.limited` protects the model,
+      not SQLite), so spamming `/ping` never produces a `limit` row — 61 pings prove exactly that.
+- [x] a stranger writes `/ask` → the refusal of §7 and `events(kind='denied')`; `/start` and `/whoami`
+      stay open (§16 change 13). **Walked 2026-10-31:** the second account's `start` and `whoami` produced
+      `command` rows while its `ask` produced the `denied` row and the refusal text.
 - [ ] Ctrl-C / `docker compose down` during a long `/ask` → the process exits, WAL of §5 is checkpointed,
       the next start continues from the stored offset (the graceful stop of §10 День 1, the checkpoint of §5).
+      The container half is walked (§8.1: `docker compose stop` → exit 0 in 0.5 s, no `-wal`/`-shm` left);
+      on the host a signal is not deliverable to a detached process (§3.1), so `scripts/test-restart.ps1`
+      walks the hard-kill half there instead.
+
+Две ловушки обхода 2026-10-31, обе про команды §6: очистка контекста называется `/reset` (`store.ClearChat`
+прячет контекст, строки §5 остаются — `/history` их всё ещё видит), а не `/forget`; и с
+`PROXY_FREE_TEXT=true` неизвестная команда не получает отказа, а уходит модели — посланный `/forget` дал
+галлюцинацию «Context cleared. How can I help?» и контекст при этом очищен не был.
 
 ### Часовой пояс: `created_at` — это UTC (§5, §13)
 
@@ -404,9 +433,13 @@ the logs. The repeated-answer half of that case stays with `uq_messages_chat_tg_
 tests `TestOffsetSurvivesRestart` and `TestRedeliveredUpdateIsAnsweredOnce`; the SIGTERM half (the graceful stop
 of §10 День 1) stays with `docker compose stop` of §8.1, because Windows has no signal for a detached process
 (§3.1).
-Not implemented yet: the manual demo of §11 (the §10 День 7 checklist: `/ping` and `/ask` were walked in a real chat
-on 2026-10-31, the rest of the list — `/help`, `/model`, `/forget`, a denied user, a restart without repeated
-answers — has not been walked by a human yet). Secrets stay
+Not implemented yet: the manual demo of §11 is walked — 8 of the 11 items of the §10 День 7 checklist carry
+their numbers in the list above (two real Telegram accounts, the real STRATA of §14, three restarts with the
+offset of §5 read back, a 6063-character answer sent as ≥ 2 pieces of §16 change 7). What is left of that
+list: the «модель недоступна» notice with STRATA stopped, the sleep on Telegram's 429
+(`events(kind='flood')`), and the host-side stop by a signal — Windows cannot deliver one to a detached
+process (§3.1). One command name in this very list was wrong until today: the command of §6 that clears the
+context is `/reset`, not `/forget`. Secrets stay
 out of the output: `TELEGRAM_BOT_TOKEN` and `STRATA_API_KEY` print only their length, every library error
 goes through `bot.Sanitize` (a live run shows `https://api.telegram.org/bot***/getMe`), the fakes record
 the Authorization header but no test prints it, and `scripts/smoke.ps1` greps the whole source tree for

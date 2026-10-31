@@ -197,7 +197,11 @@ func sections(ctx context.Context, db *sql.DB, chatID int64, limit int, integrit
 	}
 	var eventTable = newTable("id", "user_id", "kind", "created_at (UTC)", "detail")
 	for _, row := range events {
-		eventTable.write(row.ID, dash(row.UserID), row.Kind, row.CreatedAt, brief(row.Detail, 60))
+		// The detail of an event IS the answer to «why» — a dial error, the text of a 5xx, the budget spent.
+		// The content of a message is clipped because it is long by nature; the reason of a failure is not,
+		// and clipping it at 60 runes is what made the STRATA failure of 2026-10-31 unreadable
+		// (`… chat/completions": dial tcp …` — the address and the reason were exactly what followed).
+		eventTable.write(row.ID, dash(row.UserID), row.Kind, row.CreatedAt, brief(row.Detail, 240))
 	}
 	eventTable.flush()
 

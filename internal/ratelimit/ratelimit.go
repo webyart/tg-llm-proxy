@@ -8,7 +8,7 @@
 //     allocate state per user.
 //  2. A per-chat lock has to be cancellable: the reply of §10 День 4 runs inside
 //     TG_REPLY_DEADLINE_SECONDS, and a lock that ignores ctx would keep a goroutine parked after
-//     the budget expired (§12.1.4 MsgStuckShutdown). The lock is therefore a buffered channel of
+//     the budget expired (§7 TG_REPLY_DEADLINE_SECONDS + §12 «Производительность»). The lock is therefore a buffered channel of
 //     size 1 selected together with ctx.Done(), which also means nothing is ever sent into the
 //     channel when ctx wins — no lost slot, no permanently locked chat.
 package ratelimit

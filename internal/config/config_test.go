@@ -109,7 +109,7 @@ func TestLoadFromDefaults(t *testing.T) {
 	}
 }
 
-// TestLoadFromNamesEveryBrokenRow — §7.2 and §16 change 24: one run names every broken row
+// TestLoadFromNamesEveryBrokenRow — §7 and §16 change 24: one run names every broken row
 // and keeps the good values, so a single typo cannot blind the whole configuration.
 func TestLoadFromNamesEveryBrokenRow(t *testing.T) {
 	var raw = map[string]string{

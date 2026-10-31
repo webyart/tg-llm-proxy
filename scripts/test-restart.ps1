@@ -10,7 +10,7 @@ One line of what it does: start the bot, wait for /healthz = 200, read the numbe
 `db_inspect.ps1 -Counts` (cmd/dbinspect, mode=ro), kill the process with `taskkill /F`, read the numbers
 again, start a second instance, and compare.
 
-What is asserted (§5 «Offset long polling», §12.1.4):
+What is asserted (§5 «Offset long polling», §10 День 4 kill/restart):
   - the file survives a hard death: journal_mode is still wal and integrity_check is still ok (§5 WAL;
     §10 День 2 DoD «о битом файле нельзя молчать»);
   - bot_state still holds the offset the killed process had — not 0, not lost (§5);
@@ -25,8 +25,8 @@ What it does NOT check, and where that lives instead (§11):
   - «no repeated answers» as behavior: uq_messages_chat_tg_id of §5 makes a duplicate row impossible to
     write, and test/integration (TestOffsetSurvivesRestart, TestRedeliveredUpdateIsAnsweredOnce) proves the
     behavior against a fake Telegram, where an update can be redelivered on purpose;
-  - the graceful stop of §12.1.4 (SIGTERM): Windows has no signal for a detached process (§3.1), that half of
-    the case belongs to `docker compose stop` of §8.1.
+  - the graceful stop (SIGTERM, the `signal.NotifyContext` of §10 День 1): Windows has no signal for a
+    detached process (§3.1), that half of the case belongs to `docker compose stop` of §8.1.
 
 Usage:
   . .\scripts\Setup.ps1
@@ -186,10 +186,10 @@ function Finish() {
     Write-Output "Summary: total $($script:results.Count) | FAIL $($fails.Count) | WARN $($warns.Count)"
     foreach ($f in $fails) { Write-Output "FAIL: $($f.Item) :: $($f.Note)" }
     if ($fails.Count -gt 0) {
-        Write-Output 'test-restart: RED — the kill/restart case of §10 День 4 did not hold (§5 offset, §12.1.4 WAL)'
+        Write-Output 'test-restart: RED — the kill/restart case of §10 День 4 did not hold (§5 offset, the WAL of §5)'
         exit 1
     }
-    Write-Output 'test-restart: GREEN — the process died hard, the file answered sound, and the second instance resumed on the same offset (§5, §12.1.4)'
+    Write-Output 'test-restart: GREEN — the process died hard, the file answered sound, and the second instance resumed on the same offset (§5, §10 День 4)'
     exit 0
 }
 
@@ -269,7 +269,7 @@ Check 'the process is dead' $gone "taskkill /F /PID $($first.Id) → «$killNote
 if (-not $gone) { Finish }
 
 # --- 4. the file of §5 after a hard death: a reader with mode=ro recovers the WAL by itself, and the reader
-#     that cannot open the file is the failure this script exists to catch (§12.1.4, §10 День 2 DoD) ---
+#     that cannot open the file is the failure this script exists to catch (§10 День 2 DoD, §10 День 4) ---
 $afterKill = ReadCounts
 Check 'the database answers after the kill' ($afterKill.Values.Count -gt 0) "read $($afterKill.Values.Count) numbers through mode=ro (exit $($afterKill.Code)) — no bot was running to checkpoint the WAL of §5 for it"
 if ($afterKill.Values.Count -eq 0) {

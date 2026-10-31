@@ -192,7 +192,7 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 	if modelErr != nil {
 		// §10 День 3: a failed call writes NO assistant row — only the event of §5 and the notice.
 		if errors.Is(modelErr, context.Canceled) {
-			return modelErr // the process is stopping (§12.1.4): nothing to promise the user
+			return modelErr // the process is stopping (the signal ctx of §10 День 1): nothing to promise the user
 		}
 		// §12 надёжность / §10 День 7: the reason of a failure used to exist only in the events table of §5.
 		// Measured 2026-10-31: STRATA refused the connection (`dial tcp 127.0.0.1:8080: connectex …`) while

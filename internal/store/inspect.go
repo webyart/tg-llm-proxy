@@ -88,7 +88,7 @@ func WALSideFile(path string) string { return path + "-wal" }
 
 // WALSideFilePresent — is the WAL of §5 sitting next to the file? Absent means the main file holds every
 // committed page: SQLite deletes the -wal only after moving its pages into the main file, and store.Close of §5
-// is what checkpoints it (measured 2026-10-31 in the container of §8.1: after `docker compose stop` of §12.1.4
+// is what checkpoints it (measured 2026-10-31 in the container of §8.1: after `docker compose stop`,
 // the named volume held bot.db alone — 36 KB, no -wal and no -shm).
 func WALSideFilePresent(path string) bool {
 	_, statErr := os.Stat(WALSideFile(path))

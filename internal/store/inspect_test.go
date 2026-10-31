@@ -155,7 +155,7 @@ func TestOpenReadOnlyMissingFile(t *testing.T) {
 
 // TestWALSideFileIsThereWhileTheWriterIsOpenAndGoneAfterAClose — the decision rule of OpenReadOnlySnapshot in
 // one test: the -wal of §5 exists while a writer holds the file, and a clean Close checkpoints and deletes it.
-// Measured in the container of §8.1 on 2026-10-31 (`docker compose stop` of §12.1.4 left bot.db alone in the
+// Measured in the container of §8.1 on 2026-10-31 (`docker compose stop` left bot.db alone in the
 // named volume), and it is what makes an immutable read legitimate: with no -wal file the main file already
 // holds every committed page, so the reader is not looking at an old state.
 func TestWALSideFileIsThereWhileTheWriterIsOpenAndGoneAfterAClose(t *testing.T) {

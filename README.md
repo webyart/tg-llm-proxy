@@ -112,7 +112,7 @@ git status                     # repo state
 .\scripts\lint.ps1             # §9: gofmt + go vet (also with -tags integration)
 .\scripts\test.ps1             # §11 Unit + Store levels (no -race on this host, §3.1)
 .\scripts\smoke.ps1 -Unit      # §11 Integration: fake Telegram + fake STRATA, then the leak scan of §12
-.\scripts\build.ps1            # §9: go mod tidy + bin\bot.exe + the §7.1 «empty ENV must exit 1» check
+.\scripts\build.ps1            # §9: go mod tidy + bin\bot.exe + the §7 «empty ENV must exit 1» check
 .\scripts\run.ps1              # §9: loads .env (values never printed), builds, runs — Ctrl-C stops it
 .\scripts\db_inspect.ps1       # §9: reads DB_PATH of §7 through mode=ro — chats/messages/events/bot_state
 .\scripts\test-restart.ps1     # §10 День 4 at process level: hard kill between two instances, the §5 offset must survive
@@ -209,7 +209,7 @@ without the dot the PATH of §3 dies with the child process.
 - [ ] a stranger writes `/ask` → the refusal of §7 and `events(kind='denied')`; `/start` and `/whoami`
       stay open (§16 change 13).
 - [ ] Ctrl-C / `docker compose down` during a long `/ask` → the process exits, WAL of §5 is checkpointed,
-      the next start continues from the stored offset (§12.1.4).
+      the next start continues from the stored offset (the graceful stop of §10 День 1, the checkpoint of §5).
 
 ### Часовой пояс: `created_at` — это UTC (§5, §13)
 
@@ -359,17 +359,20 @@ goes by runes); `TG_REPLY_DEADLINE_SECONDS` must exceed `STRATA_TIMEOUT_SECONDS`
   instance that resumes on exactly that offset. Two more scans cover the failures of the same day: no panic
   text in the logs of either run (the update-without-`message` case above) and no value of
   `TELEGRAM_BOT_TOKEN` in them (§12 security). What the script deliberately does not check is named in its own
-  header: repeated answers are the unique index of §5 plus the integration tests, and the SIGTERM case of
-  §12.1.4 belongs to `docker compose stop` of §8.1, because Windows has no signal for a detached process (§3.1).
+  header: repeated answers are the unique index of §5 plus the integration tests, and the SIGTERM case (the
+  graceful stop of §10 День 1) belongs to `docker compose stop` of §8.1, because Windows has no signal for a
+  detached process (§3.1).
   **The container path of §8.1 was walked the same day, and with it that SIGTERM half.**
   `.\scripts\docker-build.ps1` + `.\scripts\docker-up.ps1`: the container reached `healthy`, and its log said
   «bot is polling Telegram, bot_state last_update_id 0 found false» — inside the container Telegram needs no
   proxy at all (the §2 workaround is an affair of the Windows host), and `host.docker.internal:8080` of §8.1
   answers 401 to a `wget` sent without the key, which is the proof that the network path exists.
-  `docker compose stop` then gave the graceful death: **exit 0 in 0.5 s** (the 10 s of grace of §12.1.4 were
-  never needed), `restart=0` under `restart: unless-stopped`, and the last three lines of the log being
+  `docker compose stop` then gave the graceful death: **exit 0 in 0.5 s** (Docker's default 10 s stop grace was
+  never needed — `docker-compose.yml` sets no `stop_grace_period` of its own), `restart=0` under
+  `restart: unless-stopped`, and the last three lines of the log being
   «stopped by signal true», «poller stopped true» (§5: `bot_state` lands before `db.Close` checkpoints the WAL)
-  and «stopped by signal» of §10 День 1 DoD. After that the volume held `bot.db` alone — no `-wal`, no `-shm`,
+  and «stopped by signal» — the line the graceful-shutdown requirement of §10 День 1 produces. After that the
+  volume held `bot.db` alone — no `-wal`, no `-shm`,
   which is the checkpoint of §5 — and the next start resumed on the state that volume carried (a volume that has
   never answered anyone carries no offset row, and the §9 viewer says so: «no poll offset stored yet»).
   Two defects fell out of the walk, and both are fixed (§16 change 31):
@@ -398,8 +401,9 @@ without `sqlite3` CLI, plus the `-counts` key=value mode a script can compare) a
 `taskkill /F` between two instances, `journal_mode=wal` / `integrity=ok` / `last_update_id` unchanged read
 while no bot is running, the second instance resuming on that very offset, no panic text and no token value in
 the logs. The repeated-answer half of that case stays with `uq_messages_chat_tg_id` of §5 and the integration
-tests `TestOffsetSurvivesRestart` and `TestRedeliveredUpdateIsAnsweredOnce`; the SIGTERM half of §12.1.4 stays
-with `docker compose stop` of §8.1, because Windows has no signal for a detached process (§3.1).
+tests `TestOffsetSurvivesRestart` and `TestRedeliveredUpdateIsAnsweredOnce`; the SIGTERM half (the graceful stop
+of §10 День 1) stays with `docker compose stop` of §8.1, because Windows has no signal for a detached process
+(§3.1).
 Not implemented yet: the manual demo of §11 (the §10 День 7 checklist: `/ping` and `/ask` were walked in a real chat
 on 2026-10-31, the rest of the list — `/help`, `/model`, `/forget`, a denied user, a restart without repeated
 answers — has not been walked by a human yet). Secrets stay

@@ -11,9 +11,9 @@ no C toolchain (§3.1) — and `-race` therefore lives in the container of scrip
 
 Usage:
   . .\scripts\Setup.ps1             # PATH + project-local Go cache (§3)
-  .\scripts\build.ps1               # go mod tidy + bin\bot.exe + the §7.1 refusal smoke
+  .\scripts\build.ps1               # go mod tidy + bin\bot.exe + the §7 refusal smoke
   .\scripts\build.ps1 -SkipTidy     # the module graph is already resolved
-  .\scripts\build.ps1 -SkipNoEnv    # skip the «empty ENV must exit 1» check of §7.1
+  .\scripts\build.ps1 -SkipNoEnv    # skip the «empty ENV must exit 1» check of §7
 
 Exit: 0 — bin\bot.exe was produced and refuses to start without the §7 ENV; 1 — tidy or build failed.
 #>
@@ -52,8 +52,8 @@ try {
     Write-Output "build: bin\bot.exe — $sizeKb KiB, CGO_ENABLED=0, target '.' (§4 deviation, §8.1 builder)"
 
     if (-not $SkipNoEnv) {
-        # §7.1 + §10 День 1 DoD: an empty process ENV must not start a half-configured bot — the binary
-        # names the missing §7.2 rows and leaves with exit code 1. The check runs with the token removed,
+        # §7 + §10 День 1 DoD: an empty process ENV must not start a half-configured bot — the binary
+        # names the missing §7 rows and leaves with exit code 1. The check runs with the token removed,
         # and the token of §7 is never printed (§12 security).
         $keep = $env:TELEGRAM_BOT_TOKEN
         $env:TELEGRAM_BOT_TOKEN = ''
@@ -65,11 +65,11 @@ try {
             $env:TELEGRAM_BOT_TOKEN = $keep
         }
         if ($noEnvCode -ne 1) {
-            Write-Output "§7.1 check FAILED: the binary exited $noEnvCode without TELEGRAM_BOT_TOKEN, want 1"
+            Write-Output "§7 check FAILED: the binary exited $noEnvCode without TELEGRAM_BOT_TOKEN, want 1"
             Write-Output ($noEnv.Trim())
             exit 1
         }
-        Write-Output 'build: §7.1 check OK — with an empty ENV the binary names the missing rows and exits 1'
+        Write-Output 'build: §7 check OK — with an empty ENV the binary names the missing rows and exits 1'
     }
     Write-Output 'build: OK'
     exit 0

@@ -273,7 +273,7 @@ func Renamed(raw map[string]string) []string {
 }
 
 // RowIsSet — does the §7 row carry a value? PrintMissing uses it (§10 День 1 DoD: the name of every unset
-// §7.2 variable is printed, and a wrong «not set» line is worse than no line). Since §16 change 29 the row
+// §7 variable is printed, and a wrong «not set» line is worse than no line). Since §16 change 29 the row
 // has exactly one spelling, so this is one lookup and nothing to look through.
 func RowIsSet(raw map[string]string, name string) bool {
 	return strings.TrimSpace(raw[name]) != ""

@@ -30,7 +30,7 @@ import (
 	"strings"
 )
 
-// sqliteDriver — the name the pure-Go driver of §15.2 registers itself under (§5:
+// sqliteDriver — the name the pure-Go driver of §3 registers itself under (§5:
 // sql.Open("sqlite", dsn), no C toolchain on this host).
 const sqliteDriver = "sqlite"
 

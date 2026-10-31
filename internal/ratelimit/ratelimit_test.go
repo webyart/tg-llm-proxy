@@ -241,7 +241,7 @@ func TestWithChatCancelDoesNotLockTheChatForever(t *testing.T) {
 		return nil
 	})
 	if err != context.Canceled {
-		t.Fatalf("a cancelled wait must return context.Canceled, got %v (§12.1.4 MsgStuckShutdown)", err)
+		t.Fatalf("a cancelled wait must return context.Canceled, got %v (the cancellable lock of §12 Производительность)", err)
 	}
 
 	close(release)

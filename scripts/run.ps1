@@ -4,8 +4,8 @@ run.ps1 — §9 row «scripts/run.ps1»: «загрузка .env, сборка, 
 
 The .env of §7 is loaded into the PROCESS environment only: no value is ever printed (§12 security — the
 token of BotFather stays out of the console and out of the transcript, only the count of rows is echoed).
-The build goes through scripts/build.ps1, so `CGO_ENABLED=0` and the §7.1 refusal check are the same as in
-CI of §9. Ctrl-C stops the process through signal.NotifyContext of main.go (§10.2 Day 1 DoD).
+The build goes through scripts/build.ps1, so `CGO_ENABLED=0` and the §7 refusal check are the same as in
+CI of §9. Ctrl-C stops the process through signal.NotifyContext of main.go (§10 День 1 DoD).
 
 Usage:
   . .\scripts\Setup.ps1
@@ -25,7 +25,7 @@ internet to talk to its own loopback, and the failure would arrive as events(kin
 §7 has no row for a proxy and gets none: the variable belongs to the process, not to the configuration.
 
 Exit: the exit code of the bot — 0 after a clean stop by signal, 1 on a configuration or start failure
-(§7.1, §10 День 4: a wrong token stops the start).
+(§7, §10 День 4: a wrong token stops the start).
 #>
 
 [CmdletBinding()]
@@ -61,7 +61,7 @@ Push-Location $repoRoot
 try {
     $rows = LoadEnv $EnvFile
     if ($rows -eq 0) {
-        Write-Output "run: $EnvFile was not found or empty — the §7 rows are taken from the process ENV as it is (§7.1: a missing row stops the start with exit 1)"
+        Write-Output "run: $EnvFile was not found or empty — the §7 rows are taken from the process ENV as it is (§7: a missing row stops the start with exit 1)"
     }
     else {
         Write-Output "run: $rows ENV row(s) loaded from $(Split-Path -Leaf $EnvFile) (§7 table; values are not printed, §12 security)"
@@ -141,9 +141,9 @@ try {
         exit 0
     }
 
-    Write-Output 'run: the bot runs in this console — Ctrl-C stops it through signal.NotifyContext (§10.2 Day 1 DoD)'
+    Write-Output 'run: the bot runs in this console — Ctrl-C stops it through signal.NotifyContext (§10 День 1 DoD)'
     & $exe
-    Write-Output "run: the bot exited with $LASTEXITCODE (§7.1/§10 День 4: 1 = configuration, token or start failure)"
+    Write-Output "run: the bot exited with $LASTEXITCODE (§7/§10 День 4: 1 = configuration, token or start failure)"
     exit $LASTEXITCODE
 }
 finally {

@@ -132,7 +132,7 @@ func run(ctx context.Context, path string, chatID int64, limit int, integrity bo
 // the same file instead of parsing a table it did not design; the numbers come from the SAME store functions
 // the human sections call, because a check that re-implements a query drifts from the query the operator
 // reads (§12 reliability). Unlike the human report, integrity_check always runs here: the whole point of
-// comparing snapshots across a hard kill is to see that the file is still sound (§5 WAL, §12.1.4).
+// comparing snapshots across a hard kill is to see that the file is still sound (§5 WAL, §10 День 4).
 //
 // `open_mode` and `wal_side_file` are part of the block for the same reason §5 keeps `bot_state_offset_found`
 // beside the offset: a number read through one of the two read-only handles of §9 means something slightly
@@ -208,7 +208,7 @@ func modeNote(mode store.ReadOnlyMode) string {
 		return "mode=ro (§5: the accurate reader — it attaches the WAL of §5, so committed pages still in the WAL are visible)"
 	}
 	var side = store.WALSideFile("bot.db") // «bot.db-wal»: the name the reader looked for, spelled out in the note
-	return "mode=ro&immutable=1 (§9: the plain open was refused by a read-only mount and no " + side + " file sits next to the database, so the main file already holds every committed page of §5 — this is the state after a clean stop of §12.1.4, not after a kill; through this handle the WAL machinery is not attached, so journal_mode below describes the handle)"
+	return "mode=ro&immutable=1 (§9: the plain open was refused by a read-only mount and no " + side + " file sits next to the database, so the main file already holds every committed page of §5 — this is the state after the clean stop of §8.1, not after a kill; through this handle the WAL machinery is not attached, so journal_mode below describes the handle)"
 }
 
 // journalCaveat — the second half of the journal_mode line, empty for the plain open.

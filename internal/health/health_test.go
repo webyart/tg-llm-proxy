@@ -1,6 +1,7 @@
 // health_test.go — §11 Store/health levels: /healthz answers 200 on the loopback port of §7, the
 // compose HEALTHCHECK target of §8.1 (`wget -qO- http://127.0.0.1:8080/healthz`), and a cancelled
-// context stops the listener inside the 2-second window of §12.1.4 MsgStuckShutdown.
+// context stops the listener inside the 2-second window this package sets (§10 День 1: graceful shutdown;
+// §8.1: Docker sends SIGKILL when its stop grace ends).
 package health
 
 import (
@@ -90,10 +91,10 @@ func TestCancelStopsInsideTwoSeconds(t *testing.T) {
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("Run returned %v, §12.1.4 MsgStopped: a cancelled context is a clean stop", err)
+			t.Fatalf("Run returned %v, the clean stop of §10 День 1: a cancelled context is a clean stop", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatalf("the listener did not stop inside 2 seconds (§12.1.4 MsgStuckShutdown, §8.1 stop grace)")
+		t.Fatalf("the listener did not stop inside 2 seconds (the budget of this package; §8.1: Docker's stop grace is 10 s by default)")
 	}
 }
 

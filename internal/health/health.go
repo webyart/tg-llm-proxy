@@ -4,8 +4,8 @@
 // Two measured facts shape it:
 //  1. The container's process is PID 1 of the run stage (§8.1 `USER 65534`, `ENTRYPOINT ["/bot"]`),
 //     so a listening server is what keeps the process alive; `docker compose restart` then has
-//     something to graceful-shut down instead of SIGKILL after the stop grace period (§12.1.4
-//     MsgStuckShutdown: the bot must unwind inside 2 seconds of the signal).
+//     something to graceful-shut down instead of being SIGKILLed when Docker's stop grace ends — the
+//     graceful shutdown §10 День 1 asks for, and the 2-second unwind window below is this package's own.
 //  2. /healthz answers 200 as soon as the server is listening on the loopback interface the
 //     HEALTHCHECK runs in — the database and Telegram are dependencies of the bot, not of the
 //     health answer, and §12 reliability wants the container reported healthy while the store
@@ -97,7 +97,7 @@ func (s *Server) Run(ctx context.Context) error {
 	var address = s.listener.Addr().String()
 	serveDone := make(chan error, 1)
 	go func() {
-		// http.ErrServerClosed is the Shutdown path, not a failure (§12.1.4 MsgStopped).
+		// http.ErrServerClosed is the Shutdown path, not a failure (the clean stop of §10 День 1).
 		serveDone <- s.srv.Serve(s.listener)
 	}()
 
@@ -108,12 +108,13 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		return nil
 	case <-ctx.Done():
-		// §12.1.4 MsgStuckShutdown: the unwind window is 2 seconds, the same budget main gives the
-		// bot schedule, so the container exits inside the 10-second stop grace period of Docker.
+		// The unwind window is 2 seconds — this package's own budget, the same one main gives the polling
+		// goroutine (§10 День 1 graceful shutdown) — so the container exits well inside Docker's default
+		// 10-second stop grace (docker-compose.yml sets no `stop_grace_period` of its own).
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		if err := s.srv.Shutdown(shutdownCtx); err != nil {
-			return fmt.Errorf("health: /healthz did not stop inside 2 seconds (%w) — §12.1.4 MsgStuckShutdown", err)
+			return fmt.Errorf("health: /healthz did not stop inside 2 seconds (%w) — the 2 s budget of this package", err)
 		}
 		return nil
 	}

@@ -90,7 +90,8 @@ func (d *Dispatcher) limited(next HandlerFunc) HandlerFunc {
 
 // locked — §12 «per-chat lock гарантирует порядок ответов в одном чате». The wait for the lock is
 // cancellable (ratelimit.WithChat), so an expired reply budget frees the queue instead of parking
-// a goroutine (§12.1.4).
+// a goroutine (§12 «Производительность»: per-chat lock гарантирует порядок в чате; бюджет ответа —
+// §7 TG_REPLY_DEADLINE_SECONDS).
 func (d *Dispatcher) locked(next HandlerFunc) HandlerFunc {
 	return func(ctx context.Context, ev Event, cmd Command) error {
 		return d.deps.Locks.WithChat(ctx, ev.ChatID, func() error {

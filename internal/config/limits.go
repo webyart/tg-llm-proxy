@@ -8,4 +8,4 @@ package config
 // validation, понятные сообщения об ошибках") validates every row in the same place
 // where it reads it and names the row and its bounds in the problem message.
 // The module of the time budgets of the glued history and of the TTLs of bot_state
-// (§7.2, §15 backlog) arrives with the context builder of Дня 4, not in v1.1.
+// (§7, §15 backlog) arrives with the context builder of Дня 4, not in v1.1.

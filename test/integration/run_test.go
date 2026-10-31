@@ -164,7 +164,8 @@ func (l *syncLog) String() string {
 // startBot — «cmd/bot/main.go: конфиг → store → model client → bot → healthz → цикл» without the health
 // server: bot.New → NewTelegram (WithServerURL of §11) → PublishCommands (§10 День 4 «setMyCommands при
 // старте») → Start(ctx) in a goroutine. The ctx is a child of the test ctx, so stop() is the SIGTERM of
-// §12.1.4 and the next start can open the same file without racing an old poller.
+// the signal ctx of §10 День 1 (`signal.NotifyContext`) plays, and the next start can open the same file
+// without racing an old poller.
 func startBot(t *testing.T, ctx context.Context, cfg config.Config, db *sql.DB, client model.Client, tgAPI *testutil.Telegram, opts bot.Options, startOffset int64) *botRun {
 	t.Helper()
 	var logs = &syncLog{}

@@ -1,7 +1,8 @@
 // entry — the program entry point of the module
-// The program entry: read the configuration from the process ENV (§7.1),
-// echo it back (§10.2 Day 1 DoD) and stay running until a stop signal arrives
-// (§10.2 Day 1 DoD: start and stop with Ctrl-C).
+// The program entry: read the configuration from the process ENV (§7), print it back, open the store,
+// and stay running until a stop signal arrives — §10 День 1 asks for `main.go` с graceful shutdown
+// (`signal.NotifyContext`); the DoD of that day is «go build проходит; при пустом токене — ясная ошибка
+// и код выхода 1».
 
 package main
 
@@ -21,21 +22,21 @@ import (
 	"time"
 )
 
-// The signal set that stops the program (§10.2 Day 1 DoD: Ctrl-C on Windows
-// and the SIGTERM of the process supervisors, §12.1.4 MsgStopped). `docker stop` sends SIGTERM
+// The signal set that stops the program: Ctrl-C on Windows and the SIGTERM a process supervisor sends
+// (§10 День 1: `main.go` с graceful shutdown (`signal.NotifyContext`)). `docker stop` sends SIGTERM
 // (§8.1 restart: unless-stopped, the compose down of the §10 День 5 DoD), so it is part of the set:
-// without it the container is SIGKILLed when the stop grace period ends, and db.Close never
-// checkpoints the WAL of §5.
+// without it the container is SIGKILLed when Docker's stop grace ends — 10 s by default, because
+// docker-compose.yml sets no `stop_grace_period` — and db.Close never checkpoints the WAL of §5.
 var stopSignals = []os.Signal{os.Interrupt, syscall.SIGTERM}
 
-// PrintConfig - the §10.2 Day 1 DoD "echo the read configuration back": print
-// every §7.2 variable with the §-reference of its meaning, one variable per
-// line. The token is hidden, only the length is printed (§12.1.1).
+// PrintConfig - print every variable of the §7 table with the §-reference of its meaning, one variable
+// per line: the program's own report of what it read. The token is hidden, only its length is printed
+// (§12 безопасность).
 func PrintConfig(cfg config.Config) {
-	// The secrets of §12.1.1 are never printed, only their length.
+	// The secrets of §12 безопасность are never printed, only their length.
 	fmt.Println("TELEGRAM_BOT_TOKEN", "is set, length", len(cfg.BotToken), "(§7, §12 security: the token of BotFather is never printed, only its length)")
 	fmt.Println("STRATA_API_KEY", "is set, length", len(cfg.StrataKey), "(§7, §12 security: only the length is printed)")
-	fmt.Println("STRATA_BASE_URL", cfg.StrataBase, "(§7.1, §16 change 26: normalized to exactly one /v1)")
+	fmt.Println("STRATA_BASE_URL", cfg.StrataBase, "(§7, §16 change 26: normalized to exactly one /v1)")
 	fmt.Println("STRATA_MODEL", cfg.StrataModel, "(§7, §14 item 2: the model of Strata that answers)")
 	fmt.Println("STRATA_MODELS_URL", cfg.ModelsURL, "(§7, §16 change 8: joined as {base}/models over NormalizeBase)")
 	fmt.Println("STRATA_CHAT_COMPLETIONS_URL", cfg.ChatURL, "(§7, §16 change 8: joined as {base}/chat/completions over NormalizeBase)")
@@ -62,9 +63,9 @@ func PrintConfig(cfg config.Config) {
 	fmt.Println("TELEGRAM_ALLOWED_USERS", len(cfg.UserIDs), "entries (§7, §12 security: the allowlist of the chat IDs)")
 }
 
-// PrintMissing - print the name of every §7.2 variable that is not set
-// (§10.2 Day 1 DoD: a missing token gives a clear error; §12: the message
-// names the variable and the §-reference). RowIsSet checks the one name of the row
+// PrintMissing - print the name of every variable of the §7 table that is not set: §10 День 1 asks the
+// loader for «валидация, понятные сообщения об ошибках», and this message names the variable and the
+// §-reference. RowIsSet checks the one name of the row
 // of §16 change 29, so a wrong "not set" line — which is worse than no line at all —
 // cannot come from a second spelling that the loader would have to know about.
 func PrintMissing(raw map[string]string) {
@@ -72,16 +73,16 @@ func PrintMissing(raw map[string]string) {
 	var i = 0
 	for i < len(names) {
 		if !config.RowIsSet(raw, names[i]) {
-			// §10.2 Day 1 DoD: the names of the unset variables are printed.
-			fmt.Println("ENV variable", names[i], "is not set (§7.2)")
+			// §10 День 1 DoD: the names of the unset variables are printed.
+			fmt.Println("ENV variable", names[i], "is not set (§7)")
 		}
 		i += 1
 	}
 }
 
-// LoadConfig - read the process ENV (§7.2 Day 1 DoD: "every ENV variable
-// below is read by the process"), hand it to the §7.1 loader and keep the
-// configurations and the problems apart (§12.1: the errors are not fatal yet).
+// LoadConfig - read the process ENV, hand it to the loader of §7 and keep the configuration and the
+// problems apart: one pass names every broken row instead of stopping at the first one (§10 День 1:
+// «internal/config: ENV → Config, валидация, понятные сообщения об ошибках»).
 func LoadConfig() (config.Config, []string, map[string]string) {
 	var entries = os.Environ()
 	var raw = map[string]string{}
@@ -89,8 +90,8 @@ func LoadConfig() (config.Config, []string, map[string]string) {
 	for entry < len(entries) {
 		var pair = strings.Split(entries[entry], "=")
 		if len(pair) > 1 {
-			// §7.2: the name is written exactly as in the table, so the lookup is
-			// direct (§12.1.1: the ENV form of the variable name).
+			// §7: the name is written exactly as in the table, so the lookup is
+			// direct (§12 безопасность: the ENV form of the variable name).
 			raw[pair[0]] = strings.Join(pair[1:], "=")
 		}
 		entry += 1
@@ -118,21 +119,22 @@ func logLevel(name string) slog.Level {
 // pollerWait — how long the stop path waits for the polling goroutine of §5 before db.Close. The reason
 // is §5: SetLastUpdateID of a processed update must land before Close checkpoints the WAL, otherwise the
 // restart reads an offset it has already answered (§13 риск «повторные ответы после рестарта»). The wait
-// is bounded on purpose — §12.1.4 MsgStuckShutdown must not turn Ctrl-C into a hung process.
+// is bounded on purpose: the graceful shutdown §10 День 1 asks for must not turn Ctrl-C into a hung
+// process, and Docker would SIGKILL the container at the end of its stop grace in any case (§8.1).
 var pollerWait = 3 * time.Second
 
 func main() {
-	// §12.2, §15.5 log/slog: the JSON log layer of the bot arrives with the bot
-	// itself; the §10.2 Day 1 DoD messages go to the standard output.
-	// §9.4: the signal handler is installed before anything starts, so the stop
-	// signal is never missed (§10.2 Day 1 DoD "start and stop with Ctrl-C").
+	// log/slog: the JSON log layer of the bot arrives with the bot itself; the start messages День 1 asks for
+	// go to the standard output, and §12 безопасность decides what these logs may contain. The signal handler
+	// is installed before anything starts, so the stop signal is never missed — §10 День 1 asks for `main.go`
+	// с graceful shutdown (`signal.NotifyContext`).
 	// §5: sqlite.StrictPragmas is process-wide, off by default and NOT a DSN parameter (the driver
 	// copies it into every connection at Connect), so it is set here, before the first sql.Open —
 	// the second line of defence behind the whitelist of store.BuildDSN (§13 «_pragma via %3B»).
 	store.EnableStrictPragmas()
 	var ctx, cancel = signal.NotifyContext(context.Background(), stopSignals...)
-	// §7.1: the configuration is read before the server starts (§12.1.1 MsgTGNoID
-	// and MsgStrataNoKey are the reasons of a refused start).
+	// The configuration is read before anything starts: MsgTGNoID and MsgStrataNoKey of the §7 loader name the
+	// reasons of a refused start, and the DoD of §10 День 1 asks for a clear error and exit code 1.
 	var cfg, problems, raw = LoadConfig()
 	PrintMissing(raw)
 	if len(problems) > 0 {
@@ -140,21 +142,20 @@ func main() {
 		// DoD "a missing token must exit with code 1").
 		var bad = 0
 		for bad < len(problems) {
-			// §16.2.5 DoD: the message shows the problem with the §-reference.
+			// §10 День 1 DoD: the message shows the problem with the §-reference.
 			fmt.Println("configuration problem:", problems[bad])
 			bad += 1
 		}
 		if cfg.BotToken == "" {
-			// §7.1: with an empty mandatory row the configuration is not printed at all.
-			fmt.Println("ENV TELEGRAM_BOT_TOKEN is not set: the start falls with a clear error and the configuration is not printed (§7 behavior, §7.1, §10 День 1 DoD: exit code 1)")
+			// The DoD of §10 День 1: «при пустом токене — ясная ошибка и код выхода 1». With an empty
+			// mandatory row the configuration is not printed at all.
+			fmt.Println("ENV TELEGRAM_BOT_TOKEN is not set: the start falls with a clear error and the configuration is not printed (§7, the DoD of §10 День 1: exit code 1)")
 		}
-		fmt.Println("the loader resolved 1 configuration out of the §7 table and found", len(problems), "problem(s): every broken row is named once, the loader does not stop at the first one (§7.2, §12 reliability, §16 change 24; exit code 1)")
+		fmt.Println("the loader resolved 1 configuration out of the §7 table and found", len(problems), "problem(s): every broken row is named once, the loader does not stop at the first one (§7, §12 reliability, §16 change 24; exit code 1)")
 		os.Exit(1)
 	}
-	// §7.1: only a complete configuration starts the program (§10.2 Day 1 DoD:
-	// "all ENV vars are filled, the program starts, echoes the configuration back
-	// and stays running").
-	// §7.1: the configuration of §7 was already read by LoadConfig.
+	// Only a complete configuration of §7 gets the program running: a broken row has already exited above
+	// with the DoD of §10 День 1 («ясная ошибка и код выхода 1»). PrintConfig only reports what was read.
 	PrintConfig(cfg)
 	// §10 День 2: store.Open builds the DSN through the whitelist of §5, Pings (the only place a bad
 	// DSN surfaces, §5 spike 11), verifies journal_mode/foreign_keys and applies the schema of §5 that
@@ -174,7 +175,7 @@ func main() {
 	}
 	fmt.Println("store is open:", cfg.DBPath, "journal_mode", journalMode, "foreign_keys", foreignKeys,
 		"migrations applied", len(store.MigrationSQL), "(§5 schema through go:embed, §10 День 2)")
-	fmt.Println("program is running, PID", os.Getpid(), "(§10.2 Day 1 DoD)")
+	fmt.Println("program is running, PID", os.Getpid(), "(§10 День 1: `signal.NotifyContext` keeps the process alive until a stop signal)")
 	// §10 День 5 + §8.1: internal/health answers GET /healthz on HEALTH_PORT, which is what the
 	// compose HEALTHCHECK probes (wget on 127.0.0.1) and what keeps the container process alive
 	// under restart: unless-stopped. The port of §7 is pinned by config.LoadFrom at ≤65535.
@@ -263,11 +264,11 @@ func main() {
 		}
 	}()
 	fmt.Println("bot is polling Telegram, bot_state last_update_id", startOffset, "found", offsetFound, "(§5, §10 День 4)")
-	// §9.4, §15.5 os/signal: NotifyContext is installed before anything starts, so Ctrl+C / SIGTERM
-	// can never be missed; cancel() is the explicit cancellation path when the run ends.
-	// §12.1.4 MsgStopped: the wait is on the context, not on a fixed window — the process stays
-	// running until a stop signal arrives (the §10.2 Day 1 DoD "stays running"), and a health
-	// listener that dies takes the run down with a clear error instead of a silent healthy shell.
+	// os/signal: NotifyContext is installed before anything starts, so Ctrl+C / SIGTERM can never be
+	// missed; cancel() is the explicit cancellation path when the run ends (§10 День 1 asks for exactly this
+	// call). The wait below is on the context, not on a fixed window — the process stays running until a stop
+	// signal arrives — and a health listener that dies takes the run down with a clear error instead of a
+	// silent healthy shell (§12 надёжность).
 	var stoppedBySignal = true
 	select {
 	case <-ctx.Done():
@@ -289,13 +290,16 @@ func main() {
 		stoppedBySignal = false
 	}
 	cancel()
-	fmt.Println("stopped by signal", stoppedBySignal, "(§12.1.4 MsgStopped, §12.1.4 MsgStuckShutdown)")
-	// §10.2 Day 1 DoD: the stopped program prints "stopped by signal".
+	fmt.Println("stopped by signal", stoppedBySignal, "(the graceful shutdown of §10 День 1: a signal, then a bounded unwind)")
+	// The line an operator looks for when a container is stopped: the process left on a signal, not because
+	// something broke. §10 День 1 requires the graceful shutdown; it does not name this line, so the line is
+	// this program's own report (§12 UX: the reason belongs next to the fact, not in a manual).
 	// §10 День 2 + §5: the store is closed before the process leaves, so the WAL is checkpointed and
 	// no -wal/-shm sidecar survives a restart (a correct db.Close leaves only bot.db, §5 table row).
 	// §10 День 4: Close has to happen after the polling goroutine is gone — an in-flight update writes
 	// SetLastUpdateID through the same handle, and a write after Close would fail (§5 bot_state). The wait
-	// is bounded by pollerWait, because §12.1.4 MsgStuckShutdown forbids a stop that hangs forever.
+	// is bounded by pollerWait: a stop that never finishes cannot be told apart from a hung process, and
+	// Docker SIGKILLs the container at the end of its stop grace anyway (§8.1).
 	var pollerGone = false
 	select {
 	case <-botDone:
@@ -304,6 +308,6 @@ func main() {
 	}
 	fmt.Println("poller stopped", pollerGone, "(§5: bot_state is written before db.Close checkpoints the WAL)")
 	db.Close()
-	fmt.Println("stopped by signal (§10.2 Day 1 DoD)")
+	fmt.Println("stopped by signal (the graceful shutdown of §10 День 1)")
 	os.Exit(0)
 }

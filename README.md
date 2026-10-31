@@ -226,19 +226,42 @@ without the dot the PATH of §3 dies with the child process.
       **Walked 2026-10-31 on the host** as three `taskkill /F` between instances: the offset of §5 was read
       back unchanged each time (920551619 → 920551634 → 920551657) and nothing was answered twice; the
       container half was walked the same day with `docker compose stop` (§8.1, exit 0 in 0.5 s).
-- [ ] point `STRATA_BASE_URL` at a dead port → `/ask` answers `Модель не ответила: <причина> …` and
+- [x] point `STRATA_BASE_URL` at a dead port → `/ask` answers `Модель не ответила: <причина> …` and
       `events(kind='model_error')` grows, while `/ping`, `/model` and `/healthz` keep answering — the reliability
       line of the plan is «один сбой STRATA ≠ падение бота» (PLAN «Надёжность»); when the endpoint answers
       again, `/ask` must recover **without** restarting the bot. (The STRATA of §14 lives on another machine
       behind the local proxy of §14 item 7, so stopping that service is not ours to do — which is exactly why
-      §11 offers the dead port.) The same branch of §12 has three more notices worth walking: a spent
-      `STRATA_TIMEOUT_SECONDS` gives the plan's exact phrase «Модель не ответила за N с, попробуй ещё раз»
-      and writes `events(kind='timeout')` (the kind is free TEXT in §5, which is why no migration was needed),
-      an empty 200 gives «Модель вернула пустой ответ…» with `model_error/empty_answer`, and a saturated
-      `MAX_CONCURRENT_MODEL_REQUESTS` gives `model_error/no_room`. Not walked by a human yet: on 2026-10-31 the
-      real STRATA was alive for the whole demo, and `test/integration` walks these branches against fakes only.
+      §11 offers the dead port.) **Walked 2026-10-31 in three phases, and the recovery phase ran on one and the
+      same process.** Phase 1 — nothing listening on 127.0.0.1:8099: `/ping` answered `pong 1m17s`, `/healthz`
+      stayed 200, `/model check` answered `STRATA не отвечает: Get "http://127.0.0.1:8099/v1/models": dial tcp
+      127.0.0.1:8099: connectex: …`, `/ask 2+2` answered `Модель не ответила: Post … (after 2 attempts,
+      §10 День 3)`; `events(kind='model_error')` grew 1 → 3, and the row of §5 stayed a lone `user` row — the
+      table still shows `id=43 «3+3»` with no answer next to it, which is the «a failed call writes no assistant
+      row» invariant of §10 День 3 seen in a live chat. Phase 2 — a scratch endpoint (gitignored `zzscratch/`,
+      deleted after the walk) stood on that port and answered `/v1/models` at once but `/v1/chat/completions`
+      after 25 s, while `STRATA_TIMEOUT_SECONDS=15`: the plan's exact phrase came out — «Модель не ответила за
+      15 с, попробуй ещё раз (§7 STRATA_TIMEOUT_SECONDS)» — and `events(kind='timeout')` appeared with it
+      (free TEXT of §5 is why no migration was needed), while `/model check` in the same minute answered
+      `Модели (1): stub-model`, i.e. the readiness of §14.2 honestly says «the endpoint is alive» at the moment
+      the inference hangs. Phase 3 — the same endpoint started answering at once, and the SAME bot process
+      (PID 11664, no restart happened) answered `/ask 5+5`: `latency_ms` 1, exactly one assistant row, 11→12
+      tokens, `model=stub-model`. The timeout branch was met on the real service too: a ~6000-symbol WAL
+      generation did not fit into `STRATA_TIMEOUT_SECONDS=60` and produced the same phrase with 60 in it — so a
+      long answer needs a bigger pair of budgets, and §7 keeps `TG_REPLY_DEADLINE_SECONDS` > `STRATA_TIMEOUT_SECONDS`.
+      The two remaining notices of that §12 branch stay walked by `test/integration` only — `model_error/empty_answer`
+      (an empty 200) and `model_error/no_room` (a saturated `MAX_CONCURRENT_MODEL_REQUESTS`) need an endpoint that
+      lies or a pool of zero slots, and that is what the fakes of §11 are for.
 - [ ] flood: `/ask` ~30 times in a few seconds → Telegram's 429 is logged as `retry_after`, the chat waits
-      and the answer still arrives (§10 День 4, `events(kind='flood')` grows). Not walked by a human yet.
+      and the answer still arrives (§10 День 4, `events(kind='flood')` grows). **Attempted 2026-10-31 and not
+      reproducible against the real Telegram — with the reason measured, not assumed.** `MAX_MESSAGE_CHUNK` was
+      put at the floor the loader allows (64 symbols: `Num(raw, "MAX_MESSAGE_CHUNK", DefaultMaxChunk, 64, ChunkMax)`
+      of `internal/config`), and one `/history 50` became ~70 `SendMessage` in a row into one private chat;
+      `events(kind='flood')` stayed 0 and the log of that instance holds not one line about 429. The sender of
+      §10 День 4 is sequential — one HTTP round trip per piece, ~0.3 с — so the throughput stays under the flood
+      threshold of Telegram, and the pause a human saw in the chat was those 70 round trips, not the sleep of the
+      guard. The item stays open for a human walk and is proven where it can be proven: `run_test.go` pushes a
+      scripted `TooManyRequestsError`, asserts the wait is `RetryAfter` capped by `FloodSleepMax = 30 s`, that the
+      answer arrives after the pause, that `events(kind='flood')` = 1, and that the log carries no secret.
       What WAS walked 2026-10-31 is the other guard: with `RATE_LIMIT_PER_MINUTE=5` a burst of ten `/ask`
       gave 5 answers and 5 refusals naming the seconds (`events(kind='limit')` = 5). Note for the next walk:
       the limiter of §12 covers only the commands with `UsesModel` (`middleware.limited` protects the model,
@@ -256,6 +279,37 @@ without the dot the PATH of §3 dies with the child process.
 прячет контекст, строки §5 остаются — `/history` их всё ещё видит), а не `/forget`; и с
 `PROXY_FREE_TEXT=true` неизвестная команда не получает отказа, а уходит модели — посланный `/forget` дал
 галлюцинацию «Context cleared. How can I help?» и контекст при этом очищен не был.
+
+### Что именно считает `/stats` (исправлено 2026-10-31, §6)
+
+Прогон §11 про модель показал три места, где числа `/stats` и `events` говорили не то, что о них думают. Все три
+исправлены и закрыты тестами; ниже — что именно теперь значит каждая строка.
+
+- **«Модель: …» — модель последнего ответа этого чата.** Раньше запрос брал `MAX(model)`, то есть лексикографически
+  наибольшее имя среди всех строк чата: чат, который сначала обслуживал `qwen3.8-flash-next-nvfp4-nvfp4-nvidia`,
+  а позже `qwen3.8-flash-next-iq3_s`, показывал первое имя вечно (`n` сортируется позже `i`), и оператор читал это
+  как «сейчас мне отвечает вот эта модель». Живое расхождение было видно глазами: `.env` говорит `iq3_s`, зритель §5
+  по строкам чата печатает `iq3_s`, а `/stats` отвечал `…nvfp4-nvfp4-nvidia`. `TestStatsModelIsTheLastAnswer`
+  раскладывает имена так, чтобы хронологический и лексикографический ответы не совпадали;
+  `TestStatsModelEmptyBeforeAnyAnswer` — что пока модель ни на что не ответила, строки нет вовсе (§10 День 3).
+- **«Ошибок модели» и «Таймаутов модели» — два разных числа,** потому что §5 хранит два разных `kind`. До правки
+  таймаут не попадал ни в один счётчик: сразу после ответа «Модель не ответила за 15 с, попробуй ещё раз» `/stats`
+  продолжал показывать «Ошибок модели: 3» со вчерашним значением, что читается как «ничего не случилось». Строка
+  про таймауты появляется только когда они есть; `TestStatsCountsTimeoutsApartFromErrors` держит и разделение
+  счётчиков, и то, что `kind` которого `/stats` не считает (`flood`), чтению не мешает.
+- **`events.detail` строки `timeout` называет тот бюджет, который истёк, и тот же номер видит пользователь:**
+  `STRATA_TIMEOUT_SECONDS 15s spent` или `TG_REPLY_DEADLINE_SECONDS 30s spent`. Раньше событие писало `budget 30s`
+  (бюджет ответа), когда человеку говорили «за 15 с» — одно событие и два разных числа в двух местах, которые
+  оператор сравнивает. Текст пользователю теперь цитирует имя того же бюджета.
+- **Аудит упавшего вызова пишется на отвязанном контексте** (`auditBudget` = 3 с, `context.WithoutCancel`): строка
+  `timeout` выжила в этом прогоне только потому, что бюджет модели (15 с) меньше бюджета ответа (30 с) — при
+  обратном соотношении истёкший `replyCtx` унёс бы её молча, ровно в том случае, ради которого §12 обещает
+  «один сбой STRATA ≠ падение бота». Ошибку записи `logEvent` пишет в лог, а не прячет.
+
+Отдельно про бюджет длинных ответов: **реальная STRATA не уложила ~6000-символьный ответ в
+`STRATA_TIMEOUT_SECONDS=60`** — тот же текст «Модель не ответила за 60 с …» случился в живом чате сам собой. Для
+длинных генераций пару бюджетов надо поднимать (например 120/150), помня инвариант §7:
+`TG_REPLY_DEADLINE_SECONDS` строго больше `STRATA_TIMEOUT_SECONDS`.
 
 ### Часовой пояс: `created_at` — это UTC (§5, §13)
 
@@ -450,13 +504,15 @@ the logs. The repeated-answer half of that case stays with `uq_messages_chat_tg_
 tests `TestOffsetSurvivesRestart` and `TestRedeliveredUpdateIsAnsweredOnce`; the SIGTERM half (the graceful stop
 of §10 День 1) stays with `docker compose stop` of §8.1, because Windows has no signal for a detached process
 (§3.1).
-Not implemented yet: the manual demo of §11 is walked — 8 of the 11 items of the §10 День 7 checklist carry
+Not implemented yet: the manual demo of §11 is walked — 9 of the 11 items of the §10 День 7 checklist carry
 their numbers in the list above (two real Telegram accounts, the real STRATA of §14, three restarts with the
-offset of §5 read back, a 6063-character answer sent as ≥ 2 pieces of §16 change 7). What is left of that
-list: the «модель недоступна» notice with STRATA stopped, the sleep on Telegram's 429
-(`events(kind='flood')`), and the host-side stop by a signal — Windows cannot deliver one to a detached
-process (§3.1). One command name in this very list was wrong until today: the command of §6 that clears the
-context is `/reset`, not `/forget`. Secrets stay
+offset of §5 read back, a 6063-character answer sent as ≥ 2 pieces of §16 change 7, and the whole model-failure
+branch of §12: a dead port, a spent `STRATA_TIMEOUT_SECONDS` both on a scratch endpoint and on the real service,
+and the recovery of `/ask` on the same process without a restart). What is left of that list: the sleep on
+Telegram's 429 (`events(kind='flood')` — attempted 2026-10-31, and ~70 sends in a row proved that a sequential
+sender cannot reach Telegram's flood threshold, so this one stays with `run_test.go`), and the host-side stop by
+a signal — Windows cannot deliver one to a detached process (§3.1). One command name in this very list was wrong
+until today: the command of §6 that clears the context is `/reset`, not `/forget`. Secrets stay
 out of the output: `TELEGRAM_BOT_TOKEN` and `STRATA_API_KEY` print only their length, every library error
 goes through `bot.Sanitize` (a live run shows `https://api.telegram.org/bot***/getMe`), the fakes record
 the Authorization header but no test prints it, and `scripts/smoke.ps1` greps the whole source tree for

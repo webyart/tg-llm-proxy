@@ -263,6 +263,112 @@ func TestEventsAndStatsErrors(t *testing.T) {
 	}
 }
 
+// TestStatsModelIsTheLastAnswer — the «Модель: …» line of §6 /stats has to name the model that answered
+// LAST, not the largest name ever stored. Measured 2026-10-31 in a real chat: its older rows were answered
+// by qwen3.8-flash-next-nvfp4-nvfp4-nvidia and the newer ones by qwen3.8-flash-next-iq3_s, while the
+// aggregate MAX(model) kept printing the older name — MAX over TEXT is lexicographic, not chronological.
+// The second answer below deliberately uses a name that sorts BEFORE the first one, so a lexicographic
+// reading and a chronological one cannot agree.
+func TestStatsModelIsTheLastAnswer(t *testing.T) {
+	var db = memDB(t)
+	var ctx = context.Background()
+
+	if _, err := Append(ctx, db, Message{ChatID: 43, UserID: 9, Role: RoleUser, Content: "первый вопрос"}); err != nil {
+		t.Fatalf("Append the first user row: %v", err)
+	}
+	if _, err := Append(ctx, db, Message{ChatID: 43, UserID: 9, Role: RoleAssistant, Content: "старый ответ", Model: "zzz-model-older"}); err != nil {
+		t.Fatalf("Append the older answer: %v", err)
+	}
+	if _, err := Append(ctx, db, Message{ChatID: 43, UserID: 9, Role: RoleUser, Content: "второй вопрос"}); err != nil {
+		t.Fatalf("Append the second user row: %v", err)
+	}
+	if _, err := Append(ctx, db, Message{ChatID: 43, UserID: 9, Role: RoleAssistant, Content: "новый ответ", Model: "aaa-model-latest"}); err != nil {
+		t.Fatalf("Append the newest answer: %v", err)
+	}
+
+	var stats, err = Stats(ctx, db, 43)
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if stats.Model != "aaa-model-latest" {
+		t.Errorf("Stats.Model = %q, want the model of the LAST answer (§6 /stats: the line reads as «which model serves me now»)", stats.Model)
+	}
+	if stats.Messages != 4 {
+		t.Errorf("Stats.Messages = %d, want 4 rows of the chat (§5 messages)", stats.Messages)
+	}
+}
+
+// TestStatsModelEmptyBeforeAnyAnswer — a chat with only user rows has no model to name: §6 /stats prints
+// the line only when it is not empty, so an empty value must come back without an error (§5 messages.model
+// is NULL for a user row and for a failed model call, §10 День 3).
+func TestStatsModelEmptyBeforeAnyAnswer(t *testing.T) {
+	var db = memDB(t)
+	var ctx = context.Background()
+
+	if _, err := Append(ctx, db, Message{ChatID: 44, UserID: 10, Role: RoleUser, Content: "вопрос без ответа"}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	var stats, err = Stats(ctx, db, 44)
+	if err != nil {
+		t.Fatalf("Stats on a chat nothing has answered yet: %v", err)
+	}
+	if stats.Model != "" {
+		t.Errorf("Stats.Model = %q, want an empty string (§10 День 3: a failed call stores no assistant row)", stats.Model)
+	}
+	if stats.Messages != 1 {
+		t.Errorf("Stats.Messages = %d, want 1 (the unanswered question IS stored, the answer is not)", stats.Messages)
+	}
+}
+
+// TestStatsCountsTimeoutsApartFromErrors — §5 keeps kind='model_error' and kind='timeout' as different service
+// events, and §6 /stats has to show both numbers: measured 2026-10-31 in a live chat, one timeout left the
+// error counter reading «Ошибок модели: 3», i.e. the counter stayed at the value from before the failure.
+// A kind /stats does not count must also not break the reading (§5 keeps kind free TEXT on purpose).
+func TestStatsCountsTimeoutsApartFromErrors(t *testing.T) {
+	var db = memDB(t)
+	var ctx = context.Background()
+
+	if _, err := Append(ctx, db, Message{ChatID: 45, UserID: 12, Role: RoleUser, Content: "вопрос"}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	for _, row := range []struct{ kind, detail string }{
+		{EventModelError, "upstream 502"},
+		{EventModelError, "empty_answer"},
+		{EventTimeout, "STRATA_TIMEOUT_SECONDS 15s spent"},
+		{EventTimeout, "STRATA_TIMEOUT_SECONDS 15s spent"},
+		{EventTimeout, "TG_REPLY_DEADLINE_SECONDS 30s spent"},
+		{EventFlood, "retry_after 5 s"},
+	} {
+		if err := LogEvent(ctx, db, 12, row.kind, row.detail); err != nil {
+			t.Fatalf("LogEvent %s: %v", row.kind, err)
+		}
+	}
+
+	var stats, err = Stats(ctx, db, 45)
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if stats.Errors != 2 {
+		t.Errorf("Stats.Errors = %d, want 2 rows of kind='model_error' (§5)", stats.Errors)
+	}
+	if stats.Timeouts != 3 {
+		t.Errorf("Stats.Timeouts = %d, want 3 rows of kind='timeout' (§7 budgets, §5 events)", stats.Timeouts)
+	}
+
+	// The errors of another user must not leak into this chat: events are keyed by user_id of §5, and the chat
+	// row of §5 is what ties the two together.
+	if err := LogEvent(ctx, db, 99, EventTimeout, "another user"); err != nil {
+		t.Fatalf("LogEvent for another user: %v", err)
+	}
+	var again, againErr = Stats(ctx, db, 45)
+	if againErr != nil {
+		t.Fatalf("Stats the second time: %v", againErr)
+	}
+	if again.Timeouts != 3 {
+		t.Errorf("Stats.Timeouts = %d after an event of another user, want 3 (events belong to the chat's user_id)", again.Timeouts)
+	}
+}
+
 // TestBotStateOffsetRoundTrip — §5 bot_state: the offset of getUpdates is a string, and the two
 // helpers keep the "the key does not exist yet" distinction (§10 День 4: a fresh database must not
 // start with bot.WithInitialOffset(0)).

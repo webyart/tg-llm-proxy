@@ -302,12 +302,17 @@ func TestStatsCounters(t *testing.T) {
 	if err := store.LogEvent(ctx, db, 11, store.EventModelError, "upstream 502"); err != nil {
 		t.Fatalf("LogEvent: %v", err)
 	}
+	// One timeout of §7 alongside the model error: §5 keeps the two kinds apart and §6 has to show both
+	// numbers — a chat that saw a timeout must not read as a chat where nothing failed (measured 2026-10-31).
+	if err := store.LogEvent(ctx, db, 11, store.EventTimeout, "STRATA_TIMEOUT_SECONDS 15s spent"); err != nil {
+		t.Fatalf("LogEvent timeout: %v", err)
+	}
 
 	if err := dispatch(t, d, testEvent(100, 11, 360, "/stats")); err != nil {
 		t.Fatalf("/stats: %v", err)
 	}
 	var text = r.joined()
-	for _, want := range []string{"Сообщений: 2", "10 входящих", "5 исходящих", "Ошибок модели: 1", "qwen2.5-7b"} {
+	for _, want := range []string{"Сообщений: 2", "10 входящих", "5 исходящих", "Ошибок модели: 1", "Таймаутов модели: 1", "qwen2.5-7b"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("§6 /stats must show %q, got %q", want, text)
 		}

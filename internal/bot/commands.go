@@ -32,8 +32,11 @@ const (
 // The user-facing texts of §6 and §12 UX. They live in one place because §12 requires the timeout
 // answer to be exact («Модель не ответила за 60 с, попробуй ещё раз»).
 const (
-	msgAskNeedsText   = "Нужен текст вопроса: /ask <текст> (§6)."
-	msgTimeoutFormat  = "Модель не ответила за %d с, попробуй ещё раз (§7 STRATA_TIMEOUT_SECONDS)."
+	msgAskNeedsText = "Нужен текст вопроса: /ask <текст> (§6)."
+	// The §12 exact text, with the number AND the name of the budget that really expired: §7 keeps two
+	// budgets (STRATA_TIMEOUT_SECONDS for one model call, TG_REPLY_DEADLINE_SECONDS for the whole answer), and
+	// citing a fixed one in the text made the sentence disagree with the events row (see the ask handler).
+	msgTimeoutFormat  = "Модель не ответила за %d с, попробуй ещё раз (§7 %s)."
 	msgModelError     = "Модель не ответила: %s. Запрос записан в events(kind='model_error') (§10 День 3)."
 	msgEmptyAnswer    = "Модель вернула пустой ответ — это ошибка, а не ответ (§10 День 3). Попробуй ещё раз."
 	msgNoRoom         = "Все слоты модели заняты (§7 MAX_CONCURRENT_MODEL_REQUESTS). Подожди немного."
@@ -41,6 +44,11 @@ const (
 	msgHistoryEmpty   = "История чата пуста (§6 /history)."
 	msgResetFormat    = "Контекст очищен: модель больше не видит %d сообщений (§5 /reset). История осталась — /history."
 )
+
+// auditBudget — how long the audit of a failed call may take once the call itself gave up. The audit of a
+// timeout is written after a budget has expired, and an expired context would take the events row of §5 with
+// it (see the detached context in the ask handler); the value stays small so nothing waits forever (§9).
+const auditBudget = 3 * time.Second
 
 // registry — the §6 table in the order Telegram should show it (§10 День 4 setMyCommands).
 func (d *Dispatcher) registry() []Command {
@@ -194,6 +202,15 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 		if errors.Is(modelErr, context.Canceled) {
 			return modelErr // the process is stopping (the signal ctx of §10 День 1): nothing to promise the user
 		}
+		// The audit of a failure must not ride a context that has already expired. Measured 2026-10-31 the
+		// timeout row was written only because the model budget (15 с) is shorter than the reply deadline
+		// (30 с): with the budgets inverted it is replyCtx that expires first, and writing the events row of §5
+		// through it would drop the row in exactly the case §12 «один сбой STRATA ≠ падение бота» exists for.
+		// context.WithoutCancel keeps the values of the request and drops its cancellation; auditBudget gives
+		// the write a deadline of its own (§9 «no unbounded work»), and logEvent of dispatch.go reports a failed
+		// write to the log instead of hiding it (§12 security: the reason goes through Sanitize there too).
+		var auditCtx, stopAudit = context.WithTimeout(context.WithoutCancel(ctx), auditBudget)
+		defer stopAudit()
 		// §12 надёжность / §10 День 7: the reason of a failure used to exist only in the events table of §5.
 		// Measured 2026-10-31: STRATA refused the connection (`dial tcp 127.0.0.1:8080: connectex …`) while
 		// the user was answered and the row was written, and `Get-Content -Tail` of the §12 log showed three
@@ -206,18 +223,29 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 			"error", Sanitize(modelErr, d.deps.Token),
 		)
 		if errors.Is(modelErr, context.DeadlineExceeded) {
-			d.logEvent(replyCtx, ev.UserID, store.EventTimeout, fmt.Sprintf("budget %ds", d.deps.Cfg.ReplyDeadlineSeconds))
-			return d.reply(ctx, ev.ChatID, fmt.Sprintf(msgTimeoutFormat, d.deps.Cfg.TimeoutSeconds))
+			// The number in the user text and the detail in the events row must name the SAME budget — the
+			// one that really expired. Measured 2026-10-31 (STRATA_TIMEOUT_SECONDS=15, TG_REPLY_DEADLINE_SECONDS=30):
+			// the row read «budget 30s» while the user was answered «не ответила за 15 с» — one failure described
+			// by two different numbers in the two places an operator compares (the events table of §5 and the
+			// chat of §12 UX). replyCtx.Err() tells them apart: nil means the model call gave up first.
+			var spent = "STRATA_TIMEOUT_SECONDS"
+			var seconds = d.deps.Cfg.TimeoutSeconds
+			if replyCtx.Err() != nil {
+				spent = "TG_REPLY_DEADLINE_SECONDS"
+				seconds = d.deps.Cfg.ReplyDeadlineSeconds
+			}
+			d.logEvent(auditCtx, ev.UserID, store.EventTimeout, fmt.Sprintf("%s %ds spent", spent, seconds))
+			return d.reply(ctx, ev.ChatID, fmt.Sprintf(msgTimeoutFormat, seconds, spent))
 		}
 		if errors.Is(modelErr, model.ErrEmptyAnswer) {
-			d.logEvent(replyCtx, ev.UserID, store.EventModelError, "empty_answer")
+			d.logEvent(auditCtx, ev.UserID, store.EventModelError, "empty_answer")
 			return d.reply(ctx, ev.ChatID, msgEmptyAnswer)
 		}
 		if errors.Is(modelErr, model.ErrNoRoom) {
-			d.logEvent(replyCtx, ev.UserID, store.EventModelError, "no_room")
+			d.logEvent(auditCtx, ev.UserID, store.EventModelError, "no_room")
 			return d.reply(ctx, ev.ChatID, msgNoRoom)
 		}
-		d.logEvent(replyCtx, ev.UserID, store.EventModelError, Sanitize(modelErr, d.deps.Token))
+		d.logEvent(auditCtx, ev.UserID, store.EventModelError, Sanitize(modelErr, d.deps.Token))
 		return d.reply(ctx, ev.ChatID, fmt.Sprintf(msgModelError, Sanitize(modelErr, d.deps.Token)))
 	}
 
@@ -304,6 +332,13 @@ func (d *Dispatcher) stats(ctx context.Context, ev Event, arg string) error {
 		fmt.Sprintf("Сообщений: %d (§5 messages)", stats.Messages),
 		fmt.Sprintf("Токенов: %d входящих, %d исходящих (§5 tokens_in/tokens_out)", stats.TokensIn, stats.TokensOut),
 		fmt.Sprintf("Ошибок модели: %d (§5 events kind='model_error')", stats.Errors),
+	}
+	// A timeout is a kind of its own in §5, so it is NOT inside the counter above. Measured 2026-10-31: right
+	// after the bot had answered «Модель не ответила за 15 с, попробуй ещё раз» this line still read
+	// «Ошибок модели: 3» — which reads to an operator as nothing having happened. The line shows up only when
+	// a timeout happened, the way the two optional lines below do (§6 /stats: messages, tokens, errors).
+	if stats.Timeouts > 0 {
+		lines = append(lines, fmt.Sprintf("Таймаутов модели: %d (§5 events kind='timeout', §7 budgets)", stats.Timeouts))
 	}
 	if stats.Model != "" {
 		lines = append(lines, "Модель: "+stats.Model)

@@ -47,7 +47,9 @@ const (
 	// EventLimit — the refusal of RATE_LIMIT_PER_MINUTE (§7). §5 keeps kind free TEXT precisely so a
 	// new service event does not need a migration; §12 reliability wants the refusal auditable.
 	EventLimit = "limit"
-	// EventTimeout — the reply budget of §7 (TG_REPLY_DEADLINE_SECONDS) was spent (§12 UX).
+	// EventTimeout — a budget of §7 ran out before an answer was written (§12 UX): one model call under
+	// STRATA_TIMEOUT_SECONDS, or the whole answer under TG_REPLY_DEADLINE_SECONDS. Which of the two expired,
+	// the detail of the row says by name; measured 2026-10-31 with 15/30 it is the model budget that goes first.
 	EventTimeout = "timeout"
 )
 
@@ -77,12 +79,16 @@ type Message struct {
 	CreatedAt         string
 }
 
-// ChatStats — the counters of `/stats` (§6: messages, tokens, errors of one chat).
+// ChatStats — the counters of `/stats` (§6: messages, tokens, errors of one chat). Errors and Timeouts are
+// kept apart the way §5 keeps the kinds apart: 'model_error' is a call that came back broken, 'timeout' is a
+// budget of §7 that ran out. Measured 2026-10-31 one live timeout left the error counter untouched, which an
+// operator reads as «nothing failed» unless the two numbers are shown separately.
 type ChatStats struct {
 	Messages  int64
 	TokensIn  int64
 	TokensOut int64
 	Errors    int64
+	Timeouts  int64
 	Model     string
 	LastAt    string
 }
@@ -306,17 +312,30 @@ func ClearChat(ctx context.Context, db *sql.DB, chatID int64) (int64, error) {
 // and no chat_id — the same attribution the denial events of §6 use.
 func Stats(ctx context.Context, db *sql.DB, chatID int64) (ChatStats, error) {
 	var stats = ChatStats{}
-	var model sql.NullString
 	var lastAt sql.NullString
 	var err = db.QueryRowContext(ctx, `
-		SELECT COUNT(*), COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0), MAX(model), MAX(created_at)
+		SELECT COUNT(*), COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0), MAX(created_at)
 		FROM messages WHERE chat_id = ?`, chatID).
-		Scan(&stats.Messages, &stats.TokensIn, &stats.TokensOut, &model, &lastAt)
+		Scan(&stats.Messages, &stats.TokensIn, &stats.TokensOut, &lastAt)
 	if err != nil {
 		return stats, err
 	}
-	if model.Valid {
-		stats.Model = model.String
+	// The model of the LAST answer, not MAX(model). Measured 2026-10-31: a chat answered first by
+	// qwen3.8-flash-next-nvfp4-nvfp4-nvidia and later by qwen3.8-flash-next-iq3_s printed the FIRST name
+	// in /stats, because MAX over TEXT is lexicographic — and that line is read as «this model serves my
+	// chat now». §6 does not even ask for a model in /stats, so if the line stays it has to be true: the
+	// model of the most recent assistant row, next to its latency and token counts (§12 «логи с model»).
+	// No model answered yet → empty string, and the /stats handler prints the line only when it is not empty.
+	var lastModel sql.NullString
+	if modelErr := db.QueryRowContext(ctx, `
+		SELECT m.model FROM messages m
+		WHERE m.chat_id = ? AND m.role = ? AND m.model IS NOT NULL
+		ORDER BY m.id DESC LIMIT 1`, chatID, RoleAssistant).
+		Scan(&lastModel); modelErr != nil && !errors.Is(modelErr, sql.ErrNoRows) {
+		return stats, fmt.Errorf("store.Stats: the last answered model of chat %d: %w (§5 messages.model)", chatID, modelErr)
+	}
+	if lastModel.Valid {
+		stats.Model = lastModel.String
 	}
 	if lastAt.Valid {
 		stats.LastAt = lastAt.String
@@ -328,10 +347,30 @@ func Stats(ctx context.Context, db *sql.DB, chatID int64) (ChatStats, error) {
 		return stats, err
 	}
 	if userID.Valid {
-		if err := db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM events WHERE user_id = ? AND kind = ?`, userID.Int64, EventModelError).
-			Scan(&stats.Errors); err != nil {
-			return stats, err
+		// One grouped read for every kind instead of one query per kind: §5 keeps kind free TEXT precisely so a
+		// new service event needs no migration, and `/stats` must not go blind when a new kind appears while the
+		// ones it knows stay counted (§6 counters, §5 events by kind).
+		var kindRows, rowsErr = db.QueryContext(ctx, `
+			SELECT kind, COUNT(*) FROM events WHERE user_id = ? GROUP BY kind`, userID.Int64)
+		if rowsErr != nil {
+			return stats, fmt.Errorf("store.Stats: the event kinds of user %d: %w (§5 events)", userID.Int64, rowsErr)
+		}
+		defer kindRows.Close()
+		for kindRows.Next() {
+			var kind = ""
+			var count = int64(0)
+			if scanErr := kindRows.Scan(&kind, &count); scanErr != nil {
+				return stats, fmt.Errorf("store.Stats: an events row of user %d: %w (§5 events)", userID.Int64, scanErr)
+			}
+			switch kind {
+			case EventModelError:
+				stats.Errors = count
+			case EventTimeout:
+				stats.Timeouts = count
+			}
+		}
+		if rowsErr = kindRows.Err(); rowsErr != nil {
+			return stats, fmt.Errorf("store.Stats: reading the event kinds of user %d: %w (§5 events)", userID.Int64, rowsErr)
 		}
 	}
 	return stats, nil

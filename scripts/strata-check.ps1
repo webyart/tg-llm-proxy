@@ -85,6 +85,24 @@ Write-Output "strata-check — repo: $repoRoot"
 Write-Output "base (as configured): $Base   ->  probes at $v1 (§7.5: the stored value carries no /v1)"
 Write-Output ("key: " + $(if ($Key) { 'set (not printed, §12 security)' } else { 'empty (§7 STRATA_API_KEY may be empty)' }))
 
+# --- 0. HEALTH_PORT of §7 must not be the port of STRATA (§12 reliability) ---
+# Measured on this machine: STRATA answered on 127.0.0.1:8080 while .env still carried HEALTH_PORT=8080, so
+# the bot could not bind /healthz (the start now stops and names the port) and `docker compose up` could not
+# publish it either ("ports are not available"). This is a configuration collision, not a STRATA failure, so
+# it is a WARN here — strata-check answers for the endpoint, the port row belongs to the bot.
+$healthPort = $env:HEALTH_PORT
+if (-not $healthPort) { $healthPort = ReadEnv 'HEALTH_PORT' }
+if (-not $healthPort) { $healthPort = '8080' }   # the §7 default
+$probeUri = $null
+try { $probeUri = [Uri]$v1 } catch { $probeUri = $null }
+if ($probeUri -and $probeUri.Port -gt 0 -and "$healthPort" -eq "$($probeUri.Port)") {
+    Check 'HEALTH_PORT vs STRATA port' $false "HEALTH_PORT=$healthPort is the port $v1 answers on: the bot cannot bind /healthz there and ``docker compose up`` cannot publish it — §7: point HEALTH_PORT at a free port" $true
+}
+else {
+    $strataPort = if ($probeUri) { $probeUri.Port } else { '?' }
+    Check 'HEALTH_PORT vs STRATA port' $true "HEALTH_PORT=$healthPort, STRATA answers on $strataPort (§10 День 5 DoD: /healthz must bind its own port)"
+}
+
 # --- 1. GET {base}/v1/models — the probe of §6 /model check ---
 $models = @()
 $modelsOk = $false

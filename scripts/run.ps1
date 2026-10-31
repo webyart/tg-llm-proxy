@@ -13,6 +13,13 @@ Usage:
   .\scripts\run.ps1 -Background         # Start-Process, logs to data\run-<pid>.log (*.log is gitignored)
   .\scripts\run.ps1 -SkipBuild          # reuse bin\bot.exe as it is
   .\scripts\run.ps1 -EnvFile .env.local # another §7 table than .env
+  .\scripts\run.ps1 -UseSystemProxy     # export HTTPS_PROXY from the Windows proxy settings first
+
+-UseSystemProxy exists because of what §2 measured on this machine: PowerShell reaches api.telegram.org
+through the WinINET proxy of the registry, while the Go process does not see that proxy at all —
+`http.Transport` (the nil-Transport default of http.Client) reads only HTTPS_PROXY/HTTP_PROXY of the
+PROCESS ENV. Without it `run.ps1` stops at getMe (§10 День 4), with it the same binary polls Telegram.
+§7 has no row for a proxy and gets none: the variable belongs to the process, not to the configuration.
 
 Exit: the exit code of the bot — 0 after a clean stop by signal, 1 on a configuration or start failure
 (§7.1, §10 День 4: a wrong token stops the start).
@@ -22,6 +29,7 @@ Exit: the exit code of the bot — 0 after a clean stop by signal, 1 on a config
 param(
     [switch]$Background,
     [switch]$SkipBuild,
+    [switch]$UseSystemProxy,
     [string]$EnvFile
 )
 
@@ -57,6 +65,28 @@ try {
     }
     if (-not $env:DB_PATH) {
         Write-Output 'run: DB_PATH is not in the §7 table of this process — config.LoadFrom takes the local default of §16 change 9 (data/bot.db)'
+    }
+
+    if ($UseSystemProxy -and -not $env:HTTPS_PROXY) {
+        # The proxy the Windows shell uses is a registry setting (WinINET), and a Go process cannot see it:
+        # http.Transport reads HTTPS_PROXY of the ENV only. Copying the first address of ProxyServer into the
+        # ENV of this child process is what turns «getMe timed out» into a bot that polls (§10 День 4).
+        $inet = $null
+        try {
+            $inet = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction SilentlyContinue
+        }
+        catch {
+            $inet = $null
+        }
+        if ($inet -and $inet.ProxyEnable -eq 1 -and $inet.ProxyServer) {
+            $server = (($inet.ProxyServer -split '[;,]') | Select-Object -First 1).Trim()
+            if ($server -and $server -notmatch '^[A-Za-z][A-Za-z0-9+.-]*://') { $server = 'http://' + $server }
+            $env:HTTPS_PROXY = $server
+            Write-Output "run: HTTPS_PROXY=$server copied from the system proxy settings (§2: the Go process has no other way to learn about it; the token is not part of this value)"
+        }
+        else {
+            Write-Output 'run: -UseSystemProxy was asked, but no proxy is enabled in the system settings — the bot keeps the direct route (§10 День 4: getMe needs an answer from api.telegram.org)'
+        }
     }
 
     $exe = Join-Path $repoRoot 'bin\bot.exe'

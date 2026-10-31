@@ -128,6 +128,46 @@ Check 'STRATA network' $modelsOk "$modelsNote (Day 4 checks — network for Go p
 $sqliteCli = Get-Command -Name sqlite3 -ErrorAction SilentlyContinue
 Check 'sqlite3 CLI' $true "present: $(if ($sqliteCli) { 'yes' } else { 'no' }) — plan §5: no CLI expected, use Go-tool scripts/db_inspect.ps1" $true
 
+# --- 12. Telegram API from a Go process (§2: the network the BOT has, not the one PowerShell has) ---
+# Measured 2026-10-31 on this machine: `Invoke-RestMethod …/getMe` answers 200 (WinINET proxy
+# 127.0.0.1:10808 is enabled in HKCU\…\Internet Settings), while the same request from a Go process times
+# out: http.Transport honours only HTTPS_PROXY/HTTP_PROXY of the PROCESS ENV, and the registry proxy is not
+# part of that ENV. So a check that asks PowerShell reports «network OK» while run.ps1 dies at getMe of
+# §10 День 4 (§12 reliability: a check must describe the process that has to work, not the shell that runs
+# the check). Inside the container the story is different — there the same binary polls Telegram directly.
+$tcpOk = $false
+$tcpNote = ''
+try {
+    $client = [System.Net.Sockets.TcpClient]::new()
+    $begin = $client.BeginConnect('api.telegram.org', 443, $null, $null)
+    $tcpOk = $begin.AsyncWaitHandle.WaitOne(2000) -and $client.Connected
+    $client.Close()
+}
+catch {
+    $tcpOk = $false
+}
+if ($tcpOk) { $tcpNote = 'a direct TCP connect to api.telegram.org:443 succeeds' }
+else { $tcpNote = 'a direct TCP connect to api.telegram.org:443 fails' }
+
+$goProxy = $env:HTTPS_PROXY
+if (-not $goProxy) { $goProxy = $env:https_proxy }
+$systemProxy = ''
+try {
+    $inet = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction SilentlyContinue
+    if ($inet -and $inet.ProxyEnable -eq 1) { $systemProxy = $inet.ProxyServer }
+}
+catch {
+    $systemProxy = ''
+}
+if ($tcpOk -or $goProxy) {
+    $proxyNote = if ($goProxy) { "the Go process will use HTTPS_PROXY=$goProxy" } else { 'no HTTPS_PROXY is needed' }
+    Check 'Telegram API from Go' $true "$tcpNote; $proxyNote (§10 День 4: getMe must answer for the bot itself)"
+}
+else {
+    $hint = if ($systemProxy) { "the system proxy is $systemProxy — start the bot with scripts/run.ps1 -UseSystemProxy or export HTTPS_PROXY=http://$systemProxy" } else { 'no system proxy is enabled either — the bot needs a route to api.telegram.org or a container (§8.1)' }
+    Check 'Telegram API from Go' $false "$tcpNote and HTTPS_PROXY is empty — run.ps1 will stop at getMe; $hint" $true
+}
+
 # --- Output ---
 Write-Output ''
 Write-Output "env-check — repo: $repoRoot"

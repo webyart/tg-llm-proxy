@@ -179,11 +179,21 @@ func main() {
 	// compose HEALTHCHECK probes (wget on 127.0.0.1) and what keeps the container process alive
 	// under restart: unless-stopped. The port of §7 is pinned by config.LoadFrom at ≤65535.
 	var healthServer = health.New(cfg.HealthPort)
+	// §12 reliability: the bind happens HERE, before the line below claims the endpoint answers. A
+	// HEALTH_PORT taken by another process (on this machine the local STRATA proxy holds 8080, §14 item 7)
+	// therefore stops the start immediately instead of surfacing 30 seconds later, after getMe of §10
+	// День 4 has already burned the timeout — and instead of a container that reports healthy while
+	// /healthz answers nothing (§10 День 5 DoD).
+	if listenErr := healthServer.Listen(); listenErr != nil {
+		fmt.Println(listenErr, "(§10 День 5 DoD: /healthz must answer — free the port of §7 HEALTH_PORT or point it elsewhere, exit code 1)")
+		db.Close()
+		os.Exit(1)
+	}
 	var healthErr = make(chan error, 1)
 	go func() {
 		healthErr <- healthServer.Run(ctx)
 	}()
-	fmt.Println("health is listening on 127.0.0.1:", cfg.HealthPort, health.Path, "(§7 HEALTH_PORT, §8.1 HEALTHCHECK of compose)")
+	fmt.Println("health is listening on 127.0.0.1:", healthServer.Port(), health.Path, "(§7 HEALTH_PORT, §8.1 HEALTHCHECK of compose)")
 	// §10 День 4: the bot itself. The JSON log of §12 is built here because run.go writes through it, and
 	// Sanitize of §12 keeps TELEGRAM_BOT_TOKEN out of every line — including the lines the Telegram
 	// library writes into its own logger (§10 День 4 hands that logger to bot.WithLogger).

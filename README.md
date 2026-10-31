@@ -10,10 +10,12 @@ and stops cleanly on Ctrl-C with exit code 0; an unset `TELEGRAM_BOT_TOKEN` →
 clear error + exit code 1). **Day 4 done** — `internal/bot` (long polling of §5 over
 `go-telegram/bot` v1.27.0, the dispatcher + command registry + middleware of §6) is wired into
 `main.go`: the process now polls Telegram, answers the §6 commands, and stops on Ctrl-C/SIGTERM
-with the offset of §5 written before `db.Close` checkpoints the WAL. The bot cannot be reached
-from this machine right now (`api.telegram.org` is filtered → `getMe` stops the start with exit 1),
-which is exactly why the §11 Integration level runs against the fake Telegram of
-`internal/testutil/telegram.go` instead of the real API (§16 change 16: `bot.WithServerURL`).
+with the offset of §5 written before `db.Close` checkpoints the WAL. Reaching `api.telegram.org` from a
+Windows process needs the proxy of this machine handed to the process ENV — `go http.Transport` ignores the
+WinINET registry, so `scripts\run.ps1 -UseSystemProxy` exports `HTTPS_PROXY` and only then does `getMe`
+answer (2026-10-31; without the flag the start stops at `getMe` with exit 1). The §11 Integration level runs
+against the fake Telegram of `internal/testutil/telegram.go` regardless (§16 change 16: `bot.WithServerURL`) —
+it is what makes the §10 DoD cases repeatable, not a substitute for the missing network.
 
 ## Git-репозитория (§10 Day 1)
 
@@ -57,7 +59,7 @@ which is exactly why the §11 Integration level runs against the fake Telegram o
 | C-compiler | none | OK — pure-Go `modernc.org/sqlite` (§2) |
 | sqlite3 CLI | absent | expected (§5) → `scripts/db_inspect.ps1` exists and is that Go-tool (`cmd/dbinspect`, read-only `mode=ro`) |
 | go proxy | `https://proxy.golang.org,direct` | §3; caches `.cache/gocache`, `.cache/gopath` |
-| STRATA network | from host — `host.docker.internal` unreachable | OK in container (Day 4 §11) |
+| STRATA (the model of §7) | `http://127.0.0.1:8080/v1`, answers now | measured 2026-10-31: `GET /v1/models` → 200 (`qwen3.8-flash-next-nvfp4-nvfp4-nvidia`), `POST /v1/chat/completions` → 200 in 2.3 s, tokens 59/45 (`scripts/strata-check.ps1`); a container reaches the same service as `host.docker.internal:8080` (§8.1) |
 
 ## Layout (§4)
 
@@ -140,8 +142,15 @@ without the dot the PATH of §3 dies with the child process.
    C toolchain, so `-race` physically cannot run here).
 7. Local run: `.\scripts\run.ps1` — loads `.env` into the process ENV, builds `bin\bot.exe`
    (`CGO_ENABLED=0`), prints the §7 configuration back, starts polling, stops on Ctrl-C with exit 0.
-   On THIS machine the start ends at `getMe` with exit 1, because `api.telegram.org` is filtered for the
-   Windows process — that is the §10 День 4 behaviour, not a bug: without Telegram the bot must not start.
+   Measured 2026-10-31 on THIS machine: the host reaches `api.telegram.org` only through the WinINET proxy
+   (`127.0.0.1:10808` in `HKCU\…\Internet Settings`), which Go's `http.Transport` does not read — so the start
+   ends at `getMe` with exit 1 unless the proxy is handed to the process: `.\scripts\run.ps1 -UseSystemProxy`
+   exports `HTTPS_PROXY` from those registry settings for the child process only and the bot polls normally.
+   `scripts/env-check.ps1` checks exactly this (a TCP connect from the process + `HTTPS_PROXY`), because a
+   check that asks PowerShell reports «network OK» while the bot dies at `getMe` (§10 День 4 «без сети/токена
+   бот не стартует» stays true; only the diagnosis changed). A `HEALTH_PORT` of §7 held by another process
+   stops the start too — on this machine the local STRATA sits on 8080, so `.env` carries `HEALTH_PORT=8081`;
+   the bind happens before the process claims that `/healthz` answers (§12 reliability).
 8. Container run (the way that has a network here): `.\scripts\docker-build.ps1`, then
    `.\scripts\docker-up.ps1` — compose starts `tg-llm-proxy-bot` with `DB_PATH=/data/bot.db` in the named
    volume `bot-data` (§8.1) and waits for the health check; `docker compose logs -f bot` for the JSON log
@@ -268,7 +277,10 @@ goes by runes); `TG_REPLY_DEADLINE_SECONDS` must exceed `STRATA_TIMEOUT_SECONDS`
   **Network split measured on this machine**: from the Windows host `api.telegram.org` is unreachable, so a
   local `scripts/run.ps1` stops at `getMe` with exit 1 (§10 День 4: «без сети/токена бот не стартует»), and
   the URL inside that error is already sanitized — `https://api.telegram.org/bot***/getMe`, no token in the
-  log (§12 security, checked by `scripts/smoke.ps1`). Inside the container the same token works: a
+  log (§12 security, checked by `scripts/smoke.ps1`). Corrected 2026-10-31: what is unreachable from the host
+  is the *process*, not the machine — the host has a WinINET proxy in the registry that `http.Transport` does
+  not read, and `scripts/run.ps1 -UseSystemProxy` hands it to the child as `HTTPS_PROXY`, after which the same
+  `bin\bot.exe` polls Telegram from Windows and answers real chats (step 7 above). Inside the container the same token works: a
   15-second `docker compose up -d` probe logged `bot is polling Telegram, bot_state last_update_id 0
   found false` with the container `Up (healthy)`. The interactive part of the §11 manual checklist (real
   answers to the §6 commands in a real chat) now only needs the bot to be reachable: `.env` lists the real
@@ -306,7 +318,19 @@ goes by runes); `TG_REPLY_DEADLINE_SECONDS` must exceed `STRATA_TIMEOUT_SECONDS`
   `TestAllowlistCountsADuplicateOnce`, `TestAllowlistNamesTheRowOfABadEntry` and `TestAllowlistRowOpensTheBot`
   (the last one asserts the user reaches the model and `events(kind='denied')` stays empty).
   Still open: the manual demo itself (the checklist above) and the last §1 criterion it proves — both need
-  `api.telegram.org` from the process, which this host filters for the Windows binary and the container has.
+  `api.telegram.org` from the process, which this host filtered for the Windows binary until 2026-10-31 (see
+  the next paragraph).
+  **The live demo was walked on 2026-10-31**: `.\scripts\run.ps1 -UseSystemProxy` on the Windows host, a real
+  chat, real STRATA. `/ping` answered, `/ask 2+2` answered `4`, and the assistant row of §5 carries
+  `model`, `latency_ms` 1567 and tokens 62/25 — the §10 День 7 fields read back with
+  `scripts\db_inspect.ps1` while the bot was still running. The walk exposed two defects, and both are fixed
+  and covered: a `HEALTH_PORT` held by the local STRATA made the process promise `/healthz` and die later, so
+  the bind now happens before the promise (`health.Listen`, `TestListenNamesTheTakenPortAtOnce`, `.env` →
+  8081); and the «carries no text» log line dereferenced `upd.Message.Chat.ID` before the nil check, so one
+  `callback_query`/`my_chat_member`/`edited_message` update panicked inside the library and killed the process
+  — silently, because getUpdates has already deleted the update and `bot_state` only moves after `Dispatch`.
+  `telegramHandler` now has its own recover, and `TestUpdatesWithoutMessageSurviveTheHandler` fails with that
+  exact nil dereference against the old code.
 
 ## Not implemented yet (honest list)
 
@@ -318,8 +342,10 @@ the fake Telegram + fake STRATA and the `-race` run of §11 Concurrency (both gr
 without `sqlite3` CLI). Not implemented yet: no `scripts/test-restart.ps1` (the §10 День 4 kill/restart case
 is covered by the integration
 tests `TestOffsetSurvivesRestart` and `TestRedeliveredUpdateIsAnsweredOnce`; a process-level kill needs a
-reachable Telegram), the manual demo of §11 (the §10 День 7 checklist above has to be walked by a human in a
-real chat), and the real-network proof while `api.telegram.org` is filtered on this host. Secrets stay
+reachable Telegram — the host has one since 2026-10-31, so the reason for not writing the script is gone, the
+script is not), the manual demo of §11 (the §10 День 7 checklist: `/ping` and `/ask` were walked in a real chat
+on 2026-10-31, the rest of the list — `/help`, `/model`, `/forget`, a denied user, a restart without repeated
+answers — has not been walked by a human yet). Secrets stay
 out of the output: `TELEGRAM_BOT_TOKEN` and `STRATA_API_KEY` print only their length, every library error
 goes through `bot.Sanitize` (a live run shows `https://api.telegram.org/bot***/getMe`), the fakes record
 the Authorization header but no test prints it, and `scripts/smoke.ps1` greps the whole source tree for

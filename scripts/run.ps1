@@ -164,7 +164,7 @@ try {
         # gitignored (§10 День 1) and the token never enters them (§12 security, Sanitize of §6).
         $proc = Start-Process -FilePath $exe -WorkingDirectory $repoRoot -WindowStyle Hidden -PassThru `
             -RedirectStandardOutput $outLog -RedirectStandardError $errLog
-        Write-Output "run: PID $($proc.Id), logs: $outLog / $errLog — stop it with Stop-Process -Id $($proc.Id) (or taskkill /PID $($proc.Id) for the kill case of §10 День 4)"
+        Write-Output "run: PID $($proc.Id), logs: $outLog / $errLog — stop it with .\scripts\stop.ps1 -Id $($proc.Id), which posts Ctrl+C to its console: that is the graceful stop of §10 День 1 (signal.NotifyContext, pollerWait, db.Close, the WAL checkpoint of §5). Stop-Process -Id $($proc.Id) (or taskkill /PID $($proc.Id)) is the hard kill of §10 День 4 — survivable through the offset of §5 and uq_messages_chat_tg_id, and scripts/test-restart.ps1 walks exactly that case."
         exit 0
     }
 

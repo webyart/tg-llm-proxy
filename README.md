@@ -85,8 +85,9 @@ tg-llm-proxy/
 ├── test/integration/  # //go:build integration — §11 «бот ↔ фейковый STRATA ↔ фейковый Telegram»
 ├── Dockerfile         # multi-stage (§8.1: golang builder → alpine + ca-certificates, USER 65534) — Day 5: done
 ├── docker-compose.yml # bot + named volume bot-data:/data + 127.0.0.1 healthz publish + `test` profile for -race (§8.1)
-├── scripts/           # Setup, env-check, strata-check, build, test, test-race, lint, run, smoke,
-│                      # docker-build, docker-up, docker-down, db_inspect (§9: every script the plan names)
+├── scripts/           # Setup, env-check, strata-check, build, test, test-race, lint, run, stop, smoke,
+│                      # docker-build, docker-up, docker-down, db_inspect (§9: every script the plan names,
+│                      # plus stop.ps1 — the graceful stop of §10 День 1 for a detached instance)
 ├── bin/               # runtime binaries (gitignored)
 ├── data/              # bot.db (gitignored)
 ├── zzscratch/         # local verification scratch (gitignored, never committed)
@@ -114,6 +115,9 @@ git status                     # repo state
 .\scripts\smoke.ps1 -Unit      # §11 Integration: fake Telegram + fake STRATA, then the leak scan of §12
 .\scripts\build.ps1            # §9: go mod tidy + bin\bot.exe + the §7 «empty ENV must exit 1» check
 .\scripts\run.ps1              # §9: loads .env (values never printed), builds, runs — Ctrl-C stops it
+.\scripts\stop.ps1 -Id <pid>   # §10 День 1: Ctrl+C to a detached instance through its console — the graceful stop
+                               # (signal.NotifyContext → pollerWait → db.Close → the WAL checkpoint of §5);
+                               # -Force is the hard kill of §10 День 4
 .\scripts\db_inspect.ps1       # §9: reads DB_PATH of §7 through mode=ro — chats/messages/events/bot_state
 .\scripts\test-restart.ps1     # §10 День 4 at process level: hard kill between two instances, the §5 offset must survive
 # container of §8.1: .\scripts\docker-build.ps1; .\scripts\docker-up.ps1 (waits for /healthz = 200);
@@ -159,9 +163,15 @@ without the dot the PATH of §3 dies with the child process.
    running bot left the newcomer dead with «bind: Only one usage of each socket address» in its own log, while
    the OLD instance — whose `.env` had been edited under it to another model port — kept answering `/healthz`
    200 and kept polling, so every probe reported a healthy bot that no longer matched the file. A process
-   carries the ENV of **its own** start: after editing `.env` the instance has to be restarted
-   (`Stop-Process -Id …`, then `run.ps1`), and the offset of §5 with `uq_messages_chat_tg_id` survive the kill
-   — which `scripts/test-restart.ps1 -StopExisting` asserts (19 checks, 0 FAIL, walked again that same day).
+   carries the ENV of **its own** start: after editing `.env` the instance has to be restarted. The graceful way
+   is `.\scripts\stop.ps1 -Id …`: it posts Ctrl+C to the console of the instance (a hidden instance still owns
+   a console), so the process runs its own stop path — `signal.NotifyContext`, `pollerWait`, `db.Close` and the
+   WAL checkpoint of §5. Measured 2026-10-31 on the live instance: «stopped by signal true» → «poller stopped
+   true» → «stopped by signal (the graceful shutdown of §10 День 1)», the process was gone 0.9 s after the
+   event, and `bot.db-wal` of 2 364 912 bytes plus `bot.db-shm` disappeared, leaving only `bot.db` of 73 728.
+   `Stop-Process -Id …` is the hard kill of §10 День 4 — survivable through the offset of §5 and
+   `uq_messages_chat_tg_id`, which `scripts/test-restart.ps1 -StopExisting` asserts (19 checks, 0 FAIL, walked
+   again that same day).
 8. Container run (the way that has a network here): `.\scripts\docker-build.ps1`, then
    `.\scripts\docker-up.ps1` — compose starts `tg-llm-proxy-bot` with `DB_PATH=/data/bot.db` in the named
    volume `bot-data` (§8.1) and waits for the health check; `docker compose logs -f bot` for the JSON log
@@ -271,9 +281,16 @@ without the dot the PATH of §3 dies with the child process.
       `command` rows while its `ask` produced the `denied` row and the refusal text.
 - [ ] Ctrl-C / `docker compose down` during a long `/ask` → the process exits, WAL of §5 is checkpointed,
       the next start continues from the stored offset (the graceful stop of §10 День 1, the checkpoint of §5).
-      The container half is walked (§8.1: `docker compose stop` → exit 0 in 0.5 s, no `-wal`/`-shm` left);
-      on the host a signal is not deliverable to a detached process (§3.1), so `scripts/test-restart.ps1`
-      walks the hard-kill half there instead.
+      The container half is walked (§8.1: `docker compose stop` → exit 0 in 0.5 s, no `-wal`/`-shm` left).
+      The host half used to be written off as unreachable («a signal is not deliverable to a detached process»,
+      §3.1), and that sentence is wrong: measured 2026-10-31 with `scripts/stop.ps1`, a hidden instance does own
+      a console, and `AttachConsole` + `GenerateConsoleCtrlEvent(CTRL_C_EVENT)` delivers exactly the
+      `os.Interrupt` that Ctrl+C in a terminal would — the bot printed its own three stop lines, left 0.9 s
+      after the event and checkpointed the WAL. Still open is the interrupt **inside** a long `/ask`: the row of
+      `role='user'` is written before the model call (`middleware.go:35`), while `persistOffset` runs after the
+      handler (`dispatch.go:236`), so a process that dies mid-answer never acknowledges the update and Telegram
+      hands it back — where `middleware.go:43` treats the redelivery as «already answered». Whether that loses
+      the question is what the walk measures now.
 
 Две ловушки обхода 2026-10-31, обе про команды §6: очистка контекста называется `/reset` (`store.ClearChat`
 прячет контекст, строки §5 остаются — `/history` их всё ещё видит), а не `/forget`; и с

@@ -307,11 +307,38 @@ without the dot the PATH of §3 dies with the child process.
       So the update was **not** handed back, the guard of §2 п.7 never ran, and the question stayed in §5 with no
       answer. Real Telegram drops a batch whose `getUpdates` response was delivered successfully; it re-delivers
       only what never got through (the connection broke mid-poll). The offset of §5 therefore prevents duplicate
-      answers, but on its own it does not recover a question cut inside the handler. Closing that gap is a §15
-      item, not a done one: at startup, answer the stored question that has no answer row after it — the check is
-      sound precisely because `commands.go` writes the assistant row before sending, so «no answer row» means
-      «nothing was ever sent»; the opposite window (row written, send lost) stays silent on purpose, as §13 риск
-      «двойная доставка» prefers losing to duplicating.
+      answers, but on its own it does not recover a question cut inside the handler.
+      **Closed the same day.** At the start of the process `store.UnansweredQuestions` names the chats whose newest
+      VISIBLE row of §5 is a `role='user'` row, and `Dispatcher.ResumeInterruptedQuestions` (`internal/bot/resume.go`,
+      started by `main.go` beside the polling goroutine so a slow STRATA cannot delay the first `getUpdates` of §5)
+      pushes that stored question back through the same middleware chain: `stored` of §2 п.7 hits
+      `uq_messages_chat_tg_id`, the guard sees the row of that question still the newest, and the `/ask` handler of §6
+      answers it. Nothing was written twice — the guard decides, the replay only supplies the update Telegram will not
+      send. The check is sound precisely because `commands.go` writes the assistant row before sending, so «no answer
+      row» means «nothing was ever sent»; the opposite window (row written, send lost) stays silent on purpose, as
+      §13 риск «двойная доставка» prefers losing to duplicating. Two conditions the query enforces, both learned from
+      §2 п.7: the row must carry a `telegram_message_id` (without it no UNIQUE guard of §5 would make the replay
+      idempotent), and only the NEWEST visible row of the chat may be answered (a chat the user asked twice must not
+      get its first answer a second time). A scan that finds one says so in the log of §12 — `the stored question of
+      §5 has no answer of §6, the start of the process answers it` — and prints `the start of the process answered 1
+      stored question(s) of §5 that had no answer of §6 (§15, internal/bot/resume.go)`. `TestUnansweredQuestions`
+      (`internal/store/messages_test.go`) and the four `TestStartup…` cases of `internal/bot/resume_test.go` hold it,
+      the last of them racing the scan against a real redelivery of the same update: the per-chat lock of §12 puts one
+      of them second, the guard silences it — one answer, two rows of §5, no second model call.
+      **The live end of this was not walked, and the reason is the network, not the code.** Recreating the
+      container onto the new image ran straight into a dead route to the Bot API: `bot.New: … getMe … context
+      deadline exceeded`, exit 1, and `restart: unless-stopped` has been retrying it since —
+      `Test-NetConnection api.telegram.org 443` is `False`, `ProxyEnable=0`, while `example.com` answers 200 and
+      the registry of Docker Hub answers its usual 401, so only the Telegram side of the route is gone. The scan
+      was still measured against the real data of the volume, read-only through the `docker cp` copy of §9
+      (`zzscratch/resumescan`): it names exactly one chat — `chat=666244095 row=6 tg_id=449 stored_at 14:57:47` —
+      and leaves the older `row=5 tg_id=448` of the same text alone (the newest-visible-row rule of §2 п.7), with
+      `last_update_id` untouched at 920551681. Worth noticing in those rows: `row=6` is not the SIGTERM case at
+      all, it is the question whose model call spent the whole `STRATA_TIMEOUT_SECONDS 60s` (the `timeout` event of
+      §5 at 14:58:47) — the scan cannot tell a gap made by a signal from one made by a budget or an OOM, and does
+      not have to: all three leave the same shape, «a stored question with no answer row», and §12 is the reason
+      the process answers it once instead of leaving it there. As soon as the route returns, the container does
+      this by itself: the pending question gets its answer without anyone asking again.
       The guard itself stays as fixed on 2026-10-31 — it is what makes any redelivery that *does* happen safe, and
       `TestRedeliveredUnansweredQuestionIsAnswered` / `TestRedeliveredAnsweredQuestionStaysSilentWhenTheChatMovedOn`
       hold both directions of it (§10 День 6 note below).
@@ -477,6 +504,14 @@ goes by runes); `TG_REPLY_DEADLINE_SECONDS` must exceed `STRATA_TIMEOUT_SECONDS`
   `TestRedeliveredAnsweredQuestionStaysSilentWhenTheChatMovedOn` (the two-questions case). One window stays
   open by design: the answer is stored before it is sent, so a stop between those two writes loses the
   message while §5 keeps the answer — `/history` of §6 shows it, and the guard stays silent.
+  Closed the same day for the direction that used to be lost: since the live walk showed that no redelivery is
+  coming (`§11 manual`), `store.UnansweredQuestions` + `Dispatcher.ResumeInterruptedQuestions`
+  (`internal/bot/resume.go`, started by `main.go` beside the polling goroutine) feed the stored question back
+  into the SAME chain, so this guard — not a second copy of the answering code — decides. `TestStartup…` in
+  `internal/bot/resume_test.go` holds the four directions of it: the interrupted question is answered once at
+  the start of a new process, an answered chat stays silent, a twice-asked chat is answered only for its newest
+  question, and the scan racing a real redelivery of the same update still produces exactly one answer — the
+  per-chat lock of §12 puts one of them second, and the guard silences it.
 - Day 7 (partly): DONE — the JSON log of §10 День 7 got the fields the plan names: every answered `/ask`
   writes `chat_id`, `user_id`, `model`, `latency_ms`, `attempts`, `tokens_in`, `tokens_out` through the
   `slog` JSON handler of `main.go` (an unknown usage stays `null`, §14 риск «usage полей нет»), and
@@ -590,13 +625,6 @@ the token value before a commit (§12 security, §16 change 25).
 Not a todo list for v1 — these are the things §15 deliberately left out of the prototype, plus what this
 implementation made concrete enough to name.
 
-- Догонять вопрос, оборванный внутри обработчика. Замер 2026-10-31 (§11 manual, `zzscratch/container-walk.ps1`)
-  показал, что Telegram не возвращает апдейт, чей ответ `getUpdates` клиент уже получил: offset of §5 защищает от
-  дублей, но вопрос, обрезанный посреди генерации, остаётся в §5 без ответа и без строки в `events`. Стартовая
-  сверка («найти `role='user'`, после которого нет ни одной видимой `assistant`-строки, и ответить») безопасна
-  ровно потому, что `commands.go` writes the answer row before sending: «no answer row» means «nothing was ever
-  sent». Окно «строка ответа есть, отправка не состоялась» остаётся молча потерянным — §13 риск «двойная доставка»
-  сознательно выбирает потерю вместо дубля.
 - Стриминг ответов: правка одного сообщения раз в ~1 с вместо одного `sendMessage` (the chunking of
   `internal/bot/reply.go` already owns the size logic a stream would reuse).
 - Вебхуки + HTTPS (`StartWebhook` of the library exists) вместо long polling; `bot_state` offset then

@@ -125,7 +125,10 @@ func TestDuplicateUpdateAnswersOnce(t *testing.T) {
 // the reason the §11 walk «Ctrl-C / docker compose down при длинном /ask» (2026-10-31) is in the README: the
 // row of role='user' is written by stored of §2 п.7 BEFORE the model call, while the offset of §5 is
 // acknowledged only after the handler (Dispatch → persistOffset). A process stopped in the middle of a
-// generation therefore leaves the question stored WITH no answer, and Telegram hands the update back. The old
+// generation therefore leaves the question stored WITH no answer and the offset behind the update. That is NOT
+// a second chance: the §11 walk measured that Telegram does not hand such an update back at all, so the restart
+// that this guard used to be written for never brings the update — the real second chance is the scan of
+// resume.go (§15), and this test is the fake of the redelivery that §11 could not produce. The old
 // guard read «a row of this update exists» as «this update was already answered» and stayed silent: the user
 // never got an answer, and no row of events of §5 said why. The sequence here is that exact one — the first
 // delivery is cancelled while the model of §7 is still producing, the second delivery of the same update
@@ -166,7 +169,7 @@ func TestRedeliveredUnansweredQuestionIsAnswered(t *testing.T) {
 		t.Fatalf("store.LastUpdateID: %v", offErr)
 	}
 	if found && offset >= ev.UpdateID {
-		t.Fatalf("an interrupted update must not be acknowledged (§5: persistOffset runs after the handler, so Telegram hands it back), got offset %d found=%v", offset, found)
+		t.Fatalf("an interrupted update must not be acknowledged (§5: persistOffset runs after the handler; §11 measured that Telegram does not hand the update back, which is why §15 asks the database), got offset %d found=%v", offset, found)
 	}
 
 	// The restart of §8.1: the same update arrives again, and answering it is the only chance it ever gets.

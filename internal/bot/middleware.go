@@ -49,9 +49,10 @@ func (d *Dispatcher) stored(next HandlerFunc) HandlerFunc {
 				// comment simply assumed: this very function writes role='user' BEFORE the model call,
 				// while the offset of §5 is acknowledged only after the handler (Dispatch → persistOffset),
 				// so a process stopped in the middle of a generation leaves the question stored and
-				// unanswered, and Telegram hands the update back after the restart. Silence there was not a
-				// second line of defence against a duplicate answer — it was the loss of the user's question
-				// with nothing in the audit of §5 to show for it.
+				// unanswered. Silence there was not a second line of defence against a duplicate answer — it
+				// was the loss of the user's question with nothing in the audit of §5 to show for it. (What
+				// happens next was measured the same day: Telegram does NOT hand such an update back, so the
+				// second chance this guard used to be written as waiting for is the scan of resume.go, §15.)
 				//
 				// The guard therefore asks the database, and it asks it about THIS update: the row of the
 				// question has an id (§5 AUTOINCREMENT), and the answer of §6 is the next row of the same
@@ -78,7 +79,7 @@ func (d *Dispatcher) stored(next HandlerFunc) HandlerFunc {
 					return nil
 				}
 				if questionID != 0 && questionID == lastID && lastRole == store.RoleUser {
-					d.deps.Logger.Info("the redelivered question has no answer of §6 yet, answering it",
+					d.deps.Logger.Info("the question of this update has no answer of §6 yet, answering it",
 						"chat_id", ev.ChatID, "telegram_message_id", tgID, "question_row", questionID)
 					return next(ctx, ev, cmd)
 				}

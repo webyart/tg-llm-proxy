@@ -549,3 +549,103 @@ func TestLastVisibleMessageAndRowID(t *testing.T) {
 		t.Fatalf("the telegram id of a row belonging to another chat must not be found here, got %d err=%v (§5 uq_messages_chat_tg_id is per chat)", rowID, rowErr)
 	}
 }
+
+// TestUnansweredQuestions — the scan the §15 item «догонять вопрос, оборванный внутри обработчика» runs at the
+// start of the process. §11 measured why it has to exist: the stop left the row of the question in §5 and the
+// offset behind it, and Telegram did not hand the update back, so no incoming update ever asked the guard of
+// §2 п.7 about that question again. Here the database is asked per chat, with no update in hand.
+func TestUnansweredQuestions(t *testing.T) {
+	var db = memDB(t)
+	var ctx = context.Background()
+
+	// Nothing stored at all: nothing to chase, and no error.
+	if rows, err := UnansweredQuestions(ctx, db, 10); err != nil || len(rows) != 0 {
+		t.Fatalf("an empty database must return no question, got %d rows err=%v", len(rows), err)
+	}
+
+	// The state §15 is about: the chat ends with a question that has no answer of §6 after it.
+	var waitingQuestion, err = Append(ctx, db, Message{ChatID: 51, UserID: 7, Role: RoleUser,
+		Content: "вопрос, до которого не дошёл процесс", TelegramMessageID: intPtr(950)})
+	if err != nil {
+		t.Fatalf("Append of the waiting question: %v", err)
+	}
+
+	// A chat that was answered: the newest visible row is the assistant row, so the chat is caught up
+	// (§10 День 3 «ровно одна запись assistant» writes it before sending).
+	if _, err = Append(ctx, db, Message{ChatID: 52, UserID: 7, Role: RoleUser, Content: "отвеченный вопрос", TelegramMessageID: intPtr(951)}); err != nil {
+		t.Fatalf("Append of the answered question: %v", err)
+	}
+	if _, err = Append(ctx, db, Message{ChatID: 52, UserID: 7, Role: RoleAssistant, Content: "ответ", Model: "qwen-test"}); err != nil {
+		t.Fatalf("Append of the answer: %v", err)
+	}
+
+	// A question row without a telegram_message_id has no uq_messages_chat_tg_id of §5 to make a replay
+	// idempotent, so the scan refuses to chase it (§13 риск «повторные ответы»).
+	if _, err = Append(ctx, db, Message{ChatID: 53, UserID: 7, Role: RoleUser, Content: "строка без telegram_message_id"}); err != nil {
+		t.Fatalf("Append of the row without a telegram id: %v", err)
+	}
+
+	// `/reset` of §6 hides the rows rather than deleting them: a question the user chose to forget is not a
+	// question the bot should answer on its own.
+	if _, err = Append(ctx, db, Message{ChatID: 54, UserID: 7, Role: RoleUser, Content: "вопрос до /reset", TelegramMessageID: intPtr(954)}); err != nil {
+		t.Fatalf("Append before /reset: %v", err)
+	}
+	if _, err = ClearChat(ctx, db, 54); err != nil {
+		t.Fatalf("ClearChat: %v", err)
+	}
+
+	// The case a decision made on the ROLE alone would get wrong, now on the scan side: the user asked twice
+	// and the chat ends with the second question. Only that one is waiting — the first question already has
+	// its answer, and answering it again is exactly the §13 risk.
+	if _, err = Append(ctx, db, Message{ChatID: 55, UserID: 7, Role: RoleUser, Content: "первый вопрос, отвечен", TelegramMessageID: intPtr(955)}); err != nil {
+		t.Fatalf("Append of the first question: %v", err)
+	}
+	if _, err = Append(ctx, db, Message{ChatID: 55, UserID: 7, Role: RoleAssistant, Content: "ответ на первый", Model: "qwen-test"}); err != nil {
+		t.Fatalf("Append of the first answer: %v", err)
+	}
+	var secondQuestionID, secondErr = Append(ctx, db, Message{ChatID: 55, UserID: 7, Role: RoleUser,
+		Content: "второй вопрос, оборванный", TelegramMessageID: intPtr(956)})
+	if secondErr != nil {
+		t.Fatalf("Append of the second question: %v", secondErr)
+	}
+
+	var rows, readErr = UnansweredQuestions(ctx, db, 10)
+	if readErr != nil {
+		t.Fatalf("UnansweredQuestions: %v", readErr)
+	}
+	// Chats 52 (answered), 53 (no telegram id) and 54 (hidden by /reset) must all stay out; 51 and 55 must be
+	// there, newest activity first — the last_active_at of every row here lands in the same second, so the
+	// chat_id tie-break of the ORDER BY decides and 55 comes first.
+	if len(rows) != 2 {
+		t.Fatalf("exactly the two chats that end with an unanswered question must be reported, got %d: %+v", len(rows), rows)
+	}
+	if rows[0].ChatID != 55 || rows[0].ID != secondQuestionID {
+		t.Fatalf("the second question of a twice-asked chat must be the one that is waiting, got chat=%d row=%d (%d expected)",
+			rows[0].ChatID, rows[0].ID, secondQuestionID)
+	}
+	if rows[1].ChatID != 51 || rows[1].ID != waitingQuestion {
+		t.Fatalf("the first chat must keep its own waiting question, got chat=%d row=%d (%d expected)",
+			rows[1].ChatID, rows[1].ID, waitingQuestion)
+	}
+	// The replay of §6 is built from these two fields: the text goes to the model, the telegram_message_id is
+	// what makes uq_messages_chat_tg_id of §5 reject the second question row.
+	if rows[1].Content != "вопрос, до которого не дошёл процесс" || rows[1].TelegramMessageID == nil || *rows[1].TelegramMessageID != 950 {
+		t.Fatalf("the row must carry its text and its telegram id, got %q / %v", rows[1].Content, rows[1].TelegramMessageID)
+	}
+	// messages of §5 has no user_id column — the chats row of §5 supplies the one the allowlist of §7 needs.
+	if rows[1].UserID != 7 {
+		t.Fatalf("the user_id of the chats row must come along, got %d", rows[1].UserID)
+	}
+	if rows[1].CreatedAt == "" {
+		t.Fatalf("the log of the replay names the age of the row, so created_at must be read, got %q", rows[1].CreatedAt)
+	}
+
+	// §9: the scan is bounded. The chats are looked at newest-first, so the limit costs the OLDEST activity —
+	// not the question the user is waiting for.
+	if limited, limitErr := UnansweredQuestions(ctx, db, 1); limitErr != nil || len(limited) != 1 || limited[0].ChatID != 55 {
+		t.Fatalf("limit=1 must return the newest chat only, got %+v err=%v", limited, limitErr)
+	}
+	if zero, zeroErr := UnansweredQuestions(ctx, db, 0); zeroErr != nil || len(zero) != 0 {
+		t.Fatalf("limit=0 must ask for nothing, got %d rows err=%v", len(zero), zeroErr)
+	}
+}

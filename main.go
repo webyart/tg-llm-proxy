@@ -13,6 +13,8 @@ import (
 	"bot/internal/model"
 	"bot/internal/store"
 	"context"
+	"errors"
+
 	"fmt"
 	"log/slog"
 	"os"
@@ -264,6 +266,30 @@ func main() {
 		}
 	}()
 	fmt.Println("bot is polling Telegram, bot_state last_update_id", startOffset, "found", offsetFound, "(§5, §10 День 4)")
+	// §15 «догонять вопрос, оборванный внутри обработчика» (`internal/bot/resume.go`): a question that §5 kept
+	// without an answer of §6 is not brought back by the offset of §5. Measured 2026-10-31 in the §11 container
+	// walk: the stop left the offset at 920551679 with the interrupted update numbered 920551680, and the
+	// restarted poller asked Telegram for exactly that id and got empty batches for 9.5 minutes — Telegram
+	// re-delivers only what never reached the client. The scan of resume.go asks the database instead, and it
+	// runs next to the polling goroutine rather than before it: a model that spends its whole
+	// STRATA_TIMEOUT_SECONDS on a question from the previous run must not delay the first getUpdates of this
+	// one (§12 UX), and the per-chat lock of §12 is what keeps the replay and a real redelivery of the same
+	// update from answering it twice.
+	var resumeDone = make(chan struct{})
+	go func() {
+		defer close(resumeDone)
+		var answered, resumeErr = dispatcher.ResumeInterruptedQuestions(ctx)
+		if resumeErr != nil && !errors.Is(resumeErr, context.Canceled) {
+			logger.Error("the startup scan of §15 stopped", "answered", answered,
+				"error", bot.Sanitize(resumeErr, cfg.BotToken))
+			return
+		}
+		if answered > 0 {
+			fmt.Println("the start of the process answered", answered,
+				"stored question(s) of §5 that had no answer of §6 (§15, internal/bot/resume.go)")
+		}
+	}()
+
 	// os/signal: NotifyContext is installed before anything starts, so Ctrl+C / SIGTERM can never be
 	// missed; cancel() is the explicit cancellation path when the run ends (§10 День 1 asks for exactly this
 	// call). The wait below is on the context, not on a fixed window — the process stays running until a stop
@@ -307,6 +333,20 @@ func main() {
 	case <-time.After(pollerWait):
 	}
 	fmt.Println("poller stopped", pollerGone, "(§5: bot_state is written before db.Close checkpoints the WAL)")
+	// §15 (resume.go): the replay of a stored question writes its row of the answer through the same handle, so
+	// the database stays open for that goroutine too — bounded by the same pollerWait window, because a stop
+	// that never finishes cannot be told apart from a hung process (§10 День 1). A replay still with the model
+	// when the window closes leaves no assistant row at all (§10 День 3 writes exactly one, after the final
+	// Response), which is the state the next start of the process picks up again.
+	var resumeGone = false
+	select {
+	case <-resumeDone:
+		resumeGone = true
+	case <-time.After(pollerWait):
+	}
+	if !resumeGone {
+		fmt.Println("the startup scan of §15 was still answering when the process left (§5: no answer row is written for an answer that never happened, the next start tries it again)")
+	}
 	db.Close()
 	fmt.Println("stopped by signal (the graceful shutdown of §10 День 1)")
 	os.Exit(0)

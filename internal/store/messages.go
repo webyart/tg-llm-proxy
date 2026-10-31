@@ -272,10 +272,12 @@ func HistoryOfChat(ctx context.Context, db *sql.DB, chatID int64, limit int) ([]
 // means the question is stored and nothing ever answered it — the state the §11 item «Ctrl-C / docker compose
 // down при длинном /ask» is about, because stored of §2 п.7 writes role='user' BEFORE the model call while the
 // offset of §5 is acknowledged only after the handler (Dispatch → persistOffset), so a process that dies in the
-// middle of a generation leaves a question in the database with no answer at all and an update that Telegram
-// hands back after the restart. The id is part of the answer, not decoration: «the chat ends with a question»
-// and «THIS update's question is still waiting» differ as soon as the user asked twice, and only the newest
-// row can be the one awaiting its answer — see RowIDByTelegramMessageID. Zero id and empty role with no error
+// middle of a generation leaves a question in the database with no answer at all — and, as the §11 container walk
+// of 2026-10-31 measured, with no update that Telegram hands back either. The scan of resume.go (the §15 item)
+// reads this function per chat instead of waiting for an update that never comes. The id is part of the answer,
+// not decoration: «the chat ends with a question» and «THIS update's question is still waiting» differ as soon as
+// the user asked twice, and only the newest row can be the one awaiting its answer — see RowIDByTelegramMessageID.
+// Zero id and empty role with no error
 // when the chat has no visible row: a fresh chat, or a /reset of §6 that hid every one of them.
 func LastVisibleMessage(ctx context.Context, db *sql.DB, chatID int64) (int64, string, error) {
 	var filter, args, err = contextFilter(ctx, db, chatID)
@@ -317,6 +319,106 @@ func RowIDByTelegramMessageID(ctx context.Context, db *sql.DB, chatID int64, tel
 		return 0, scanErr
 	}
 	return id, nil
+}
+
+// UnansweredQuestions — the questions that §5 kept and §6 never answered: the §15 item «догонять вопрос,
+// оборванный внутри обработчика». A chat is in that state exactly when its newest VISIBLE row is
+// role='user'. commands.go writes the row of the answer BEFORE sending it (§10 День 3 «ровно одна запись
+// assistant»), so any other newest row — an assistant row, or no visible row at all after a /reset of §6 —
+// means the chat is caught up. This is the very fact the dedup guard of §2 п.7 reads for one incoming
+// update (LastVisibleMessage), read here per chat and without an update in hand, and that is the point:
+// measured 2026-10-31 in the container walk of §8.1 (§11 manual), a stop inside the handler leaves the
+// offset of §5 behind the update, but Telegram does NOT hand such an update back — the restarted poller
+// asked for update_id 920551680 from the stored offset 920551679 and got empty batches for 9.5 minutes.
+// Nothing ever asks about that question again, so the row would sit unanswered forever.
+//
+// Only rows with a telegram_message_id qualify. The replay stays idempotent because uq_messages_chat_tg_id
+// of §5 rejects the second question row of the same update (§2 п.7), and a row without that key has no such
+// guard to fall back on (§13 риск «повторные ответы»). At most `limit` chats are looked at, newest activity
+// first: the scan runs at the start of the process and must not grow with the age of the database
+// (§9: no unbounded work).
+func UnansweredQuestions(ctx context.Context, db *sql.DB, limit int) ([]Message, error) {
+	if limit <= 0 {
+		return []Message{}, nil
+	}
+	// The chats are read in one pass and closed before the per-chat reads begin: §5 sets no pool limit,
+	// but a scan that keeps a connection open while borrowing another is the kind of cleverness that turns
+	// into a deadlock the day someone adds SetMaxOpenConns.
+	type chatRow struct {
+		chatID int64
+		userID int64
+	}
+	var chats = []chatRow{}
+	var chatRows, err = db.QueryContext(ctx, `
+		SELECT chat_id, user_id FROM chats
+		ORDER BY last_active_at DESC, chat_id DESC
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	for chatRows.Next() {
+		var one chatRow
+		if scanErr := chatRows.Scan(&one.chatID, &one.userID); scanErr != nil {
+			chatRows.Close()
+			return nil, scanErr
+		}
+		chats = append(chats, one)
+	}
+	if err = chatRows.Err(); err != nil {
+		chatRows.Close()
+		return nil, err
+	}
+	chatRows.Close()
+
+	var out = []Message{}
+	var i = 0
+	for i < len(chats) {
+		var row, rowErr = lastVisibleRow(ctx, db, chats[i].chatID)
+		if rowErr != nil {
+			return nil, rowErr
+		}
+		if row.ID == 0 || row.Role != RoleUser || row.TelegramMessageID == nil {
+			i++
+			continue
+		}
+		// messages of §5 has no user_id column — the chats row has (§5), and the bot needs it for the
+		// allowlist of §7 and for the events of §5 the replay of the question writes.
+		row.UserID = chats[i].userID
+		out = append(out, row)
+		i++
+	}
+	return out, nil
+}
+
+// lastVisibleRow — the newest row the context of §5 sees for one chat, as a whole Message.
+// LastVisibleMessage returns the id and the role, which is all the guard of §2 п.7 compares; the startup
+// scan needs the text and the telegram_message_id of that row too, because it rebuilds the update of §6
+// from them. No row and no error when the chat has no visible row (a fresh chat, or a /reset of §6 that hid
+// every one of them).
+func lastVisibleRow(ctx context.Context, db *sql.DB, chatID int64) (Message, error) {
+	var filter, args, err = contextFilter(ctx, db, chatID)
+	if err != nil {
+		return Message{}, err
+	}
+	var queryArgs = append([]any{chatID}, args...) // the placeholder of contextFilter, when it has one
+	var rows, queryErr = db.QueryContext(ctx, `
+		SELECT m.id, m.chat_id, m.role, m.content, m.tokens_in, m.tokens_out, m.model, m.latency_ms, m.telegram_message_id, m.created_at
+		FROM messages m
+		WHERE m.chat_id = ? AND `+filter+`
+		ORDER BY m.id DESC
+		LIMIT 1`, queryArgs...)
+	if queryErr != nil {
+		return Message{}, queryErr
+	}
+	defer rows.Close()
+	var found, scanErr = scanMessages(rows)
+	if scanErr != nil {
+		return Message{}, scanErr
+	}
+	if len(found) == 0 {
+		return Message{}, nil
+	}
+	return found[0], nil
 }
 
 // ClearChat — `/reset` of §6: the context starts from now, nothing is deleted («история не

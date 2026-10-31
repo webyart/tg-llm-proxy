@@ -197,6 +197,95 @@ func TestRedeliveredUnansweredQuestionIsAnswered(t *testing.T) {
 	}
 }
 
+// TestRedeliveredAnsweredQuestionStaysSilentWhenTheChatMovedOn — the hazard the §11 item exposed while the fix
+// for the interrupted question was being written: a decision made on the ROLE of the newest row of the chat is
+// wrong as soon as the user asks twice. The chat then ends with the row of the second question, and the answer
+// the first question already received looks missing — so a naive fix would answer the old question a second
+// time, which is exactly the §13 risk «повторные ответы» this middleware exists to prevent. The guard compares
+// the row of THIS update (store.RowIDByTelegramMessageID) with the newest row of §5
+// (store.LastVisibleMessage), so only a question that is still the newest row of the chat is answered again.
+func TestRedeliveredAnsweredQuestionStaysSilentWhenTheChatMovedOn(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	var m = &fakeModel{response: model.Response{Content: "ответ первой модели"}, delay: 2 * time.Second}
+	var r = &fakeReplier{}
+	var db = testStore(t)
+	var d = newTestDispatcher(t, cfg, m, r, db)
+
+	var first = testEvent(121, 11, 910, "/ask первый вопрос")
+	var second = testEvent(121, 11, 911, "/ask второй вопрос, который оборвался")
+	if err := dispatch(t, d, first); err != nil {
+		t.Fatalf("the first /ask: %v", err)
+	}
+	if m.callCount() != 1 || r.count() != 1 {
+		t.Fatalf("the first question must be answered once, got %d model calls and %d replies", m.callCount(), r.count())
+	}
+
+	// The second question is the one the process loses in the middle of (§11: the row of the question is stored,
+	// its answer is not, and the offset of §5 was never acknowledged).
+	var stopCtx, cancel = context.WithCancel(context.Background())
+	var secondDone = make(chan error, 1)
+	go func() { secondDone <- d.Dispatch(stopCtx, second) }()
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	_ = <-secondDone
+
+	var stats, statsErr = store.Stats(context.Background(), db, 121)
+	if statsErr != nil {
+		t.Fatalf("store.Stats: %v", statsErr)
+	}
+	if stats.Messages != 3 {
+		t.Fatalf("the chat must hold two questions and one answer, got %d rows (§5)", stats.Messages)
+	}
+	var secondRow, rowErr = store.RowIDByTelegramMessageID(context.Background(), db, 121, 911)
+	if rowErr != nil {
+		t.Fatalf("store.RowIDByTelegramMessageID: %v", rowErr)
+	}
+	var newestID, newestRole, newestErr = store.LastVisibleMessage(context.Background(), db, 121)
+	if newestErr != nil {
+		t.Fatalf("store.LastVisibleMessage: %v", newestErr)
+	}
+	if secondRow == 0 || newestID != secondRow || newestRole != store.RoleUser {
+		t.Fatalf("the interrupted question must be the newest visible row of §5, got row=%d newest=%d role=%q err=%v", secondRow, newestID, newestRole, newestErr)
+	}
+
+	// Telegram hands the FIRST update back after the restart (§5 does not acknowledge updates while the handler
+	// of the second one is still running). Its answer exists, so nothing may be sent again.
+	if err := d.Dispatch(context.Background(), first); err != nil {
+		t.Fatalf("the redelivery of an answered update must not error, got %v", err)
+	}
+	if m.callCount() != 2 {
+		t.Fatalf("the redelivered answered question must not reach the model again, got %d calls (§13 risk «повторные ответы»)", m.callCount())
+	}
+	if r.count() != 1 {
+		t.Fatalf("the user must not receive a second answer to the first question, got %d replies", r.count())
+	}
+
+	// The second update — the one that really has no answer — is answered by its own redelivery.
+	if err := d.Dispatch(context.Background(), second); err != nil {
+		t.Fatalf("the redelivery of the interrupted question must not error, got %v", err)
+	}
+	if m.callCount() != 3 {
+		t.Fatalf("the interrupted question must reach the model once more, got %d calls", m.callCount())
+	}
+	if r.count() != 2 {
+		t.Fatalf("the interrupted question must finally get its answer, got %d replies", r.count())
+	}
+	if stats, statsErr = store.Stats(context.Background(), db, 121); statsErr != nil {
+		t.Fatalf("store.Stats after both redeliveries: %v", statsErr)
+	}
+	if stats.Messages != 4 {
+		t.Fatalf("two questions and two answers, got %d rows (§5 uq_messages_chat_tg_id keeps every question single)", stats.Messages)
+	}
+	var recent, recentErr = store.RecentByChat(context.Background(), db, 121, 10)
+	if recentErr != nil {
+		t.Fatalf("store.RecentByChat: %v", recentErr)
+	}
+	if len(recent) != 4 || recent[0].Role != store.RoleUser || recent[1].Role != store.RoleAssistant ||
+		recent[2].Role != store.RoleUser || recent[3].Role != store.RoleAssistant {
+		t.Fatalf("the conversation of §5 must be question/answer/question/answer, got %+v", recent)
+	}
+}
+
 // TestClosedBotRefusesAndAudits — §7 deny-by-default + §10 День 4 DoD («чужой user id получает отказ и
 // попадает в events(kind='denied')»), with §16 change 13: /start and /whoami still answer, otherwise a
 // closed bot could never reveal the id needed to open it.

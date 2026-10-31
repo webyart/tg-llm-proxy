@@ -291,10 +291,11 @@ without the dot the PATH of §3 dies with the child process.
       while `persistOffset` runs after the handler (`dispatch.go`), so a process that dies mid-answer never
       acknowledges the update and Telegram hands it back — and the dedup guard of §2 п.7 read that redelivery
       as «already answered» and answered nothing, which loses the question with no trace in `events` of §5.
-      `store.LastRoleInContext` makes that decision now (see the note on the idempotency of §10 День 6), and
-      `TestRedeliveredUnansweredQuestionIsAnswered` fails on the old guard. What this box still waits for is the
-      live measurement: a real `/ask` whose generation is cut by the signal, and the answer of §6 after the
-      restart.
+      `store.RowIDByTelegramMessageID` + `store.LastVisibleMessage` make that decision per update now (see the
+      note on the idempotency of §10 День 6, where the naive «role of the chat» variant is shown to break the
+      two-questions case), and `TestRedeliveredUnansweredQuestionIsAnswered` fails on the old guard. What this
+      box still waits for is the live measurement: a real `/ask` whose generation is cut by the signal, and the
+      answer of §6 after the restart.
 
 Две ловушки обхода 2026-10-31, обе про команды §6: очистка контекста называется `/reset` (`store.ClearChat`
 прячет контекст, строки §5 остаются — `/history` их всё ещё видит), а не `/forget`; и с
@@ -439,13 +440,22 @@ goes by runes); `TG_REPLY_DEADLINE_SECONDS` must exceed `STRATA_TIMEOUT_SECONDS`
   acknowledged only after the handler (`dispatch.go` → `persistOffset`). A process stopped in the middle of a
   generation leaves the question stored and unanswered, Telegram hands the update back — and the guard read
   that redelivery as «already answered» and stayed silent: the user got nothing, and nothing in `events` of §5
-  said why either. The guard now asks the database through `store.LastRoleInContext`, which reads the same
-  window `RecentByChat` glues (so the rows a `/reset` of §6 hid do not decide the question): a chat ending
-  with an assistant row was answered → the silence of §10 День 6 stays; a chat ending with the user row of
-  this very question has no answer to repeat → the redelivery produces it. Two tests hold the line:
-  `TestDuplicateUpdateAnswersOnce` (the answered case must stay silent) and
-  `TestRedeliveredUnansweredQuestionIsAnswered` (the interrupted case must reach the model exactly once more —
-  it fails on the old guard with «the redelivered question must reach the model … got 1 calls»).
+  said why either. The guard now asks the database about **this** update: `store.RowIDByTelegramMessageID`
+  locates the row it left in §5, `store.LastVisibleMessage` names the newest row inside the same window
+  `RecentByChat` glues (so the rows a `/reset` of §6 hid do not decide the question), and the question is still
+  waiting exactly when those two are the same row — the answer of §6 is always the next row of the chat
+  (`commands.go` writes it before sending, §10 День 3 «ровно одна запись assistant»). Comparing the ROLE alone
+  would be a new bug: when the user asked twice, the chat ends with the row of the second question and the
+  answer the first one already got looks missing, so the old question would be answered a second time — the
+  §13 risk «повторные ответы» this middleware exists to prevent. Proven by running the suite against that
+  naive variant: `TestRedeliveredAnsweredQuestionStaysSilentWhenTheChatMovedOn` fails with «the redelivered
+  answered question must not reach the model again, got 3 calls». Three tests hold the line:
+  `TestDuplicateUpdateAnswersOnce` (the answered case stays silent),
+  `TestRedeliveredUnansweredQuestionIsAnswered` (the interrupted case reaches the model exactly once more; it
+  fails on the old guard with «the redelivered question must reach the model … got 1 calls») and
+  `TestRedeliveredAnsweredQuestionStaysSilentWhenTheChatMovedOn` (the two-questions case). One window stays
+  open by design: the answer is stored before it is sent, so a stop between those two writes loses the
+  message while §5 keeps the answer — `/history` of §6 shows it, and the guard stays silent.
 - Day 7 (partly): DONE — the JSON log of §10 День 7 got the fields the plan names: every answered `/ask`
   writes `chat_id`, `user_id`, `model`, `latency_ms`, `attempts`, `tokens_in`, `tokens_out` through the
   `slog` JSON handler of `main.go` (an unknown usage stays `null`, §14 риск «usage полей нет»), and
@@ -535,9 +545,11 @@ without `sqlite3` CLI, plus the `-counts` key=value mode a script can compare) a
 `taskkill /F` between two instances, `journal_mode=wal` / `integrity=ok` / `last_update_id` unchanged read
 while no bot is running, the second instance resuming on that very offset, no panic text and no token value in
 the logs. The repeated-answer half of that case stays with `uq_messages_chat_tg_id` of §5 and the integration
-tests `TestOffsetSurvivesRestart` and `TestRedeliveredUpdateIsAnsweredOnce`; the SIGTERM half (the graceful stop
-of §10 День 1) stays with `docker compose stop` of §8.1, because Windows has no signal for a detached process
-(§3.1).
+tests `TestOffsetSurvivesRestart` and `TestRedeliveredUpdateIsAnsweredOnce`. The SIGTERM half (the graceful stop
+of §10 День 1) was attributed to `docker compose stop` of §8.1 on the theory that Windows has no signal for a
+detached process (§3.1); that theory is wrong and `scripts/stop.ps1` measured it on 2026-10-31 — a hidden
+instance owns a console, `AttachConsole` + `GenerateConsoleCtrlEvent(CTRL_C_EVENT)` delivers the same
+`os.Interrupt` a terminal Ctrl+C would, and the WAL of §5 is checkpointed behind it.
 Not implemented yet: the manual demo of §11 is walked — 9 of the 11 items of the §10 День 7 checklist carry
 their numbers in the list above (two real Telegram accounts, the real STRATA of §14, three restarts with the
 offset of §5 read back, a 6063-character answer sent as ≥ 2 pieces of §16 change 7, and the whole model-failure

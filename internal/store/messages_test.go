@@ -453,65 +453,99 @@ func TestRestartKeepsHistoryAndOffset(t *testing.T) {
 	}
 }
 
-// TestLastRoleInContext — the primitive the dedup guard of §2 п.7 needs, written after the §11 walk
-// «Ctrl-C / docker compose down при длинном /ask» (2026-10-31) showed that «a row of this update exists» and
-// «this question was answered» are not the same fact: stored of §10 День 4 writes role='user' BEFORE the model
-// call, while the offset of §5 is acknowledged only after the handler, so a process stopped mid-generation
-// leaves the question in the database with no answer. A chat that ends with the question reports RoleUser, a
-// chat that ends with the answer reports RoleAssistant, a chat with nothing visible reports "", and the window
-// is the one the context of §5 glues — the rows hidden by a /reset of §6 do not decide the question.
-func TestLastRoleInContext(t *testing.T) {
+// TestLastVisibleMessageAndRowID — the two reads the dedup guard of §2 п.7 needs, written after the §11 item
+// «Ctrl-C / docker compose down при длинном /ask» showed that «a row of this update exists» and «this question
+// was answered» are not the same fact: stored of §10 День 4 writes role='user' BEFORE the model call, while the
+// offset of §5 is acknowledged only after the handler, so a process stopped mid-generation leaves the question
+// in the database with no answer. The pair answers the question update by update: RowIDByTelegramMessageID
+// locates the row of THIS update, LastVisibleMessage names the newest row the context of §5 sees, and an
+// unanswered question is the case where those two are the same row.
+func TestLastVisibleMessageAndRowID(t *testing.T) {
 	var db = memDB(t)
 	var ctx = context.Background()
 
-	if role, err := LastRoleInContext(ctx, db, 40); err != nil || role != "" {
-		t.Fatalf("a chat with no rows must report no role at all, got %q err=%v", role, err)
+	// A chat with no rows: no id, no role, no error — and the row of an update that never came is 0.
+	if id, role, err := LastVisibleMessage(ctx, db, 40); err != nil || id != 0 || role != "" {
+		t.Fatalf("a chat with no rows must report no row at all, got id=%d role=%q err=%v", id, role, err)
+	}
+	if id, err := RowIDByTelegramMessageID(ctx, db, 40, 940); err != nil || id != 0 {
+		t.Fatalf("a chat that never saw the update must report id 0, got %d err=%v", id, err)
 	}
 
-	if _, err := Append(ctx, db, Message{ChatID: 40, UserID: 9, Role: RoleUser, Content: "вопрос без ответа", TelegramMessageID: intPtr(940)}); err != nil {
+	// The state §11 is about: the question is stored, nothing answered it.
+	var questionID, err = Append(ctx, db, Message{ChatID: 40, UserID: 9, Role: RoleUser, Content: "вопрос без ответа", TelegramMessageID: intPtr(940)})
+	if err != nil {
 		t.Fatalf("Append user: %v", err)
 	}
-	if role, err := LastRoleInContext(ctx, db, 40); err != nil || role != RoleUser {
-		t.Fatalf("the chat that ends with an unanswered question must report %q, got %q err=%v (the §11 state: the process died between the insert and the answer)", RoleUser, role, err)
+	var lastID int64
+	var lastRole string
+	if lastID, lastRole, err = LastVisibleMessage(ctx, db, 40); err != nil || lastID != questionID || lastRole != RoleUser {
+		t.Fatalf("the chat that ends with an unanswered question must report its own row, got id=%d role=%q err=%v", lastID, lastRole, err)
+	}
+	if rowID, rowErr := RowIDByTelegramMessageID(ctx, db, 40, 940); rowErr != nil || rowID != questionID {
+		t.Fatalf("RowIDByTelegramMessageID must find the row of the update, got %d err=%v (§5 uq_messages_chat_tg_id)", rowID, rowErr)
 	}
 
-	if _, err := Append(ctx, db, Message{ChatID: 40, UserID: 9, Role: RoleAssistant, Content: "ответ", Model: "qwen-test"}); err != nil {
-		t.Fatalf("Append assistant: %v", err)
+	// The answer of §6 is the next row of the same chat (§10 День 3 «ровно одна запись assistant»), and from now
+	// on the row of the update is NOT the newest one — which is precisely what lets the guard stay silent.
+	var answerID, appendErr = Append(ctx, db, Message{ChatID: 40, UserID: 9, Role: RoleAssistant, Content: "ответ", Model: "qwen-test"})
+	if appendErr != nil {
+		t.Fatalf("Append assistant: %v", appendErr)
 	}
-	if role, err := LastRoleInContext(ctx, db, 40); err != nil || role != RoleAssistant {
-		t.Fatalf("the chat that ends with an answer must report %q, got %q err=%v", RoleAssistant, role, err)
-	}
-
-	// The newest turn decides, not the best turn: a second question that never got an answer is the one the
-	// redelivery of §11 has to answer, even though the chat did answer the first question.
-	if _, err := Append(ctx, db, Message{ChatID: 40, UserID: 9, Role: RoleUser, Content: "второй вопрос", TelegramMessageID: intPtr(941)}); err != nil {
-		t.Fatalf("Append the second question: %v", err)
-	}
-	if role, err := LastRoleInContext(ctx, db, 40); err != nil || role != RoleUser {
-		t.Fatalf("the newest turn of §5 must decide, got %q err=%v", role, err)
+	if lastID, lastRole, err = LastVisibleMessage(ctx, db, 40); err != nil || lastID != answerID || lastRole != RoleAssistant {
+		t.Fatalf("the chat that ends with an answer must report that answer, got id=%d role=%q err=%v", lastID, lastRole, err)
 	}
 
-	// A /reset of §6 hides the history from the context of §5 — and with it the decision: the rows under the
-	// watermark of ClearChat are not the turns the next model request would end with (§5 keeps them for
-	// /history, which is exactly why this function reads the contextFilter window and not the whole table).
-	if _, err := ClearChat(ctx, db, 40); err != nil {
-		t.Fatalf("ClearChat: %v", err)
+	// The case a decision made on the ROLE alone would get wrong: the user asked twice, and the chat now ends
+	// with the row of the second question. Replaying the FIRST update must not produce a second answer to a
+	// question that was answered — the row of the first update is no longer the newest row of §5.
+	var secondQuestionID, secondErr = Append(ctx, db, Message{ChatID: 40, UserID: 9, Role: RoleUser, Content: "второй вопрос", TelegramMessageID: intPtr(941)})
+	if secondErr != nil {
+		t.Fatalf("Append the second question: %v", secondErr)
 	}
-	if role, err := LastRoleInContext(ctx, db, 40); err != nil || role != "" {
-		t.Fatalf("after /reset the hidden rows must not decide the question, got %q err=%v", role, err)
+	if lastID, lastRole, err = LastVisibleMessage(ctx, db, 40); err != nil || lastID != secondQuestionID || lastRole != RoleUser {
+		t.Fatalf("the newest row must be the second question, got id=%d role=%q err=%v", lastID, lastRole, err)
 	}
-	if rows, err := HistoryOfChat(ctx, db, 40, 10); err != nil || len(rows) != 3 {
-		t.Fatalf("/history still sees the hidden rows (§6), got %d rows err=%v", len(rows), err)
+	var firstRowID, firstErr = RowIDByTelegramMessageID(ctx, db, 40, 940)
+	if firstErr != nil {
+		t.Fatalf("RowIDByTelegramMessageID for the first update: %v", firstErr)
+	}
+	if firstRowID != questionID || firstRowID == lastID {
+		t.Fatalf("the first update must own an older row than the newest one: row=%d newest=%d (the guard has to stay silent on its redelivery)", firstRowID, lastID)
+	}
+	var secondRowID, secondRowErr = RowIDByTelegramMessageID(ctx, db, 40, 941)
+	if secondRowErr != nil || secondRowID != secondQuestionID || secondRowID != lastID {
+		t.Fatalf("the second update owns the newest row (§11: its answer is what the restart still owes), got row=%d newest=%d err=%v", secondRowID, lastID, secondRowErr)
 	}
 
-	// chat_id is the key of §5: another chat of the same database never leaks into this one.
-	if _, err := Append(ctx, db, Message{ChatID: 41, UserID: 9, Role: RoleAssistant, Content: "чужой ответ"}); err != nil {
-		t.Fatalf("Append of the other chat: %v", err)
+	// A /reset of §6 hides the history from the context of §5 — and LastVisibleMessage follows that window,
+	// because the rows under the watermark of ClearChat are not the turns the next model request would end with.
+	// RowIDByTelegramMessageID deliberately ignores the window: the row of an update is a fact about the incoming
+	// side, so the guard sees «this row exists but is not the newest visible row» and stays silent.
+	if _, clearErr := ClearChat(ctx, db, 40); clearErr != nil {
+		t.Fatalf("ClearChat: %v", clearErr)
 	}
-	if role, err := LastRoleInContext(ctx, db, 41); err != nil || role != RoleAssistant {
-		t.Fatalf("the other chat keeps its own last role, got %q err=%v", role, err)
+	if lastID, lastRole, err = LastVisibleMessage(ctx, db, 40); err != nil || lastID != 0 || lastRole != "" {
+		t.Fatalf("after /reset the hidden rows must not be reported as visible, got id=%d role=%q err=%v", lastID, lastRole, err)
 	}
-	if role, err := LastRoleInContext(ctx, db, 40); err != nil || role != "" {
-		t.Fatalf("the other chat must not leak into chat 40, got %q err=%v", role, err)
+	if rowID, rowErr := RowIDByTelegramMessageID(ctx, db, 40, 941); rowErr != nil || rowID != secondQuestionID {
+		t.Fatalf("the row of an update survives a /reset (it is not a fact about the context of §5), got %d err=%v", rowID, rowErr)
+	}
+	if rows, histErr := HistoryOfChat(ctx, db, 40, 10); histErr != nil || len(rows) != 3 {
+		t.Fatalf("/history still sees the hidden rows (§6), got %d rows err=%v", len(rows), histErr)
+	}
+
+	// chat_id of §5 keeps the chats apart: neither read leaks a row of another chat.
+	if _, otherErr := Append(ctx, db, Message{ChatID: 41, UserID: 9, Role: RoleAssistant, Content: "чужой ответ"}); otherErr != nil {
+		t.Fatalf("Append of the other chat: %v", otherErr)
+	}
+	if otherID, otherRole, otherReadErr := LastVisibleMessage(ctx, db, 41); otherReadErr != nil || otherID == 0 || otherRole != RoleAssistant {
+		t.Fatalf("the other chat keeps its own newest row, got id=%d role=%q err=%v", otherID, otherRole, otherReadErr)
+	}
+	if lastID, lastRole, err = LastVisibleMessage(ctx, db, 40); err != nil || lastID != 0 || lastRole != "" {
+		t.Fatalf("the other chat must not leak into chat 40, got id=%d role=%q err=%v", lastID, lastRole, err)
+	}
+	if rowID, rowErr := RowIDByTelegramMessageID(ctx, db, 41, 941); rowErr != nil || rowID != 0 {
+		t.Fatalf("the telegram id of a row belonging to another chat must not be found here, got %d err=%v (§5 uq_messages_chat_tg_id is per chat)", rowID, rowErr)
 	}
 }

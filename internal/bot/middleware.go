@@ -19,10 +19,12 @@ const msgPanic = "Бот ошибся на этом сообщении (panic п
 // msgTooOften — §7 RATE_LIMIT_PER_MINUTE with the concrete wait (§12 UX: say what to do).
 const msgTooOftenFormat = "Слишком часто: не больше %d запросов в минуту (§7 RATE_LIMIT_PER_MINUTE). Подожди %s и попробуй ещё раз."
 
-// stored — the UNIQUE guard of §5 `uq_messages_chat_tg_id` used as the idempotency key of §2 п.7:
-// the incoming message is written BEFORE the model call, so the second delivery of the same update
-// after a restart (or a redelivery by Telegram) hits the constraint and answers nothing. Only the
-// paths with UsesModel get a row — /help and /ping are not conversation content of §5.
+// stored — the UNIQUE guard of §5 `uq_messages_chat_tg_id` used as the idempotency key of §2 п.7: the incoming
+// message is written BEFORE the model call, so the second delivery of the same update after a restart (or a
+// redelivery by Telegram) hits the constraint. Only the paths with UsesModel get a row — /help and /ping are not
+// conversation content of §5. Hitting the constraint does not yet say whether the update was ANSWERED: the guard
+// separates «answered, stay silent» (§10 День 6) from «interrupted mid-generation, answer it now» (§11) by
+// comparing the row of this update with the newest row of the chat, see the comment inside.
 func (d *Dispatcher) stored(next HandlerFunc) HandlerFunc {
 	return func(ctx context.Context, ev Event, cmd Command) error {
 		var question = ev.Question
@@ -42,35 +44,48 @@ func (d *Dispatcher) stored(next HandlerFunc) HandlerFunc {
 		if err != nil {
 			if store.IsDuplicate(err) {
 				// §13 risk «повторные ответы»: the row of this update exists. Whether that means
-				// «this update was already answered» is a different question, and the walk of §11
+				// «this update was already answered» is a different question, and preparing the §11 item
 				// «Ctrl-C / docker compose down при длинном /ask» (2026-10-31) settled the case the old
 				// comment simply assumed: this very function writes role='user' BEFORE the model call,
 				// while the offset of §5 is acknowledged only after the handler (Dispatch → persistOffset),
 				// so a process stopped in the middle of a generation leaves the question stored and
-				// unanswered, and Telegram hands the update back after the restart. Silence there was not
-				// a second line of defence against a duplicate answer — it was the loss of the user's
-				// question with nothing in the audit to show for it. The guard therefore asks the database
-				// of §5: a chat that ends with an assistant row was answered, stay silent (§10 День 4 DoD:
-				// restart repeats nothing); a chat that ends with the user row of this very question has no
-				// answer to repeat, and the redelivery is what produces it.
-				var lastRole, roleErr = store.LastRoleInContext(ctx, d.deps.DB, ev.ChatID)
-				if roleErr != nil {
+				// unanswered, and Telegram hands the update back after the restart. Silence there was not a
+				// second line of defence against a duplicate answer — it was the loss of the user's question
+				// with nothing in the audit of §5 to show for it.
+				//
+				// The guard therefore asks the database, and it asks it about THIS update: the row of the
+				// question has an id (§5 AUTOINCREMENT), and the answer of §6 is the next row of the same
+				// chat (commands.go appends it before sending, §10 День 3 «ровно одна запись assistant»).
+				// So the question of this update is still waiting exactly when its own row is the newest row
+				// the context of §5 sees. Comparing roles only would be wrong in the ordinary case of a user
+				// who asked twice: the chat then ends with the row of the SECOND question, and the answer to
+				// the first one — already given — would look missing.
+				var questionID, rowErr = store.RowIDByTelegramMessageID(ctx, d.deps.DB, ev.ChatID, tgID)
+				if rowErr != nil {
 					// The read that decides «answer or stay silent» failed. §13 names a duplicate answer as
 					// the risk this middleware guards, so the conservative branch is the silence of §10
 					// День 4, and §12 reliability puts the reason in the log rather than in a manual.
-					d.deps.Logger.Error("the redelivered update stays unanswered: the last role of §5 could not be read",
+					d.deps.Logger.Error("the redelivered update stays unanswered: the row of §5 could not be read",
 						"chat_id", ev.ChatID, "telegram_message_id", tgID,
-						"error", Sanitize(roleErr, d.deps.Token))
+						"error", Sanitize(rowErr, d.deps.Token))
 					return nil
 				}
-				if lastRole == store.RoleAssistant {
-					d.deps.Logger.Info("the update was already answered, skipped",
-						"chat_id", ev.ChatID, "telegram_message_id", tgID)
+				var lastID, lastRole, lastErr = store.LastVisibleMessage(ctx, d.deps.DB, ev.ChatID)
+				if lastErr != nil {
+					d.deps.Logger.Error("the redelivered update stays unanswered: the newest row of §5 could not be read",
+						"chat_id", ev.ChatID, "telegram_message_id", tgID,
+						"error", Sanitize(lastErr, d.deps.Token))
 					return nil
 				}
-				d.deps.Logger.Info("the redelivered update has no answer of §6 yet, answering it",
-					"chat_id", ev.ChatID, "telegram_message_id", tgID, "last_role", lastRole)
-				return next(ctx, ev, cmd)
+				if questionID != 0 && questionID == lastID && lastRole == store.RoleUser {
+					d.deps.Logger.Info("the redelivered question has no answer of §6 yet, answering it",
+						"chat_id", ev.ChatID, "telegram_message_id", tgID, "question_row", questionID)
+					return next(ctx, ev, cmd)
+				}
+				d.deps.Logger.Info("the update was already answered, skipped",
+					"chat_id", ev.ChatID, "telegram_message_id", tgID,
+					"question_row", questionID, "newest_row", lastID, "newest_role", lastRole)
+				return nil
 			}
 			return err
 		}

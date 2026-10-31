@@ -55,7 +55,7 @@ which is exactly why the §11 Integration level runs against the fake Telegram o
 | pwsh | `7.6.9` | scripts/ requires ≥7 |
 | Docker compose | `v5.6.1` | demon running; ≥ plan "compose v4" |
 | C-compiler | none | OK — pure-Go `modernc.org/sqlite` (§2) |
-| sqlite3 CLI | absent | expected (§5) → use `scripts/db_inspect.ps1` (Go-tool, Day 3) |
+| sqlite3 CLI | absent | expected (§5) → `scripts/db_inspect.ps1` exists and is that Go-tool (`cmd/dbinspect`, read-only `mode=ro`) |
 | go proxy | `https://proxy.golang.org,direct` | §3; caches `.cache/gocache`, `.cache/gopath` |
 | STRATA network | from host — `host.docker.internal` unreachable | OK in container (Day 4 §11) |
 
@@ -66,8 +66,11 @@ tg-llm-proxy/
 ├── PLAN.md            # planning doc (local, gitignored)
 ├── go.mod             # `module bot` + `go 1.27.3` (Go 1.27 modules prototype)
 ├── main.go            # entry point (package main) — signal.NotifyContext + §7 config
+├── cmd/dbinspect/     # the second package main: the read-only viewer of §5 behind scripts/db_inspect.ps1
+│                      # (not in the image of §8.1 — a maintenance reader has no business in a bot container)
 ├── internal/config/   # config.go + limits.go — the §7 ENV loader (Day 1: done)
-├── internal/store/    # schema of §5 via go:embed, Open/PRAGMA, messages + bot_state (Day 2: done)
+├── internal/store/    # schema of §5 via go:embed, Open/PRAGMA, messages + bot_state (Day 2: done) +
+│                      # inspect.go — the read-only side (mode=ro, no _journal_mode/_txlock) of §9
 ├── internal/model/    # client.go + openai.go — the STRATA client of §10 День 3 (retries, budget)
 ├── internal/ratelimit/ # rate limiter + per-chat lock of §12 (§10 День 4 middleware)
 ├── internal/bot/      # §6 + §10 День 4: registry (commands.go), normalization + middleware
@@ -81,19 +84,21 @@ tg-llm-proxy/
 ├── Dockerfile         # multi-stage (§8.1: golang builder → alpine + ca-certificates, USER 65534) — Day 5: done
 ├── docker-compose.yml # bot + named volume bot-data:/data + 127.0.0.1 healthz publish + `test` profile for -race (§8.1)
 ├── scripts/           # Setup, env-check, strata-check, build, test, test-race, lint, run, smoke,
-│                      # docker-build, docker-up, docker-down (§9)
+│                      # docker-build, docker-up, docker-down, db_inspect (§9: every script the plan names)
 ├── bin/               # runtime binaries (gitignored)
 ├── data/              # bot.db (gitignored)
 ├── zzscratch/         # local verification scratch (gitignored, never committed)
 └── .env.example       # template — committed
 ```
 
-§4 deviation (honest note): the plan draws the entry point as `cmd/bot/main.go`, but
+§4 deviation (honest note, updated after День 4): the plan draws the entry point as `cmd/bot/main.go`, but
 the Go 1.27 modules prototype of this toolchain puts `package main` at the repo root
 next to `go.mod` (`module bot`) and imports the config as `bot/internal/config`.
-The layout of `internal/` matches §4; only the entry-point folder differs. Moving
-`main.go` into `cmd/bot/` gets decided at Day 2 when `go-telegram/bot` is vendored
-(the module graph then becomes visible), not silently now.
+The layout of `internal/` matches §4; only the entry-point folder differs. `go-telegram/bot` v1.27.0 arrived
+in `go.mod` at День 4 and the root entry point survived it — `go build .` of the Dockerfile builder stage
+(§8.1) and `go build -o bin\bot.exe .` of scripts/build.ps1 use the same target, so the host and the image
+cannot drift apart, and moving the file now would buy nothing but a diff. `cmd/` does exist for the second
+entry point (`cmd/dbinspect`): a second `package main` cannot sit next to the root one.
 
 ## Quick start (Windows/pwsh)
 
@@ -107,6 +112,7 @@ git status                     # repo state
 .\scripts\smoke.ps1 -Unit      # §11 Integration: fake Telegram + fake STRATA, then the leak scan of §12
 .\scripts\build.ps1            # §9: go mod tidy + bin\bot.exe + the §7.1 «empty ENV must exit 1» check
 .\scripts\run.ps1              # §9: loads .env (values never printed), builds, runs — Ctrl-C stops it
+.\scripts\db_inspect.ps1       # §9: reads DB_PATH of §7 through mode=ro — chats/messages/events/bot_state
 # container of §8.1: .\scripts\docker-build.ps1; .\scripts\docker-up.ps1 (waits for /healthz = 200);
 # .\scripts\test-race.ps1 (the -race run lives in the image, §3.1); .\scripts\docker-down.ps1
 ```
@@ -144,7 +150,17 @@ without the dot the PATH of §3 dies with the child process.
 9. Talk to the bot with the §6 commands (the manual check-list below). The first message from a new user is
    `/start` — it registers the chat of §5; while `TELEGRAM_ALLOWED_USERS` does not contain that `user_id`,
    `/whoami` still answers and prints the id to add (§16 change 13).
-10. `.\scripts\docker-down.ps1` + `git status` before a commit: `bin/`, `data/`, `*.db*`, `.env`,
+10. Read what the bot stored, without a Telegram account: `.\scripts\db_inspect.ps1` — it takes `DB_PATH` of
+    §7 (from `.env`), builds `bin\dbinspect.exe` when the sources are newer and prints `bot_state` (the offset
+    that must survive a restart), the events by kind (`denied`/`flood`/`model_error`/`limit`), the chats with
+    their message counts, and the newest messages and events. `-Chat 4242` narrows it to one chat, `-Limit 100`
+    widens it, `-Integrity` runs `PRAGMA integrity_check` of §15 (exit 2 when the file is not sound). The read
+    goes through `mode=ro` (the maintenance DSN of §5): it can look at the database of a RUNNING bot, cannot
+    write a row to it and cannot re-mode its journal (`internal/store/inspect.go`, `TestReadOnlyCannotWrite`).
+    A container keeps its database in the named volume, so read it there:
+    `docker compose cp bot:/data/bot.db .\zzscratch\bot.db` and then
+    `.\scripts\db_inspect.ps1 -Path .\zzscratch\bot.db`.
+11. `.\scripts\docker-down.ps1` + `git status` before a commit: `bin/`, `data/`, `*.db*`, `.env`,
     `zzscratch/` are all ignored (§10 День 1); `scripts/smoke.ps1` has already proven no token is in a file.
 
 ## Ручной чек-лист демо (§11 «Manual», реальный Telegram + реальный STRATA)
@@ -297,9 +313,10 @@ goes by runes); `TG_REPLY_DEADLINE_SECONDS` must exceed `STRATA_TIMEOUT_SECONDS`
 Implemented: the §7 configuration loader, the SQLite layer of §5, the STRATA client of §10 День 3,
 the dispatcher/registry/middleware and the Telegram adapter of §10 День 4, the §11 Integration level with
 the fake Telegram + fake STRATA and the `-race` run of §11 Concurrency (both green in the container of
-§8.1), `/healthz` of §9, the Docker image of §8.1 and the §9 scripts. Not implemented yet: no
-`scripts/db_inspect.ps1` (README §5 — the chat history can currently be read only through `/history` or
-`/stats`), no `scripts/test-restart.ps1` (the §10 День 4 kill/restart case is covered by the integration
+§8.1), `/healthz` of §9, the Docker image of §8.1, the §9 scripts and the read-only viewer of §5
+(`cmd/dbinspect` + `scripts/db_inspect.ps1`, so the history is readable without a Telegram account and
+without `sqlite3` CLI). Not implemented yet: no `scripts/test-restart.ps1` (the §10 День 4 kill/restart case
+is covered by the integration
 tests `TestOffsetSurvivesRestart` and `TestRedeliveredUpdateIsAnsweredOnce`; a process-level kill needs a
 reachable Telegram), the manual demo of §11 (the §10 День 7 checklist above has to be walked by a human in a
 real chat), and the real-network proof while `api.telegram.org` is filtered on this host. Secrets stay

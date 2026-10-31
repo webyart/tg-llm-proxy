@@ -286,11 +286,15 @@ without the dot the PATH of §3 dies with the child process.
       §3.1), and that sentence is wrong: measured 2026-10-31 with `scripts/stop.ps1`, a hidden instance does own
       a console, and `AttachConsole` + `GenerateConsoleCtrlEvent(CTRL_C_EVENT)` delivers exactly the
       `os.Interrupt` that Ctrl+C in a terminal would — the bot printed its own three stop lines, left 0.9 s
-      after the event and checkpointed the WAL. Still open is the interrupt **inside** a long `/ask`: the row of
-      `role='user'` is written before the model call (`middleware.go:35`), while `persistOffset` runs after the
-      handler (`dispatch.go:236`), so a process that dies mid-answer never acknowledges the update and Telegram
-      hands it back — where `middleware.go:43` treats the redelivery as «already answered». Whether that loses
-      the question is what the walk measures now.
+      after the event and checkpointed the WAL. The interrupt **inside** a long `/ask` is fixed, but its live
+      number is not taken yet: the row of `role='user'` is written before the model call (`middleware.go`),
+      while `persistOffset` runs after the handler (`dispatch.go`), so a process that dies mid-answer never
+      acknowledges the update and Telegram hands it back — and the dedup guard of §2 п.7 read that redelivery
+      as «already answered» and answered nothing, which loses the question with no trace in `events` of §5.
+      `store.LastRoleInContext` makes that decision now (see the note on the idempotency of §10 День 6), and
+      `TestRedeliveredUnansweredQuestionIsAnswered` fails on the old guard. What this box still waits for is the
+      live measurement: a real `/ask` whose generation is cut by the signal, and the answer of §6 after the
+      restart.
 
 Две ловушки обхода 2026-10-31, обе про команды §6: очистка контекста называется `/reset` (`store.ClearChat`
 прячет контекст, строки §5 остаются — `/history` их всё ещё видит), а не `/forget`; и с
@@ -429,6 +433,19 @@ goes by runes); `TG_REPLY_DEADLINE_SECONDS` must exceed `STRATA_TIMEOUT_SECONDS`
   the update never comes back) and `TestRedeliveredUpdateIsAnsweredOnce` (the crash *before* `bot_state`
   was written: the same update arrives again, `store.Append` hits `uq_messages_chat_tg_id`, the answer is
   silence — no second `sendMessage`, no second model call, one extra log line).
+  Corrected 2026-10-31, while the §11 item «Ctrl-C / `docker compose down` при длинном `/ask`» was being
+  prepared: «a row of this update exists» and «this question was answered» are two different facts, because
+  `stored` writes `role='user'` BEFORE the model call (`middleware.go`) while the offset of §5 is
+  acknowledged only after the handler (`dispatch.go` → `persistOffset`). A process stopped in the middle of a
+  generation leaves the question stored and unanswered, Telegram hands the update back — and the guard read
+  that redelivery as «already answered» and stayed silent: the user got nothing, and nothing in `events` of §5
+  said why either. The guard now asks the database through `store.LastRoleInContext`, which reads the same
+  window `RecentByChat` glues (so the rows a `/reset` of §6 hid do not decide the question): a chat ending
+  with an assistant row was answered → the silence of §10 День 6 stays; a chat ending with the user row of
+  this very question has no answer to repeat → the redelivery produces it. Two tests hold the line:
+  `TestDuplicateUpdateAnswersOnce` (the answered case must stay silent) and
+  `TestRedeliveredUnansweredQuestionIsAnswered` (the interrupted case must reach the model exactly once more —
+  it fails on the old guard with «the redelivered question must reach the model … got 1 calls»).
 - Day 7 (partly): DONE — the JSON log of §10 День 7 got the fields the plan names: every answered `/ask`
   writes `chat_id`, `user_id`, `model`, `latency_ms`, `attempts`, `tokens_in`, `tokens_out` through the
   `slog` JSON handler of `main.go` (an unknown usage stays `null`, §14 риск «usage полей нет»), and

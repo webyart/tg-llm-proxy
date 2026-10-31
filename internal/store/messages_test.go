@@ -452,3 +452,66 @@ func TestRestartKeepsHistoryAndOffset(t *testing.T) {
 		t.Errorf("the replayed telegram id was accepted after reopen: %v (§13 risk «повторные ответы»)", err5)
 	}
 }
+
+// TestLastRoleInContext — the primitive the dedup guard of §2 п.7 needs, written after the §11 walk
+// «Ctrl-C / docker compose down при длинном /ask» (2026-10-31) showed that «a row of this update exists» and
+// «this question was answered» are not the same fact: stored of §10 День 4 writes role='user' BEFORE the model
+// call, while the offset of §5 is acknowledged only after the handler, so a process stopped mid-generation
+// leaves the question in the database with no answer. A chat that ends with the question reports RoleUser, a
+// chat that ends with the answer reports RoleAssistant, a chat with nothing visible reports "", and the window
+// is the one the context of §5 glues — the rows hidden by a /reset of §6 do not decide the question.
+func TestLastRoleInContext(t *testing.T) {
+	var db = memDB(t)
+	var ctx = context.Background()
+
+	if role, err := LastRoleInContext(ctx, db, 40); err != nil || role != "" {
+		t.Fatalf("a chat with no rows must report no role at all, got %q err=%v", role, err)
+	}
+
+	if _, err := Append(ctx, db, Message{ChatID: 40, UserID: 9, Role: RoleUser, Content: "вопрос без ответа", TelegramMessageID: intPtr(940)}); err != nil {
+		t.Fatalf("Append user: %v", err)
+	}
+	if role, err := LastRoleInContext(ctx, db, 40); err != nil || role != RoleUser {
+		t.Fatalf("the chat that ends with an unanswered question must report %q, got %q err=%v (the §11 state: the process died between the insert and the answer)", RoleUser, role, err)
+	}
+
+	if _, err := Append(ctx, db, Message{ChatID: 40, UserID: 9, Role: RoleAssistant, Content: "ответ", Model: "qwen-test"}); err != nil {
+		t.Fatalf("Append assistant: %v", err)
+	}
+	if role, err := LastRoleInContext(ctx, db, 40); err != nil || role != RoleAssistant {
+		t.Fatalf("the chat that ends with an answer must report %q, got %q err=%v", RoleAssistant, role, err)
+	}
+
+	// The newest turn decides, not the best turn: a second question that never got an answer is the one the
+	// redelivery of §11 has to answer, even though the chat did answer the first question.
+	if _, err := Append(ctx, db, Message{ChatID: 40, UserID: 9, Role: RoleUser, Content: "второй вопрос", TelegramMessageID: intPtr(941)}); err != nil {
+		t.Fatalf("Append the second question: %v", err)
+	}
+	if role, err := LastRoleInContext(ctx, db, 40); err != nil || role != RoleUser {
+		t.Fatalf("the newest turn of §5 must decide, got %q err=%v", role, err)
+	}
+
+	// A /reset of §6 hides the history from the context of §5 — and with it the decision: the rows under the
+	// watermark of ClearChat are not the turns the next model request would end with (§5 keeps them for
+	// /history, which is exactly why this function reads the contextFilter window and not the whole table).
+	if _, err := ClearChat(ctx, db, 40); err != nil {
+		t.Fatalf("ClearChat: %v", err)
+	}
+	if role, err := LastRoleInContext(ctx, db, 40); err != nil || role != "" {
+		t.Fatalf("after /reset the hidden rows must not decide the question, got %q err=%v", role, err)
+	}
+	if rows, err := HistoryOfChat(ctx, db, 40, 10); err != nil || len(rows) != 3 {
+		t.Fatalf("/history still sees the hidden rows (§6), got %d rows err=%v", len(rows), err)
+	}
+
+	// chat_id is the key of §5: another chat of the same database never leaks into this one.
+	if _, err := Append(ctx, db, Message{ChatID: 41, UserID: 9, Role: RoleAssistant, Content: "чужой ответ"}); err != nil {
+		t.Fatalf("Append of the other chat: %v", err)
+	}
+	if role, err := LastRoleInContext(ctx, db, 41); err != nil || role != RoleAssistant {
+		t.Fatalf("the other chat keeps its own last role, got %q err=%v", role, err)
+	}
+	if role, err := LastRoleInContext(ctx, db, 40); err != nil || role != "" {
+		t.Fatalf("the other chat must not leak into chat 40, got %q err=%v", role, err)
+	}
+}

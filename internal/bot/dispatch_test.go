@@ -121,6 +121,82 @@ func TestDuplicateUpdateAnswersOnce(t *testing.T) {
 	}
 }
 
+// TestRedeliveredUnansweredQuestionIsAnswered — the case TestDuplicateUpdateAnswersOnce does not cover, and
+// the reason the §11 walk «Ctrl-C / docker compose down при длинном /ask» (2026-10-31) is in the README: the
+// row of role='user' is written by stored of §2 п.7 BEFORE the model call, while the offset of §5 is
+// acknowledged only after the handler (Dispatch → persistOffset). A process stopped in the middle of a
+// generation therefore leaves the question stored WITH no answer, and Telegram hands the update back. The old
+// guard read «a row of this update exists» as «this update was already answered» and stayed silent: the user
+// never got an answer, and no row of events of §5 said why. The sequence here is that exact one — the first
+// delivery is cancelled while the model of §7 is still producing, the second delivery of the same update
+// arrives as it would after a restart.
+func TestRedeliveredUnansweredQuestionIsAnswered(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	var m = &fakeModel{response: model.Response{Content: "ответ после ределивери"}, delay: 2 * time.Second}
+	var r = &fakeReplier{}
+	var db = testStore(t)
+	var d = newTestDispatcher(t, cfg, m, r, db)
+
+	var ev = testEvent(120, 11, 900, "/ask вопрос, который оборвался")
+
+	// The stop of §10 День 1 in the middle of the generation: the model call of §7 has begun, the row of the
+	// question is already in §5, and the answer never lands.
+	var stopCtx, cancel = context.WithCancel(context.Background())
+	var firstDone = make(chan error, 1)
+	go func() { firstDone <- d.Dispatch(stopCtx, ev) }()
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	_ = <-firstDone // the interrupted Dispatch is allowed to report the cancellation (§10 День 1: the process is leaving)
+
+	if m.callCount() != 1 {
+		t.Fatalf("the interrupted delivery must have reached the model once, got %d calls", m.callCount())
+	}
+	if r.count() != 0 {
+		t.Fatalf("an interrupted delivery must not send an answer, got %d replies", r.count())
+	}
+	var stats, err = store.Stats(context.Background(), db, 120)
+	if err != nil {
+		t.Fatalf("store.Stats: %v", err)
+	}
+	if stats.Messages != 1 {
+		t.Fatalf("the interrupted chat must hold the question and nothing else, got %d rows (§2 п.7 writes the question before the model call)", stats.Messages)
+	}
+	var offset, found, offErr = store.LastUpdateID(context.Background(), db)
+	if offErr != nil {
+		t.Fatalf("store.LastUpdateID: %v", offErr)
+	}
+	if found && offset >= ev.UpdateID {
+		t.Fatalf("an interrupted update must not be acknowledged (§5: persistOffset runs after the handler, so Telegram hands it back), got offset %d found=%v", offset, found)
+	}
+
+	// The restart of §8.1: the same update arrives again, and answering it is the only chance it ever gets.
+	if err = d.Dispatch(context.Background(), ev); err != nil {
+		t.Fatalf("the second Dispatch of the same update must not error, got %v", err)
+	}
+	if m.callCount() != 2 {
+		t.Fatalf("the redelivered question must reach the model — it has no answer of §6 to repeat, got %d calls", m.callCount())
+	}
+	if r.count() != 1 {
+		t.Fatalf("the user must get exactly one answer after the restart, got %d replies", r.count())
+	}
+	if joined := r.joined(); !strings.Contains(joined, "ответ после ределивери") {
+		t.Fatalf("the answer produced after the restart is not what the model returned, got %q", joined)
+	}
+	if stats, err = store.Stats(context.Background(), db, 120); err != nil {
+		t.Fatalf("store.Stats after the restart: %v", err)
+	}
+	if stats.Messages != 2 {
+		t.Fatalf("one question plus one answer and no second question row, got %d rows (§5 uq_messages_chat_tg_id is what keeps the question single)", stats.Messages)
+	}
+	var recent, recErr = store.RecentByChat(context.Background(), db, 120, 10)
+	if recErr != nil {
+		t.Fatalf("store.RecentByChat: %v", recErr)
+	}
+	if len(recent) != 2 || recent[0].Role != store.RoleUser || recent[1].Role != store.RoleAssistant {
+		t.Fatalf("the conversation of §5 must be the question once and then one answer, got %+v", recent)
+	}
+}
+
 // TestClosedBotRefusesAndAudits — §7 deny-by-default + §10 День 4 DoD («чужой user id получает отказ и
 // попадает в events(kind='denied')»), with §16 change 13: /start and /whoami still answer, otherwise a
 // closed bot could never reveal the id needed to open it.

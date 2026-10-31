@@ -265,6 +265,36 @@ func HistoryOfChat(ctx context.Context, db *sql.DB, chatID int64, limit int) ([]
 	return scanMessages(rows)
 }
 
+// LastRoleInContext — the role of the newest message of the chat that the context of §5 still sees: the same
+// window RecentByChat glues (contextFilter — the id watermark of a /reset of §6, otherwise context_reset_at
+// of §5). It exists to answer exactly one question: did the last question of this chat receive an answer?
+// RoleAssistant means it did. RoleUser means the row of the question is stored and nothing ever answered it
+// — the state §11 «Ctrl-C / docker compose down при длинном /ask» measured on 2026-10-31: stored of §2 п.7
+// writes role='user' BEFORE the model call, while the offset of §5 is acknowledged only after the handler
+// (Dispatch → persistOffset), so a process that dies in the middle of a generation leaves a question in the
+// database with no answer at all and an update that Telegram hands back after the restart. Empty string and
+// no error when the chat has no visible row: a fresh chat, or a /reset of §6 that hid every one of them.
+func LastRoleInContext(ctx context.Context, db *sql.DB, chatID int64) (string, error) {
+	var filter, args, err = contextFilter(ctx, db, chatID)
+	if err != nil {
+		return "", err
+	}
+	var queryArgs = append([]any{chatID}, args...) // the placeholder of contextFilter, when it has one
+	var role string
+	var scanErr = db.QueryRowContext(ctx, `
+		SELECT m.role FROM messages m
+		WHERE m.chat_id = ? AND `+filter+`
+		ORDER BY m.id DESC
+		LIMIT 1`, queryArgs...).Scan(&role)
+	if errors.Is(scanErr, sql.ErrNoRows) {
+		return "", nil
+	}
+	if scanErr != nil {
+		return "", scanErr
+	}
+	return role, nil
+}
+
 // ClearChat — `/reset` of §6: the context starts from now, nothing is deleted («история не
 // удаляется — /history её видит», §5). Both marks are written in one transaction (§5 WAL with
 // `_txlock=immediate` makes the write transaction immediate, so a concurrent writer of another

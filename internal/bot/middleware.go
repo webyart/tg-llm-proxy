@@ -41,11 +41,36 @@ func (d *Dispatcher) stored(next HandlerFunc) HandlerFunc {
 		})
 		if err != nil {
 			if store.IsDuplicate(err) {
-				// §13 risk «повторные ответы»: this update was already answered. Silence, not a
-				// second model request, and the log says why (§10 День 4 DoD: restart repeats nothing).
-				d.deps.Logger.Info("the update was already answered, skipped",
-					"chat_id", ev.ChatID, "telegram_message_id", tgID)
-				return nil
+				// §13 risk «повторные ответы»: the row of this update exists. Whether that means
+				// «this update was already answered» is a different question, and the walk of §11
+				// «Ctrl-C / docker compose down при длинном /ask» (2026-10-31) settled the case the old
+				// comment simply assumed: this very function writes role='user' BEFORE the model call,
+				// while the offset of §5 is acknowledged only after the handler (Dispatch → persistOffset),
+				// so a process stopped in the middle of a generation leaves the question stored and
+				// unanswered, and Telegram hands the update back after the restart. Silence there was not
+				// a second line of defence against a duplicate answer — it was the loss of the user's
+				// question with nothing in the audit to show for it. The guard therefore asks the database
+				// of §5: a chat that ends with an assistant row was answered, stay silent (§10 День 4 DoD:
+				// restart repeats nothing); a chat that ends with the user row of this very question has no
+				// answer to repeat, and the redelivery is what produces it.
+				var lastRole, roleErr = store.LastRoleInContext(ctx, d.deps.DB, ev.ChatID)
+				if roleErr != nil {
+					// The read that decides «answer or stay silent» failed. §13 names a duplicate answer as
+					// the risk this middleware guards, so the conservative branch is the silence of §10
+					// День 4, and §12 reliability puts the reason in the log rather than in a manual.
+					d.deps.Logger.Error("the redelivered update stays unanswered: the last role of §5 could not be read",
+						"chat_id", ev.ChatID, "telegram_message_id", tgID,
+						"error", Sanitize(roleErr, d.deps.Token))
+					return nil
+				}
+				if lastRole == store.RoleAssistant {
+					d.deps.Logger.Info("the update was already answered, skipped",
+						"chat_id", ev.ChatID, "telegram_message_id", tgID)
+					return nil
+				}
+				d.deps.Logger.Info("the redelivered update has no answer of §6 yet, answering it",
+					"chat_id", ev.ChatID, "telegram_message_id", tgID, "last_role", lastRole)
+				return next(ctx, ev, cmd)
 			}
 			return err
 		}

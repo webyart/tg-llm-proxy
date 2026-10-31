@@ -49,6 +49,23 @@ type Response struct {
 	TokensOut *int64
 	Latency   time.Duration
 	Attempts  int
+	// ReasoningRunes and FinishReason are filled only by the streamed path of §15 (§16 change 34). They exist
+	// for the log line of §10 День 7 and for nothing else: no column of §5 holds them, because §5 keeps the
+	// answer text, not the thinking, and `finish_reason == "length"` (the model ran out of context, §13 risk
+	// «ответ обрывается») would otherwise be visible only as a suspiciously short answer.
+	ReasoningRunes int
+	FinishReason   string
+}
+
+// Streamer — the optional interface of §15 «стриминг ответов» (§16 change 34). It is deliberately NOT part of
+// Client: the fakes of §11 and the health probe of §4 answer one question with one answer, and making every
+// implementation produce a stream would push the streaming rules of §10 День 3 (one row, no retry after the
+// first delivered token) into places that have no tokens to deliver. The ask handler asks for this interface
+// and falls back to Complete when the client does not implement it.
+type Streamer interface {
+	// Stream performs one chat request as a stream and returns the FINAL answer, so the caller still writes
+	// exactly one assistant row of §5.
+	Stream(ctx context.Context, req Request, h StreamHandler) (Response, error)
 }
 
 // Client — the contract of §4 (`internal/model/client.go`).

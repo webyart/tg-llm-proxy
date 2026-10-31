@@ -9,6 +9,7 @@ package testutil
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -32,6 +33,21 @@ type StrataReply struct {
 	Model        string        // the model name to echo (§6 /model)
 	Delay        time.Duration // hold the response open — the "timeout" case of §10 День 3
 	Models       []string      // the list for GET /v1/models (§6 /model check)
+
+	// The streaming fields of §15 (§16 change 34). They are used only when the REQUEST asks for a stream
+	// (`"stream": true` in the body), which is how one fake serves both paths of the client. The shapes below
+	// are the ones measured on the real endpoint of §14: one `data:` line per delta, keepalive comment lines,
+	// `data: [DONE]` at the end, and `usage` inside the stream without `stream_options`.
+	StreamContent     []string      // one element per `delta.content` event — the answer arriving by pieces
+	StreamReasoning   []string      // `delta.reasoning_content` events: the thinking channel of §14
+	StreamGap         time.Duration // pause BETWEEN the events (a healthy stream measures ~20 ms apart)
+	StreamStall       time.Duration // pause before the LAST event — the stall of STREAM_IDLE_TIMEOUT_SECONDS
+	StreamGarbage     int           // inject this many `data:` lines that are not JSON (a broken provider)
+	StreamKeepalive   bool          // insert a `:` comment line — measured 2–3 per real answer
+	StreamNoDone      bool          // do not send `[DONE]`; end by closing the connection instead
+	StreamFinish      string        // finish_reason of the last event, "stop" unless set ("length" = cut off)
+	StreamUsage       bool          // carry the usage object in the final event of the stream
+	StreamContentType string        // content-type to answer — a proxy that ignored the stream answers JSON
 }
 
 // Strata — the running fake. The counters live under a mutex because §10 День 6 runs parallel
@@ -173,6 +189,14 @@ func (s *Strata) handleChat(w http.ResponseWriter, r *http.Request) {
 	if model == "" {
 		model = requestModel(string(raw)) // echo what the client asked for, as a real server does
 	}
+
+	// §15 (§16 change 34): a request that asks for a stream is answered as SSE when the script carries the
+	// stream shape. A script WITHOUT it answers plain JSON to the same request — that is the proxy bug the
+	// client of stream.go refuses to read as an empty model answer.
+	if answer.hasStream() && requestWantsStream(string(raw)) {
+		s.writeStream(r, w, answer, model)
+		return
+	}
 	var message = map[string]any{"role": "assistant"}
 	if answer.NoContent {
 		message["content"] = nil // some providers answer null here
@@ -233,4 +257,155 @@ func requestModel(raw string) string {
 		return ""
 	}
 	return decoded.Model
+}
+
+// requestWantsStream — the `"stream": true` flag of §15. The fake serves both paths, so it has to read the
+// flag the same way the client sets it.
+func requestWantsStream(raw string) bool {
+	var decoded struct {
+		Stream bool `json:"stream"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &decoded); err != nil {
+		return false
+	}
+	return decoded.Stream
+}
+
+// hasStream — does this reply carry the stream shape at all? A reply that only scripts the plain path stays
+// a plain reply even when the client asks for a stream (§15: the guard of the client needs that case).
+func (r StrataReply) hasStream() bool {
+	return len(r.StreamContent) > 0 || len(r.StreamReasoning) > 0 || r.StreamUsage || r.StreamNoDone ||
+		r.StreamStall > 0 || r.StreamGap > 0 || r.StreamGarbage > 0 || r.StreamKeepalive
+}
+
+// writeStream — the SSE answer of §15 in the shape measured on the real endpoint of §14 on 2026-10-31:
+//
+//	data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}
+//	: keepalive comment                                                    (2–3 per answer)
+//	data: …{"delta":{"reasoning_content":"Thinking"}}                      (the thinking of this model)
+//	data: …{"delta":{"content":"Привет"}}                                  (the answer, one event per token)
+//	data: …{"choices":[],"usage":{"prompt_tokens":79,"completion_tokens":167}}
+//	data: [DONE]
+//
+// The sleeps obey the REQUEST context: a client whose budget of §7 ran out does not leave the fake writing
+// events nobody reads, which is what keeps a stall test short (§10 День 3 does the same for Delay).
+func (s *Strata) writeStream(r *http.Request, w http.ResponseWriter, answer StrataReply, model string) {
+	var contentType = strings.TrimSpace(answer.StreamContentType)
+	if contentType == "" {
+		contentType = "text/event-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+
+	var flusher, canFlush = w.(http.Flusher)
+	var event = func(payload map[string]any) bool {
+		var line, err = json.Marshal(payload)
+		if err != nil {
+			return true // a scripted event that cannot be built is not worth an aborted test
+		}
+		if _, err = fmt.Fprintf(w, "data: %s\n\n", line); err != nil {
+			return false // the client is gone (it gave up on its budget of §7)
+		}
+		if canFlush {
+			flusher.Flush() // without a flush the client sees one wall of text at the end, not a stream
+		}
+		return true
+	}
+	var comment = func() {
+		if _, err := fmt.Fprint(w, ": keepalive of the fake (§14 measured these)\n\n"); err != nil {
+			return
+		}
+		if canFlush {
+			flusher.Flush()
+		}
+	}
+	var wait = func(gap time.Duration) bool {
+		if gap <= 0 {
+			return true
+		}
+		select {
+		case <-r.Context().Done():
+			return false
+		case <-time.After(gap):
+			return true
+		}
+	}
+
+	var envelope = func(delta map[string]any, finish any, usage map[string]any, choices []any) map[string]any {
+		var payload = map[string]any{
+			"id":      "fake-chat-stream-1",
+			"object":  "chat.completion.chunk",
+			"model":   model,
+			"choices": choices,
+		}
+		if delta != nil {
+			payload["choices"] = []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finish}}
+		}
+		if usage != nil {
+			payload["usage"] = usage
+		}
+		return payload
+	}
+
+	if !event(envelope(map[string]any{"role": "assistant", "content": ""}, nil, nil, nil)) {
+		return
+	}
+	if answer.StreamKeepalive {
+		comment()
+	}
+	for _, piece := range answer.StreamReasoning {
+		if !wait(answer.StreamGap) {
+			return
+		}
+		if !event(envelope(map[string]any{"reasoning_content": piece}, nil, nil, nil)) {
+			return
+		}
+	}
+	for i := 0; i < answer.StreamGarbage; i++ {
+		if _, err := fmt.Fprint(w, "data: {this is not json (§15: a broken line of a provider)}\n\n"); err != nil {
+			return
+		}
+		if canFlush {
+			flusher.Flush()
+		}
+	}
+	for _, piece := range answer.StreamContent {
+		if !wait(answer.StreamGap) {
+			return
+		}
+		if !event(envelope(map[string]any{"content": piece}, nil, nil, nil)) {
+			return
+		}
+	}
+	var finish = answer.StreamFinish
+	if finish == "" {
+		finish = "stop"
+	}
+	if answer.StreamStall > 0 {
+		if !wait(answer.StreamStall) {
+			return // the stall of STREAM_IDLE_TIMEOUT_SECONDS: the client ends the call, nothing to write
+		}
+	}
+	if !event(envelope(map[string]any{}, finish, nil, nil)) {
+		return
+	}
+	if answer.StreamUsage {
+		var usage = map[string]any{
+			"prompt_tokens":     answer.TokensIn,
+			"completion_tokens": answer.TokensOut,
+			"total_tokens":      answer.TokensIn + answer.TokensOut,
+		}
+		if !event(envelope(nil, nil, usage, []any{})) {
+			return
+		}
+	}
+	if !answer.StreamNoDone {
+		if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
+			return
+		}
+		if canFlush {
+			flusher.Flush()
+		}
+	}
 }

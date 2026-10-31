@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -329,6 +330,24 @@ func TestDeadlineOfTheHandlerWins(t *testing.T) {
 	}
 	if spent := time.Since(start); spent > 250*time.Millisecond {
 		t.Errorf("the call ran %v although the handler gave 100ms (§10 День 3 budget)", spent)
+	}
+}
+
+// TestSpentBudgetIsNotRetryable — the trap §15 exposed. context.DeadlineExceeded implements Timeout() and
+// Is(), which makes it satisfy net.Error, so the network branch of Retryable would retry a call whose time is
+// simply up: the user waits a second wall, and a second slot of MAX_CONCURRENT_MODEL_REQUESTS of §12 goes to an
+// answer that is already lost. The guard in Retryable is what keeps §10 День 3 («ретраи — только сеть и 5xx»).
+func TestSpentBudgetIsNotRetryable(t *testing.T) {
+	for _, err := range []error{
+		context.DeadlineExceeded,
+		context.Canceled,
+		fmt.Errorf("%w: %s", context.DeadlineExceeded, TelegramBudgetNotice),
+		fmt.Errorf("%w: %s", ErrStreamStalled, StreamNotice),
+		fmt.Errorf("%w: %s", ErrStreamTooLong, StreamNotice),
+	} {
+		if Retryable(err) {
+			t.Errorf("Retryable(%v) = true — a spent budget is not the network class (§10 День 3, §15)", err)
+		}
 	}
 }
 

@@ -47,6 +47,11 @@ type Options struct {
 	Backoff       time.Duration
 	MaxConcurrent int
 	HTTPClient    *http.Client
+	// Stream carries the budgets of the §15 «стриминг ответов» path (§16 change 34): the three rows of §7
+	// STREAM_IDLE_TIMEOUT_SECONDS, STREAM_TOTAL_DEADLINE_SECONDS and the progress cadence. A zero value means
+	// the defaults of stream.go — a client built by a test streams with those defaults and no test has to
+	// repeat the table of §7.
+	Stream StreamSettings
 }
 
 // OpenAI — the Client of §4 implemented over the OpenAI-compatible API.
@@ -60,6 +65,7 @@ type OpenAI struct {
 	backoff   time.Duration
 	client    *http.Client
 	sem       chan struct{}
+	stream    StreamSettings
 }
 
 // New — build the client, filling the defaults of §10 День 3. A missing ChatURL is a configuration
@@ -98,6 +104,7 @@ func New(o Options) (*OpenAI, error) {
 		backoff:   o.Backoff,
 		client:    o.HTTPClient,
 		sem:       make(chan struct{}, o.MaxConcurrent),
+		stream:    withStreamDefaults(o.Stream),
 	}, nil
 }
 
@@ -162,6 +169,14 @@ func (c *OpenAI) Complete(ctx context.Context, req Request) (Response, error) {
 // Retryable — §10 День 3: only network errors and 5xx are retried. A 4xx (APIError.Retryable is
 // false), an empty answer and a cancelled context all end the call at once.
 func Retryable(err error) bool {
+	// A spent budget is not the network class, and this check has to come FIRST: context.DeadlineExceeded
+	// implements Timeout() and Is(), so it satisfies net.Error and the branch below would retry an answer
+	// whose time is simply up. Measured 2026-10-31 by the §15 stream tests, where a stalled stream was
+	// retried for exactly this reason — a second wall for the user and a second slot of
+	// MAX_CONCURRENT_MODEL_REQUESTS of §12 spent on an answer they already watched die.
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return false
+	}
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
 		return apiErr.Retryable()
@@ -178,8 +193,9 @@ func Retryable(err error) bool {
 }
 
 // chatMessage/chatRequest/chatResponse — the wire shape of the OpenAI-compatible API (§14 item 5).
-// `stream` is explicitly false: streaming belongs to the §15 backlog, and §10 День 3 stores one
-// final answer per request.
+// `stream` is false for Complete and true for the §15 path of stream.go; both end in ONE final answer and one
+// assistant row of §5 (§10 День 3). The events of the streamed path have their own shape in chatChunk,
+// because a streamed event carries a `delta`, not a `message`.
 type chatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`

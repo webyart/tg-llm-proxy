@@ -19,6 +19,9 @@ Usage:
 through the WinINET proxy of the registry, while the Go process does not see that proxy at all —
 `http.Transport` (the nil-Transport default of http.Client) reads only HTTPS_PROXY/HTTP_PROXY of the
 PROCESS ENV. Without it `run.ps1` stops at getMe (§10 День 4), with it the same binary polls Telegram.
+With the proxy comes NO_PROXY: the loopback and the host of STRATA_BASE_URL of §7 are excluded, because the
+model normally answers on this very machine — sending it through the proxy would make the bot need the
+internet to talk to its own loopback, and the failure would arrive as events(kind='model_error').
 §7 has no row for a proxy and gets none: the variable belongs to the process, not to the configuration.
 
 Exit: the exit code of the bot — 0 after a clean stop by signal, 1 on a configuration or start failure
@@ -86,6 +89,33 @@ try {
         }
         else {
             Write-Output 'run: -UseSystemProxy was asked, but no proxy is enabled in the system settings — the bot keeps the direct route (§10 День 4: getMe needs an answer from api.telegram.org)'
+        }
+    }
+
+    # The bypass belongs to ANY proxy of the process, not only to the one copied from the registry above: the
+    # variable may be exported by the shell or inherited by the service manager, and ProxyFromEnvironment then
+    # applies it to EVERY request — including the model of §7, which usually lives on the same machine
+    # (http://127.0.0.1:8080/v1 here, i.e. the very port that collided with HEALTH_PORT on 2026-10-31). A
+    # request to the bot's own loopback that goes through a proxy needs the proxy and the internet to reach a
+    # program next door, and the failure arrives as events(kind='model_error') with a dial error inside
+    # (§12 надёжность). §7 has no row for it, exactly as for HTTPS_PROXY: it belongs to the process.
+    if ($env:HTTPS_PROXY -or $env:HTTP_PROXY) {
+        $bypass = @('127.0.0.1', 'localhost', '::1')
+        if ($env:STRATA_BASE_URL) {
+            try {
+                $strataHost = ([System.Uri]$env:STRATA_BASE_URL).Host
+                if ($strataHost -and $bypass -notcontains $strataHost) { $bypass += $strataHost }
+            }
+            catch {
+                Write-Output 'run: STRATA_BASE_URL is not a URL the script can read a host from — only the loopback stays out of the proxy'
+            }
+        }
+        if (-not $env:NO_PROXY) {
+            $env:NO_PROXY = ($bypass -join ',')
+            Write-Output "run: NO_PROXY=$($env:NO_PROXY) — the model of §7 is reached directly, the proxy is for api.telegram.org (§2)"
+        }
+        else {
+            Write-Output "run: NO_PROXY is already set in the ENV ($($env:NO_PROXY)), the script leaves it alone (§7 table of the process)"
         }
     }
 

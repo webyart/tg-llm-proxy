@@ -160,7 +160,8 @@ catch {
     $systemProxy = ''
 }
 if ($tcpOk -or $goProxy) {
-    $proxyNote = if ($goProxy) { "the Go process will use HTTPS_PROXY=$goProxy" } else { 'no HTTPS_PROXY is needed' }
+    $bypassNote = if ($env:NO_PROXY) { "NO_PROXY=$env:NO_PROXY" } else { 'NO_PROXY is empty, so a model of §7 on the loopback would be sent through the proxy — run.ps1 -UseSystemProxy sets the bypass' }
+    $proxyNote = if ($goProxy) { "the Go process will use HTTPS_PROXY=$goProxy ($bypassNote)" } else { 'no HTTPS_PROXY is needed' }
     Check 'Telegram API from Go' $true "$tcpNote; $proxyNote (§10 День 4: getMe must answer for the bot itself)"
 }
 else {

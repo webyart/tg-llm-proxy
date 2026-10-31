@@ -320,25 +320,52 @@ without the dot the PATH of §3 dies with the child process.
       §2 п.7: the row must carry a `telegram_message_id` (without it no UNIQUE guard of §5 would make the replay
       idempotent), and only the NEWEST visible row of the chat may be answered (a chat the user asked twice must not
       get its first answer a second time). A scan that finds one says so in the log of §12 — `the stored question of
-      §5 has no answer of §6, the start of the process answers it` — and prints `the start of the process answered 1
-      stored question(s) of §5 that had no answer of §6 (§15, internal/bot/resume.go)`. `TestUnansweredQuestions`
-      (`internal/store/messages_test.go`) and the four `TestStartup…` cases of `internal/bot/resume_test.go` hold it,
-      the last of them racing the scan against a real redelivery of the same update: the per-chat lock of §12 puts one
-      of them second, the guard silences it — one answer, two rows of §5, no second model call.
-      **The live end of this was not walked, and the reason is the network, not the code.** Recreating the
-      container onto the new image ran straight into a dead route to the Bot API: `bot.New: … getMe … context
-      deadline exceeded`, exit 1, and `restart: unless-stopped` has been retrying it since —
-      `Test-NetConnection api.telegram.org 443` is `False`, `ProxyEnable=0`, while `example.com` answers 200 and
-      the registry of Docker Hub answers its usual 401, so only the Telegram side of the route is gone. The scan
-      was still measured against the real data of the volume, read-only through the `docker cp` copy of §9
-      (`zzscratch/resumescan`): it names exactly one chat — `chat=666244095 row=6 tg_id=449 stored_at 14:57:47` —
-      and leaves the older `row=5 tg_id=448` of the same text alone (the newest-visible-row rule of §2 п.7), with
-      `last_update_id` untouched at 920551681. Worth noticing in those rows: `row=6` is not the SIGTERM case at
-      all, it is the question whose model call spent the whole `STRATA_TIMEOUT_SECONDS 60s` (the `timeout` event of
-      §5 at 14:58:47) — the scan cannot tell a gap made by a signal from one made by a budget or an OOM, and does
-      not have to: all three leave the same shape, «a stored question with no answer row», and §12 is the reason
-      the process answers it once instead of leaving it there. As soon as the route returns, the container does
-      this by itself: the pending question gets its answer without anyone asking again.
+      §5 has no answer of §6, the start of the process answers it` — and closes with two counters, `answered` and
+      `pending`, whose difference the live walk below is about. `TestUnansweredQuestions`
+      (`internal/store/messages_test.go`) and the five `TestStartup…` cases of `internal/bot/resume_test.go` hold it:
+      the question cut mid-generation, a chat that had already caught up, a chat the user asked twice, the scan
+      racing a real redelivery of the same update (the per-chat lock of §12 puts one of them second, the guard
+      silences it — one answer, two rows of §5, no second model call), and a replay whose model never answered.
+      **The live end was walked twice the same afternoon — at 15:55:28 and at 16:12:03 UTC — and the first of those
+      two runs is what found the bug described below.** For the better part of an hour before them the recreated
+      container had sat in
+      `restart: unless-stopped` on `bot.New: … getMe … context deadline exceeded` (exit 1) while `example.com`
+      answered 200 and the registry of Docker Hub its usual 401: only the Telegram side of the route was down, and
+      `bot.New` of §10 День 4 runs before the scan of §15, so there was nothing of §15 to watch. The first container that
+      got through printed `the stored question of §5 has no answer of §6, the start of the process answers it`
+      (`chat=666244095 row=6 tg_id=449 stored_at 14:57:47` — the same chat the read-only `docker cp` copy of §9 had
+      named through `zzscratch/resumescan`, which had likewise left the older `row=5 tg_id=448` of the same text
+      alone: the newest-visible-row rule of §2 п.7 working on real data), then the guard of §2 п.7
+      (`the question of this update has no answer of §6 yet, answering it`), then `the model did not answer` at
+      15:56:28 when the whole `STRATA_TIMEOUT_SECONDS 60s` was spent — and, the bug, `the start of the process
+      answered 1 stored question(s) …`. The second container, on the fixed counting, printed the same three lines at
+      16:12:03 and then `the replay of the start of the process left the stored question without an answer of §6,
+      the next start tries it again` (WARN, `newest_row=6 newest_role=user`) plus the summary that names both
+      counters: `the start of the process of §15 answered 0 stored question(s) of §5 that had no answer of §6, left
+      1 still without an answer (the next start of the process tries them again)`. The volume after both runs
+      (`db_inspect.ps1` of §9 over a second copy): `command` still five rows, `timeout` now three (14:58:47 the run
+      that was interrupted, 15:56:28 and 16:13:03 the two replays), `last_update_id` still 920551681, and `messages`
+      still ending at `row=6` — no second question row, no assistant row for an answer that never happened, no
+      second `ask` event, the offset unmoved. The replay supplies the update Telegram will not send; §5 decides the
+      rest, exactly as the §11 tests say.
+      What the first of those runs exposed was a lie in the log, and it was the counting: the process claimed an
+      answer for a question nobody had answered, because the `/ask` handler of §6 finishes a STRATA failure itself —
+      the events row of §10 День 3 and the notice to the user — and returns nil to the chain, so the chain cannot
+      see the failure. `ResumeInterruptedQuestions` therefore takes both counters from §5, through
+      `store.LastVisibleMessage`, the same read the guard of §2 п.7 decides with: an `assistant` row with `id >` the
+      question row is the only proof that the user was finally answered, and the poller running beside this loop must
+      not be able to fake that proof with a NEW question of the same chat.
+      `TestStartupCountsAQuestionTheModelCouldNotAnswer` holds it — a failed replay leaves the question in §5, one
+      `timeout` event, one notice to the user, `answered=0 pending=1`.
+      And here is why this particular question keeps failing, measured through `zzscratch/asktime` against the same
+      STRATA, the question read out of the §9 copy, a long budget: **1m55.99s, 6034 runes, 140 → 7248 tokens**. It
+      asks for «не менее 20 пунктов, каждый с пояснением в 3 предложения, плюс в конце вывод на 10 предложений», so
+      `STRATA_TIMEOUT_SECONDS 60` of §7 was never going to cover it: the replay of §15 works, the budget of the model
+      does not fit the answer, and that is the same wall the §15 «стриминг ответов» item runs into from the other
+      side. The question is still pending in the volume, and every start of the process will try it again. No age
+      cap on a replayed question is deliberately in v1 — §12 promises an answer to a question the user never got,
+      and an age cap would break that promise silently — but the cost of the rule is now measured too: one model
+      call per pending question per start, which is what those three `timeout` rows are.
       The guard itself stays as fixed on 2026-10-31 — it is what makes any redelivery that *does* happen safe, and
       `TestRedeliveredUnansweredQuestionIsAnswered` / `TestRedeliveredAnsweredQuestionStaysSilentWhenTheChatMovedOn`
       hold both directions of it (§10 День 6 note below).
@@ -508,10 +535,12 @@ goes by runes); `TG_REPLY_DEADLINE_SECONDS` must exceed `STRATA_TIMEOUT_SECONDS`
   coming (`§11 manual`), `store.UnansweredQuestions` + `Dispatcher.ResumeInterruptedQuestions`
   (`internal/bot/resume.go`, started by `main.go` beside the polling goroutine) feed the stored question back
   into the SAME chain, so this guard — not a second copy of the answering code — decides. `TestStartup…` in
-  `internal/bot/resume_test.go` holds the four directions of it: the interrupted question is answered once at
+  `internal/bot/resume_test.go` holds the five directions of it: the interrupted question is answered once at
   the start of a new process, an answered chat stays silent, a twice-asked chat is answered only for its newest
-  question, and the scan racing a real redelivery of the same update still produces exactly one answer — the
-  per-chat lock of §12 puts one of them second, and the guard silences it.
+  question, the scan racing a real redelivery of the same update still produces exactly one answer — the
+  per-chat lock of §12 puts one of them second, and the guard silences it — and a replay whose model never
+  answered leaves §5 exactly as it found it and reports `pending=1` rather than pretending otherwise, which is
+  the case the live container of §8.1 caught the first version lying about (§11 note above).
 - Day 7 (partly): DONE — the JSON log of §10 День 7 got the fields the plan names: every answered `/ask`
   writes `chat_id`, `user_id`, `model`, `latency_ms`, `attempts`, `tokens_in`, `tokens_out` through the
   `slog` JSON handler of `main.go` (an unknown usage stays `null`, §14 риск «usage полей нет»), and
@@ -626,7 +655,11 @@ Not a todo list for v1 — these are the things §15 deliberately left out of th
 implementation made concrete enough to name.
 
 - Стриминг ответов: правка одного сообщения раз в ~1 с вместо одного `sendMessage` (the chunking of
-  `internal/bot/reply.go` already owns the size logic a stream would reuse).
+  `internal/bot/reply.go` already owns the size logic a stream would reuse). Замер 2026-10-31 через
+  `zzscratch/asktime` — тот же STRATA и тот же вопрос, который догоняет §15: **1m55.99s, 6034 runes,
+  140 → 7248 tokens**. В `STRATA_TIMEOUT_SECONDS 60` такой ответ не влезает ни при каком числе повторов
+  (§10 День 3: кончился бюджет — повторов уже нет), так что стрим здесь нужен не только ради UX, а чтобы
+  длинный ответ вообще случился.
 - Вебхуки + HTTPS (`StartWebhook` of the library exists) вместо long polling; `bot_state` offset then
   becomes the idempotency key of the incoming side instead of the poll cursor.
 - Команды `/image`, `/voice`, вложения и файлы (§15) — the registry of §6 takes a new entry without

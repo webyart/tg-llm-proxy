@@ -278,15 +278,21 @@ func main() {
 	var resumeDone = make(chan struct{})
 	go func() {
 		defer close(resumeDone)
-		var answered, resumeErr = dispatcher.ResumeInterruptedQuestions(ctx)
+		var answered, pending, resumeErr = dispatcher.ResumeInterruptedQuestions(ctx)
 		if resumeErr != nil && !errors.Is(resumeErr, context.Canceled) {
-			logger.Error("the startup scan of §15 stopped", "answered", answered,
+			logger.Error("the startup scan of §15 stopped", "answered", answered, "pending", pending,
 				"error", bot.Sanitize(resumeErr, cfg.BotToken))
 			return
 		}
-		if answered > 0 {
-			fmt.Println("the start of the process answered", answered,
-				"stored question(s) of §5 that had no answer of §6 (§15, internal/bot/resume.go)")
+		if answered > 0 || pending > 0 {
+			// §12 UX: the two numbers are different promises. «answered» is a row of §6 the user actually
+			// received, «pending» is a question §5 still holds with no answer and that the next start will
+			// try again. Measured 2026-10-31 15:56 in the container of §8.1: this line printed the first
+			// number for a question that had earned the second one, because the ask handler of §6 answers a
+			// model failure itself (the events row of §5 and the notice to the user) and returns nil.
+			fmt.Println("the start of the process of §15 answered", answered,
+				"stored question(s) of §5 that had no answer of §6, left", pending,
+				"still without an answer (the next start of the process tries them again)")
 		}
 	}()
 

@@ -37,10 +37,21 @@ import (
 const ResumeScanLimit = 20
 
 // ResumeInterruptedQuestions — one attempt, at the start of the process, for every stored question of §5 that
-// has no answer of §6. It returns how many of them reached the handler; a question whose handler failed (STRATA
-// down, a budget of §7 gone) is reported by the ask handler itself — the events row of §5 and the user notice —
-// and the loop moves on, because a broken STRATA must not take the whole start of the process down
-// (§12 надёжность: «один сбой STRATA ≠ падение бота»).
+// has no answer of §6. It returns how many questions actually RECEIVED an answer of §6 and how many are still
+// without one; a question whose handler failed (STRATA down, a budget of §7 gone) is reported by the ask handler
+// itself — the events row of §5 and the user notice — and the loop moves on, because a broken STRATA must not
+// take the whole start of the process down (§12 надёжность: «один сбой STRATA ≠ падение бота»).
+//
+// The second number is not decoration, and the container of §8.1 found that out on 2026-10-31 at 15:55:28: the
+// scan named the one waiting question, the guard let it through, the model spent the whole
+// STRATA_TIMEOUT_SECONDS 60s on it and answered nothing — and the process still printed «answered 1», because
+// the ask handler of §6 handles a model failure itself (the events row and the notice to the user) and returns
+// nil. What the handler returns therefore says nothing about the answer; only §5 knows. So the count is taken
+// from store.LastVisibleMessage, the same function the dedup guard of §2 п.7 decides with: an assistant row
+// newer than the question row means the user got the answer, anything else leaves the question exactly where it
+// was for the next start of the process. The comparison is `id > row.ID` rather than «the chat ends with an
+// answer», because the poller of §5 runs next to this loop and a new question can arrive while this one is in
+// flight — that must not read as a failure of the replay.
 //
 // Two things it deliberately does not do:
 //   - it never writes the offset of §5. There is no update here to acknowledge: the Event is rebuilt from a row,
@@ -54,23 +65,22 @@ const ResumeScanLimit = 20
 // One consequence worth naming before someone reads it as a bug: the replay goes through `allowed` of §7 like any
 // other update, so a chat that left TELEGRAM_ALLOWED_USERS while its question was waiting gets the refusal text
 // it would have got live, not an answer. That is the allowlist working, not the scan misbehaving.
-func (d *Dispatcher) ResumeInterruptedQuestions(ctx context.Context) (int, error) {
+func (d *Dispatcher) ResumeInterruptedQuestions(ctx context.Context) (answered int, pending int, err error) {
 	if d.deps.DB == nil {
-		return 0, nil
+		return 0, 0, nil
 	}
-	var rows, err = store.UnansweredQuestions(ctx, d.deps.DB, ResumeScanLimit)
-	if err != nil {
-		return 0, err
+	var rows, scanErr = store.UnansweredQuestions(ctx, d.deps.DB, ResumeScanLimit)
+	if scanErr != nil {
+		return 0, 0, scanErr
 	}
 	var ask = d.index[CommandAsk]
-	var answered = 0
 	var i = 0
 	for i < len(rows) {
 		if err = ctx.Err(); err != nil {
 			// The stop signal of §10 День 1: the loop leaves the remaining questions in §5 for the next
 			// start, exactly where they are now. The one in flight returns through the cancellation check of
 			// the ask handler, which writes no assistant row for an answer that never happened.
-			return answered, err
+			return answered, pending, err
 		}
 		var row = rows[i]
 		var ev = Event{
@@ -94,11 +104,40 @@ func (d *Dispatcher) ResumeInterruptedQuestions(ctx context.Context) (int, error
 			d.deps.Logger.Error("the stored question of §5 stayed unanswered",
 				"chat_id", ev.ChatID, "question_row", row.ID,
 				"error", Sanitize(chainErr, d.deps.Token))
+			pending++
 			i++
 			continue
 		}
-		answered++
+		// The chain returned without an error, which is NOT the same thing as an answer: the ask handler of §6
+		// swallows a model failure of §10 День 3 on purpose (one STRATA failure must not travel up as a broken
+		// update), so only §5 can say what the replay actually left behind. LastVisibleMessage is the same read
+		// the guard of §2 п.7 decides with, which keeps the two paths using one definition of «answered».
+		var newestID, newestRole, checkErr = store.LastVisibleMessage(ctx, d.deps.DB, ev.ChatID)
+		if checkErr != nil {
+			// Counting this as answered would be the other kind of lie: the operator would look for an answer
+			// that §5 has no record of. The question stays where it is, and the next start tries it again.
+			d.deps.Logger.Error("the start of the process could not check whether its replay wrote an answer of §6",
+				"chat_id", ev.ChatID, "question_row", row.ID,
+				"error", Sanitize(checkErr, d.deps.Token))
+			pending++
+			i++
+			continue
+		}
+		// `> row.ID` and not just the role: the poller of §5 runs next to this loop, so a NEW question of this
+		// chat can be the newest row by the time the replay ends. An assistant row newer than the question this
+		// replay was built from is the only thing that proves the user was finally answered.
+		if newestRole == store.RoleAssistant && newestID > row.ID {
+			answered++
+			i++
+			continue
+		}
+		// Silent otherwise is the §13 риск «пользователь так и не получил ответ»: the model spent its budget, or
+		// `allowed`/`limited` of §7 refused the replay — the chain logs the ones of those that are errors, this
+		// line is the one nobody else would print (§12 UX).
+		d.deps.Logger.Warn("the replay of the start of the process left the stored question without an answer of §6, the next start tries it again",
+			"chat_id", ev.ChatID, "question_row", row.ID, "newest_row", newestID, "newest_role", newestRole)
+		pending++
 		i++
 	}
-	return answered, nil
+	return answered, pending, nil
 }

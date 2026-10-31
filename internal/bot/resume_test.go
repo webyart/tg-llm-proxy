@@ -62,12 +62,12 @@ func TestStartupAnswersTheQuestionCutMidGeneration(t *testing.T) {
 
 	// The restart: a fresh Dispatcher over the same rows, with the scan of §15 instead of a redelivery.
 	var restarted = newTestDispatcher(t, cfg, m, r, db)
-	var answered, resumeErr = restarted.ResumeInterruptedQuestions(context.Background())
+	var answered, pending, resumeErr = restarted.ResumeInterruptedQuestions(context.Background())
 	if resumeErr != nil {
 		t.Fatalf("ResumeInterruptedQuestions: %v", resumeErr)
 	}
-	if answered != 1 {
-		t.Fatalf("the waiting question must be resumed once, got %d", answered)
+	if answered != 1 || pending != 0 {
+		t.Fatalf("the waiting question must be resumed once, got answered=%d pending=%d", answered, pending)
 	}
 	if m.callCount() != 2 {
 		t.Fatalf("one interrupted call plus one resumed call, got %d", m.callCount())
@@ -116,12 +116,12 @@ func TestStartupStaysSilentWhenTheChatIsCaughtUp(t *testing.T) {
 	if err := dispatch(t, d, testEvent(151, 11, 965, "/ask обычный вопрос")); err != nil {
 		t.Fatalf("the ordinary Dispatch must not fail: %v", err)
 	}
-	var answered, err = d.ResumeInterruptedQuestions(context.Background())
+	var answered, pending, err = d.ResumeInterruptedQuestions(context.Background())
 	if err != nil {
 		t.Fatalf("ResumeInterruptedQuestions: %v", err)
 	}
-	if answered != 0 {
-		t.Fatalf("an answered chat must not be resumed, got %d", answered)
+	if answered != 0 || pending != 0 {
+		t.Fatalf("an answered chat must not be resumed, got answered=%d pending=%d", answered, pending)
 	}
 	if m.callCount() != 1 || r.count() != 1 {
 		t.Fatalf("the answered chat must stay exactly as it was, got %d model calls and %d replies", m.callCount(), r.count())
@@ -144,12 +144,12 @@ func TestStartupAnswersOnlyTheNewestQuestionOfAChat(t *testing.T) {
 	}
 	interruptDispatch(t, d, testEvent(152, 11, 971, "/ask второй вопрос, оборванный"))
 
-	var answered, err = d.ResumeInterruptedQuestions(context.Background())
+	var answered, pending, err = d.ResumeInterruptedQuestions(context.Background())
 	if err != nil {
 		t.Fatalf("ResumeInterruptedQuestions: %v", err)
 	}
-	if answered != 1 {
-		t.Fatalf("only the second question is waiting, got %d resumed", answered)
+	if answered != 1 || pending != 0 {
+		t.Fatalf("only the second question is waiting, got answered=%d pending=%d", answered, pending)
 	}
 	var last = m.lastRequest()
 	if len(last.Messages) == 0 || !strings.Contains(last.Messages[len(last.Messages)-1].Content, "второй вопрос, оборванный") {
@@ -182,7 +182,7 @@ func TestStartupReplayAndRedeliveryAnswerOnce(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		if _, err := d.ResumeInterruptedQuestions(context.Background()); err != nil {
+		if _, _, err := d.ResumeInterruptedQuestions(context.Background()); err != nil {
 			t.Errorf("the replay of §15 must not fail: %v", err)
 		}
 	}()
@@ -207,5 +207,68 @@ func TestStartupReplayAndRedeliveryAnswerOnce(t *testing.T) {
 	}
 	if stats.Messages != 2 {
 		t.Fatalf("one question and one answer after two competing paths, got %d rows", stats.Messages)
+	}
+}
+
+// TestStartupCountsAQuestionTheModelCouldNotAnswer — the case the live container of §8.1 found on 2026-10-31 at
+// 15:55:28 and the first version of resume.go reported wrongly. The scan named the waiting question, the guard of
+// §2 п.7 let it through, the model spent the whole STRATA_TIMEOUT_SECONDS 60s and wrote nothing — and the process
+// printed «answered 1», because the ask handler of §6 handles a model failure itself (the events row of §5, the
+// notice to the user) and returns nil to the chain. What the handler returns therefore says nothing about the
+// answer of §6; resume.go counts from §5 instead, and this test is the reason.
+func TestStartupCountsAQuestionTheModelCouldNotAnswer(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	var m = &fakeModel{response: model.Response{Content: "ответ, которого не будет"}, delay: 2 * time.Second}
+	var r = &fakeReplier{}
+	var db = testStore(t)
+	var d = newTestDispatcher(t, cfg, m, r, db)
+	var ev = testEvent(154, 11, 985, "/ask вопрос, на который бюджет модели не кончился")
+
+	interruptDispatch(t, d, ev)
+
+	// The restart, with the model of §3 failing exactly the way it failed in the container: the budget of §7 gone.
+	var spent = &fakeModel{err: context.DeadlineExceeded}
+	var restarted = newTestDispatcher(t, cfg, spent, r, db)
+	var answered, pending, err = restarted.ResumeInterruptedQuestions(context.Background())
+	if err != nil {
+		t.Fatalf("ResumeInterruptedQuestions: %v", err)
+	}
+	if answered != 0 {
+		t.Fatalf("a question with no row of §6 must not be counted as answered, got %d", answered)
+	}
+	if pending != 1 {
+		t.Fatalf("the unanswered question must be counted as pending, got %d", pending)
+	}
+	if spent.callCount() != 1 {
+		t.Fatalf("the replay must have asked the model exactly once, got %d calls", spent.callCount())
+	}
+	// §5 still ends with the question, which is what makes the next start of the process try it again — and the
+	// guard of §2 п.7 plus uq_messages_chat_tg_id of §5 are what keep that retry from answering twice.
+	var left, leftErr = store.UnansweredQuestions(context.Background(), db, ResumeScanLimit)
+	if leftErr != nil {
+		t.Fatalf("store.UnansweredQuestions: %v", leftErr)
+	}
+	if len(left) != 1 || left[0].ChatID != 154 {
+		t.Fatalf("the question must stay waiting for the next start, got %+v", left)
+	}
+	var stats, statsErr = store.Stats(context.Background(), db, 154)
+	if statsErr != nil {
+		t.Fatalf("store.Stats: %v", statsErr)
+	}
+	if stats.Messages != 1 {
+		t.Fatalf("no row of §6 may appear for an answer that never happened, got %d rows (§10 День 3)", stats.Messages)
+	}
+	// The user did get something: the failure notice of §12 UX, and it must not read like an answer.
+	if r.count() != 1 {
+		t.Fatalf("the user must get exactly one failure notice, got %d replies", r.count())
+	}
+	if joined := r.joined(); !strings.Contains(joined, "не ответила") {
+		t.Fatalf("the notice of §6 must name the failure, got %q", joined)
+	}
+	// events of §5: the timeout budget spent, which is the row `dbinspect` of §9 reads (§10 День 3 — a failed
+	// call leaves the event and nothing else in §5).
+	var timeouts, evErr = store.CountEvents(context.Background(), db, store.EventTimeout)
+	if evErr != nil || timeouts != 1 {
+		t.Fatalf("events(kind=%q) must be 1 after the failed replay, got %d err=%v", store.EventTimeout, timeouts, evErr)
 	}
 }

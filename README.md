@@ -279,23 +279,42 @@ without the dot the PATH of §3 dies with the child process.
 - [x] a stranger writes `/ask` → the refusal of §7 and `events(kind='denied')`; `/start` and `/whoami`
       stay open (§16 change 13). **Walked 2026-10-31:** the second account's `start` and `whoami` produced
       `command` rows while its `ask` produced the `denied` row and the refusal text.
-- [ ] Ctrl-C / `docker compose down` during a long `/ask` → the process exits, WAL of §5 is checkpointed,
+- [x] Ctrl-C / `docker compose down` during a long `/ask` → the process exits, WAL of §5 is checkpointed,
       the next start continues from the stored offset (the graceful stop of §10 День 1, the checkpoint of §5).
-      The container half is walked (§8.1: `docker compose stop` → exit 0 in 0.5 s, no `-wal`/`-shm` left).
-      The host half used to be written off as unreachable («a signal is not deliverable to a detached process»,
-      §3.1), and that sentence is wrong: measured 2026-10-31 with `scripts/stop.ps1`, a hidden instance does own
-      a console, and `AttachConsole` + `GenerateConsoleCtrlEvent(CTRL_C_EVENT)` delivers exactly the
-      `os.Interrupt` that Ctrl+C in a terminal would — the bot printed its own three stop lines, left 0.9 s
-      after the event and checkpointed the WAL. The interrupt **inside** a long `/ask` is fixed, but its live
-      number is not taken yet: the row of `role='user'` is written before the model call (`middleware.go`),
-      while `persistOffset` runs after the handler (`dispatch.go`), so a process that dies mid-answer never
-      acknowledges the update and Telegram hands it back — and the dedup guard of §2 п.7 read that redelivery
-      as «already answered» and answered nothing, which loses the question with no trace in `events` of §5.
-      `store.RowIDByTelegramMessageID` + `store.LastVisibleMessage` make that decision per update now (see the
-      note on the idempotency of §10 День 6, where the naive «role of the chat» variant is shown to break the
-      two-questions case), and `TestRedeliveredUnansweredQuestionIsAnswered` fails on the old guard. What this
-      box still waits for is the live measurement: a real `/ask` whose generation is cut by the signal, and the
-      answer of §6 after the restart.
+      **Measured 2026-10-31 end to end on the real Telegram + the real STRATA** (`zzscratch/container-walk.ps1`,
+      the report lands in `data/container-walk-report.txt`). The signal was `docker compose stop bot` (§8.1)
+      aimed 10 s into a live generation; the host half of the box had already been measured with
+      `scripts/stop.ps1` (an idle process left 0.9 s after `CTRL_C_EVENT`, §3.1). The numbers:
+      `docker inspect` gave **exit 0 in 0.6 s** (`FinishedAt 2026-10-31T14:28:08Z`) — the graceful path of
+      `main.go`, not the SIGKILL at the end of the stop grace; the log of the cancelled update is
+      `ERROR bot_state last_update_id was not stored update_id=920551680 error="context canceled"` plus
+      `ERROR dispatch failed command="ask" error="context canceled: the budget of STRATA_TIMEOUT_SECONDS is spent"`,
+      then the three stop lines of §10 День 1; the volume held `bot.db` **36864 B alone** — no `-wal`, no `-shm`,
+      so the checkpoint of §5 ran inside those 0.6 s; read through the copy of §9, the question of the interrupted
+      update was still there (`messages id=5`, `tg_id=448`, `role='user'`, no answer row after it) and
+      `last_update_id` had stayed **920551679** while the interrupted update is **920551680** — exactly the window
+      §5 was built for: `stored` wrote `role='user'` before the model call (`middleware.go`), `persistOffset`
+      never ran (`dispatch.go`). Two traps of the script itself, both fixed in it: listing `/data` needs the
+      volume mounted (`docker run -v tg-llm-proxy_bot-data:/data`), otherwise it prints `total 0` and measures
+      nothing; and the arrival must be detected by the **row of the question**, not by `events_command` — the
+      first attempt latched onto a `/ping`, so the signal hit an idle poller and the real `/ask` came afterwards
+      and was answered normally in 4.2 s.
+      **What the run refuted is the half of the story this README used to take for granted.** The restart was
+      healthy and polling: `WithInitialOffset(920551679)` makes the library ask `offset = lastUpdateID + 1`
+      (`get_updates.go` of go-telegram/bot v1.27.0), so the bot demanded 920551680 — and Telegram returned empty
+      batches for 9.5 minutes. Those minutes cannot hide a broken poller: `WithErrorsHandler` (`internal/bot/run.go`)
+      logs every failed request as `the telegram library failed` on level `error`, and not one such line appeared.
+      So the update was **not** handed back, the guard of §2 п.7 never ran, and the question stayed in §5 with no
+      answer. Real Telegram drops a batch whose `getUpdates` response was delivered successfully; it re-delivers
+      only what never got through (the connection broke mid-poll). The offset of §5 therefore prevents duplicate
+      answers, but on its own it does not recover a question cut inside the handler. Closing that gap is a §15
+      item, not a done one: at startup, answer the stored question that has no answer row after it — the check is
+      sound precisely because `commands.go` writes the assistant row before sending, so «no answer row» means
+      «nothing was ever sent»; the opposite window (row written, send lost) stays silent on purpose, as §13 риск
+      «двойная доставка» prefers losing to duplicating.
+      The guard itself stays as fixed on 2026-10-31 — it is what makes any redelivery that *does* happen safe, and
+      `TestRedeliveredUnansweredQuestionIsAnswered` / `TestRedeliveredAnsweredQuestionStaysSilentWhenTheChatMovedOn`
+      hold both directions of it (§10 День 6 note below).
 
 Две ловушки обхода 2026-10-31, обе про команды §6: очистка контекста называется `/reset` (`store.ClearChat`
 прячет контекст, строки §5 остаются — `/history` их всё ещё видит), а не `/forget`; и с
@@ -431,16 +450,18 @@ goes by runes); `TG_REPLY_DEADLINE_SECONDS` must exceed `STRATA_TIMEOUT_SECONDS`
   (`ProcessUpdate` → `go r(ctx, b, upd)` in v1.27.0) — the sink is now `syncLog` (mutex-guarded), which is
   a test-only fix, production hands slog an `os.Stdout`.
   Idempotency of §10 День 6 is proved on both levels: `TestOffsetSurvivesRestart` (the offset of §5 means
-  the update never comes back) and `TestRedeliveredUpdateIsAnsweredOnce` (the crash *before* `bot_state`
-  was written: the same update arrives again, `store.Append` hits `uq_messages_chat_tg_id`, the answer is
+  the update is not replayed) and `TestRedeliveredUpdateIsAnsweredOnce` (the crash *before* `bot_state`
+  was written: the fake of §11 replays the same update, `store.Append` hits `uq_messages_chat_tg_id`, the answer is
   silence — no second `sendMessage`, no second model call, one extra log line).
   Corrected 2026-10-31, while the §11 item «Ctrl-C / `docker compose down` при длинном `/ask`» was being
   prepared: «a row of this update exists» and «this question was answered» are two different facts, because
   `stored` writes `role='user'` BEFORE the model call (`middleware.go`) while the offset of §5 is
   acknowledged only after the handler (`dispatch.go` → `persistOffset`). A process stopped in the middle of a
-  generation leaves the question stored and unanswered, Telegram hands the update back — and the guard read
-  that redelivery as «already answered» and stayed silent: the user got nothing, and nothing in `events` of §5
-  said why either. The guard now asks the database about **this** update: `store.RowIDByTelegramMessageID`
+  generation leaves the question stored and unanswered; whenever that update comes back — the fake of §11 replays
+  it, and the real Bot API re-delivers a batch only when its response never arrived, which the live container walk
+  of 2026-10-31 did **not** observe after a stop inside the handler (§11 manual, 9.5 minutes of empty batches) —
+  the guard read that redelivery as «already answered» and stayed silent: the user got nothing, and nothing in
+  `events` of §5 said why either. The guard now asks the database about **this** update: `store.RowIDByTelegramMessageID`
   locates the row it left in §5, `store.LastVisibleMessage` names the newest row inside the same window
   `RecentByChat` glues (so the rows a `/reset` of §6 hid do not decide the question), and the question is still
   waiting exactly when those two are the same row — the answer of §6 is always the next row of the chat
@@ -569,6 +590,13 @@ the token value before a commit (§12 security, §16 change 25).
 Not a todo list for v1 — these are the things §15 deliberately left out of the prototype, plus what this
 implementation made concrete enough to name.
 
+- Догонять вопрос, оборванный внутри обработчика. Замер 2026-10-31 (§11 manual, `zzscratch/container-walk.ps1`)
+  показал, что Telegram не возвращает апдейт, чей ответ `getUpdates` клиент уже получил: offset of §5 защищает от
+  дублей, но вопрос, обрезанный посреди генерации, остаётся в §5 без ответа и без строки в `events`. Стартовая
+  сверка («найти `role='user'`, после которого нет ни одной видимой `assistant`-строки, и ответить») безопасна
+  ровно потому, что `commands.go` writes the answer row before sending: «no answer row» means «nothing was ever
+  sent». Окно «строка ответа есть, отправка не состоялась» остаётся молча потерянным — §13 риск «двойная доставка»
+  сознательно выбирает потерю вместо дубля.
 - Стриминг ответов: правка одного сообщения раз в ~1 с вместо одного `sendMessage` (the chunking of
   `internal/bot/reply.go` already owns the size logic a stream would reuse).
 - Вебхуки + HTTPS (`StartWebhook` of the library exists) вместо long polling; `bot_state` offset then

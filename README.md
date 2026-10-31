@@ -152,6 +152,16 @@ without the dot the PATH of §3 dies with the child process.
    бот не стартует» stays true; only the diagnosis changed). A `HEALTH_PORT` of §7 held by another process
    stops the start too — on this machine the local STRATA sits on 8080, so `.env` carries `HEALTH_PORT=8081`;
    the bind happens before the process claims that `/healthz` answers (§12 reliability).
+   The same held port is also how a **second** start is refused: `run.ps1` looks for a listener on
+   `HEALTH_PORT` before it even builds, names the PID that owns it and exits 1, because Telegram serves one
+   `getUpdates` consumer per token (§3.1, the same invariant `test-restart.ps1` checks under «one poller»);
+   `-AllowExisting` opts out. The reason is a trap measured 2026-10-31: starting in the background on top of a
+   running bot left the newcomer dead with «bind: Only one usage of each socket address» in its own log, while
+   the OLD instance — whose `.env` had been edited under it to another model port — kept answering `/healthz`
+   200 and kept polling, so every probe reported a healthy bot that no longer matched the file. A process
+   carries the ENV of **its own** start: after editing `.env` the instance has to be restarted
+   (`Stop-Process -Id …`, then `run.ps1`), and the offset of §5 with `uq_messages_chat_tg_id` survive the kill
+   — which `scripts/test-restart.ps1 -StopExisting` asserts (19 checks, 0 FAIL, walked again that same day).
 8. Container run (the way that has a network here): `.\scripts\docker-build.ps1`, then
    `.\scripts\docker-up.ps1` — compose starts `tg-llm-proxy-bot` with `DB_PATH=/data/bot.db` in the named
    volume `bot-data` (§8.1) and waits for the health check; `docker compose logs -f bot` for the JSON log
@@ -216,10 +226,17 @@ without the dot the PATH of §3 dies with the child process.
       **Walked 2026-10-31 on the host** as three `taskkill /F` between instances: the offset of §5 was read
       back unchanged each time (920551619 → 920551634 → 920551657) and nothing was answered twice; the
       container half was walked the same day with `docker compose stop` (§8.1, exit 0 in 0.5 s).
-- [ ] stop STRATA (or point `STRATA_BASE_URL` at a dead port) → `/ask` answers the «модель недоступна»
-      notice of §12, `events(kind='model_error')` grows, `/ping` still works; restart STRATA → `/ask`
-      recovers without a bot restart (§13 риск «STRATA лежит»). Not walked by a human on 2026-10-31 — the
-      STRATA of §14 was alive for the whole demo; the fake half stays proven by `test/integration`.
+- [ ] point `STRATA_BASE_URL` at a dead port → `/ask` answers `Модель не ответила: <причина> …` and
+      `events(kind='model_error')` grows, while `/ping`, `/model` and `/healthz` keep answering — the reliability
+      line of the plan is «один сбой STRATA ≠ падение бота» (PLAN «Надёжность»); when the endpoint answers
+      again, `/ask` must recover **without** restarting the bot. (The STRATA of §14 lives on another machine
+      behind the local proxy of §14 item 7, so stopping that service is not ours to do — which is exactly why
+      §11 offers the dead port.) The same branch of §12 has three more notices worth walking: a spent
+      `STRATA_TIMEOUT_SECONDS` gives the plan's exact phrase «Модель не ответила за N с, попробуй ещё раз»
+      and writes `events(kind='timeout')` (the kind is free TEXT in §5, which is why no migration was needed),
+      an empty 200 gives «Модель вернула пустой ответ…» with `model_error/empty_answer`, and a saturated
+      `MAX_CONCURRENT_MODEL_REQUESTS` gives `model_error/no_room`. Not walked by a human yet: on 2026-10-31 the
+      real STRATA was alive for the whole demo, and `test/integration` walks these branches against fakes only.
 - [ ] flood: `/ask` ~30 times in a few seconds → Telegram's 429 is logged as `retry_after`, the chat waits
       and the answer still arrives (§10 День 4, `events(kind='flood')` grows). Not walked by a human yet.
       What WAS walked 2026-10-31 is the other guard: with `RATE_LIMIT_PER_MINUTE=5` a burst of ten `/ask`

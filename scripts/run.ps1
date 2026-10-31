@@ -14,6 +14,13 @@ Usage:
   .\scripts\run.ps1 -SkipBuild          # reuse bin\bot.exe as it is
   .\scripts\run.ps1 -EnvFile .env.local # another §7 table than .env
   .\scripts\run.ps1 -UseSystemProxy     # export HTTPS_PROXY from the Windows proxy settings first
+  .\scripts\run.ps1 -AllowExisting      # start anyway although HEALTH_PORT is already listened on
+
+-AllowExisting exists for the rare host that runs two bots of this kind on purpose (two tokens, two ports);
+by default the script refuses, because the second poller of the SAME token does not become a second
+instance: Telegram serves one getUpdates consumer per token (§3.1, and scripts/test-restart.ps1 checks the
+same invariant under «one poller»), and §10 День 5 makes main.go bind HEALTH_PORT before it claims that
+/healthz answers — so a listener on that port is how a running instance is recognized from outside.
 
 -UseSystemProxy exists because of what §2 measured on this machine: PowerShell reaches api.telegram.org
 through the WinINET proxy of the registry, while the Go process does not see that proxy at all —
@@ -33,6 +40,7 @@ param(
     [switch]$Background,
     [switch]$SkipBuild,
     [switch]$UseSystemProxy,
+    [switch]$AllowExisting,
     [string]$EnvFile
 )
 
@@ -68,6 +76,25 @@ try {
     }
     if (-not $env:DB_PATH) {
         Write-Output 'run: DB_PATH is not in the §7 table of this process — config.LoadFrom takes the local default of §16 change 9 (data/bot.db)'
+    }
+
+    # One poller per token (§3.1): a second start of the same token does not produce a second instance, and
+    # the operator should learn that before the build, not after. The listener on §7 HEALTH_PORT is the
+    # outside sign of a running instance, because main.go binds the port before it claims /healthz answers
+    # (§10 День 5 DoD, §13 «порт занят»). Measured the hard way on 2026-10-31: a background start on top of
+    # a running bot left the new process dead with «bind: Only one usage of each socket address» in its own
+    # log, while the OLD instance — whose .env had been changed under it to a dead model port — kept
+    # answering 200 to every /healthz probe and kept polling. The probe saw a healthy bot that did not exist.
+    if (-not $AllowExisting) {
+        $probePort = 8080
+        if ($env:HEALTH_PORT -and $env:HEALTH_PORT -match '^\d+$') { $probePort = [int]$env:HEALTH_PORT }
+        $owners = @(Get-NetTCPConnection -LocalPort $probePort -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique | Sort-Object)
+        if ($owners.Count -gt 0) {
+            Write-Output "run: §7 HEALTH_PORT $probePort is already listened on by PID $(@($owners) -join ', ') — an instance of this bot is running, and Telegram serves one getUpdates consumer per token (§3.1)"
+            Write-Output "run: stop it first (Stop-Process -Id $($owners[0]); a hard kill is survivable — the offset of §5 and uq_messages_chat_tg_id of §5 are what test-restart.ps1 asserts), or re-run with -AllowExisting when a second instance is what you want"
+            exit 1
+        }
     }
 
     if ($UseSystemProxy -and -not $env:HTTPS_PROXY) {

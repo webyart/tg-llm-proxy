@@ -116,6 +116,9 @@ docker compose logs -f bot
 
 `STRATA_BASE_URL` нормализуется к ровно одному `/v1`: запросы идут в `{base}/chat/completions` и `{base}/models`.
 
+При `PARSE_MODE=MarkdownV2` сохраняются заголовки, жирный и курсивный текст, `code`, code fences и
+http/https-ссылки. Обычные специальные символы экранируются, а небезопасные схемы ссылок не пропускаются.
+
 ### Стриминг
 
 ```env

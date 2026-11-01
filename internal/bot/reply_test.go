@@ -39,8 +39,8 @@ func TestEscapePerParseMode(t *testing.T) {
 	if cfg.ParseMode != config.DefaultParseMode {
 		t.Fatalf("PARSE_MODE must default to %s (§7), got %q", config.DefaultParseMode, cfg.ParseMode)
 	}
-	if Escape("текст_с_подчёркиванием", cfg.ParseMode) == "текст_с_подчёркиванием" {
-		t.Fatalf("the default parse mode must escape underscores, got %q", Escape("текст_с_подчёркиванием", cfg.ParseMode))
+	if got := Escape("один_подчёрк", cfg.ParseMode); got != "один\\_подчёрк" {
+		t.Fatalf("an unmatched underscore must be escaped, got %q", got)
 	}
 }
 

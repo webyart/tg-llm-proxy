@@ -9,8 +9,6 @@ import (
 	"strings"
 	"unicode"
 
-	tgbot "github.com/go-telegram/bot"
-
 	"bot/internal/config"
 )
 
@@ -26,12 +24,12 @@ const (
 // "&" is safe to expand here without double-escaping the "&" of "&lt;".
 var htmlEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 
-// Escape — the parse mode of §7 applied to the outgoing text. MarkdownV2 goes through the library so
-// the set of special characters is Telegram's own, not a guess (`_*[]()~` + "#+=|{}.`).
+// Escape — the parse mode of §7 applied to the outgoing text. MarkdownV2 preserves the markup Telegram
+// renders and escapes everything else through the library's own special-character set.
 func Escape(text string, parseMode string) string {
 	switch parseMode {
 	case ParseMarkdownV2:
-		return tgbot.EscapeMarkdown(text)
+		return formatMarkdownV2(text)
 	case ParseHTML:
 		return htmlEscaper.Replace(text)
 	default:

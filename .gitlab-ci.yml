@@ -24,7 +24,9 @@ docker-race:
     DOCKER_HOST: tcp://docker:2376
     DOCKER_TLS_CERTDIR: ''
     DOCKER_DRIVER: overlay2
+    DOCKER_DIND_PRIVILEGED: 'true'
   before_script:
+    - for i in $(seq 1 20); do if docker info; then break; fi; echo 'waiting for docker:dind'; sleep 3; done
     - docker info
   script:
     - docker build --target test -t tg-llm-proxy-test:latest .

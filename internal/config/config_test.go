@@ -261,11 +261,11 @@ func TestOldNameOfTheRowIsRefusedByName(t *testing.T) {
 
 // TestEnvIsTheRowsOfTheTable — §7 says the loader reads EXACTLY the names of the table, and README repeats
 // that number. The rename of §16 change 29 swapped one name for another and did not change the count; §16
-// change 34 added the four streaming rows of §15 and made it 23, which is pinned here rather than left to a
-// comment (§12 reliability: a documented invariant without a check is a comment waiting to lie).
+// change 34 added the four streaming rows of §15 and the webhook rows made it 29, pinned here rather than
+// left to a comment (§12 reliability: a documented invariant without a check is a comment waiting to lie).
 func TestEnvIsTheRowsOfTheTable(t *testing.T) {
-	if len(Env) != 23 {
-		t.Errorf("Env holds %d names, want the 23 rows of §7 (19 since plan v1.1 + 4 of §16 change 34)", len(Env))
+	if len(Env) != 29 {
+		t.Errorf("Env holds %d names, want the 29 rows of §7 (19 since plan v1.1 + 4 streaming + 6 webhook)", len(Env))
 	}
 	var seen = map[string]bool{}
 	var i = 0

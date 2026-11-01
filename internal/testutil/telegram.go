@@ -53,6 +53,14 @@ type SentEdit struct {
 	ParseMode string // «» means the request carried no parse_mode at all — what a half-written answer needs
 }
 
+// WebhookRegistration records setWebhook exactly as the fake Bot API received it.
+type WebhookRegistration struct {
+	URL                string
+	SecretToken        string
+	AllowedUpdates     []string
+	DropPendingUpdates bool
+}
+
 // TelegramFailure — one-shot error answer in the envelope of the Bot API. Code 429 with RetryAfter is
 // the flood case of §10 День 4 («на исходящем sendMessage библиотека возвращает TooManyRequestsError
 // → спать ровно RetryAfter секунд, записать events(kind='flood')»).
@@ -87,6 +95,7 @@ type Telegram struct {
 	sentIDs     map[int]bool // the ids this fake handed out: an edit of an id it never gave is a wiring bug
 	calls       map[string]int
 	commands    []models.BotCommand
+	webhook     *WebhookRegistration
 	failures    []TelegramFailure
 	wrongTokens int
 	offsets     []string // the offset params the library sent, for the offset assertions of §5
@@ -230,6 +239,18 @@ func (s *Telegram) Commands() []models.BotCommand {
 	return out
 }
 
+// Webhook returns the registered public URL, secret, and update filter.
+func (s *Telegram) Webhook() (WebhookRegistration, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.webhook == nil {
+		return WebhookRegistration{}, false
+	}
+	out := *s.webhook
+	out.AllowedUpdates = append([]string{}, out.AllowedUpdates...)
+	return out, true
+}
+
 // Offsets — the `offset` values of the getUpdates requests, in order (§5 «Offset long polling»).
 func (s *Telegram) Offsets() []string {
 	s.mu.Lock()
@@ -300,6 +321,8 @@ func (s *Telegram) handle(w http.ResponseWriter, r *http.Request) {
 		s.handleEditMessageText(w, r)
 	case "setMyCommands":
 		s.handleSetMyCommands(w, r)
+	case "setWebhook":
+		s.handleSetWebhook(w, r)
 	default:
 		// §6 v1 needs no other method; answering ok would hide a wrong call (§12 reliability).
 		writeError(w, http.StatusNotFound, "the fake does not serve "+method+" — v1 of §6 uses getMe, getUpdates, sendMessage, setMyCommands, and §15 adds editMessageText", 0)
@@ -459,6 +482,35 @@ func (s *Telegram) handleEditMessageText(w http.ResponseWriter, r *http.Request)
 		Text:     text,
 		Entities: []models.MessageEntity{},
 	})
+}
+
+func (s *Telegram) handleSetWebhook(w http.ResponseWriter, r *http.Request) {
+	var allowed []string
+	if raw := r.FormValue("allowed_updates"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &allowed); err != nil {
+			writeError(w, http.StatusBadRequest, "allowed_updates must be a JSON array: "+err.Error(), 0)
+			return
+		}
+	}
+	dropPending, err := strconv.ParseBool(r.FormValue("drop_pending_updates"))
+	if err != nil && r.FormValue("drop_pending_updates") != "" {
+		writeError(w, http.StatusBadRequest, "drop_pending_updates must be boolean", 0)
+		return
+	}
+	registration := &WebhookRegistration{
+		URL:                r.FormValue("url"),
+		SecretToken:        r.FormValue("secret_token"),
+		AllowedUpdates:     allowed,
+		DropPendingUpdates: dropPending,
+	}
+	if registration.URL == "" {
+		writeError(w, http.StatusBadRequest, "url is required", 0)
+		return
+	}
+	s.mu.Lock()
+	s.webhook = registration
+	s.mu.Unlock()
+	writeOK(w, true)
 }
 
 // handleSetMyCommands — the menu of §10 День 4; the commands arrive as a JSON string inside the form.

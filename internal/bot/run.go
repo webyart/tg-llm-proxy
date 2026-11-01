@@ -64,6 +64,8 @@ type Options struct {
 	SkipGetMe bool
 	// HTTPClient — the client of WithHTTPClient; nil → a client whose Timeout is PollTimeout + 5s.
 	HTTPClient *http.Client
+	// WebhookSecretToken enables the X-Telegram-Bot-Api-Secret-Token check on the webhook handler.
+	WebhookSecretToken string
 }
 
 // NewTelegram — the library bot wired to d, plus the handlers of §10 День 4:
@@ -120,6 +122,9 @@ func (d *Dispatcher) NewTelegram(opts Options) (*tgbot.Bot, error) {
 	}
 	if opts.SkipGetMe {
 		setting = append(setting, tgbot.WithSkipGetMe())
+	}
+	if opts.WebhookSecretToken != "" {
+		setting = append(setting, tgbot.WithWebhookSecretToken(opts.WebhookSecretToken))
 	}
 	if d.startOffset > 0 {
 		// §5 «Offset long polling»: bot_state last_update_id is the last PROCESSED update, and the
@@ -454,6 +459,20 @@ func Run(ctx context.Context, deps Deps, opts Options) (*Dispatcher, error) {
 	defer cancel()
 	if err := d.PublishCommands(menuCtx, tg); err != nil {
 		d.deps.Logger.Warn("the command menu was not published, the commands still work", "error", err)
+	}
+	if deps.Cfg.WebhookEnabled {
+		server, err := NewWebhookServer(tg, deps.Cfg.WebhookAddress(), deps.Cfg.WebhookPath)
+		if err != nil {
+			return nil, err
+		}
+		defer server.Close()
+		if err := d.ConfigureWebhook(ctx, tg); err != nil {
+			return nil, err
+		}
+		if err := server.Run(ctx); err != nil {
+			return nil, err
+		}
+		return d, nil
 	}
 	tg.Start(ctx) // blocks: one getUpdates poller and `workers` handler goroutines (§10 День 4)
 	return d, nil

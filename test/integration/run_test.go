@@ -16,6 +16,7 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
+	"net/http"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -136,12 +137,13 @@ func newClient(t *testing.T, cfg config.Config, strata *testutil.Strata) model.C
 // botRun — the process of §4 in miniature: the dispatcher of §6, the adapter of §10 День 4, the
 // goroutine of Start(ctx) and the log buffer §12 inspects.
 type botRun struct {
-	d      *bot.Dispatcher
-	tg     *tgbot.Bot
-	cancel context.CancelFunc
-	done   chan struct{}
-	logs   *syncLog
-	offset int64 // §5 bot_state value the run was seeded with (§10 День 4 WithInitialOffset)
+	d          *bot.Dispatcher
+	tg         *tgbot.Bot
+	cancel     context.CancelFunc
+	done       chan struct{}
+	logs       *syncLog
+	offset     int64 // §5 bot_state value the run was seeded with (§10 День 4 WithInitialOffset)
+	webhookURL string
 }
 
 // syncLog — the log sink of a run behind a mutex. The library answers every update in its own goroutine
@@ -186,6 +188,9 @@ func startBot(t *testing.T, ctx context.Context, cfg config.Config, db *sql.DB, 
 		StartOffset: startOffset,
 		Offset:      func(ctx context.Context, updateID int64) error { return store.SetLastUpdateID(ctx, db, updateID) },
 	})
+	if cfg.WebhookEnabled && opts.WebhookSecretToken == "" {
+		opts.WebhookSecretToken = cfg.WebhookSecretToken
+	}
 	var tg, err = d.NewTelegram(opts)
 	if err != nil {
 		t.Fatalf("NewTelegram against the fake Bot API: %v (§10 День 4: New calls getMe and must be answered)", err)
@@ -195,14 +200,39 @@ func startBot(t *testing.T, ctx context.Context, cfg config.Config, db *sql.DB, 
 	if menuErr := d.PublishCommands(menuCtx, tg); menuErr != nil {
 		t.Fatalf("setMyCommands: %v (§10 День 4 publishes the menu of §6 at start)", menuErr)
 	}
+	var webhookServer *bot.WebhookServer
+	if cfg.WebhookEnabled {
+		webhookServer, err = bot.NewWebhookServer(tg, cfg.WebhookAddress(), cfg.WebhookPath)
+		if err != nil {
+			t.Fatalf("NewWebhookServer: %v", err)
+		}
+		if err := d.ConfigureWebhook(ctx, tg); err != nil {
+			_ = webhookServer.Close()
+			t.Fatalf("ConfigureWebhook: %v", err)
+		}
+	}
 	var runCtx, cancel = context.WithCancel(ctx)
 	var done = make(chan struct{})
 	go func() {
-		tg.Start(runCtx) // §10 День 4: Run у библиотеки нет, Start blocks until the ctx is cancelled
+		if webhookServer != nil {
+			if err := webhookServer.Run(runCtx); err != nil {
+				logger.Error("webhook run stopped", "error", err)
+			}
+		} else {
+			tg.Start(runCtx) // §10 День 4: Run у библиотеки нет, Start blocks until the ctx is cancelled
+		}
 		close(done)
 	}()
 	var run = &botRun{d: d, tg: tg, cancel: cancel, done: done, logs: logs, offset: startOffset}
-	t.Cleanup(run.stop)
+	if webhookServer != nil {
+		run.webhookURL = webhookServer.URL()
+	}
+	t.Cleanup(func() {
+		if webhookServer != nil {
+			_ = webhookServer.Close()
+		}
+		run.stop()
+	})
 	return run
 }
 
@@ -985,4 +1015,82 @@ func TestStreamedAnswerEditsOneMessage(t *testing.T) {
 	secretLeak(t, "the log of the streamed run", run.logs.String())
 	secretLeak(t, "the chat of the streamed run", textOf(tgAPI))
 	run.stop()
+}
+
+func TestWebhookAcceptsOnlySecretUpdatesWithoutPolling(t *testing.T) {
+	var ctx = context.Background()
+	var path = dbFile(t)
+	var tgAPI = testutil.NewTelegram(t, secretToken)
+	var strata = testutil.NewStrata(t, secretStrataKey, testutil.StrataReply{Content: "ответ по webhook", Model: "fake-model", TokensIn: 4, TokensOut: 6})
+	var cfg = integrationEnv(t, path, strata.BaseURL(), map[string]string{
+		"WEBHOOK_ENABLED":      "true",
+		"WEBHOOK_PUBLIC_URL":   "https://example.test/telegram/webhook",
+		"WEBHOOK_SECRET_TOKEN": "1234567890abcdef",
+	})
+	cfg.WebhookPort = 0
+	var db = openStore(t, path)
+	var run = startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second}, 0)
+
+	registration, found := tgAPI.Webhook()
+	if !found || registration.URL != cfg.WebhookPublicURL || registration.SecretToken != cfg.WebhookSecretToken {
+		t.Fatalf("setWebhook registration = %+v found=%v", registration, found)
+	}
+	if registration.DropPendingUpdates || len(registration.AllowedUpdates) != 1 || registration.AllowedUpdates[0] != "message" {
+		t.Fatalf("webhook must keep pending updates and allow only messages: %+v", registration)
+	}
+	if run.webhookURL == "" {
+		t.Fatal("the local webhook listener did not start")
+	}
+	if tgAPI.Calls("getUpdates") != 0 {
+		t.Fatalf("webhook mode must not start long polling, getUpdates calls=%d", tgAPI.Calls("getUpdates"))
+	}
+
+	wrong := postWebhook(t, run.webhookURL, "wrong-secret")
+	if wrong.StatusCode != http.StatusOK {
+		t.Fatalf("the library's rejected-secret response = %d, want 200 without handler delivery", wrong.StatusCode)
+	}
+	quiet()
+	if tgAPI.Calls("sendMessage") != 0 {
+		t.Fatal("an update with a wrong secret reached the model")
+	}
+	resp, err := http.Get(run.webhookURL)
+	if err != nil {
+		t.Fatalf("GET webhook: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("GET webhook status = %d, want 405", resp.StatusCode)
+	}
+
+	accepted := postWebhook(t, run.webhookURL, cfg.WebhookSecretToken)
+	if accepted.StatusCode != http.StatusOK {
+		t.Fatalf("valid webhook status = %d, want 200", accepted.StatusCode)
+	}
+	waitFor(t, "the webhook answer reached fake Telegram", func() bool { return tgAPI.Calls("sendMessage") == 1 })
+	if !strings.Contains(tgAPI.Joined(), "ответ по webhook") {
+		t.Fatalf("webhook answer = %q", tgAPI.Joined())
+	}
+	waitFor(t, "the webhook offset was stored", func() bool {
+		offset, found, err := store.LastUpdateID(ctx, db)
+		return err == nil && found && offset == 160
+	})
+	secretLeak(t, "webhook run log", run.logs.String())
+	run.stop()
+}
+
+func postWebhook(t *testing.T, url string, secret string) *http.Response {
+	t.Helper()
+	body := `{"update_id":160,"message":{"message_id":160,"date":1700000000,"chat":{"id":4242,"type":"private"},"from":{"id":1717,"is_bot":false,"first_name":"Tester","username":"tester"},"text":"/ask webhook"}}`
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Telegram-Bot-Api-Secret-Token", secret)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST webhook: %v", err)
+	}
+	_ = resp.Body.Close()
+	return resp
 }

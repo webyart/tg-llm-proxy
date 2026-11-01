@@ -31,6 +31,12 @@ var Env = []string{
 	"STREAM_EDIT_INTERVAL_MS",
 	"STREAM_IDLE_TIMEOUT_SECONDS",
 	"STREAM_TOTAL_DEADLINE_SECONDS",
+	"WEBHOOK_ENABLED",
+	"WEBHOOK_PUBLIC_URL",
+	"WEBHOOK_SECRET_TOKEN",
+	"WEBHOOK_LISTEN_HOST",
+	"WEBHOOK_PORT",
+	"WEBHOOK_PATH",
 	"DB_PATH",
 	"CONTEXT_MESSAGES",
 	"MAX_CONTEXT_CHARS",
@@ -46,8 +52,8 @@ var Env = []string{
 	"LOG_LEVEL",
 }
 
-// HasRow — is the name one of the rows of the §7 table (19 since plan v1.1, 23 since §16 change 34 added the
-// streaming rows)? The §16 change 29 rename is pinned from both sides with it: TELEGRAM_ALLOWED_USERS is a row,
+// HasRow — is the name one of the rows of the §7 table (19 since plan v1.1, 23 after streaming, 29 after
+// webhooks)? The §16 change 29 rename is pinned from both sides with it: TELEGRAM_ALLOWED_USERS is a row,
 // ALLOWED_USER_IDS is not one any more (a test checks both, because `Env` is what PrintMissing walks and what a
 // reader of §7 expects to find).
 func HasRow(name string) bool {
@@ -144,6 +150,12 @@ type Config struct {
 	StreamEditIntervalMS  int64
 	StreamIdleSeconds     int64
 	StreamTotalSeconds    int64
+	WebhookEnabled        bool
+	WebhookPublicURL      string
+	WebhookSecretToken    string
+	WebhookHost           string
+	WebhookPort           int64
+	WebhookPath           string
 	DBPath                string
 	ContextMessages       int64
 	MaxContextChars       int64
@@ -281,7 +293,7 @@ func Push(problems []string, msg string) []string {
 // loader. A name that leaves the table still has to be named when it carries a value — an old file with
 // `ALLOWED_USER_IDS=…` must not become a silently closed bot (the exact failure §16 change 28 was about).
 // So the value is NOT applied: one row, one spelling, nothing to merge, and the start stops with exit
-// code 1 on the message below (§7: the loader reads exactly the 23 names of the table).
+// code 1 on the message below (§7: the loader reads exactly the 29 names of the table).
 var RenamedRows = map[string]string{
 	"ALLOWED_USER_IDS": "TELEGRAM_ALLOWED_USERS",
 }
@@ -299,7 +311,7 @@ func Renamed(raw map[string]string) []string {
 	for i < len(RenamedOrder) {
 		var name = RenamedOrder[i]
 		if strings.TrimSpace(raw[name]) != "" {
-			found = Push(found, fmt.Sprintf("ENV %s is not a row of the §7 table any more: §16 change 29 renamed the row to %s, so the value of %s is ignored — write the allowlist under the new name (§7: the loader reads exactly the 23 names of the table)", name, RenamedRows[name], name))
+			found = Push(found, fmt.Sprintf("ENV %s is not a row of the §7 table any more: §16 change 29 renamed the row to %s, so the value of %s is ignored — write the allowlist under the new name (§7: the loader reads exactly the 29 names of the table)", name, RenamedRows[name], name))
 		}
 		i += 1
 	}
@@ -376,7 +388,7 @@ const DefaultStrataModel = "qwen2.5-7b-instruct"
 // refuses such a row by name instead of ignoring it, because a leftover row in .env
 // or in compose otherwise looks like a working configuration and hides the fact that
 // the feature does not exist in v1.1 (§10 День 1: "understandable messages about
-// errors"; §7: the loader reads exactly the 23 rows of the table).
+// errors"; §7: the loader reads exactly the 29 rows of the table).
 var LegacyRows = []string{
 	"LLM_CHAT_MODEL",
 	"LLM_CHAT_COMPLETIONS_URL",
@@ -415,7 +427,7 @@ var LegacyRows = []string{
 }
 
 // Legacy — name every legacy row that is set in the environment (§7 table: only
-// the 23 names above are real rows; §16 change 25.1 points the rest at §15).
+// the 29 names above are real rows; §16 change 25.1 points the rest at §15).
 // The value is never applied and never logged, so a secret-shaped legacy row
 // cannot leak through this message (§12 security).
 func Legacy(raw map[string]string) []string {
@@ -424,7 +436,7 @@ func Legacy(raw map[string]string) []string {
 	for i < len(LegacyRows) {
 		var name = LegacyRows[i]
 		if strings.TrimSpace(raw[name]) != "" {
-			found = Push(found, fmt.Sprintf("ENV %s is not a row of the §7 table of v1.1 (it is a row of the v1.0 §7; §16 change 25.1 moved it to the §15 backlog together with the token budgets, the deep link and the summary/embedding models): the value is ignored, the loader reads only the 23 rows of §7", name))
+			found = Push(found, fmt.Sprintf("ENV %s is not a row of the §7 table of v1.1 (it is a row of the v1.0 §7; §16 change 25.1 moved it to the §15 backlog together with the token budgets, the deep link and the summary/embedding models): the value is ignored, the loader reads only the 29 rows of §7", name))
 		}
 		i += 1
 	}
@@ -445,7 +457,7 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	var cfg = Config{}
 	var problems = []string{}
 
-	// §7 v1.1 reads only the 23 rows of the table; §16 change 25.1 names the leftover
+	// §7 v1.1 reads only the 29 rows of the table; §16 change 25.1 names the leftover
 	// v1.0 rows so that a stale .env or compose file cannot pretend to configure the bot.
 	var stale = Legacy(raw)
 	var staleIndex = 0
@@ -529,6 +541,11 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	if streaming && deadline <= streamIdle {
 		problems = Push(problems, "ENV TG_REPLY_DEADLINE_SECONDS is not greater than STREAM_IDLE_TIMEOUT_SECONDS while STREAMING_ENABLED=true: the answer must START arriving inside the reply budget of §7, and a stream that may stay silent for the whole idle budget breaks that promise by configuration (§12 UX, §15)")
 	}
+
+	var webhookEnabled, badWebhookEnabled = Flag(raw, "WEBHOOK_ENABLED", DefaultWebhookEnabled)
+	cfg.WebhookEnabled = webhookEnabled
+	problems = Push(problems, badWebhookEnabled)
+	problems = append(problems, loadWebhook(raw, &cfg)...)
 
 	var dbPath = strings.TrimSpace(raw["DB_PATH"])
 	if dbPath == "" {

@@ -50,6 +50,12 @@ func PrintConfig(cfg config.Config) {
 	fmt.Println("STREAM_EDIT_INTERVAL_MS", cfg.StreamEditIntervalMS, "(§7, §15: the cadence of the rewrites — the default is five seconds after the live 429 measurement, §10 День 4 flood)")
 	fmt.Println("STREAM_IDLE_TIMEOUT_SECONDS", cfg.StreamIdleSeconds, "(§7, §15: the pause between two SSE events past which the stream is dead; measured gap of a healthy stream is ~20 ms)")
 	fmt.Println("STREAM_TOTAL_DEADLINE_SECONDS", cfg.StreamTotalSeconds, "(§7, §15: the ceiling of one streamed answer, thinking included — the GPU of §12 is bounded)")
+	fmt.Println("WEBHOOK_ENABLED", cfg.WebhookEnabled, "(§15: long polling remains the default; HTTPS terminates at the reverse proxy/tunnel)")
+	if cfg.WebhookEnabled {
+		fmt.Println("WEBHOOK_PUBLIC_URL", cfg.WebhookPublicURL)
+		fmt.Println("WEBHOOK_LISTEN", cfg.WebhookAddress(), cfg.WebhookPath)
+		fmt.Println("WEBHOOK_SECRET_TOKEN is set, length", len(cfg.WebhookSecretToken), "(§12 security: only the length is printed)")
+	}
 	fmt.Println("DB_PATH", cfg.DBPath, "(§7, §16 change 9: the default is a local Windows path, compose overrides /data/bot.db)")
 	fmt.Println("CONTEXT_MESSAGES", cfg.ContextMessages, "(§7, §16 change 10: the glued history is now bounded by the count and by MAX_CONTEXT_CHARS)")
 	fmt.Println("MAX_CONTEXT_CHARS", cfg.MaxContextChars, "(§7, §12 UX: the budget of the glued history)")
@@ -258,7 +264,7 @@ func main() {
 	// WithHTTPClient(pollTimeout) и workers»: NewTelegram calls getMe on its own (§10 День 4), and getMe
 	// is what answers 401 on a wrong token. A process that cannot poll must not sit next to a healthz that
 	// still says 200 (§12 reliability), so this is exit code 1 — with Sanitize already applied (§12 security).
-	var tg, tgErr = dispatcher.NewTelegram(bot.Options{})
+	var tg, tgErr = dispatcher.NewTelegram(bot.Options{WebhookSecretToken: cfg.WebhookSecretToken})
 	if tgErr != nil {
 		fmt.Println("bot.New:", tgErr, "(§10 День 4: getMe did not answer — a wrong TELEGRAM_BOT_TOKEN or no route to api.telegram.org stops the start, exit code 1)")
 		db.Close()
@@ -271,18 +277,44 @@ func main() {
 		logger.Warn("setMyCommands refused, the menu of the client stays empty", "error", bot.Sanitize(menuErr, cfg.BotToken))
 	}
 	cancelMenu()
-	// §5 long polling: Start owns the goroutine. It returns when the context ends; a return that no signal
-	// caused means the poller died, and a dead poller is a bot that answers nothing while §8.1 still
-	// reports healthy — the process leaves with a clear error instead (§12 reliability).
+	var webhookServer *bot.WebhookServer
+	if cfg.WebhookEnabled {
+		var err error
+		webhookServer, err = bot.NewWebhookServer(tg, cfg.WebhookAddress(), cfg.WebhookPath)
+		if err != nil {
+			fmt.Println("webhook listener:", err, "(the local address must be free before setWebhook, exit code 1)")
+			db.Close()
+			os.Exit(1)
+		}
+		defer webhookServer.Close()
+		if err := dispatcher.ConfigureWebhook(ctx, tg); err != nil {
+			fmt.Println("setWebhook:", err, "(§15: the public HTTPS URL or secret was refused, exit code 1)")
+			db.Close()
+			os.Exit(1)
+		}
+	}
+	// Start owns polling, or Run owns the webhook workers and listener. Either way an unexpected return means
+	// this bot can no longer receive updates and the process must not remain a healthy-looking shell.
 	var botDone = make(chan struct{}, 1)
 	go func() {
-		tg.Start(ctx)
+		if webhookServer != nil {
+			if err := webhookServer.Run(ctx); err != nil {
+				logger.Error("webhook transport stopped", "error", bot.Sanitize(err, cfg.BotToken))
+			}
+		} else {
+			tg.Start(ctx)
+		}
 		select {
 		case botDone <- struct{}{}:
 		default:
 		}
 	}()
-	fmt.Println("bot is polling Telegram, bot_state last_update_id", startOffset, "found", offsetFound, "(§5, §10 День 4)")
+	if webhookServer != nil {
+		fmt.Println("bot is accepting Telegram webhooks on", webhookServer.URL(), "public URL", cfg.WebhookPublicURL,
+			"bot_state last_update_id", startOffset, "found", offsetFound)
+	} else {
+		fmt.Println("bot is polling Telegram, bot_state last_update_id", startOffset, "found", offsetFound, "(§5, §10 День 4)")
+	}
 	// §15 «догонять вопрос, оборванный внутри обработчика» (`internal/bot/resume.go`): a question that §5 kept
 	// without an answer of §6 is not brought back by the offset of §5. Measured 2026-10-31 in the §11 container
 	// walk: the stop left the offset at 920551679 with the interrupted update numbered 920551680, and the
@@ -322,11 +354,11 @@ func main() {
 	select {
 	case <-ctx.Done():
 	case <-botDone:
-		// §12 reliability: the poller of §5 left without a stop signal. The bot answers nothing from now
+		// §12 reliability: the Telegram transport left without a stop signal. The bot answers nothing from now
 		// on, and the health endpoint of §8.1 would still say 200 — that is exactly the silent failure the
 		// §12 rules forbid, so the process exits with code 1 and the container restart policy of §8.1 gets
 		// a chance to bring it back.
-		fmt.Println("the polling of §5 stopped without a stop signal, exit code 1 (§12 reliability)")
+		fmt.Println("the Telegram transport stopped without a stop signal, exit code 1 (§12 reliability)")
 		cancel()
 		db.Close()
 		os.Exit(1)

@@ -4,7 +4,7 @@ Prototype per the plan (`PLAN.md` — local planning doc, not committed, see §1
 
 Status: **Day 0 done** (§10 Day 0: environment checks), **Day 1 done** —
 git repo + ignore-файлов + scripts created; `go build` passes with
-`main.go` (package main, see «§4 deviation») + `internal/config` (the ENV → Config loader of §7, 23 rows,
+`main.go` (package main, see «§4 deviation») + `internal/config` (the ENV → Config loader of §7, 29 rows,
 validation with the list of problems, §10 Day 1 DoD: echoes the configuration back
 and stops cleanly on Ctrl-C with exit code 0; an unset `TELEGRAM_BOT_TOKEN` →
 clear error + exit code 1). **Day 4 done** — `internal/bot` (long polling of §5 over
@@ -154,7 +154,7 @@ without the dot the PATH of §3 dies with the child process.
 3. `Copy-Item .env.example .env` and fill the §7 table: `TELEGRAM_BOT_TOKEN` from BotFather,
    `TELEGRAM_ALLOWED_USERS` = your own numeric `user_id` (id@username in BotFather is NOT it — §14.1;
    §16 change 29 made this the row's only spelling, the old `ALLOWED_USER_IDS` is refused by name), the STRATA
-   URL/model/key. Nothing else has to be touched: every remaining row of the 23 has the default of §7.
+   URL/model/key. Nothing else has to be touched: every remaining row of the 29 has the default of §7.
    `.env` is gitignored and never printed (§12 security).
 4. `.\scripts\strata-check.ps1` — is the model reachable at all (§6 `/model` check + one chat request)?
    A red here with the rest green means STRATA, not the code (§13 риск «сервер недоступен»).
@@ -459,7 +459,7 @@ the machine-readable half of the same story: a log line and a DB row can be line
 ## ENV (§7) — see `.env.example` (full table in PLAN.md §7)
 
 The loader `internal/config` (imported by `cmd/bot` as `bot/internal/config`) reads
-the process ENV once and accepts **exactly the rows of the §7 table — 23 names since
+the process ENV once and accepts **exactly the rows of the §7 table — 29 names since
 §16 change 34 added the four streaming rows** — a name
 that is not a row of §7 is reported by name and pointed at the table (§16 change 25.1
 moves the v1.0 extras `LLM_CHAT_*`, the token budgets and the deep link to the §15 backlog).
@@ -478,7 +478,7 @@ answer and everything else goes to `events(kind='denied')` (§7, §16 change 13)
 machine carried `TELEGRAM_ALLOWED_USERS`, and the name fell between the two lists the loader reports (the 19
 rows + the v1.0 legacy rows), so the real `user_id` configured nothing and nothing was printed about it —
 §12 reliability's worst failure: a setting that looks applied and is not. `TELEGRAM_ALLOWED_USERS` is now
-**the** row of §7 (still 23 names), `UserIDs` reads that one name, and the old `ALLOWED_USER_IDS` left the
+**the** row of §7 (still 29 names), `UserIDs` reads that one name, and the old `ALLOWED_USER_IDS` left the
 loader: it is not merged and not quietly ignored — `Renamed` refuses it by name and the start stops with exit
 code 1 pointing at the new spelling, because an old file must not turn into a silently closed bot.
 `/whoami` prints the numeric `user_id` plus «в allowlist: да/нет» and the name to write it under
@@ -551,7 +551,7 @@ loader tests of §11 (`internal/config`); the streaming behaviour itself by `int
   of §7 and the `events(kind='denied')` row are reserved for strangers.
 - Day 6: DONE — `internal/testutil/telegram.go` (the fake Bot API: `getMe`, `getUpdates` with the
   real offset semantics, `sendMessage`, `setMyCommands`, scripted 429 with `retry_after`, wrong-token
-  counter, `Replay`), `test/integration/run_test.go` (`//go:build integration`, 9 cases),
+  counter, `Replay`), `test/integration/run_test.go` (`//go:build integration`, 10 cases),
   `scripts/smoke.ps1`, and `scripts/test-race.ps1 -Tagged` green: `go vet` + `gofmt` + `go test -race
   -tags integration ./... -count=2` inside the §8.1 test image — no data races (§11 Concurrency,
   §10 День 6 DoD). The race detector earned its keep once: the integration harness had been polling a
@@ -607,7 +607,7 @@ loader tests of §11 (`internal/config`); the streaming behaviour itself by `int
   reports (§7 rows + the v1.0 legacy rows) — so the real `user_id` configured nothing and nothing was printed
   about it. Change 28 first accepted the second spelling as an alias; change 29 reversed the direction the
   same day, because the name the operator actually writes is the Telegram-style one: `TELEGRAM_ALLOWED_USERS`
-  is now the row of §7 (`Env` still holds 23 names, `UserIDs`/`RowIsSet` read exactly that one), and
+  is now the row of §7 (`Env` still holds 29 names, `UserIDs`/`RowIsSet` read exactly that one), and
   `ALLOWED_USER_IDS` is gone from the loader — `Renamed` refuses it by name and the start exits 1 pointing at
   the new spelling rather than ignoring it (§7: the loader reads exactly the names of the table). `/whoami`,
   the refusal texts and `bot.AllowlistHint` name the single row (§12 UX). Covered by
@@ -774,6 +774,30 @@ docker compose up -d
 
 Never use `docker compose down --volumes` for this runbook: it deletes the very history the restore is meant to save.
 
+## Optional webhook transport (§15)
+
+Long polling remains the default. Webhook mode is an opt-in for an existing HTTPS reverse proxy or tunnel:
+
+```env
+WEBHOOK_ENABLED=true
+WEBHOOK_PUBLIC_URL=https://bot.example.com/telegram/webhook
+WEBHOOK_SECRET_TOKEN=<a-random-token-with-16-to-256-ascii-characters>
+WEBHOOK_LISTEN_HOST=127.0.0.1
+WEBHOOK_PORT=8082
+WEBHOOK_PATH=/telegram/webhook
+```
+
+The proxy forwards `https://bot.example.com/telegram/webhook` to `http://127.0.0.1:8082/telegram/webhook`; the two
+paths must match exactly. The secret travels only in `X-Telegram-Bot-Api-Secret-Token` and is logged by length.
+The listener accepts POST only, limits bodies to 1 MiB, and does not expose TLS itself. In compose it listens on
+`0.0.0.0:8082`, while the published host endpoint stays `127.0.0.1:8082` (`WEBHOOK_HOST_PORT` changes the host side).
+Do not publish the listener directly to the internet.
+
+Startup binds the local listener before `setWebhook`, registers only `message` updates without dropping pending
+updates, and never starts `getUpdates` in webhook mode. Switching back to polling requires Telegram `deleteWebhook`
+first; the project does not delete a webhook automatically. The fake integration proves registration, secret
+rejection, POST delivery and offset persistence; live HTTPS acceptance needs a real public URL and tunnel.
+
 ## Current limits (honest list)
 
 The v1 path is implemented: configuration, SQLite, the STRATA client, commands and middleware, integration and
@@ -781,6 +805,7 @@ race tests, Docker, health, read-only DB inspection, process-level kill/restart,
 and on Windows (`scripts/stop.ps1` delivers Ctrl+C to a hidden console). `scripts/verify.ps1` is the single entry
 point for the automated levels; the manual checklist above remains the authority for real Telegram behaviour.
 
+- Webhook transport is implemented as opt-in but has no live HTTPS acceptance yet; production remains on polling.
 - Streaming is implemented but stays opt-in (`STREAMING_ENABLED=false`). Its live checks and the budgets measured
   there are recorded in the checklist and §15 below; fakes alone cannot prove Telegram's edit/flood limits.
 - Ordinary sequential sends did not reproduce Telegram 429, but sustained one-second stream edits did produce
@@ -817,8 +842,8 @@ implementation made concrete enough to name.
   104.872 s, 17 edits, zero delivery failures, полный ответ и разметка подтверждены человеком. Старые `row=6`/`row=9`
   не догоняются после более нового ответа: startup scan намеренно смотрит только на самую новую visible row чата,
   чтобы не воскрешать перекрытые вопросы; возрастного TTL или автоматического удаления по-прежнему нет.
-- Вебхуки + HTTPS (`StartWebhook` of the library exists) вместо long polling; `bot_state` offset then
-  becomes the idempotency key of the incoming side instead of the poll cursor.
+- Живой HTTPS acceptance webhook и автоматический `deleteWebhook` при возврате к polling; сам opt-in transport,
+  `setWebhook`, secret validation и fake POST integration уже реализованы (§16 change 52).
 - Команды `/image`, `/voice`, вложения и файлы (§15) — the registry of §6 takes a new entry without
   touching the dispatcher, that is what `UsesModel`/`AlwaysAllowed` are for.
 - Пресеты системного промпта (`/persona`) и выбор модели (`/model select`); инструменты/функции модели и
@@ -828,7 +853,7 @@ implementation made concrete enough to name.
   ручной backup, проверенный scratch-restore, dry-run/apply retention и scheduler-ready maintenance реализованы (§9).
 - Публикация образа в registry; `.github/workflows/verify.yml` уже запускает Windows host checks и Ubuntu Docker
   race после появления remote, а локальный `scripts/verify.ps1` остаётся тем же pipeline.
-- `Config.Get()` — overrides per chat / per `user_id` (§16 change 25.1 kept the loader at the 23 rows of §7;
+- `Config.Get()` — overrides per chat / per `user_id` (§16 change 25.1 kept the loader at the 29 rows of §7;
   the first consumer would have been a per-chat `PARSE_MODE`, which v1 does not need).
 - Time budgets and TTLs as their own module: the limits of §7 live next to the loader in
   `internal/config/limits.go`; the TTL of the `bot_state` rows and a per-request budget bookkeeping move to v2.

@@ -83,12 +83,12 @@ func (d *Dispatcher) start(ctx context.Context, ev Event, arg string) error {
 	if d.deps.Cfg.DenyByDefault {
 		lines = append(lines, refuseClosed(ev.UserID))
 	}
-	return d.reply(ctx, ev.ChatID, strings.Join(lines, "\n"))
+	return d.sendMenu(ctx, ev.ChatID, strings.Join(lines, "\n"))
 }
 
 // help — §6 «список команд из реестра».
 func (d *Dispatcher) help(ctx context.Context, ev Event, arg string) error {
-	return d.reply(ctx, ev.ChatID, strings.Join(d.helpLines(), "\n"))
+	return d.sendMenu(ctx, ev.ChatID, strings.Join(d.helpLines(), "\n"))
 }
 
 // helpLines — one line per registry entry, so /help can never drift from the registry (§6).

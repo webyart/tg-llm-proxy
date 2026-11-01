@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	tgmodels "github.com/go-telegram/bot/models"
+
 	"bot/internal/config"
 	"bot/internal/model"
 	"bot/internal/store"
@@ -23,9 +25,17 @@ type sentMessage struct {
 }
 
 type fakeReplier struct {
-	mu   sync.Mutex
-	sent []sentMessage
-	err  error
+	mu    sync.Mutex
+	sent  []sentMessage
+	menus []tgmodels.InlineKeyboardMarkup
+	err   error
+}
+
+func (f *fakeReplier) SendMenu(ctx context.Context, chatID int64, text string, markup tgmodels.InlineKeyboardMarkup) error {
+	f.mu.Lock()
+	f.menus = append(f.menus, markup)
+	f.mu.Unlock()
+	return f.Send(ctx, chatID, text)
 }
 
 func (f *fakeReplier) Send(ctx context.Context, chatID int64, text string) error {
@@ -51,6 +61,15 @@ func (f *fakeReplier) texts() []string {
 }
 
 func (f *fakeReplier) joined() string { return strings.Join(f.texts(), "\n") }
+
+func (f *fakeReplier) menu() []tgmodels.InlineKeyboardButton {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.menus) == 0 {
+		return nil
+	}
+	return f.menus[len(f.menus)-1].InlineKeyboard[0]
+}
 
 func (f *fakeReplier) count() int {
 	f.mu.Lock()

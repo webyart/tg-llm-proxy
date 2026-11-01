@@ -106,9 +106,8 @@ func (d *Dispatcher) NewTelegram(opts Options) (*tgbot.Bot, error) {
 		tgbot.WithHTTPClient(poll, client),
 		tgbot.WithCheckInitTimeout(InitTimeout),
 		tgbot.WithWorkers(workers),
-		// §6 v1 reacts to messages only; naming them explicitly keeps callback_query and
-		// my_chat_member noise out of the queue and out of the log (§12 security: less volume).
-		tgbot.WithAllowedUpdates(tgbot.AllowedUpdates{"message"}),
+		// Accept text messages and menu callbacks; other update types stay out of the queue and the log.
+		tgbot.WithAllowedUpdates(tgbot.AllowedUpdates{"message", "callback_query"}),
 		tgbot.WithDefaultHandler(d.telegramHandler),
 		// §12 security: the default errorsHandler of the library prints errors carrying
 		// `https://api.telegram.org/bot<TOKEN>/…`, so every text goes through Sanitize first. No
@@ -175,7 +174,7 @@ func (d *Dispatcher) matchUpdate(upd *models.Update) bool {
 
 // telegramHandler — the single entry point of both paths (§10 День 4): the registered MatchFunc for
 // text messages and WithDefaultHandler for everything else.
-func (d *Dispatcher) telegramHandler(ctx context.Context, _ *tgbot.Bot, upd *models.Update) {
+func (d *Dispatcher) telegramHandler(ctx context.Context, tg *tgbot.Bot, upd *models.Update) {
 	// §12 reliability / §10 День 7: the first question in a live incident is always «did the update arrive
 	// at all», and until today the process answered it only by silence. One debug line per update, with the
 	// id and the length of the text rather than the text itself (§12 security: LOG_LEVEL=debug must not
@@ -206,6 +205,10 @@ func (d *Dispatcher) telegramHandler(ctx context.Context, _ *tgbot.Bot, upd *mod
 		d.deps.Logger.Error("the update handler panicked before Dispatch, the update is lost",
 			"update_id", updateID, "panic", fmt.Sprint(r))
 	}()
+	if upd != nil && upd.CallbackQuery != nil {
+		d.handleCallback(ctx, tg, upd)
+		return
+	}
 	d.deps.Logger.Debug("the update arrived", "update_id", updateID, "text_len", textLen)
 	var ev, ok = eventOf(upd)
 	if !ok {
@@ -301,16 +304,29 @@ func (r *telegramReplier) chatUser(chatID int64) int64 {
 // Send — one piece of text into one chat, with the parse mode of §7. The chunks were already cut by
 // reply.go (§16 change 7: escape, then cut), so Send sends what it is given and does not re-split.
 func (r *telegramReplier) Send(ctx context.Context, chatID int64, text string) error {
+	return r.send(ctx, chatID, text, nil)
+}
+
+// SendMenu sends a short menu message with its inline keyboard through the same retry path as any other reply.
+func (r *telegramReplier) SendMenu(ctx context.Context, chatID int64, text string, markup models.InlineKeyboardMarkup) error {
+	return r.send(ctx, chatID, text, &markup)
+}
+
+func (r *telegramReplier) send(ctx context.Context, chatID int64, text string, markup *models.InlineKeyboardMarkup) error {
 	if r.bot == nil {
 		return errors.New("the telegram bot is not attached (§10 День 4: NewTelegram must run before the first reply)")
 	}
 	var attempt = 0
 	for {
-		var _, err = r.bot.SendMessage(ctx, &tgbot.SendMessageParams{
+		params := &tgbot.SendMessageParams{
 			ChatID:    chatID,
 			Text:      text,
 			ParseMode: parseModeOf(r.cfg.ParseMode),
-		})
+		}
+		if markup != nil {
+			params.ReplyMarkup = *markup
+		}
+		var _, err = r.bot.SendMessage(ctx, params)
 		if err == nil {
 			return nil
 		}

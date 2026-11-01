@@ -1,3 +1,12 @@
+# tg-llm-proxy v1.2.0
+
+## Minor release
+
+- `/start` и `/help` теперь открывают обычное inline-меню Telegram с 12 кнопками в две колонки.
+- Нажатие кнопки вызывает `answerCallbackQuery` и существующую команду через тот же Dispatcher и middleware chain.
+- Callback data ограничены зарегистрированными командами; произвольные данные игнорируются.
+- Добавлены unit/integration тесты inline keyboard и обработки callback.
+
 # tg-llm-proxy v1.1.0
 
 ## Minor release

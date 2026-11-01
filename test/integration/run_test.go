@@ -25,6 +25,7 @@ import (
 	"time"
 
 	tgbot "github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
 
 	"bot/internal/bot"
 	"bot/internal/config"
@@ -1035,8 +1036,8 @@ func TestWebhookAcceptsOnlySecretUpdatesWithoutPolling(t *testing.T) {
 	if !found || registration.URL != cfg.WebhookPublicURL || registration.SecretToken != cfg.WebhookSecretToken {
 		t.Fatalf("setWebhook registration = %+v found=%v", registration, found)
 	}
-	if registration.DropPendingUpdates || len(registration.AllowedUpdates) != 1 || registration.AllowedUpdates[0] != "message" {
-		t.Fatalf("webhook must keep pending updates and allow only messages: %+v", registration)
+	if registration.DropPendingUpdates || len(registration.AllowedUpdates) != 2 || registration.AllowedUpdates[0] != "message" || registration.AllowedUpdates[1] != "callback_query" {
+		t.Fatalf("webhook must keep pending updates and allow messages and menu callbacks: %+v", registration)
 	}
 	if run.webhookURL == "" {
 		t.Fatal("the local webhook listener did not start")
@@ -1121,6 +1122,43 @@ func TestModelSelectPersistsPerChat(t *testing.T) {
 	waitFor(t, "model reset was confirmed", func() bool { return tgAPI.Calls("sendMessage") == 3 })
 	if _, found, err := store.ChatModel(ctx, db, chatID); err != nil || found {
 		t.Fatalf("reset must clear the override, found=%v err=%v", found, err)
+	}
+	run.stop()
+}
+
+func TestInlineMenuAndCallback(t *testing.T) {
+	var ctx = context.Background()
+	var path = dbFile(t)
+	var tgAPI = testutil.NewTelegram(t, secretToken)
+	var strata = testutil.NewStrata(t, secretStrataKey, testutil.StrataReply{Content: "ответ"})
+	var cfg = integrationEnv(t, path, strata.BaseURL(), nil)
+	var db = openStore(t, path)
+	var run = startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second}, 0)
+
+	tgAPI.PushText(180, chatID, userID, "/start")
+	waitFor(t, "the inline menu was sent", func() bool { return tgAPI.Calls("sendMessage") == 1 })
+	var menu = tgAPI.Sent()[0].ReplyMarkup
+	for _, want := range []string{"inline_keyboard", "cmd:ask", "cmd:model", "cmd:status", "cmd:history", "cmd:reset", "cmd:skip", "cmd:unskip", "cmd:stats", "cmd:whoami", "cmd:ping", "cmd:help", "cmd:start"} {
+		if !strings.Contains(menu, want) {
+			t.Errorf("inline menu misses %q: %s", want, menu)
+		}
+	}
+
+	tgAPI.Push(models.Update{ID: 181, CallbackQuery: &models.CallbackQuery{
+		ID:   "cb1",
+		Data: "cmd:ping",
+		From: models.User{ID: userID, Username: "tester"},
+		Message: models.MaybeInaccessibleMessage{Message: &models.Message{
+			ID:   181,
+			Date: int(time.Now().Unix()),
+			Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate},
+		}},
+	}})
+	waitFor(t, "callback was answered and /ping ran", func() bool {
+		return tgAPI.Calls("answerCallbackQuery") == 1 && tgAPI.Calls("sendMessage") == 2
+	})
+	if !strings.Contains(tgAPI.Joined(), "pong") {
+		t.Fatalf("callback /ping must answer pong, got %q", tgAPI.Joined())
 	}
 	run.stop()
 }

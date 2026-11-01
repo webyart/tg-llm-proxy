@@ -8,6 +8,7 @@ Telegram-бот-прокси между пользователями и лока
 ## Возможности
 
 - 12 команд: `/start`, `/help`, `/ping`, `/status`, `/ask`, `/reset`, `/skip`, `/unskip`, `/history`, `/model`, `/stats`, `/whoami`.
+- `/start` и `/help` открывают inline-меню с 12 кнопками команд; callback проходит через тот же Dispatcher.
 - История и независимый контекст каждого чата в SQLite/WAL.
 - Allowlist по Telegram user id, rate limiting, per-chat lock и ограничение параллельных запросов к модели.
 - Обработка timeout/5xx/пустых ответов, Telegram 429 и восстановление незавершённых вопросов после рестарта.

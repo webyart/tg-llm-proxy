@@ -34,9 +34,10 @@ import (
 // SentMessage — one sendMessage the fake received (§11: the fake is what checks the chunking and the
 // parse mode of §7, because nothing else in the test knows how the answer left the process).
 type SentMessage struct {
-	ChatID    int64
-	Text      string
-	ParseMode string
+	ChatID      int64
+	Text        string
+	ParseMode   string
+	ReplyMarkup string
 	// MessageID is the id the fake handed back in the result of sendMessage — the id §15 addresses every
 	// rewrite to (§16 change 34). It is never 0: a real Telegram id is not 0, and run.go refuses an answer
 	// with no id precisely so that a stream cannot pretend it was rewritten into nothing.
@@ -323,6 +324,8 @@ func (s *Telegram) handle(w http.ResponseWriter, r *http.Request) {
 		s.handleSetMyCommands(w, r)
 	case "setWebhook":
 		s.handleSetWebhook(w, r)
+	case "answerCallbackQuery":
+		writeOK(w, true)
 	default:
 		// §6 v1 needs no other method; answering ok would hide a wrong call (§12 reliability).
 		writeError(w, http.StatusNotFound, "the fake does not serve "+method+" — v1 of §6 uses getMe, getUpdates, sendMessage, setMyCommands, and §15 adds editMessageText", 0)
@@ -421,7 +424,7 @@ func (s *Telegram) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	var id = s.nextSendID
 	s.nextSendID++
 	s.sentIDs[id] = true
-	s.sent = append(s.sent, SentMessage{ChatID: chatID, Text: text, ParseMode: r.FormValue("parse_mode"), MessageID: id})
+	s.sent = append(s.sent, SentMessage{ChatID: chatID, Text: text, ParseMode: r.FormValue("parse_mode"), ReplyMarkup: r.FormValue("reply_markup"), MessageID: id})
 	s.mu.Unlock()
 
 	// models.Message has a custom UnmarshalJSON that decides "accessible" by the `date` field, so the

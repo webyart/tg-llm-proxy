@@ -137,7 +137,7 @@ func (d *Dispatcher) ConfigureWebhook(ctx context.Context, tg *tgbot.Bot) error 
 	ok, err := tg.SetWebhook(ctx, &tgbot.SetWebhookParams{
 		URL:            cfg.WebhookPublicURL,
 		SecretToken:    cfg.WebhookSecretToken,
-		AllowedUpdates: []string{"message"},
+		AllowedUpdates: []string{"message", "callback_query"},
 	})
 	if err != nil {
 		return fmt.Errorf("setWebhook: %w", errors.New(Sanitize(errors.New(Sanitize(err, cfg.BotToken)), cfg.WebhookSecretToken)))

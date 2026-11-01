@@ -35,6 +35,17 @@ if (-not (Get-Command -Name docker -ErrorAction SilentlyContinue)) {
 
 Push-Location $repoRoot
 try {
+    if (-not $env:BUILD_COMMIT) {
+        $env:BUILD_COMMIT = 'dev'
+        if (Get-Command -Name git -ErrorAction SilentlyContinue) {
+            $gitCommit = (git rev-parse --short=12 HEAD 2>$null)
+            if ($LASTEXITCODE -eq 0 -and $gitCommit) {
+                $env:BUILD_COMMIT = $gitCommit.Trim()
+                if ((git status --porcelain 2>$null | Out-String).Trim()) { $env:BUILD_COMMIT += '-dirty' }
+            }
+        }
+    }
+    Write-Output "docker-build: BUILD_COMMIT=$env:BUILD_COMMIT"
     $composeArgs = @('compose', 'build')
     if ($NoCache) { $composeArgs += '--no-cache' }
     if ($Service) { $composeArgs += $Service }

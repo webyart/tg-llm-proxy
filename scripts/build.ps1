@@ -39,8 +39,16 @@ try {
     }
 
     New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot 'bin') | Out-Null
+    $commit = 'dev'
+    if (Get-Command -Name git -ErrorAction SilentlyContinue) {
+        $gitCommit = (git rev-parse --short=12 HEAD 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $gitCommit) {
+            $commit = $gitCommit.Trim()
+            if ((git status --porcelain 2>$null | Out-String).Trim()) { $commit += '-dirty' }
+        }
+    }
     $env:CGO_ENABLED = '0'   # §3.1: pure-Go sqlite of §5 — the host has no C compiler and needs none
-    $buildOut = (go build -o bin\bot.exe . 2>&1 | Out-String)
+    $buildOut = (go build -ldflags "-X main.buildCommit=$commit" -o bin\bot.exe . 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 0) {
         Write-Output "go build exit $LASTEXITCODE (§12 reliability: no binary, the reasons above)"
         Write-Output $buildOut.Trim()

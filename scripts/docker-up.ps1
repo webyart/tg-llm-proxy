@@ -45,8 +45,16 @@ if (-not $port) { $port = 8080 }
 
 Push-Location $repoRoot
 try {
+    if (-not $NoBuild) {
+        $build = (& pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'docker-build.ps1') -Service bot 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0) {
+            Write-Output $build.Trim()
+            Write-Output "docker-up: docker-build.ps1 -Service bot exit $LASTEXITCODE (§8.1)"
+            exit 1
+        }
+        Write-Output $build.Trim()
+    }
     $composeArgs = @('compose', 'up', '-d')
-    if (-not $NoBuild) { $composeArgs += '--build' }
     $out = (docker @composeArgs 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 0) {
         Write-Output "docker-up: docker $($composeArgs -join ' ') exit $LASTEXITCODE (§8.1) — the last lines:"

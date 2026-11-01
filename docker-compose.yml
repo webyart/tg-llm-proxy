@@ -10,6 +10,8 @@ services:
       context: .
       dockerfile: Dockerfile
       target: run
+      args:
+        BUILD_COMMIT: ${BUILD_COMMIT:-dev}
     image: tg-llm-proxy-bot:latest
     # §8.1: the §7 table comes from .env, compose pins the container path of the database.
     env_file:

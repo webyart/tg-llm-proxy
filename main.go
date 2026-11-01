@@ -31,6 +31,8 @@ import (
 // docker-compose.yml sets no `stop_grace_period` — and db.Close never checkpoints the WAL of §5.
 var stopSignals = []os.Signal{os.Interrupt, syscall.SIGTERM}
 
+var buildCommit = "dev"
+
 // PrintConfig - print every variable of the §7 table with the §-reference of its meaning, one variable
 // per line: the program's own report of what it read. The token is hidden, only its length is printed
 // (§12 безопасность).
@@ -45,7 +47,7 @@ func PrintConfig(cfg config.Config) {
 	fmt.Println("STRATA_TIMEOUT_SECONDS", cfg.TimeoutSeconds, "(§7, §10 День 3: the timeout of one attempt)")
 	fmt.Println("TG_REPLY_DEADLINE_SECONDS", cfg.ReplyDeadlineSeconds, "(§7, §10 День 3: the total budget of the model retries + timeout + the answer into Telegram)")
 	fmt.Println("STREAMING_ENABLED", cfg.Streaming, "(§7, §16 change 34: §15 «стриминг ответов» — one message rewritten as the model writes; off by default because it changes the UX of every answer)")
-	fmt.Println("STREAM_EDIT_INTERVAL_MS", cfg.StreamEditIntervalMS, "(§7, §15: the cadence of the rewrites — Telegram tolerates about one edit per second per chat, §10 День 4 flood)")
+	fmt.Println("STREAM_EDIT_INTERVAL_MS", cfg.StreamEditIntervalMS, "(§7, §15: the cadence of the rewrites — the default is five seconds after the live 429 measurement, §10 День 4 flood)")
 	fmt.Println("STREAM_IDLE_TIMEOUT_SECONDS", cfg.StreamIdleSeconds, "(§7, §15: the pause between two SSE events past which the stream is dead; measured gap of a healthy stream is ~20 ms)")
 	fmt.Println("STREAM_TOTAL_DEADLINE_SECONDS", cfg.StreamTotalSeconds, "(§7, §15: the ceiling of one streamed answer, thinking included — the GPU of §12 is bounded)")
 	fmt.Println("DB_PATH", cfg.DBPath, "(§7, §16 change 9: the default is a local Windows path, compose overrides /data/bot.db)")
@@ -138,6 +140,7 @@ func main() {
 	// copies it into every connection at Connect), so it is set here, before the first sql.Open —
 	// the second line of defence behind the whitelist of store.BuildDSN (§13 «_pragma via %3B»).
 	store.EnableStrictPragmas()
+	fmt.Println("build commit", buildCommit)
 	var ctx, cancel = signal.NotifyContext(context.Background(), stopSignals...)
 	// The configuration is read before anything starts: MsgTGNoID and MsgStrataNoKey of the §7 loader name the
 	// reasons of a refused start, and the DoD of §10 День 1 asks for a clear error and exit code 1.
@@ -243,6 +246,7 @@ func main() {
 		Logger:      logger,
 		Token:       cfg.BotToken,
 		StartOffset: startOffset,
+		BuildCommit: buildCommit,
 		// §5 «bot_state last_update_id»: every processed update moves the offset through the writer of the
 		// store, so the restart of §8.1 continues after it instead of answering the same user twice.
 		Offset: func(writeCtx context.Context, updateID int64) error {

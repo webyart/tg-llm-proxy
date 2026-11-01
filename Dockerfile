@@ -14,7 +14,8 @@ RUN go mod download
 COPY . .
 # §8.1: a static binary, no cgo, so the run stage needs nothing but the CA store.
 ENV CGO_ENABLED=0 GOOS=linux
-RUN go build -trimpath -ldflags="-s -w" -o /bot .
+ARG BUILD_COMMIT=dev
+RUN go build -trimpath -ldflags="-s -w -X main.buildCommit=${BUILD_COMMIT}" -o /bot .
 
 FROM alpine:3.21 AS run
 # tzdata: created_at is stored in UTC (§5) and the logs of §12 name the timezone of the container.

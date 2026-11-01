@@ -11,7 +11,7 @@ Telegram-бот-прокси между пользователями и лока
 - История и независимый контекст каждого чата в SQLite/WAL.
 - Allowlist по Telegram user id, rate limiting, per-chat lock и ограничение параллельных запросов к модели.
 - Обработка timeout/5xx/пустых ответов, Telegram 429 и восстановление незавершённых вопросов после рестарта.
-- Версионированные миграции через `schema_migrations` (текущая схема — версия 1).
+- Версионированные миграции через `schema_migrations` (текущая схема — версия 2).
 - Backup/restore, ротация копий и age-based retention с dry-run по умолчанию.
 - Версионированные миграции и безопасное восстановление Docker named volume.
 - Docker multi-stage build, non-root runtime, healthcheck, build commit и ротация логов 10 MB × 5.
@@ -159,6 +159,8 @@ Reverse proxy или туннель должен перенаправлять п
 | `/unskip` | снять suppression без немедленного вызова модели |
 | `/history [N]` | последние N сообщений, по умолчанию 5 |
 | `/model [check]` | модель, endpoint и проверка доступности |
+| `/model select <id>` | выбрать модель текущего чата из `GET /models` |
+| `/model reset` | вернуть модель по умолчанию `STRATA_MODEL` |
 | `/stats` | сообщения, токены и ошибки текущего чата |
 | `/whoami` | `user_id`, `chat_id` и состояние allowlist |
 
@@ -184,7 +186,7 @@ Release CI — `.gitlab-ci.yml`: Linux host checks, race непосредств�
 .\scripts\db_inspect.ps1 -Integrity
 ```
 
-`schema_version=0` означает backup до версионирования; при следующем writable `store.Open` он автоматически становится 1 без изменения прикладных строк.
+`schema_version=0` означает backup до версионирования; при следующем writable `store.Open` он автоматически становится 2 без изменения прикладных строк.
 
 ### Backup и scratch restore
 
@@ -260,11 +262,10 @@ docker compose up -d
 
 - Production использует long polling; живой HTTPS webhook acceptance не выполнен.
 - Стриминг реализован и проверен вживую, но остаётся opt-in. Точный 120-секундный 429 и реальный idle-stall покрыты только тестами.
-- `/unskip` покрыт unit/integration; живой Telegram acceptance выполняется отдельно на новом тестовом вопросе, не на `row=16`.
 - Startup recovery не имеет age cap и рассматривает только самый новый visible unanswered-вопрос чата.
 - Host-side `/healthz` на Docker Desktop может давать WARN при healthy in-container healthcheck.
 - macOS использует те же Unix-ветки, что и проверенный Linux; физический Mac acceptance не выполнялся.
-- Вложения, `/persona`, `/model select`, `/admin` и RAG относятся к следующим версиям.
+- Вложения, `/persona`, `/admin` и RAG относятся к следующим версиям.
 
 ## Документы
 

@@ -1,0 +1,4 @@
+CREATE TABLE IF NOT EXISTS chat_settings (
+    chat_id INTEGER PRIMARY KEY REFERENCES chats(chat_id) ON DELETE CASCADE,
+    model   TEXT NOT NULL
+);

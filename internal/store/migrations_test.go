@@ -19,13 +19,13 @@ func TestSchemaVersionIsRecordedOnce(t *testing.T) {
 			t.Fatalf("ApplySchema round %d: %v", round, err)
 		}
 		version, err := SchemaVersion(ctx, db)
-		if err != nil || version != 1 {
-			t.Fatalf("SchemaVersion=%d err=%v, want 1", version, err)
+		if err != nil || version != len(MigrationSQL) {
+			t.Fatalf("SchemaVersion=%d err=%v, want %d", len(MigrationSQL), version, err)
 		}
 	}
 	var rows int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&rows); err != nil || rows != 1 {
-		t.Fatalf("schema_migrations rows=%d err=%v, want exactly one", rows, err)
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&rows); err != nil || rows != len(MigrationSQL) {
+		t.Fatalf("schema_migrations rows=%d err=%v, want exactly %d", rows, len(MigrationSQL), err)
 	}
 }
 
@@ -56,8 +56,8 @@ func TestSchemaVersionAdoptsAPreVersioningDatabaseWithoutLosingRows(t *testing.T
 		t.Fatalf("adopt old database: %v", err)
 	}
 	version, err = SchemaVersion(ctx, db)
-	if err != nil || version != 1 {
-		t.Fatalf("adopted SchemaVersion=%d err=%v, want 1", version, err)
+	if err != nil || version != len(MigrationSQL) {
+		t.Fatalf("adopted SchemaVersion=%d err=%v, want %d", len(MigrationSQL), version, err)
 	}
 	var kept int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chats WHERE chat_id = 42 AND user_id = 7`).Scan(&kept); err != nil || kept != 1 {
@@ -76,10 +76,10 @@ func TestMigrationFailureRollsBackStatementsAndVersion(t *testing.T) {
 	MigrationSQL = append(append([]string{}, original...), `CREATE TABLE migration_sentinel (id INTEGER); SELECT invalid_migration_statement;`)
 	defer func() { MigrationSQL = original }()
 	if err := ApplySchema(ctx, db); err == nil {
-		t.Fatal("the invalid second migration must fail")
+		t.Fatal("the invalid migration must fail")
 	}
 	version, err := SchemaVersion(ctx, db)
-	if err != nil || version != 1 {
+	if err != nil || version != len(original) {
 		t.Fatalf("failed migration advanced SchemaVersion to %d, err=%v", version, err)
 	}
 	var sentinel int

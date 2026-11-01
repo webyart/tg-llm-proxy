@@ -43,7 +43,7 @@ func (d *Dispatcher) sendMenu(ctx context.Context, chatID int64, text string) er
 	if sender, ok := d.deps.Replier.(interface {
 		SendMenu(context.Context, int64, string, models.InlineKeyboardMarkup) error
 	}); ok {
-		return sender.SendMenu(ctx, chatID, text, d.menuMarkup())
+		return sender.SendMenu(ctx, chatID, Escape(text, d.deps.Cfg.ParseMode), d.menuMarkup())
 	}
 	return d.reply(ctx, chatID, text)
 }

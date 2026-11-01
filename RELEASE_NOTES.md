@@ -1,3 +1,11 @@
+# tg-llm-proxy v1.2.1
+
+## Hotfix
+
+- Исправлена отправка текста inline-меню: `/start` и `/help` теперь проходят MarkdownV2 escaping перед
+  `SendMessage`, поэтому `!`, `+` и остальные зарезервированные символы не вызывают `can't parse entities`.
+- Добавлены regression assertions на фактический `/start` и на `a+b` через `SendMenu`.
+
 # tg-llm-proxy v1.2.0
 
 ## Minor release

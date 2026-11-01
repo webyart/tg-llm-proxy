@@ -1,6 +1,8 @@
 package bot
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/go-telegram/bot/models"
@@ -8,11 +10,20 @@ import (
 
 func TestMenuMarkupAndStartSendInlineKeyboard(t *testing.T) {
 	var r = &fakeReplier{}
-	var d = newTestDispatcher(t, testConfig(t, nil), nil, r, testStore(t))
+	var d = newTestDispatcher(t, testConfig(t, map[string]string{"PARSE_MODE": "MarkdownV2"}), nil, r, testStore(t))
 	if err := dispatch(t, d, testEvent(100, 11, 180, "/start")); err != nil {
 		t.Fatalf("/start: %v", err)
 	}
-	if len(r.menus) != 1 {
+	if !strings.Contains(r.texts()[0], `Привет\!`) {
+		t.Errorf("menu text must escape '!' for MarkdownV2, got %q", r.texts()[0])
+	}
+	if err := d.sendMenu(context.Background(), 100, "a+b"); err != nil {
+		t.Fatalf("sendMenu with '+': %v", err)
+	}
+	if got := r.texts()[len(r.texts())-1]; got != "a\\+b" {
+		t.Errorf("menu text must escape '+', got %q", got)
+	}
+	if len(r.menus) != 2 {
 		t.Fatalf("/start must send one inline keyboard, got %d", len(r.menus))
 	}
 	seen := map[string]bool{}

@@ -13,6 +13,7 @@ import (
 
 func main() {
 	var path = flag.String("path", "", "new fixture database path (required)")
+	var preVersion = flag.Bool("pre-version", false, "drop schema_migrations to simulate a pre-versioning backup")
 	flag.Parse()
 	if *path == "" {
 		fmt.Fprintln(os.Stderr, "dbfixture: -path is required")
@@ -72,5 +73,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "dbfixture: age event: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("fixture: %s (4 messages, 2 events, offset 4242; one old pair and one old event)\n", *path)
+	if *preVersion {
+		if _, err := db.ExecContext(ctx, `DROP TABLE schema_migrations`); err != nil {
+			fmt.Fprintf(os.Stderr, "dbfixture: make pre-versioning schema: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	fmt.Printf("fixture: %s (4 messages, 2 events, offset 4242; one old pair and one old event; pre-version=%t)\n", *path, *preVersion)
 }

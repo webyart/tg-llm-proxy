@@ -177,13 +177,14 @@ func main() {
 	}
 	var journalMode, modeErr = store.Pragma(ctx, db, store.JournalModePragma)
 	var foreignKeys, keysErr = store.Pragma(ctx, db, store.ForeignKeysPragma)
-	if modeErr != nil || keysErr != nil {
-		fmt.Println("store.Pragma:", modeErr, keysErr, "(§5: the pragmas of the DSN must be readable back)")
+	var schemaVersion, schemaErr = store.SchemaVersion(ctx, db)
+	if modeErr != nil || keysErr != nil || schemaErr != nil {
+		fmt.Println("store.Pragma/SchemaVersion:", modeErr, keysErr, schemaErr, "(§5: pragmas and migration state must be readable)")
 		db.Close()
 		os.Exit(1)
 	}
 	fmt.Println("store is open:", cfg.DBPath, "journal_mode", journalMode, "foreign_keys", foreignKeys,
-		"migrations applied", len(store.MigrationSQL), "(§5 schema through go:embed, §10 День 2)")
+		"migrations applied", len(store.MigrationSQL), "schema_version", schemaVersion, "(§5 schema through go:embed, §10 День 2)")
 	fmt.Println("program is running, PID", os.Getpid(), "(§10 День 1: `signal.NotifyContext` keeps the process alive until a stop signal)")
 	// §10 День 5 + §8.1: internal/health answers GET /healthz on HEALTH_PORT, which is what the
 	// compose HEALTHCHECK probes (wget on 127.0.0.1) and what keeps the container process alive

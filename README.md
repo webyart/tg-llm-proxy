@@ -686,6 +686,9 @@ For a host-side database, the online backup does not require stopping the bot:
 verifies that file again. Its PowerShell wrapper accepts destinations only below `zzscratch`; it cannot overwrite
 `data/bot.db` or the Docker volume. Compare `table_*`, `events_*`, `last_update_id`, and `integrity` in the two
 `-Counts` reports, not file hashes: `VACUUM INTO` preserves the data but may change the physical page layout.
+The same report includes `schema_version`. Pre-versioning databases and backups report 0; on the next writable
+`store.Open`, migration 1 adopts them transactionally into `schema_migrations` without changing application rows.
+Migration history is append-only: deployed SQL entries must not be edited.
 
 Retention is explicit and dry-run first:
 
@@ -821,10 +824,10 @@ implementation made concrete enough to name.
 - Пресеты системного промпта (`/persona`) и выбор модели (`/model select`); инструменты/функции модели и
   RAG поверх локальных документов.
 - `/admin`: сводка по всем чатам, очередь и приоритеты запросов (v1 counts one chat, §6 `/stats`).
-- Версионированные миграции (`schema_version` рядом с `bot_state`) и автоматическая регистрация расписания;
-  ручной backup, проверенный scratch-restore, dry-run/apply retention и scheduler-ready maintenance уже реализованы
-  (§9), а v1 applies `001_init.sql` through `go:embed` and nothing else (§5).
-- CI (gofmt/vet/test/`-race`) and publishing the image to a registry — today the §9 scripts are the pipeline.
+- Автоматическая регистрация расписания; версионированные миграции уже используют `schema_migrations`,
+  ручной backup, проверенный scratch-restore, dry-run/apply retention и scheduler-ready maintenance реализованы (§9).
+- Публикация образа в registry; `.github/workflows/verify.yml` уже запускает Windows host checks и Ubuntu Docker
+  race после появления remote, а локальный `scripts/verify.ps1` остаётся тем же pipeline.
 - `Config.Get()` — overrides per chat / per `user_id` (§16 change 25.1 kept the loader at the 23 rows of §7;
   the first consumer would have been a per-chat `PARSE_MODE`, which v1 does not need).
 - Time budgets and TTLs as their own module: the limits of §7 live next to the loader in

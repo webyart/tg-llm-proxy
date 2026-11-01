@@ -610,7 +610,7 @@ func TestUpdatesWithoutMessageSurviveTheHandler(t *testing.T) {
 	}
 	var k = 0
 	for k < len(counts) {
-		if counts[k].Rows != 0 {
+		if counts[k].Name != "schema_migrations" && counts[k].Rows != 0 {
 			t.Fatalf("an update without a message must write nothing (§5 has no row for it): %s has %d rows", counts[k].Name, counts[k].Rows)
 		}
 		k++

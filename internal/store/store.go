@@ -187,21 +187,45 @@ func Pragma(ctx context.Context, db *sql.DB, name string) (string, error) {
 	return value, nil
 }
 
-// ApplySchema — the migration set of §5 on every start (§10 День 2: «репозитории … применяются на
-// каждом старте»). The statements go one by one: the sqlite driver refuses a ';' inside a single
-// query (§5: `invalid semicolon separator in query`), so the schema text cannot be Execed whole.
-// Every clause of 001_init.sql carries IF NOT EXISTS, so a repeated start is a no-op (§5: одна
-// идемпотентная миграция).
+// ApplySchema bootstraps schema_migrations, then applies each unapplied embedded migration in its own
+// transaction. The initial schema remains idempotent so a pre-versioning database is adopted at version 1
+// without changing its rows; later starts skip that version instead of replaying its statements.
 func ApplySchema(ctx context.Context, db *sql.DB) error {
-	for _, migration := range MigrationSQL {
+	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+		version INTEGER PRIMARY KEY,
+		applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+	)`); err != nil {
+		return fmt.Errorf("schema_migrations bootstrap failed: %w", err)
+	}
+	for index, migration := range MigrationSQL {
+		version := index + 1
+		var applied int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version).Scan(&applied); err != nil {
+			return fmt.Errorf("schema version %d could not be checked: %w", version, err)
+		}
+		if applied != 0 {
+			continue
+		}
 		statements, err := Statements(migration)
 		if err != nil {
 			return err
 		}
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("migration %d could not begin: %w", version, err)
+		}
 		for i, statement := range statements {
-			if _, err := db.ExecContext(ctx, statement); err != nil {
-				return fmt.Errorf("statement %d of the migration of §5 failed (%w); text: %s", i+1, err, firstLine(statement))
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("statement %d of migration %d failed (%w); text: %s", i+1, version, err, firstLine(statement))
 			}
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)`, version); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("migration %d could not be recorded: %w", version, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("migration %d could not commit: %w", version, err)
 		}
 	}
 	return nil

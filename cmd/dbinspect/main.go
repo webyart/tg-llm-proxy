@@ -122,6 +122,14 @@ func run(ctx context.Context, path string, chatID int64, limit int, integrity bo
 	fmt.Printf("  size          %s, modified %s\n", humanBytes(info.Size()), info.ModTime().Format(time.RFC3339))
 	fmt.Printf("  open mode     %s\n", modeNote(mode))
 	fmt.Printf("  journal_mode  %s (§5: belongs to the file; the viewer never changes it)%s\n", journal, journalCaveat(mode))
+	var schemaVersion, schemaErr = store.SchemaVersion(ctx, db)
+	var schemaText = "0 (pre-versioning backup)"
+	if schemaErr != nil {
+		schemaText = "не прочитан: " + schemaErr.Error()
+	} else if schemaVersion > 0 {
+		schemaText = fmt.Sprint(schemaVersion)
+	}
+	fmt.Printf("  schema_version %s\n", schemaText)
 	fmt.Println()
 
 	return sections(ctx, db, chatID, limit, integrity)
@@ -154,6 +162,10 @@ func countsReport(w io.Writer, ctx context.Context, db *sql.DB, path, journal st
 	if integrityErr != nil {
 		return &exitError{1, integrityErr.Error()}
 	}
+	var schemaVersion, schemaErr = store.SchemaVersion(ctx, db)
+	if schemaErr != nil {
+		return &exitError{1, schemaErr.Error()}
+	}
 
 	fmt.Fprintf(w, "path=%s\n", path)
 	// Which handle the numbers came through, and whether the WAL of §5 is sitting next to the file. A snapshot
@@ -164,6 +176,7 @@ func countsReport(w io.Writer, ctx context.Context, db *sql.DB, path, journal st
 	fmt.Fprintf(w, "wal_side_file=%s\n", map[bool]string{true: "present", false: "absent"}[store.WALSideFilePresent(path)])
 	fmt.Fprintf(w, "journal_mode=%s\n", countKey(journal))
 	fmt.Fprintf(w, "integrity=%s\n", countKey(verdict))
+	fmt.Fprintf(w, "schema_version=%d\n", schemaVersion)
 	fmt.Fprintf(w, "last_update_id=%d\n", offset)
 	// found=false means the bot_state row does not exist yet — a fresh database, where the poller starts from
 	// 0 (§5). The script has to tell «offset 0» from «no offset row at all», so both numbers are printed.

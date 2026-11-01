@@ -8,11 +8,31 @@ package store
 
 // The blank import is what makes //go:embed legal: without it the build fails with
 // «go:embed requires import "embed"» (verified on this toolchain).
-import _ "embed"
+import (
+	"context"
+	"database/sql"
+	_ "embed"
+)
 
 //go:embed migrations/001_init.sql
 var InitSQL string
 
-// MigrationSQL — the migration set of §4 in the order of the file names. v1 has
-// exactly one migration; versioned migrations are in the §15 backlog.
+// MigrationSQL is the ordered, append-only migration history. The slice index plus one is the permanent schema
+// version recorded in schema_migrations; existing entries must never be edited after deployment.
 var MigrationSQL = []string{InitSQL}
+
+// SchemaVersion returns the newest applied migration, or zero for a pre-versioning backup.
+func SchemaVersion(ctx context.Context, db *sql.DB) (int, error) {
+	var present int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'`).Scan(&present); err != nil {
+		return 0, err
+	}
+	if present == 0 {
+		return 0, nil
+	}
+	var version int
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
+		return 0, err
+	}
+	return version, nil
+}

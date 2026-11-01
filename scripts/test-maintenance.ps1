@@ -27,7 +27,7 @@ $failure = $null
 function Get-DatabaseCounts([string]$Path) {
     $report = & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'db_inspect.ps1') -Path $Path -Counts
     if ($LASTEXITCODE -ne 0) { throw "db_inspect failed for $Path" }
-    return @($report | Where-Object { $_ -match '^(integrity|last_update_id|bot_state_offset_found|table_|events_)' })
+    return @($report | Where-Object { $_ -match '^(integrity|schema_version|last_update_id|bot_state_offset_found|table_|events_)' })
 }
 
 function Assert-SameCounts([string]$ExpectedPath, [string]$ActualPath) {
@@ -69,6 +69,22 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'restore acceptance failed' }
     Assert-SameCounts $source $restored
     Write-Output 'maintenance acceptance: backup/restore counters match'
+
+    $legacy = Join-Path $work 'legacy.db'
+    & $fixtureExe -path $legacy -pre-version
+    if ($LASTEXITCODE -ne 0) { throw 'legacy dbfixture failed' }
+    $legacyBefore = Get-DatabaseCounts $legacy
+    if ($legacyBefore -notcontains 'schema_version=0') { throw 'legacy fixture must start at schema_version=0' }
+    & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'db_prune.ps1') -Source $legacy -EventsDays 100000 -Apply -Backup (Join-Path $work 'legacy-pre-migration.db')
+    if ($LASTEXITCODE -ne 0) { throw 'pre-versioning adoption failed' }
+    $legacyAfter = Get-DatabaseCounts $legacy
+    foreach ($want in @('schema_version=1', 'table_schema_migrations=1', 'table_events=2', 'table_messages=4', 'last_update_id=4242', 'integrity=ok')) {
+        if ($legacyAfter -notcontains $want) { throw "migration result misses $want" }
+    }
+    $beforeCore = @($legacyBefore | Where-Object { $_ -notmatch '^(schema_version|table_schema_migrations)=' })
+    $afterCore = @($legacyAfter | Where-Object { $_ -notmatch '^(schema_version|table_schema_migrations)=' })
+    if (Compare-Object $beforeCore $afterCore) { throw 'migration changed application data' }
+    Write-Output 'maintenance acceptance: pre-versioning backup adopted at schema_version=1 without application-data changes'
 
     $oldNames = @('bot-20000101-000000.db', 'bot-20000102-000000.db')
     foreach ($name in $oldNames + @('bot-manual.db')) {

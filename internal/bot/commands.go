@@ -60,7 +60,7 @@ func (d *Dispatcher) registry() []Command {
 		{Name: CommandHelp, Description: "справка по командам", Handler: d.help},
 		{Name: CommandPing, Description: "health бота: pong + uptime", Handler: d.ping},
 		{Name: CommandStatus, Description: "стриминг, модель, uptime и ожидание ответа", Handler: d.status},
-		{Name: CommandModel, Description: "модель, endpoint и проверка STRATA (/model check)", Handler: d.modelInfo},
+		{Name: CommandModel, Description: "модель, endpoint, /model check, select и reset", Handler: d.modelInfo},
 		{Name: CommandAsk, Description: "вопрос модели", NeedsArgs: true, UsesModel: true, Handler: d.ask},
 		{Name: CommandReset, Description: "очистить контекст чата", Handler: d.reset},
 		{Name: CommandSkip, Description: "не восстанавливать текущий unanswered-вопрос при старте", Handler: d.skip},
@@ -141,11 +141,15 @@ func (d *Dispatcher) status(ctx context.Context, ev Event, arg string) error {
 	if commit == "" {
 		commit = "dev"
 	}
+	var selected, modelErr = d.modelName(ctx, ev.ChatID)
+	if modelErr != nil {
+		return modelErr
+	}
 	var lines = []string{
 		"Состояние бота (§6 /status):",
 		"Build: " + commit,
 		"Uptime: " + time.Since(d.created).Round(time.Second).String(),
-		"Модель: " + d.deps.Cfg.StrataModel,
+		"Модель: " + selected,
 		"Стриминг: " + streaming,
 		"Последний вопрос чата ждёт ответа: " + pending,
 	}
@@ -237,12 +241,29 @@ func refuseNotListed(userID int64) string {
 	return fmt.Sprintf("Тебя нет в TELEGRAM_ALLOWED_USERS (§7). Твой user_id — %d, добавь его в %s.", userID, AllowlistHint)
 }
 
-// modelInfo — §6: имя модели, endpoint, доступность STRATA; `/model check` calls GET {base}/models
-// through the same client (§4 internal/health probes the same URL, §2).
+// modelName resolves a per-chat override or STRATA_MODEL when the chat has none.
+func (d *Dispatcher) modelName(ctx context.Context, chatID int64) (string, error) {
+	selected, found, err := store.ChatModel(ctx, d.deps.DB, chatID)
+	if err != nil {
+		return "", err
+	}
+	if found {
+		return selected, nil
+	}
+	return d.deps.Cfg.StrataModel, nil
+}
+
+// modelInfo — model/endpoint diagnostics and the per-chat select/reset controls.
 func (d *Dispatcher) modelInfo(ctx context.Context, ev Event, arg string) error {
 	var endpoint = d.deps.Cfg.StrataBase
-	var model = d.deps.Cfg.StrataModel
-	if strings.EqualFold(strings.TrimSpace(arg), "check") {
+	var action = strings.TrimSpace(arg)
+	if action == "reset" {
+		if err := store.ClearChatModel(ctx, d.deps.DB, ev.ChatID); err != nil {
+			return err
+		}
+		return d.reply(ctx, ev.ChatID, "Для этого чата восстановлена модель по умолчанию: "+d.deps.Cfg.StrataModel)
+	}
+	if strings.EqualFold(action, "check") || strings.HasPrefix(action, "select") {
 		var names, err = d.deps.Model.Models(ctx)
 		if err != nil {
 			d.logEvent(ctx, ev.UserID, store.EventModelError, "models:"+Sanitize(err, d.deps.Token))
@@ -251,9 +272,45 @@ func (d *Dispatcher) modelInfo(ctx context.Context, ev Event, arg string) error 
 		if len(names) == 0 {
 			return d.reply(ctx, ev.ChatID, fmt.Sprintf("STRATA отвечает, но список моделей пуст (§14.2 /models). Endpoint: %s", endpoint))
 		}
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Endpoint: %s\nМодели (%d): %s", endpoint, len(names), strings.Join(names, ", ")))
+		if action == "check" {
+			return d.reply(ctx, ev.ChatID, fmt.Sprintf("Endpoint: %s\nМодели (%d): %s", endpoint, len(names), strings.Join(names, ", ")))
+		}
+		var requested = strings.TrimSpace(strings.TrimPrefix(action, "select"))
+		if requested == "" {
+			var current, currentErr = d.modelName(ctx, ev.ChatID)
+			if currentErr != nil {
+				return currentErr
+			}
+			return d.reply(ctx, ev.ChatID, fmt.Sprintf("Текущая модель чата: %s\nДоступны (%d): %s\n/model select <id>, /model reset — вернуть %s",
+				current, len(names), strings.Join(names, ", "), d.deps.Cfg.StrataModel))
+		}
+		var allowed = false
+		for _, name := range names {
+			if requested == name {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return d.reply(ctx, ev.ChatID, fmt.Sprintf("Модель %q отсутствует в GET /models. Доступны: %s", requested, strings.Join(names, ", ")))
+		}
+		if err := store.EnsureChat(ctx, d.deps.DB, ev.ChatID, ev.UserID, ev.ChatTitle); err != nil {
+			return err
+		}
+		if err := store.SetChatModel(ctx, d.deps.DB, ev.ChatID, requested); err != nil {
+			return err
+		}
+		return d.reply(ctx, ev.ChatID, "Для этого чата выбрана модель: "+requested+". /model reset — вернуть "+d.deps.Cfg.StrataModel)
 	}
-	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Модель: %s\nEndpoint: %s (§7 STRATA_BASE_URL)\n/model check — проверка доступности.", model, endpoint))
+	var selected, err = d.modelName(ctx, ev.ChatID)
+	if err != nil {
+		return err
+	}
+	var note = ""
+	if selected != d.deps.Cfg.StrataModel {
+		note = " (override; default " + d.deps.Cfg.StrataModel + ")"
+	}
+	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Модель: %s%s\nEndpoint: %s (§7 STRATA_BASE_URL)\n/model check — проверка доступности; /model select <id>, /model reset.", selected, note, endpoint))
 }
 
 // ask — the main path of §6. The budget of §7 (TG_REPLY_DEADLINE_SECONDS) is opened HERE, not in the
@@ -280,6 +337,10 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 	if err != nil {
 		return err
 	}
+	var selectedModel, modelErr = d.modelName(replyCtx, ev.ChatID)
+	if modelErr != nil {
+		return modelErr
+	}
 
 	// §15 (§16 change 34): with STREAMING_ENABLED=true and everything it needs in place (a client that can
 	// stream, a sender that can edit) the answer arrives as ONE message that is rewritten as the model writes
@@ -287,12 +348,11 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 	// row of §5, written after the final answer, never per token (§10 День 3).
 	var session *streamSession
 	var resp model.Response
-	var modelErr error
 	if canStream {
 		session = d.newStreamSession(replyCtx, ev.ChatID, sender)
-		resp, modelErr = streamer.Stream(replyCtx, model.Request{Messages: messages}, session.handler())
+		resp, modelErr = streamer.Stream(replyCtx, model.Request{Model: selectedModel, Messages: messages}, session.handler())
 	} else {
-		resp, modelErr = d.deps.Model.Complete(replyCtx, model.Request{Messages: messages})
+		resp, modelErr = d.deps.Model.Complete(replyCtx, model.Request{Model: selectedModel, Messages: messages})
 	}
 	if modelErr != nil {
 		// §10 День 3: a failed call writes NO assistant row — only the event of §5 and the notice.
@@ -377,7 +437,7 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 		Content:   resp.Content,
 		TokensIn:  resp.TokensIn,
 		TokensOut: resp.TokensOut,
-		Model:     replyModel(resp.Model, d.deps.Cfg.StrataModel),
+		Model:     replyModel(resp.Model, selectedModel),
 		LatencyMs: resp.Latency.Milliseconds(),
 	})
 	if writeErr != nil {
@@ -399,7 +459,7 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 	d.deps.Logger.Info("the model answered",
 		"chat_id", ev.ChatID,
 		"user_id", ev.UserID,
-		"model", replyModel(resp.Model, d.deps.Cfg.StrataModel),
+		"model", replyModel(resp.Model, selectedModel),
 		"latency_ms", resp.Latency.Milliseconds(),
 		"attempts", resp.Attempts,
 		"tokens_in", tokensOrNull(resp.TokensIn),
@@ -412,7 +472,7 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 
 	// §6: «ответ модели + ⏱ latency, tokens». The footer travels in the same text so the chunking of
 	// §12 UX applies to it too.
-	var full = resp.Content + "\n\n" + latencyLine(resp, d.deps.Cfg.StrataModel)
+	var full = resp.Content + "\n\n" + latencyLine(resp, selectedModel)
 	if session == nil {
 		return d.Send(replyCtx, ev.ChatID, full)
 	}

@@ -300,6 +300,46 @@ func TestModelCommand(t *testing.T) {
 	}
 }
 
+func TestModelSelectScopesAndResets(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	var m = &fakeModel{models: []string{"qwen-test", "qwen-alt"}, response: model.Response{Content: "ответ"}}
+	var r = &fakeReplier{}
+	var db = testStore(t)
+	var d = newTestDispatcher(t, cfg, m, r, db)
+
+	if err := dispatch(t, d, testEvent(100, 11, 323, "/model select qwen-alt")); err != nil {
+		t.Fatalf("/model select: %v", err)
+	}
+	selected, found, err := store.ChatModel(context.Background(), db, 100)
+	if err != nil || !found || selected != "qwen-alt" {
+		t.Fatalf("ChatModel=%q found=%v err=%v", selected, found, err)
+	}
+	if err := dispatch(t, d, testEvent(100, 11, 324, "/model select missing")); err != nil {
+		t.Fatalf("/model select missing: %v", err)
+	}
+	if !strings.Contains(r.joined(), "отсутствует") {
+		t.Fatalf("an unknown model must be refused with the available list, got %q", r.joined())
+	}
+	if err := dispatch(t, d, testEvent(100, 11, 325, "/ask вопрос")); err != nil {
+		t.Fatalf("/ask with override: %v", err)
+	}
+	if got := m.lastRequest().Model; got != "qwen-alt" {
+		t.Fatalf("the request must use the chat override, got %q", got)
+	}
+	if err := dispatch(t, d, testEvent(100, 11, 326, "/status")); err != nil {
+		t.Fatalf("/status with override: %v", err)
+	}
+	if !strings.Contains(r.texts()[len(r.texts())-1], "Модель: qwen-alt") {
+		t.Fatalf("/status must show the override, got %q", r.joined())
+	}
+	if err := dispatch(t, d, testEvent(100, 11, 327, "/model reset")); err != nil {
+		t.Fatalf("/model reset: %v", err)
+	}
+	if _, found, err := store.ChatModel(context.Background(), db, 100); err != nil || found {
+		t.Fatalf("/model reset must clear the override, found=%v err=%v", found, err)
+	}
+}
+
 // TestResetHidesTheContextButKeepsHistory — §5 «логический reset: поле reset_at / отдельная таблица
 // chat_resets, история остаётся»: after /reset the model must not see the old rows, /history must
 // still list them, and /stats keeps counting them.

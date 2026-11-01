@@ -1,3 +1,12 @@
+# tg-llm-proxy v1.1.0
+
+## Minor release
+
+- Добавлены `/model select <id>` и `/model reset`: выбор модели отдельно для каждого чата с сохранением в SQLite.
+- `/model`, `/status` и `/ask` используют override чата; `/model select` принимает только id из `GET /models`.
+- Добавлена миграция `schema_version=2` с таблицей `chat_settings`; существующая история не меняется.
+- Добавлены unit/integration тесты выбора, сброса и передачи модели в completion request.
+
 # tg-llm-proxy v1.0.1
 
 ## Patch release

@@ -1094,3 +1094,33 @@ func postWebhook(t *testing.T, url string, secret string) *http.Response {
 	_ = resp.Body.Close()
 	return resp
 }
+
+func TestModelSelectPersistsPerChat(t *testing.T) {
+	var ctx = context.Background()
+	var path = dbFile(t)
+	var tgAPI = testutil.NewTelegram(t, secretToken)
+	var strata = testutil.NewStrata(t, secretStrataKey, testutil.StrataReply{Content: "ответ", Model: "qwen-alt", Models: []string{"qwen-test", "qwen-alt"}})
+	var cfg = integrationEnv(t, path, strata.BaseURL(), nil)
+	var db = openStore(t, path)
+	var run = startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second}, 0)
+
+	tgAPI.PushText(170, chatID, userID, "/model select qwen-alt")
+	waitFor(t, "model selection was confirmed", func() bool { return tgAPI.Calls("sendMessage") == 1 })
+	selected, found, err := store.ChatModel(ctx, db, chatID)
+	if err != nil || !found || selected != "qwen-alt" {
+		t.Fatalf("ChatModel=%q found=%v err=%v", selected, found, err)
+	}
+
+	tgAPI.PushText(171, chatID, userID, "/ask вопрос")
+	waitFor(t, "the answer used the selected model", func() bool { return tgAPI.Calls("sendMessage") == 2 })
+	if !strings.Contains(strata.LastRequestBody(), "qwen-alt") {
+		t.Fatalf("the completion request must carry qwen-alt: %s", strata.LastRequestBody())
+	}
+
+	tgAPI.PushText(172, chatID, userID, "/model reset")
+	waitFor(t, "model reset was confirmed", func() bool { return tgAPI.Calls("sendMessage") == 3 })
+	if _, found, err := store.ChatModel(ctx, db, chatID); err != nil || found {
+		t.Fatalf("reset must clear the override, found=%v err=%v", found, err)
+	}
+	run.stop()
+}

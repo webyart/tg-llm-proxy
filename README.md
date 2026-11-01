@@ -103,8 +103,8 @@ next to `go.mod` (`module bot`) and imports the config as `bot/internal/config`.
 The layout of `internal/` matches §4; only the entry-point folder differs. `go-telegram/bot` v1.27.0 arrived
 in `go.mod` at День 4 and the root entry point survived it — `go build .` of the Dockerfile builder stage
 (§8.1) and `go build -o bin\bot.exe .` of scripts/build.ps1 use the same target, so the host and the image
-cannot drift apart, and moving the file now would buy nothing but a diff. `cmd/` does exist for the second
-entry point (`cmd/dbinspect`): a second `package main` cannot sit next to the root one.
+cannot drift apart, and moving the file now would buy nothing but a diff. `cmd/` holds the maintenance entry
+points (`cmd/dbinspect`, `cmd/dbbackup`, `cmd/dbrestore`, `cmd/dbrotate`): another `package main` cannot sit next to the root one.
 
 ## Quick start (Windows/pwsh)
 
@@ -113,6 +113,8 @@ entry point (`cmd/dbinspect`): a second `package main` cannot sit next to the ro
 .\scripts\env-check.ps1        # §2: green before work (Go/git/pwsh/Docker/network)
 git status                     # repo state
 .\scripts\strata-check.ps1     # §10 День 3: is STRATA ready? (§6 /model check + a chat probe)
+.\scripts\verify.ps1           # the whole §9/§11 pipeline: lint, tests, build, leak scan and tagged -race
+                               # -SkipRace = host-only; -SkipHealth = no probe of a bot not started
 .\scripts\lint.ps1             # §9: gofmt + go vet (also with -tags integration)
 .\scripts\test.ps1             # §11 Unit + Store levels (no -race on this host, §3.1)
 .\scripts\smoke.ps1 -Unit      # §11 Integration: fake Telegram + fake STRATA, then the leak scan of §12
@@ -122,6 +124,15 @@ git status                     # repo state
                                # (signal.NotifyContext → pollerWait → db.Close → the WAL checkpoint of §5);
                                # -Force is the hard kill of §10 День 4
 .\scripts\db_inspect.ps1       # §9: reads DB_PATH of §7 through mode=ro — chats/messages/events/bot_state
+.\scripts\db_backup.ps1        # §9: online VACUUM INTO backup + read-only integrity/schema verification
+.\scripts\db_restore.ps1 -Source .\data\backups\<backup>.db
+                               # §9: verified restore to a NEW file under zzscratch only; live DB is untouched
+.\scripts\db_rotate.ps1 -Keep 7
+                               # §9: dry-run retention plan; deletion requires the explicit -Apply flag
+.\scripts\db_maintenance.ps1 -Keep 7
+                               # §9: scheduler-friendly verified backup + retention; -Apply permits deletion
+.\scripts\test-volume-restore.ps1 -Source .\data\backups\<backup>.db
+                               # §9: isolated volume-restore rehearsal; no second poller, live project untouched
 .\scripts\test-restart.ps1     # §10 День 4 at process level: hard kill between two instances, the §5 offset must survive
 # container of §8.1: .\scripts\docker-build.ps1; .\scripts\docker-up.ps1 (waits for /healthz = 200);
 # .\scripts\test-race.ps1 (the -race run lives in the image, §3.1); .\scripts\docker-down.ps1
@@ -143,11 +154,12 @@ without the dot the PATH of §3 dies with the child process.
    `.env` is gitignored and never printed (§12 security).
 4. `.\scripts\strata-check.ps1` — is the model reachable at all (§6 `/model` check + one chat request)?
    A red here with the rest green means STRATA, not the code (§13 риск «сервер недоступен»).
-5. `.\scripts\lint.ps1`, `.\scripts\test.ps1`, `.\scripts\smoke.ps1 -Unit` — the three green levels of §11
-   that do not need a network: Unit + Store on the host, Integration against the fake Telegram and the fake
-   STRATA, then the leak scan of §12 over the whole source tree.
-6. `.\scripts\test-race.ps1 -Tagged` — §11 Concurrency inside the §8.1 test image (§3.1: the host has no
-   C toolchain, so `-race` physically cannot run here).
+5. `.\scripts\verify.ps1` — the complete local pipeline of §9/§11: lint, Unit + Store, Integration with the
+   fake Telegram and fake STRATA, the §12 leak scan, the build with its empty-ENV refusal, and the tagged
+   `-race` run inside Docker. Every stage is reported even when an earlier one is red; `-SkipRace` runs only
+   the host levels, `-SkipHealth` marks the probe of a deliberately stopped bot SKIP rather than probing it.
+6. The same levels remain available separately: `lint.ps1`, `test.ps1`, `smoke.ps1 -Unit`, `build.ps1` and
+   `test-race.ps1 -Tagged`. On this host `-race` physically requires the container of §3.1, not the Windows Go tool.
 7. Local run: `.\scripts\run.ps1` — loads `.env` into the process ENV, builds `bin\bot.exe`
    (`CGO_ENABLED=0`), prints the §7 configuration back, starts polling, stops on Ctrl-C with exit 0.
    Measured 2026-10-31 on THIS machine: the host reaches `api.telegram.org` only through the WinINET proxy
@@ -218,6 +230,19 @@ without the dot the PATH of §3 dies with the child process.
       after writing, and the refusal of §7 must disappear. **Walked 2026-10-31 весь круг:** the second
       account first got the refusal (`events(kind='denied')` = 1), its id went into the §7 row, the bot
       restarted on the same offset of §5, and its `/ask` answered — no new `denied` row appeared.
+- [x] `/skip` → suppress startup recovery of ONLY the newest visible unanswered question, keep its history,
+  and leave a newer question recoverable; `/status` must show the explicit suppression. No model call is allowed.
+  **Walked on real Telegram:** `/skip` + `/status` confirmed suppression of `row=16`, `bot_state` stored
+  `resume_skip_666244095=16`, history stayed intact, and the next `docker compose restart` made no recovery call.
+- [ ] `/unskip` → remove only this chat's `resume_skip_` marker, keep history, make the same row eligible for a
+  later startup recovery, and make no immediate model call. Unit and fake-Telegram integration are green; the real
+  Telegram walk is pending. Do not use the production `row=16` suppression merely as a test fixture.
+- [x] `/status` → build commit (`short-sha`, plus `-dirty` for uncommitted sources), model and uptime, the
+      streaming flag and its three settings, and whether the newest visible question of THIS chat still waits for
+      an answer. The command is allowlist-only and must not call the model.
+      **Walked on real Telegram:** the response matched the running configuration (`STREAMING_ENABLED=false`) and
+      correctly surfaced the newest pending question of the chat (`row=16`). Build identity was additionally read
+      from BOTH the host binary and the container startup log: `3a1cec659893-dirty`.
 - [x] `/help`, `/ping` (the `pong <uptime>` grows), `/model`, `/model check` (the real `GET /models` of §14).
       **Walked 2026-10-31:** `help` ×3, `ping` ×64, `model` ×6 in `events.detail`; `strata-check.ps1` on the
       same machine answered `GET /v1/models` 200 and `POST /v1/chat/completions` 200 in 2.18 s.
@@ -234,21 +259,17 @@ without the dot the PATH of §3 dies with the child process.
       2026-10-31:** the WAL answer is one row of §5 of 6063 chars (`length(content)`), so ≥ 2 pieces at
       `MAX_MESSAGE_CHUNK=3500` (a second answer: 4334 chars → 2 pieces), and a human saw several messages
       with no visible mid-word cut.
-- [ ] `STREAMING_ENABLED=true` (§15 of the backlog, §16 change 34) → `/ask` posts ONE «Модель думает…» message,
-      rewrites it no more often than `STREAM_EDIT_INTERVAL_MS`, and turns it into the answer of §6 with its footer;
-      an answer longer than `MAX_MESSAGE_CHUNK` keeps its head in that message and gets the rest as the ordinary
-      messages, while `messages` of §5 still holds exactly one assistant row with the whole `content` and no
-      reasoning of the model. What this list has to measure by hand and no fake can give: the edit rate real
-      Telegram tolerates in one chat (`events(kind='flood')` of §10 День 4), that an interim rewrite of a half
-      answer never comes back as 400 «can't parse entities» (that is why every edit but the last is sent without
-      parse mode), and what `STREAM_IDLE_TIMEOUT_SECONDS` / `STREAM_TOTAL_DEADLINE_SECONDS` do to a real stall.
-      **Not walked yet:** the fakes hold the shape but not the Telegram numbers — `internal/model/stream_test.go`
-      (the reader: gaps, `[DONE]`, a stream that never says `[DONE]`, an endpoint that answered plain JSON instead
-      of SSE, usage in the last event, a budget cut mid-stream), `internal/bot/stream_test.go` (7 tests / 9
-      subtests: the placeholder budget, the edit cadence, the fallback) and `test/integration`
-      (`TestStreamedAnswerEditsOneMessage`: the real handler, the real client of §4 and the real §7 loader over the
-      fakes — one `sendMessage`, every `editMessageText` addressed to that very id, MarkdownV2 only on the last
-      rewrite, one assistant row of §5 holding the joined pieces).
+- [x] `STREAMING_ENABLED=true` (§15, §16 changes 34–35) → ONE placeholder, cadenced edits, final MarkdownV2 and
+      the tail as ordinary messages; exactly one assistant row of §5 with the whole `content` and no reasoning.
+      **Walked on real Telegram + STRATA:** the short answer took 9.037 s (5 edits, no delivery failures). The first
+      long runs exposed a real bug: a 900-second stream was cut by the outer 90-second reply context and mislabeled
+      as its own total budget; that is fixed with regression tests. A 257.272-second answer (6042 output tokens)
+      then generated successfully but sustained one-second edits reached `429 retry_after=120`; the cadence default
+      is now 5000 ms and `FloodSleepMax=120 s`. The final fresh answer took **104.872 s**, 2470 output tokens,
+      **17 edits, 0 delivery failures and no new 429**; it produced one assistant row (`id=13`), advanced the offset
+      to 920551685, and a human confirmed the complete response, continuation and correct formatting. A real idle
+      stall remains with `internal/model/stream_test.go`; the SSE shapes and fallback also stay covered by
+      `internal/bot/stream_test.go` and `test/integration/TestStreamedAnswerEditsOneMessage`.
 - [x] `docker compose restart` in the middle of a conversation → no repeated answers, no duplicated rows
       (§5 `bot_state` + `uq_messages_chat_tg_id`; §10 День 6 proved both in `test/integration`).
       **Walked 2026-10-31 on the host** as three `taskkill /F` between instances: the offset of §5 was read
@@ -280,20 +301,15 @@ without the dot the PATH of §3 dies with the child process.
       (an empty 200) and `model_error/no_room` (a saturated `MAX_CONCURRENT_MODEL_REQUESTS`) need an endpoint that
       lies or a pool of zero slots, and that is what the fakes of §11 are for.
 - [ ] flood: `/ask` ~30 times in a few seconds → Telegram's 429 is logged as `retry_after`, the chat waits
-      and the answer still arrives (§10 День 4, `events(kind='flood')` grows). **Attempted 2026-10-31 and not
-      reproducible against the real Telegram — with the reason measured, not assumed.** `MAX_MESSAGE_CHUNK` was
-      put at the floor the loader allows (64 symbols: `Num(raw, "MAX_MESSAGE_CHUNK", DefaultMaxChunk, 64, ChunkMax)`
-      of `internal/config`), and one `/history 50` became ~70 `SendMessage` in a row into one private chat;
-      `events(kind='flood')` stayed 0 and the log of that instance holds not one line about 429. The sender of
-      §10 День 4 is sequential — one HTTP round trip per piece, ~0.3 с — so the throughput stays under the flood
-      threshold of Telegram, and the pause a human saw in the chat was those 70 round trips, not the sleep of the
-      guard. The item stays open for a human walk and is proven where it can be proven: `run_test.go` pushes a
-      scripted `TooManyRequestsError`, asserts the wait is `RetryAfter` capped by `FloodSleepMax = 30 s`, that the
-      answer arrives after the pause, that `events(kind='flood')` = 1, and that the log carries no secret.
-      What WAS walked 2026-10-31 is the other guard: with `RATE_LIMIT_PER_MINUTE=5` a burst of ten `/ask`
-      gave 5 answers and 5 refusals naming the seconds (`events(kind='limit')` = 5). Note for the next walk:
-      the limiter of §12 covers only the commands with `UsesModel` (`middleware.limited` protects the model,
-      not SQLite), so spamming `/ping` never produces a `limit` row — 61 pings prove exactly that.
+      and the answer still arrives (§10 День 4, `events(kind='flood')` grows). Ordinary sequential sends did not
+      reach the threshold (~70 pieces of `/history 50`, zero flood rows), but the live streamed walk DID reach it:
+      sustained one-second edits produced `retry_after=120`. The old `FloodSleepMax=30` retried too early, received
+      another 429 and lost the tail; the cap is now 120 s and the default edit cadence is five seconds. The final
+      104.872-second run with those settings completed with zero delivery failures and no new 429; the exact long
+      RetryAfter sleep remains open because the new run did not trigger it. `run_test.go` holds the scripted 429
+      path: sleep, one retry, `events(kind='flood')`, and no token in the log. The other guard WAS walked:
+      `RATE_LIMIT_PER_MINUTE=5` gave five answers and five refusals (`events(kind='limit')` = 5); `/ping` does not
+      use the model and therefore is not limited (`middleware.limited` protects the model, not SQLite).
 - [x] a stranger writes `/ask` → the refusal of §7 and `events(kind='denied')`; `/start` and `/whoami`
       stay open (§16 change 13). **Walked 2026-10-31:** the second account's `start` and `whoami` produced
       `command` rows while its `ask` produced the `denied` row and the refusal text.
@@ -380,17 +396,14 @@ without the dot the PATH of §3 dies with the child process.
       asks for «не менее 20 пунктов, каждый с пояснением в 3 предложения, плюс в конце вывод на 10 предложений», so
       `STRATA_TIMEOUT_SECONDS 60` of §7 was never going to cover it: the replay of §15 works, the budget of the model
       does not fit the answer, and that is the same wall the §15 «стриминг ответов» item runs into from the other
-      side. The question is still pending in the volume, and every start of the process will try it again. No age
-      cap on a replayed question is deliberately in v1 — §12 promises an answer to a question the user never got,
-      and an age cap would break that promise silently — but the cost of the rule is now measured too: one model
-      call per pending question per start of the process, which is what those three `timeout` rows are.
-      **Decided on 2026-10-31: `STRATA_TIMEOUT_SECONDS` stays 60, and the scan gets no age cap either.** The question
-      of `row=6` therefore stays pending in the volume and is tried again at every start of the process — sixty
-      seconds of the local model per start, printed by both counters of §12 and written as one `timeout` row of §5 —
-      because the thing that makes an answer of 7248 tokens possible is the §15 «стриминг ответов» item rather than
-      a bigger number: an answer of that size has to fit inside the budget of ONE call (§10 День 3 stops retrying the
-      moment that budget is spent), and the same value is also what keeps a slot of
-      `MAX_CONCURRENT_MODEL_REQUESTS` of §7 busy while the model writes it.
+      side. At that measurement `row=6` was the newest unanswered row and each start tried it again. No age cap on
+      a replayed question is deliberately in v1 — §12 promises an answer to a question the user never got, and an
+      age cap would break that promise silently — but the cost was one model call per pending question per start.
+      **Decision kept: `STRATA_TIMEOUT_SECONDS` stays 60 and the scan gets no age cap.** The §15 stream now gives
+      long answers their own budget. After the later live questions and the assistant row `id=13`, older `row=6` and
+      `row=9` are no longer selected: the scan intentionally considers only the newest visible row of a chat, so it
+      does not resurrect questions the user has already moved past. They remain in history; no silent deletion or TTL
+      was introduced. `MAX_CONCURRENT_MODEL_REQUESTS` stays occupied for the whole stream (§7, §12).
       The guard itself stays as fixed on 2026-10-31 — it is what makes any redelivery that *does* happen safe, and
       `TestRedeliveredUnansweredQuestionIsAnswered` / `TestRedeliveredAnsweredQuestionStaysSilentWhenTheChatMovedOn`
       hold both directions of it (§10 День 6 note below).
@@ -476,12 +489,15 @@ goes by runes); `TG_REPLY_DEADLINE_SECONDS` must exceed `STRATA_TIMEOUT_SECONDS`
 The four rows of §16 change 34 (`STREAMING_ENABLED`, `STREAM_EDIT_INTERVAL_MS`,
 `STREAM_IDLE_TIMEOUT_SECONDS`, `STREAM_TOTAL_DEADLINE_SECONDS`) belong to the budgets, not to the looks: the flag
 defaults to `false` because a streamed answer rewrites ONE message and therefore changes how every answer of
-§12 UX looks, so an operator turns it on deliberately. The loader refuses two combinations with a message that
-names both rows and their numbers: `STREAM_TOTAL_DEADLINE_SECONDS` ≤ `STREAM_IDLE_TIMEOUT_SECONDS` (a stall
-detector may not outlive the answer it watches), and with the flag on `TG_REPLY_DEADLINE_SECONDS` ≤
-`STREAM_IDLE_TIMEOUT_SECONDS` — the answer must START arriving inside the reply budget, which is the promise
-«сообщение не зависает» of §12 UX. Verified by the loader tests of §11 (`internal/config`); the streaming
-behaviour itself by `internal/bot/stream_test.go`.
+§12 UX looks, so an operator turns it on deliberately. `STREAM_EDIT_INTERVAL_MS` defaults to **5000** after the
+live Telegram walk: a sustained one-second cadence reached `429 retry_after=120`. The streamed model call gets
+`STREAM_TOTAL_DEADLINE_SECONDS`, with `TG_REPLY_DEADLINE_SECONDS` left around it for the context read, SQLite
+and delivery; the outer 90-second reply context no longer cuts a 300/900-second stream and misreports its budget.
+The loader refuses two combinations with a message that names both rows and their numbers:
+`STREAM_TOTAL_DEADLINE_SECONDS` ≤ `STREAM_IDLE_TIMEOUT_SECONDS` (a stall detector may not outlive the answer it
+watches), and with the flag on `TG_REPLY_DEADLINE_SECONDS` ≤ `STREAM_IDLE_TIMEOUT_SECONDS` — the answer must
+START arriving inside the reply budget, which is the promise «сообщение не зависает» of §12 UX. Verified by the
+loader tests of §11 (`internal/config`); the streaming behaviour itself by `internal/bot/stream_test.go`.
 
 ## Progress (§10)
 
@@ -653,53 +669,137 @@ behaviour itself by `internal/bot/stream_test.go`.
   stayed four hours old and the reader inside it printed yesterday's code. The script builds the profile too and
   prints the age of both images.
 
-## Not implemented yet (honest list)
+## Backup and verified scratch restore (§9)
 
-Implemented: the §7 configuration loader, the SQLite layer of §5, the STRATA client of §10 День 3,
-the dispatcher/registry/middleware and the Telegram adapter of §10 День 4, the §11 Integration level with
-the fake Telegram + fake STRATA and the `-race` run of §11 Concurrency (both green in the container of
-§8.1), `/healthz` of §9, the Docker image of §8.1, the §9 scripts and the read-only viewer of §5
-(`cmd/dbinspect` + `scripts/db_inspect.ps1`, so the history is readable without a Telegram account and
-without `sqlite3` CLI, plus the `-counts` key=value mode a script can compare) and `scripts/test-restart.ps1`
-— the §10 День 4 kill/restart case at the level of a real process, GREEN on 2026-10-31 with 19 checks:
-`taskkill /F` between two instances, `journal_mode=wal` / `integrity=ok` / `last_update_id` unchanged read
-while no bot is running, the second instance resuming on that very offset, no panic text and no token value in
-the logs. The repeated-answer half of that case stays with `uq_messages_chat_tg_id` of §5 and the integration
-tests `TestOffsetSurvivesRestart` and `TestRedeliveredUpdateIsAnsweredOnce`. The SIGTERM half (the graceful stop
-of §10 День 1) was attributed to `docker compose stop` of §8.1 on the theory that Windows has no signal for a
-detached process (§3.1); that theory is wrong and `scripts/stop.ps1` measured it on 2026-10-31 — a hidden
-instance owns a console, `AttachConsole` + `GenerateConsoleCtrlEvent(CTRL_C_EVENT)` delivers the same
-`os.Interrupt` a terminal Ctrl+C would, and the WAL of §5 is checkpointed behind it.
-Not implemented yet: the manual demo of §11 is walked — 9 of the 11 items of the §10 День 7 checklist carry
-their numbers in the list above (two real Telegram accounts, the real STRATA of §14, three restarts with the
-offset of §5 read back, a 6063-character answer sent as ≥ 2 pieces of §16 change 7, and the whole model-failure
-branch of §12: a dead port, a spent `STRATA_TIMEOUT_SECONDS` both on a scratch endpoint and on the real service,
-and the recovery of `/ask` on the same process without a restart). What is left of that list: the sleep on
-Telegram's 429 (`events(kind='flood')` — attempted 2026-10-31, and ~70 sends in a row proved that a sequential
-sender cannot reach Telegram's flood threshold, so this one stays with `run_test.go`), and the host-side stop by
-a signal — Windows cannot deliver one to a detached process (§3.1). One command name in this very list was wrong
-until today: the command of §6 that clears the context is `/reset`, not `/forget`. Secrets stay
-out of the output: `TELEGRAM_BOT_TOKEN` and `STRATA_API_KEY` print only their length, every library error
-goes through `bot.Sanitize` (a live run shows `https://api.telegram.org/bot***/getMe`), the fakes record
-the Authorization header but no test prints it, and `scripts/smoke.ps1` greps the whole source tree for
-the token value before a commit (§12 security, §16 change 25).
+For a host-side database, the online backup does not require stopping the bot:
+
+```powershell
+.\scripts\db_backup.ps1 -Source .\data\bot.db -Dest .\zzscratch\backup.db
+.\scripts\db_inspect.ps1 -Path .\zzscratch\backup.db -Counts
+.\scripts\db_restore.ps1 -Source .\zzscratch\backup.db -Dest .\zzscratch\restored.db
+.\scripts\db_inspect.ps1 -Path .\zzscratch\restored.db -Counts
+```
+
+`db_backup` and `db_restore` both reject existing destinations. Restore first verifies the source read-only
+(`PRAGMA integrity_check` plus the required §5 tables), materializes a new file through SQLite `VACUUM INTO`, and
+verifies that file again. Its PowerShell wrapper accepts destinations only below `zzscratch`; it cannot overwrite
+`data/bot.db` or the Docker volume. Compare `table_*`, `events_*`, `last_update_id`, and `integrity` in the two
+`-Counts` reports, not file hashes: `VACUUM INTO` preserves the data but may change the physical page layout.
+
+Retention is explicit and dry-run first:
+
+```powershell
+.\scripts\db_rotate.ps1 -Keep 7          # print the plan; delete nothing
+.\scripts\db_rotate.ps1 -Keep 7 -Apply   # delete only the expired files listed by that plan
+```
+
+Rotation considers only regular files named `bot-YYYYMMDD-HHMMSS.db` in `data/backups` (or an explicitly supplied
+scratch directory), always retains at least one copy, and ignores manual names such as `backup.db`. `-Apply` is an
+irreversible deletion of the listed old backups.
+
+For a scheduler-ready backup plus retention step, use:
+
+```powershell
+.\scripts\db_maintenance.ps1 -Keep 7          # creates a backup; retention is still dry-run
+.\scripts\db_maintenance.ps1 -Keep 7 -Apply   # creates a backup and deletes the listed expired copies
+```
+
+In Task Scheduler select program `pwsh`, set the repository as «Start in», and use arguments such as
+`-NoLogo -NoProfile -File "C:\Kimi code\tg-llm-proxy\scripts\db_maintenance.ps1" -Keep 7`. Test the command manually
+first; add `-Apply` only after reviewing the dry-run. The project does not register or modify any scheduled task.
+
+For the current Docker named volume, take the intermediate file only after a clean stop so the WAL is checkpointed:
+
+```powershell
+docker compose stop bot
+docker compose cp bot:/data/bot.db .\zzscratch\volume-bot.db
+docker compose up -d
+.\scripts\db_backup.ps1 -Source .\zzscratch\volume-bot.db -Dest .\zzscratch\volume-backup.db
+```
+
+### Production volume restore and rollback (manual runbook)
+
+Production replacement is intentionally not automated and requires the operator's explicit decision. First rehearse
+the exact backup in the isolated compose project; this never starts a second Telegram poller and removes its own
+project, volume, and scratch files afterwards:
+
+```powershell
+.\scripts\test-volume-restore.ps1 -Source .\data\backups\bot-YYYYMMDD-HHMMSS.db
+.\scripts\db_restore.ps1 -Source .\data\backups\bot-YYYYMMDD-HHMMSS.db -Dest .\zzscratch\production-restore.db
+```
+
+For the real restore, choose new host-side snapshot names and do not delete the pre-restore snapshot until the bot
+has been accepted. The following commands are the manual runbook, not an operation performed by `db_restore`:
+
+```powershell
+docker compose stop bot
+docker compose cp bot:/data/bot.db .\zzscratch\pre-restore.db
+docker compose cp .\zzscratch\production-restore.db bot:/data/bot.db
+docker compose run --rm --no-deps --user root --entrypoint chown bot 65534:65534 /data/bot.db
+docker compose run --rm --no-deps --entrypoint sh bot -c 'test -r /data/bot.db && test -w /data/bot.db'
+docker compose cp bot:/data/bot.db .\zzscratch\post-restore.db
+.\scripts\db_inspect.ps1 -Path .\zzscratch\post-restore.db -Counts
+docker compose up -d
+docker compose ps
+```
+
+The clean stop checkpoints the WAL before `pre-restore.db` is copied. `chown` is required because a host-side copy
+can otherwise arrive root-owned while the runtime runs as uid/gid 65534. Compare the post-restore counts with the
+verified backup before `up -d`. If anything fails, roll back while the bot is stopped, then repeat the permission
+check and inspect the log before accepting:
+
+```powershell
+docker compose stop bot
+docker compose cp .\zzscratch\pre-restore.db bot:/data/bot.db
+docker compose run --rm --no-deps --user root --entrypoint chown bot 65534:65534 /data/bot.db
+docker compose up -d
+```
+
+Never use `docker compose down --volumes` for this runbook: it deletes the very history the restore is meant to save.
+
+## Current limits (honest list)
+
+The v1 path is implemented: configuration, SQLite, the STRATA client, commands and middleware, integration and
+race tests, Docker, health, read-only DB inspection, process-level kill/restart, and graceful stop both in Docker
+and on Windows (`scripts/stop.ps1` delivers Ctrl+C to a hidden console). `scripts/verify.ps1` is the single entry
+point for the automated levels; the manual checklist above remains the authority for real Telegram behaviour.
+
+- Streaming is implemented but stays opt-in (`STREAMING_ENABLED=false`). Its live checks and the budgets measured
+  there are recorded in the checklist and §15 below; fakes alone cannot prove Telegram's edit/flood limits.
+- Ordinary sequential sends did not reproduce Telegram 429, but sustained one-second stream edits did produce
+  `retry_after=120`. The default edit cadence is now five seconds and `FloodSleepMax` is 120 seconds.
+- Startup recovery still has no age cap and handles the newest unanswered visible question of a chat per start.
+  A stored assistant row is not replayed when only Telegram delivery failed, because a second send may duplicate it.
+  `/skip` explicitly suppresses exactly the current question row in `bot_state` without deleting history; a newer
+  question does not inherit that suppression, `/status` shows it, and `/unskip` removes the marker without an
+  immediate model call. Measured on `row=16` («2000+ слов»): even a
+  900-second stream ended with 4225 runes delivered, 97 edits and zero delivery failures, but no finished answer
+  and therefore no assistant row. The operator chose to leave it pending rather than occupy the GPU for 3600 seconds,
+  then applied `/skip`: the row remains pending in history, but the next restart made no recovery call.
+- Backups and scratch restores use SQLite `VACUUM INTO`, read-only integrity/schema checks, and no-overwrite
+  destinations. Manual retention, scheduler-ready maintenance, and the isolated volume-restore rehearsal are
+  implemented. Task Scheduler registration stays an explicit operator action; production replacement still requires
+  the manual runbook above and explicit operator approval.
+- `/reset` (not `/forget`) clears context without deleting history. Secrets print only their length, library errors
+  go through `bot.Sanitize`, and `scripts/smoke.ps1` scans the tree for the token value (§12 security).
 
 ## Бэклог v2 (§15, «запись v2-бэклога» of §10 День 7)
 
 Not a todo list for v1 — these are the things §15 deliberately left out of the prototype, plus what this
 implementation made concrete enough to name.
 
-- Стриминг ответов: правка одного сообщения раз в ~1 с вместо одного `sendMessage`. **Сделано досрочно —
+- Стриминг ответов: правка одного сообщения по настраиваемой cadence вместо одного `sendMessage`. **Сделано досрочно —
   §16 change 34** (2026-10-31): четыре строки §7 (`STREAMING_ENABLED=false` по умолчанию,
-  `STREAM_EDIT_INTERVAL_MS=1000`, `STREAM_IDLE_TIMEOUT_SECONDS=30`, `STREAM_TOTAL_DEADLINE_SECONDS=300`),
+  `STREAM_EDIT_INTERVAL_MS=5000`, `STREAM_IDLE_TIMEOUT_SECONDS=30`, `STREAM_TOTAL_DEADLINE_SECONDS=300`),
   `model.Streamer` рядом с `model.Client`, `internal/model/stream.go` (SSE, два бюджета, `reasoning_content`
   отдельно) и `internal/bot/stream.go` (сессия ответа), `run.go` как `StreamSender`, `chunksOf` из `reply.go`
   для обеих дорожек. Замер 2026-10-31 через `zzscratch/asktime` — тот же STRATA и тот же вопрос, который
   догоняет §15: **1m55.99s, 6034 runes, 140 → 7248 tokens**. В `STRATA_TIMEOUT_SECONDS 60` такой ответ не
   влезает ни при каком числе повторов (§10 День 3: кончился бюджет — повторов уже нет), поэтому у потока свои
-  два бюджета: пауза между SSE-событиями и потолок всего ответа. Пункт остаётся в бэклоге до ручного обхода
-  §11 на реальном Telegram (чек-лист выше) — фэйки §11 держат форму, а не числа Telegram; вопрос `row=6`
-  остаётся в томе живым примером.
+  два бюджета: пауза между SSE-событиями и потолок всего ответа. **Ручной §11 пройден** (чек-лист выше):
+  104.872 s, 17 edits, zero delivery failures, полный ответ и разметка подтверждены человеком. Старые `row=6`/`row=9`
+  не догоняются после более нового ответа: startup scan намеренно смотрит только на самую новую visible row чата,
+  чтобы не воскрешать перекрытые вопросы; возрастного TTL или автоматического удаления по-прежнему нет.
 - Вебхуки + HTTPS (`StartWebhook` of the library exists) вместо long polling; `bot_state` offset then
   becomes the idempotency key of the incoming side instead of the poll cursor.
 - Команды `/image`, `/voice`, вложения и файлы (§15) — the registry of §6 takes a new entry without
@@ -707,8 +807,9 @@ implementation made concrete enough to name.
 - Пресеты системного промпта (`/persona`) и выбор модели (`/model select`); инструменты/функции модели и
   RAG поверх локальных документов.
 - `/admin`: сводка по всем чатам, очередь и приоритеты запросов (v1 counts one chat, §6 `/stats`).
-- Версионированные миграции (`schema_version` рядом с `bot_state`), бэкап SQLite, `PRAGMA integrity_check`
-  по расписанию; v1 applies `001_init.sql` through `go:embed` and nothing else (§5).
+- Версионированные миграции (`schema_version` рядом с `bot_state`) и автоматическая регистрация расписания;
+  ручной backup, проверенный scratch-restore, dry-run/apply retention и scheduler-ready maintenance уже реализованы
+  (§9), а v1 applies `001_init.sql` through `go:embed` and nothing else (§5).
 - CI (gofmt/vet/test/`-race`) and publishing the image to a registry — today the §9 scripts are the pipeline.
 - `Config.Get()` — overrides per chat / per `user_id` (§16 change 25.1 kept the loader at the 19 rows of §7;
   the first consumer would have been a per-chat `PARSE_MODE`, which v1 does not need).

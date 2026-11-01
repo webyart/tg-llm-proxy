@@ -15,6 +15,7 @@ Production-конфигурация не требует webhook или стри�
 - Версионированные миграции через `schema_migrations`; существующие базы автоматически принимаются с версии 0 на 1.
 - Backup/restore через `VACUUM INTO`, read-only integrity/schema checks, ротация backup-файлов и age-based retention.
 - Изолированная репетиция восстановления Docker named volume с rollback-инструкцией.
+- Кроссплатформенный runtime и host tooling: Windows, macOS и Linux; SIGTERM/Ctrl+C, restart tests, portable Go builds и Docker.
 - Docker multi-stage image, non-root runtime, healthcheck, build commit в логах, ротация логов 10 MB × 5.
 - Повторяемый pipeline `scripts/verify.ps1`: lint, unit, fixture maintenance, integration, build, leak scan и Docker race.
 - CI definitions для GitHub и GitLab; release pipeline `.gitlab-ci.yml` запускает Linux host checks, Docker race и govulncheck.

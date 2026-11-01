@@ -107,7 +107,29 @@ cannot drift apart, and moving the file now would buy nothing but a diff. `cmd/`
 points (`cmd/dbinspect`, `cmd/dbbackup`, `cmd/dbrestore`, `cmd/dbrotate`, `cmd/dbprune`, `cmd/dbfixture`):
 another `package main` cannot sit next to the root one.
 
-## Quick start (Windows/pwsh)
+## Supported platforms (Windows, macOS, Linux)
+
+The Go runtime and Docker image are platform-independent. Host maintenance uses PowerShell 7 (`pwsh`), Go 1.27.3,
+Git and Docker. Docker Desktop is recommended on Windows/macOS; Docker Engine with Compose v2 works on Linux.
+The database stays in the named Docker volume, not a platform-specific bind mount.
+
+macOS with Homebrew:
+
+```bash
+brew install go git
+brew install --cask powershell docker
+```
+
+Linux: install the same tools with the distribution package manager; Go must be 1.27.3 or a compatible newer
+release. On macOS/Linux invoke scripts with `pwsh -NoLogo -NoProfile -File scripts/<name>.ps1`. `-UseSystemProxy`
+reads only the Windows registry; on Unix export `HTTPS_PROXY` and `NO_PROXY` in the shell instead.
+
+Background process lifecycle is portable: `stop.ps1` sends Ctrl+C on Windows and SIGTERM on macOS/Linux;
+`-Force` uses the hard-kill path. `run.ps1`, health/port probes, DB maintenance, restart tests and `verify.ps1`
+have already passed both Windows and clean Linux `golang:1.27-bookworm` acceptance. macOS uses the same Unix
+branches, but no physical Mac acceptance has been performed.
+
+## Quick start (Windows, macOS, Linux — pwsh 7)
 
 ```powershell
 . .\scripts\Setup.ps1          # PATH: git + GOPROXY/GOCACHE/GOPATH (§3, §11)

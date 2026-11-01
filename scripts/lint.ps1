@@ -25,7 +25,7 @@ param([switch]$Fix)
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 # .gitignore of §10 День 1 + §3: the caches and the scratch are not our sources.
-$skip = '\\\.cache\\|\\bin\\|\\data\\|\\zzscratch\\|\\\.git\\'
+$skip = '[\\/]\.cache[\\/]|[\\/]bin[\\/]|[\\/]data[\\/]|[\\/]zzscratch[\\/]|[\\/]\.git[\\/]'
 Push-Location $repoRoot
 try {
     $ourFiles = Get-ChildItem -LiteralPath $repoRoot -Recurse -File -Filter *.go |
@@ -52,7 +52,16 @@ try {
         $fails += "go vet -tags integration ./... exit $vetTaggedCode (§11 Integration level must compile): $($vetTagged.Trim())"
     }
 
-    Write-Output "lint — repo: $repoRoot | our .go files: $($ourFiles.Count) (caches and scratch excluded, §3/§10 День 1)"
+    $scriptFiles = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'scripts') -File -Filter *.ps1)
+    foreach ($script in $scriptFiles) {
+        $parseErrors = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$null, [ref]$parseErrors)
+        foreach ($parseError in $parseErrors) {
+            $fails += "$($script.Name): $($parseError.Message)"
+        }
+    }
+
+    Write-Output "lint — repo: $repoRoot | our .go files: $($ourFiles.Count), pwsh files: $($scriptFiles.Count) (caches and scratch excluded, §3/§10 День 1)"
     foreach ($line in $fails) { Write-Output $line }
     if ($fails.Count -gt 0) {
         Write-Output 'lint: RED (§9)'

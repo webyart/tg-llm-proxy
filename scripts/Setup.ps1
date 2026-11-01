@@ -29,5 +29,5 @@ Write-Output "GOPATH=$env:GOPATH"
 if (Get-Command -Name git -ErrorAction SilentlyContinue) {
     Write-Output "git: $(git --version 2>&1 | Select-Object -First 1)"
 } else {
-    Write-Output "git: NOT FOUND — install Git for Windows (winget install --id Git.Git) or run scripts/Setup.ps1 after install"
+    Write-Output "git: NOT FOUND — install Git (winget on Windows, Homebrew on macOS, apt/dnf on Linux) or run scripts/Setup.ps1 after install"
 }

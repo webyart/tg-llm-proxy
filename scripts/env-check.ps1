@@ -38,12 +38,13 @@ if ($gitFound) {
     $gitVer = (git --version 2>&1 | Select-Object -First 1)
     Check 'git on PATH' ($gitVer -ne '') "$gitVer" $false
 }
-elseif (Test-Path -LiteralPath $gitExe) {
+elseif ($IsWindows -and (Test-Path -LiteralPath $gitExe)) {
     $gitVerAbs = (& $gitExe '--version' 2>&1 | Select-Object -First 1)
     Check 'git (absolute resolve)' $true "$gitVerAbs via $gitExe — PATH-resolve failed in this pwsh session (command cache); HKCU\Environment!Path has git dir → new terminals / VS Code resolve `git`. Current session: dot-source . .\scripts\Setup.ps1" $true
 }
 else {
-    Check 'git on PATH' $false 'git not installed — winget install --id Git.Git --accept-package-agreements --accept-source-agreements' $false
+    $installHint = 'install Git with your platform package manager (winget on Windows, Homebrew on macOS, apt/dnf on Linux)'
+    Check 'git on PATH' $false "git not installed — $installHint" $false
 }
 
 # --- 4. git repo initialized at repo root (§2) ---
@@ -57,7 +58,7 @@ if ($dockerCmd) {
     Check 'Demon Docker + compose' $composeOk "compose: $composeOut" $false
 }
 else {
-    Check 'Demon Docker + compose' $false 'docker not on PATH — start Docker Desktop ("Start Docker Desktop")' $false
+    Check 'Demon Docker + compose' $false 'docker not on PATH — start Docker Desktop on Windows/macOS or Docker Engine on Linux' $false
 }
 
 # --- 6. C-compiler: not needed (pebbled std pure-Go sqlite3) — info ---
@@ -152,12 +153,14 @@ else { $tcpNote = 'a direct TCP connect to api.telegram.org:443 fails' }
 $goProxy = $env:HTTPS_PROXY
 if (-not $goProxy) { $goProxy = $env:https_proxy }
 $systemProxy = ''
-try {
-    $inet = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction SilentlyContinue
-    if ($inet -and $inet.ProxyEnable -eq 1) { $systemProxy = $inet.ProxyServer }
-}
-catch {
-    $systemProxy = ''
+if ($IsWindows) {
+    try {
+        $inet = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction SilentlyContinue
+        if ($inet -and $inet.ProxyEnable -eq 1) { $systemProxy = $inet.ProxyServer }
+    }
+    catch {
+        $systemProxy = ''
+    }
 }
 if ($tcpOk -or $goProxy) {
     $bypassNote = if ($env:NO_PROXY) { "NO_PROXY=$env:NO_PROXY" } else { 'NO_PROXY is empty, so a model of §7 on the loopback would be sent through the proxy — run.ps1 -UseSystemProxy sets the bypass' }

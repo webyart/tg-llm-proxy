@@ -35,6 +35,7 @@ param(
 )
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+. (Join-Path $PSScriptRoot 'Platform.ps1')
 $envPath = Join-Path $repoRoot '.env'
 $script:results = @()
 $ProgressPreference = 'SilentlyContinue'   # the byte-progress bar of Invoke-WebRequest is noise here (§12 UX)
@@ -96,7 +97,7 @@ try {
             if (-not $healthOk) { $healthNote += " — §8.1 HEALTHCHECK expects 200" }
         }
         catch {
-            $owners = @(Get-NetTCPConnection -LocalPort $HealthPort -State Listen -ErrorAction SilentlyContinue)
+            $owners = @(Get-PortOwnerIds $HealthPort)
             if ($owners.Count -eq 0) {
                 $healthSkip = $true
                 $healthNote = "GET $healthUrl — nothing is listening; the bot was not started, so the probe is not applicable"
@@ -118,7 +119,7 @@ try {
     else {
         # git may be absent (§13), so the §12 fallback form of the scan is used: the source tree itself.
         $sources = Get-ChildItem -LiteralPath $repoRoot -Recurse -File -Include *.go,*.md,*.yml,*.yaml,*.ps1,*.json,*.txt `
-            | Where-Object { $_.FullName -notmatch '\\\.cache\\' -and $_.FullName -notmatch '\\bin\\' -and $_.FullName -ne $envPath }
+            | Where-Object { $_.FullName -notmatch '[\\/]\.cache[\\/]' -and $_.FullName -notmatch '[\\/]bin[\\/]' -and $_.FullName -ne $envPath }
         $leaks = @($sources | Where-Object { Select-String -Path $_.FullName -SimpleMatch -Pattern $token -Quiet })
         $leakNote = "scanned $($sources.Count) files, no occurrence of the token value (§12: логи не содержат токен)"
         if ($leaks.Count -gt 0) { $leakNote = "the token value appears in $($leaks.Count) file(s): $($leaks.Name -join ', ') (§12 security)" }

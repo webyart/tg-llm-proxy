@@ -45,6 +45,7 @@ param(
 )
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+. (Join-Path $PSScriptRoot 'Platform.ps1')
 if (-not $EnvFile) { $EnvFile = Join-Path $repoRoot '.env' }
 else { $EnvFile = (Resolve-Path -LiteralPath $EnvFile).Path }
 
@@ -88,16 +89,20 @@ try {
     if (-not $AllowExisting) {
         $probePort = 8080
         if ($env:HEALTH_PORT -and $env:HEALTH_PORT -match '^\d+$') { $probePort = [int]$env:HEALTH_PORT }
-        $owners = @(Get-NetTCPConnection -LocalPort $probePort -State Listen -ErrorAction SilentlyContinue |
-            Select-Object -ExpandProperty OwningProcess -Unique | Sort-Object)
+        $owners = @(Get-PortOwnerIds $probePort)
         if ($owners.Count -gt 0) {
-            Write-Output "run: §7 HEALTH_PORT $probePort is already listened on by PID $(@($owners) -join ', ') — an instance of this bot is running, and Telegram serves one getUpdates consumer per token (§3.1)"
-            Write-Output "run: stop it first (Stop-Process -Id $($owners[0]); a hard kill is survivable — the offset of §5 and uq_messages_chat_tg_id of §5 are what test-restart.ps1 asserts), or re-run with -AllowExisting when a second instance is what you want"
+            $ownerNote = 'a process on this host'
+            if ($owners[0] -gt 0) { $ownerNote = "PID $($owners[0])" }
+            Write-Output "run: §7 HEALTH_PORT $probePort is already listened on by $ownerNote — an instance of this bot is running, and Telegram serves one getUpdates consumer per token (§3.1)"
+            Write-Output "run: stop the existing process first (a hard kill is survivable — the offset of §5 and uq_messages_chat_tg_id of §5 are what test-restart.ps1 asserts), or re-run with -AllowExisting when a second instance is what you want"
             exit 1
         }
     }
 
-    if ($UseSystemProxy -and -not $env:HTTPS_PROXY) {
+    if ($UseSystemProxy -and -not $IsWindows -and -not $env:HTTPS_PROXY) {
+        Write-Output 'run: -UseSystemProxy reads the Windows registry only; on macOS/Linux export HTTPS_PROXY and NO_PROXY in the shell instead'
+    }
+    elseif ($UseSystemProxy -and -not $env:HTTPS_PROXY) {
         # The proxy the Windows shell uses is a registry setting (WinINET), and a Go process cannot see it:
         # http.Transport reads HTTPS_PROXY of the ENV only. Copying the first address of ProxyServer into the
         # ENV of this child process is what turns «getMe timed out» into a bot that polls (§10 День 4).
@@ -162,9 +167,16 @@ try {
         $errLog = Join-Path $repoRoot "data\run-$stamp.err.log"
         # §12: slog writes JSON to stdout, so the log files of a detached run are the only trace; *.log is
         # gitignored (§10 День 1) and the token never enters them (§12 security, Sanitize of §6).
-        $proc = Start-Process -FilePath $exe -WorkingDirectory $repoRoot -WindowStyle Hidden -PassThru `
-            -RedirectStandardOutput $outLog -RedirectStandardError $errLog
-        Write-Output "run: PID $($proc.Id), logs: $outLog / $errLog — stop it with .\scripts\stop.ps1 -Id $($proc.Id), which posts Ctrl+C to its console: that is the graceful stop of §10 День 1 (signal.NotifyContext, pollerWait, db.Close, the WAL checkpoint of §5). Stop-Process -Id $($proc.Id) (or taskkill /PID $($proc.Id)) is the hard kill of §10 День 4 — survivable through the offset of §5 and uq_messages_chat_tg_id, and scripts/test-restart.ps1 walks exactly that case."
+        $startArgs = @{
+            FilePath = $exe
+            WorkingDirectory = $repoRoot
+            PassThru = $true
+            RedirectStandardOutput = $outLog
+            RedirectStandardError = $errLog
+        }
+        if ($IsWindows) { $startArgs['WindowStyle'] = 'Hidden' }
+        $proc = Start-Process @startArgs
+        Write-Output "run: PID $($proc.Id), logs: $outLog / $errLog — stop it with scripts/stop.ps1 -Id $($proc.Id): Ctrl+C on Windows or SIGTERM on macOS/Linux, then pollerWait, db.Close and the WAL checkpoint of §5. A forced kill is the case scripts/test-restart.ps1 walks."
         exit 0
     }
 

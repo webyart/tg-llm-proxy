@@ -9,20 +9,10 @@ run via: .\scripts\stop.ps1 -Id <pid>                # the graceful stop by a Ct
          .\scripts\stop.ps1 -Id <pid> -Force         # the hard kill of §10 День 4
          pwsh -NoProfile -File .\scripts\stop.ps1 -Id <pid>   # from a script (see «why a child»)
 
-What it does — stop the bot the way §10 День 1 defines as a stop. `scripts/run.ps1 -Background`
-starts the process detached, so nobody can press Ctrl-C in its console, and the obvious
-Stop-Process -Id N is TerminateProcess: it skips `signal.NotifyContext` of main.go entirely, so
-there is no bounded unwind (`pollerWait`), no `db.Close`, no WAL checkpoint of §5 — the -wal and
--shm sidecars survive and the next start replays them. That case is survivable on purpose (the
-offset of §5 + uq_messages_chat_tg_id of §5), and scripts/test-restart.ps1 walks it as the kill
-case of §10 День 4. It is NOT the case §10 День 1 and §11 ask for.
-
-A hidden console still receives Ctrl+C: AttachConsole($Id) + GenerateConsoleCtrlEvent(CTRL_C_EVENT)
-posts the very event the Go runtime turns into os.Interrupt, which is one of `stopSignals`
-(main.go:30) — so the process itself runs its own graceful stop: it prints «stopped by signal true»,
-waits `pollerWait` for the polling goroutine, closes the store, checkpoints the WAL, exits 0. This is
-how the §11 item «Ctrl-C / docker compose down при длинном /ask» is walked on a host: inside Docker the
-same path is reached by SIGTERM of §8.1 (`docker stop`/`compose down`).
+What it does — deliver a graceful stop on every supported host. On Windows a hidden console receives
+Ctrl+C through AttachConsole/GenerateConsoleCtrlEvent; on macOS/Linux Stop-Process sends SIGTERM. Both reach
+`stopSignals` of main.go, so the process runs pollerWait, closes the store and checkpoints the WAL.
+`-Force` is the hard-kill case of §10 День 4, not a graceful stop.
 
 Why a child process: the process that attaches to the bot's console receives the Ctrl+C event it
 generated and usually leaves with it. Run it as its own process
@@ -63,6 +53,12 @@ if (-not (Get-Process -Id $Id -ErrorAction SilentlyContinue)) {
 if ($Force) {
     Stop-Process -Id $Id -Force
     Say "PID $Id terminated (the hard kill of §10 День 4: no signal handler ran, the -wal/-shm sidecars of §5 stay behind and the next start replays them; scripts/test-restart.ps1 is the walk of exactly that case)"
+    exit 0
+}
+
+if (-not $IsWindows) {
+    Stop-Process -Id $Id
+    Say "SIGTERM sent to PID $Id (macOS/Linux: signal.NotifyContext of main.go, then pollerWait, db.Close and the WAL checkpoint of §5)"
     exit 0
 }
 

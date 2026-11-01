@@ -7,8 +7,8 @@ at getMe). The host reaches Telegram through the registry proxy of §2 since the
 so the case is testable end to end — and this script is that test.
 
 One line of what it does: start the bot, wait for /healthz = 200, read the numbers of §5 through
-`db_inspect.ps1 -Counts` (cmd/dbinspect, mode=ro), kill the process with `taskkill /F`, read the numbers
-again, start a second instance, and compare.
+`db_inspect.ps1 -Counts` (cmd/dbinspect, mode=ro), hard-kill the process with `taskkill /F` on Windows or
+Stop-Process -Force on macOS/Linux, read the numbers again, start a second instance, and compare.
 
 What is asserted (§5 «Offset long polling», §10 День 4 kill/restart):
   - the file survives a hard death: journal_mode is still wal and integrity_check is still ok (§5 WAL;
@@ -258,7 +258,13 @@ if ($atKill.Values.Count -eq 0) {
 }
 $offsetAtKill = [int64]$atKill.Values['last_update_id']
 
-$killNote = (taskkill /F /PID $first.Id 2>&1 | Out-String).Trim()
+if ($IsWindows) {
+    $killNote = (taskkill /F /PID $first.Id 2>&1 | Out-String).Trim()
+}
+else {
+    $killNote = "Stop-Process -Id $($first.Id) -Force (SIGKILL)"
+    Stop-Process -Id $first.Id -Force
+}
 $gone = $false
 $goneDeadline = (Get-Date).AddSeconds(15)
 while ((Get-Date) -lt $goneDeadline) {

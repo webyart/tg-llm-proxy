@@ -2,7 +2,7 @@
 <#
 verify.ps1 — the complete local verification pipeline of §9 and §11.
 
-Runs lint, Unit + Store, Integration + leak scan, build, and the containerized race detector. Every stage runs
+Runs lint, Unit + Store, fixture-based maintenance acceptance, Integration + leak scan, build, and the containerized race detector. Every stage runs
 in its own pwsh process because the stage scripts use exit; one red stage therefore does not hide the results
 of the others. The final table distinguishes PASS, FAIL, WARN and SKIP; any FAIL makes the pipeline exit 1.
 
@@ -11,13 +11,15 @@ Usage:
   .\scripts\verify.ps1 -SkipRace          # no Docker / only the host levels
   .\scripts\verify.ps1 -SkipHealth        # do not probe a bot that was not started
   .\scripts\verify.ps1 -SkipRaceBuild     # reuse the existing tg-llm-proxy-test image
+  .\scripts\verify.ps1 -WithVolumeRestore # also rehearse restore in an isolated Docker volume
 #>
 
 [CmdletBinding()]
 param(
     [switch]$SkipRace,
     [switch]$SkipHealth,
-    [switch]$SkipRaceBuild
+    [switch]$SkipRaceBuild,
+    [switch]$WithVolumeRestore
 )
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -51,6 +53,10 @@ Push-Location $repoRoot
 try {
     Invoke-Stage 'lint' 'lint.ps1'
     Invoke-Stage 'unit + store' 'test.ps1'
+
+    $maintenanceArgs = @()
+    if ($WithVolumeRestore) { $maintenanceArgs += '-WithVolumeRestore' }
+    Invoke-Stage 'maintenance acceptance' 'test-maintenance.ps1' $maintenanceArgs
 
     $smokeArgs = @()
     if ($SkipHealth) { $smokeArgs += '-SkipHealth' }

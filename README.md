@@ -4,7 +4,7 @@ Prototype per the plan (`PLAN.md` — local planning doc, not committed, see §1
 
 Status: **Day 0 done** (§10 Day 0: environment checks), **Day 1 done** —
 git repo + ignore-файлов + scripts created; `go build` passes with
-`main.go` (package main, see «§4 deviation») + `internal/config` (the ENV → Config loader of §7, 19 rows,
+`main.go` (package main, see «§4 deviation») + `internal/config` (the ENV → Config loader of §7, 23 rows,
 validation with the list of problems, §10 Day 1 DoD: echoes the configuration back
 and stops cleanly on Ctrl-C with exit code 0; an unset `TELEGRAM_BOT_TOKEN` →
 clear error + exit code 1). **Day 4 done** — `internal/bot` (long polling of §5 over
@@ -104,7 +104,8 @@ The layout of `internal/` matches §4; only the entry-point folder differs. `go-
 in `go.mod` at День 4 and the root entry point survived it — `go build .` of the Dockerfile builder stage
 (§8.1) and `go build -o bin\bot.exe .` of scripts/build.ps1 use the same target, so the host and the image
 cannot drift apart, and moving the file now would buy nothing but a diff. `cmd/` holds the maintenance entry
-points (`cmd/dbinspect`, `cmd/dbbackup`, `cmd/dbrestore`, `cmd/dbrotate`): another `package main` cannot sit next to the root one.
+points (`cmd/dbinspect`, `cmd/dbbackup`, `cmd/dbrestore`, `cmd/dbrotate`, `cmd/dbprune`, `cmd/dbfixture`):
+another `package main` cannot sit next to the root one.
 
 ## Quick start (Windows/pwsh)
 
@@ -113,8 +114,8 @@ points (`cmd/dbinspect`, `cmd/dbbackup`, `cmd/dbrestore`, `cmd/dbrotate`): anoth
 .\scripts\env-check.ps1        # §2: green before work (Go/git/pwsh/Docker/network)
 git status                     # repo state
 .\scripts\strata-check.ps1     # §10 День 3: is STRATA ready? (§6 /model check + a chat probe)
-.\scripts\verify.ps1           # the whole §9/§11 pipeline: lint, tests, build, leak scan and tagged -race
-                               # -SkipRace = host-only; -SkipHealth = no probe of a bot not started
+.\scripts\verify.ps1           # lint, unit, fixture maintenance, integration, build, leak scan and tagged -race
+                               # -SkipRace = host-only; -SkipHealth = no probe; -WithVolumeRestore = Docker rehearsal
 .\scripts\lint.ps1             # §9: gofmt + go vet (also with -tags integration)
 .\scripts\test.ps1             # §11 Unit + Store levels (no -race on this host, §3.1)
 .\scripts\smoke.ps1 -Unit      # §11 Integration: fake Telegram + fake STRATA, then the leak scan of §12
@@ -131,6 +132,9 @@ git status                     # repo state
                                # §9: dry-run retention plan; deletion requires the explicit -Apply flag
 .\scripts\db_maintenance.ps1 -Keep 7
                                # §9: scheduler-friendly verified backup + retention; -Apply permits deletion
+.\scripts\db_prune.ps1        # §9: dry-run age retention; events 90d, messages disabled; -Apply backs up first
+.\scripts\test-maintenance.ps1
+                               # §9: fixture backup/restore/rotate/prune acceptance; no live DB access
 .\scripts\test-volume-restore.ps1 -Source .\data\backups\<backup>.db
                                # §9: isolated volume-restore rehearsal; no second poller, live project untouched
 .\scripts\test-restart.ps1     # §10 День 4 at process level: hard kill between two instances, the §5 offset must survive
@@ -150,7 +154,7 @@ without the dot the PATH of §3 dies with the child process.
 3. `Copy-Item .env.example .env` and fill the §7 table: `TELEGRAM_BOT_TOKEN` from BotFather,
    `TELEGRAM_ALLOWED_USERS` = your own numeric `user_id` (id@username in BotFather is NOT it — §14.1;
    §16 change 29 made this the row's only spelling, the old `ALLOWED_USER_IDS` is refused by name), the STRATA
-   URL/model/key. Nothing else has to be touched: every remaining row of the 19 has the default of §7.
+   URL/model/key. Nothing else has to be touched: every remaining row of the 23 has the default of §7.
    `.env` is gitignored and never printed (§12 security).
 4. `.\scripts\strata-check.ps1` — is the model reachable at all (§6 `/model` check + one chat request)?
    A red here with the rest green means STRATA, not the code (§13 риск «сервер недоступен»).
@@ -474,7 +478,7 @@ answer and everything else goes to `events(kind='denied')` (§7, §16 change 13)
 machine carried `TELEGRAM_ALLOWED_USERS`, and the name fell between the two lists the loader reports (the 19
 rows + the v1.0 legacy rows), so the real `user_id` configured nothing and nothing was printed about it —
 §12 reliability's worst failure: a setting that looks applied and is not. `TELEGRAM_ALLOWED_USERS` is now
-**the** row of §7 (still 19 names), `UserIDs` reads that one name, and the old `ALLOWED_USER_IDS` left the
+**the** row of §7 (still 23 names), `UserIDs` reads that one name, and the old `ALLOWED_USER_IDS` left the
 loader: it is not merged and not quietly ignored — `Renamed` refuses it by name and the start stops with exit
 code 1 pointing at the new spelling, because an old file must not turn into a silently closed bot.
 `/whoami` prints the numeric `user_id` plus «в allowlist: да/нет» and the name to write it under
@@ -547,7 +551,7 @@ loader tests of §11 (`internal/config`); the streaming behaviour itself by `int
   of §7 and the `events(kind='denied')` row are reserved for strangers.
 - Day 6: DONE — `internal/testutil/telegram.go` (the fake Bot API: `getMe`, `getUpdates` with the
   real offset semantics, `sendMessage`, `setMyCommands`, scripted 429 with `retry_after`, wrong-token
-  counter, `Replay`), `test/integration/run_test.go` (`//go:build integration`, 8 cases),
+  counter, `Replay`), `test/integration/run_test.go` (`//go:build integration`, 9 cases),
   `scripts/smoke.ps1`, and `scripts/test-race.ps1 -Tagged` green: `go vet` + `gofmt` + `go test -race
   -tags integration ./... -count=2` inside the §8.1 test image — no data races (§11 Concurrency,
   §10 День 6 DoD). The race detector earned its keep once: the integration harness had been polling a
@@ -603,16 +607,13 @@ loader tests of §11 (`internal/config`); the streaming behaviour itself by `int
   reports (§7 rows + the v1.0 legacy rows) — so the real `user_id` configured nothing and nothing was printed
   about it. Change 28 first accepted the second spelling as an alias; change 29 reversed the direction the
   same day, because the name the operator actually writes is the Telegram-style one: `TELEGRAM_ALLOWED_USERS`
-  is now the row of §7 (`Env` still holds 19 names, `UserIDs`/`RowIsSet` read exactly that one), and
+  is now the row of §7 (`Env` still holds 23 names, `UserIDs`/`RowIsSet` read exactly that one), and
   `ALLOWED_USER_IDS` is gone from the loader — `Renamed` refuses it by name and the start exits 1 pointing at
   the new spelling rather than ignoring it (§7: the loader reads exactly the names of the table). `/whoami`,
   the refusal texts and `bot.AllowlistHint` name the single row (§12 UX). Covered by
   `TestRowOfTheAllowlistIsTelegramsName`, `TestOldNameOfTheRowIsRefusedByName`,
   `TestAllowlistCountsADuplicateOnce`, `TestAllowlistNamesTheRowOfABadEntry` and `TestAllowlistRowOpensTheBot`
   (the last one asserts the user reaches the model and `events(kind='denied')` stays empty).
-  Still open: the manual demo itself (the checklist above) and the last §1 criterion it proves — both need
-  `api.telegram.org` from the process, which this host filtered for the Windows binary until 2026-10-31 (see
-  the next paragraph).
   **The live demo was walked on 2026-10-31**: `.\scripts\run.ps1 -UseSystemProxy` on the Windows host, a real
   chat, real STRATA. `/ping` answered, `/ask 2+2` answered `4`, and the assistant row of §5 carries
   `model`, `latency_ms` 1567 and tokens 62/25 — the §10 День 7 fields read back with
@@ -708,6 +709,19 @@ In Task Scheduler select program `pwsh`, set the repository as «Start in», and
 `-NoLogo -NoProfile -File "C:\Kimi code\tg-llm-proxy\scripts\db_maintenance.ps1" -Keep 7`. Test the command manually
 first; add `-Apply` only after reviewing the dry-run. The project does not register or modify any scheduled task.
 
+Age-based deletion of rows is a separate operation from backup-file rotation:
+
+```powershell
+.\scripts\db_prune.ps1                                      # dry-run: events older than 90 days, no messages
+.\scripts\db_prune.ps1 -EventsDays 90 -Apply                # verified pre-prune backup, then delete old events
+.\scripts\db_prune.ps1 -EventsDays 0 -MessagesDays 365      # dry-run explicit message retention
+.\scripts\db_prune.ps1 -EventsDays 0 -MessagesDays 365 -Apply
+```
+
+Message deletion is disabled unless `-MessagesDays` is explicitly positive. Every `-Apply` creates a new backup and
+verifies it before opening the source for writing, then runs `integrity_check` afterwards. No scheduler invokes
+`db_prune`; production history deletion remains an explicit operator decision.
+
 For the current Docker named volume, take the intermediate file only after a clean stop so the WAL is checkpointed:
 
 ```powershell
@@ -777,9 +791,9 @@ point for the automated levels; the manual checklist above remains the authority
   and therefore no assistant row. The operator chose to leave it pending rather than occupy the GPU for 3600 seconds,
   then applied `/skip`: the row remains pending in history, but the next restart made no recovery call.
 - Backups and scratch restores use SQLite `VACUUM INTO`, read-only integrity/schema checks, and no-overwrite
-  destinations. Manual retention, scheduler-ready maintenance, and the isolated volume-restore rehearsal are
-  implemented. Task Scheduler registration stays an explicit operator action; production replacement still requires
-  the manual runbook above and explicit operator approval.
+  destinations. Backup-file rotation, backup-before-delete age retention, scheduler-ready maintenance, and the
+  isolated volume-restore rehearsal are implemented. Task Scheduler registration and production history deletion
+  stay explicit operator actions; production replacement still requires the manual runbook above and approval.
 - `/reset` (not `/forget`) clears context without deleting history. Secrets print only their length, library errors
   go through `bot.Sanitize`, and `scripts/smoke.ps1` scans the tree for the token value (§12 security).
 
@@ -811,7 +825,7 @@ implementation made concrete enough to name.
   ручной backup, проверенный scratch-restore, dry-run/apply retention и scheduler-ready maintenance уже реализованы
   (§9), а v1 applies `001_init.sql` through `go:embed` and nothing else (§5).
 - CI (gofmt/vet/test/`-race`) and publishing the image to a registry — today the §9 scripts are the pipeline.
-- `Config.Get()` — overrides per chat / per `user_id` (§16 change 25.1 kept the loader at the 19 rows of §7;
+- `Config.Get()` — overrides per chat / per `user_id` (§16 change 25.1 kept the loader at the 23 rows of §7;
   the first consumer would have been a per-chat `PARSE_MODE`, which v1 does not need).
 - Time budgets and TTLs as their own module: the limits of §7 live next to the loader in
   `internal/config/limits.go`; the TTL of the `bot_state` rows and a per-request budget bookkeeping move to v2.

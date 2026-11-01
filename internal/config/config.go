@@ -281,7 +281,7 @@ func Push(problems []string, msg string) []string {
 // loader. A name that leaves the table still has to be named when it carries a value — an old file with
 // `ALLOWED_USER_IDS=…` must not become a silently closed bot (the exact failure §16 change 28 was about).
 // So the value is NOT applied: one row, one spelling, nothing to merge, and the start stops with exit
-// code 1 on the message below (§7: the loader reads exactly the 19 names of the table).
+// code 1 on the message below (§7: the loader reads exactly the 23 names of the table).
 var RenamedRows = map[string]string{
 	"ALLOWED_USER_IDS": "TELEGRAM_ALLOWED_USERS",
 }
@@ -299,7 +299,7 @@ func Renamed(raw map[string]string) []string {
 	for i < len(RenamedOrder) {
 		var name = RenamedOrder[i]
 		if strings.TrimSpace(raw[name]) != "" {
-			found = Push(found, fmt.Sprintf("ENV %s is not a row of the §7 table any more: §16 change 29 renamed the row to %s, so the value of %s is ignored — write the allowlist under the new name (§7: the loader reads exactly the 19 names of the table)", name, RenamedRows[name], name))
+			found = Push(found, fmt.Sprintf("ENV %s is not a row of the §7 table any more: §16 change 29 renamed the row to %s, so the value of %s is ignored — write the allowlist under the new name (§7: the loader reads exactly the 23 names of the table)", name, RenamedRows[name], name))
 		}
 		i += 1
 	}
@@ -376,7 +376,7 @@ const DefaultStrataModel = "qwen2.5-7b-instruct"
 // refuses such a row by name instead of ignoring it, because a leftover row in .env
 // or in compose otherwise looks like a working configuration and hides the fact that
 // the feature does not exist in v1.1 (§10 День 1: "understandable messages about
-// errors"; §7: the loader reads exactly the 19 rows of the table).
+// errors"; §7: the loader reads exactly the 23 rows of the table).
 var LegacyRows = []string{
 	"LLM_CHAT_MODEL",
 	"LLM_CHAT_COMPLETIONS_URL",
@@ -415,7 +415,7 @@ var LegacyRows = []string{
 }
 
 // Legacy — name every legacy row that is set in the environment (§7 table: only
-// the 19 names above are real rows; §16 change 25.1 points the rest at §15).
+// the 23 names above are real rows; §16 change 25.1 points the rest at §15).
 // The value is never applied and never logged, so a secret-shaped legacy row
 // cannot leak through this message (§12 security).
 func Legacy(raw map[string]string) []string {
@@ -424,7 +424,7 @@ func Legacy(raw map[string]string) []string {
 	for i < len(LegacyRows) {
 		var name = LegacyRows[i]
 		if strings.TrimSpace(raw[name]) != "" {
-			found = Push(found, fmt.Sprintf("ENV %s is not a row of the §7 table of v1.1 (it is a row of the v1.0 §7; §16 change 25.1 moved it to the §15 backlog together with the token budgets, the deep link and the summary/embedding models): the value is ignored, the loader reads only the 19 rows of §7", name))
+			found = Push(found, fmt.Sprintf("ENV %s is not a row of the §7 table of v1.1 (it is a row of the v1.0 §7; §16 change 25.1 moved it to the §15 backlog together with the token budgets, the deep link and the summary/embedding models): the value is ignored, the loader reads only the 23 rows of §7", name))
 		}
 		i += 1
 	}
@@ -445,7 +445,7 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	var cfg = Config{}
 	var problems = []string{}
 
-	// §7 v1.1 reads only the 19 rows of the table; §16 change 25.1 names the leftover
+	// §7 v1.1 reads only the 23 rows of the table; §16 change 25.1 names the leftover
 	// v1.0 rows so that a stale .env or compose file cannot pretend to configure the bot.
 	var stale = Legacy(raw)
 	var staleIndex = 0

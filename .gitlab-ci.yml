@@ -17,20 +17,11 @@ host-checks:
 
 docker-race:
   stage: test
-  image: docker:latest
-  services:
-    - name: docker:dind
-  variables:
-    DOCKER_HOST: tcp://docker:2376
-    DOCKER_TLS_CERTDIR: ''
-    DOCKER_DRIVER: overlay2
-    DOCKER_DIND_PRIVILEGED: 'true'
+  image: golang:1.27-alpine
   before_script:
-    - for i in $(seq 1 20); do if docker info; then break; fi; echo 'waiting for docker:dind'; sleep 3; done
-    - docker info
+    - apk add --no-cache gcc musl-dev
   script:
-    - docker build --target test -t tg-llm-proxy-test:latest .
-    - docker run --rm tg-llm-proxy-test:latest sh -c 'set -e; gofmt -l . > /tmp/f.txt; if [ -s /tmp/f.txt ]; then cat /tmp/f.txt; exit 1; fi; go vet -tags integration ./...; CGO_ENABLED=1 go test -race -tags integration ./... -count=1'
+    - sh -c 'set -e; gofmt -l . > /tmp/f.txt; if [ -s /tmp/f.txt ]; then cat /tmp/f.txt; exit 1; fi; go vet -tags integration ./...; CGO_ENABLED=1 go test -race -tags integration ./... -count=1'
 
 govulncheck:
   stage: test

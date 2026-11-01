@@ -1131,12 +1131,15 @@ func TestInlineMenuAndCallback(t *testing.T) {
 	var path = dbFile(t)
 	var tgAPI = testutil.NewTelegram(t, secretToken)
 	var strata = testutil.NewStrata(t, secretStrataKey, testutil.StrataReply{Content: "ответ"})
-	var cfg = integrationEnv(t, path, strata.BaseURL(), nil)
+	var cfg = integrationEnv(t, path, strata.BaseURL(), map[string]string{"PARSE_MODE": "MarkdownV2"})
 	var db = openStore(t, path)
 	var run = startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second}, 0)
 
 	tgAPI.PushText(180, chatID, userID, "/start")
 	waitFor(t, "the inline menu was sent", func() bool { return tgAPI.Calls("sendMessage") == 1 })
+	if !strings.Contains(tgAPI.Sent()[0].Text, `Привет\!`) {
+		t.Errorf("the actual /start text must escape '!', got %q", tgAPI.Sent()[0].Text)
+	}
 	var menu = tgAPI.Sent()[0].ReplyMarkup
 	for _, want := range []string{"inline_keyboard", "cmd:ask", "cmd:model", "cmd:status", "cmd:history", "cmd:reset", "cmd:skip", "cmd:unskip", "cmd:stats", "cmd:whoami", "cmd:ping", "cmd:help", "cmd:start"} {
 		if !strings.Contains(menu, want) {

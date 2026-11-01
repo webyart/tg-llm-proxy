@@ -79,7 +79,7 @@ try {
     if ($needsBuild) {
         $env:CGO_ENABLED = '0'
         New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot 'bin') | Out-Null
-        $build = (go build -o bin\dbbackup.exe ./cmd/dbbackup 2>&1 | Out-String)
+        $build = (go build -o bin/dbbackup.exe ./cmd/dbbackup 2>&1 | Out-String)
         if ($LASTEXITCODE -ne 0) {
             Write-Output "db_backup: go build ./cmd/dbbackup exit $LASTEXITCODE — the reasons above (§9)"
             exit 1

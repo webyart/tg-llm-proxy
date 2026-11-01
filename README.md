@@ -39,7 +39,7 @@ it is what makes the §10 DoD cases repeatable, not a substitute for the missing
 
 | kind | location | state |
 |---|---|---|
-| git (work repo) | `C:\Tools\tg-llm-proxy` + `.git/` | init'd, branch `main`, commits: `ed46cf2` (Day 0 env) + the Day 1 config commit (see `git log`), **no remotes** (`git remote -v` empty) — push per §6 later |
+| git (work repo) | `C:\Tools\tg-llm-proxy` + `.git/` | init'd, branch `main`, commits: `ed46cf2` (Day 0 env) + the Day 1 config commit (see `git log`), remotes: `origin` = GitHub, `gitlab` = GitLab (release CI) |
 | parent folders | `C:\Tools` — NOT a repo (no parent `.git`) | this project folder IS the work repo (no nested/monorepo ambiguity) |
 | authorship | `git config --local` only: `arti` + `arti@localhost` | no global `.gitconfig` on machine → other repos untouched |
 | Go module cache | `GOPATH=C:\Users\arti\go` (default, global) | Setup.ps1 switches to project-local `.cache\gopath` (§3) |
@@ -851,8 +851,8 @@ implementation made concrete enough to name.
 - `/admin`: сводка по всем чатам, очередь и приоритеты запросов (v1 counts one chat, §6 `/stats`).
 - Автоматическая регистрация расписания; версионированные миграции уже используют `schema_migrations`,
   ручной backup, проверенный scratch-restore, dry-run/apply retention и scheduler-ready maintenance реализованы (§9).
-- Публикация образа в registry; `.github/workflows/verify.yml` уже запускает Windows host checks и Ubuntu Docker
-  race после появления remote, а локальный `scripts/verify.ps1` остаётся тем же pipeline.
+- Публикация образа в registry; `.github/workflows/verify.yml` и `.gitlab-ci.yml` описывают host checks и Docker
+  race, а локальный `scripts/verify.ps1` остаётся тем же pipeline. Release CI использует GitLab.
 - `Config.Get()` — overrides per chat / per `user_id` (§16 change 25.1 kept the loader at the 29 rows of §7;
   the first consumer would have been a per-chat `PARSE_MODE`, which v1 does not need).
 - Time budgets and TTLs as their own module: the limits of §7 live next to the loader in

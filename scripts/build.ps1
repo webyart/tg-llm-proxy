@@ -1,6 +1,6 @@
 #Requires -Version 7
 <#
-build.ps1 — §9 row «scripts/build.ps1»: «go mod tidy, go build -o bin\bot.exe ./cmd/bot (CGO_ENABLED=0)».
+build.ps1 — §9 row «scripts/build.ps1»: «go mod tidy, go build -o bin/bot.exe ./cmd/bot (CGO_ENABLED=0)».
 
 §4 deviation (README «§4 deviation»): package main lives at the repository root, so the build target is `.`
 and not `./cmd/bot` — the same target the builder stage of the Dockerfile uses (§8.1), which is why a local
@@ -48,7 +48,7 @@ try {
         }
     }
     $env:CGO_ENABLED = '0'   # §3.1: pure-Go sqlite of §5 — the host has no C compiler and needs none
-    $buildOut = (go build -ldflags "-X main.buildCommit=$commit" -o bin\bot.exe . 2>&1 | Out-String)
+    $buildOut = (go build -ldflags "-X main.buildCommit=$commit" -o bin/bot.exe . 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 0) {
         Write-Output "go build exit $LASTEXITCODE (§12 reliability: no binary, the reasons above)"
         Write-Output $buildOut.Trim()

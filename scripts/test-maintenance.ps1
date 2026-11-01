@@ -57,7 +57,7 @@ try {
     if ($needsBuild) {
         $env:CGO_ENABLED = '0'
         New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot 'bin') | Out-Null
-        $build = (go build -o bin\dbfixture.exe ./cmd/dbfixture 2>&1 | Out-String)
+        $build = (go build -o bin/dbfixture.exe ./cmd/dbfixture 2>&1 | Out-String)
         if ($LASTEXITCODE -ne 0) { throw "go build ./cmd/dbfixture failed: $build" }
     }
     & $fixtureExe -path $source

@@ -1,0 +1,37 @@
+stages:
+  - test
+
+variables:
+  CGO_ENABLED: '0'
+
+host-checks:
+  stage: test
+  image: golang:1.27-bookworm
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends wget ca-certificates
+    - wget -q https://github.com/PowerShell/PowerShell/releases/download/v7.6.0/powershell_7.6.0-1.deb_amd64.deb -O /tmp/powershell.deb
+    - apt-get install -y /tmp/powershell.deb
+  script:
+    - pwsh -NoLogo -NoProfile -File scripts/verify.ps1 -SkipRace -SkipHealth
+
+docker-race:
+  stage: test
+  image: docker:latest
+  services:
+    - name: docker:dind
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: ''
+    DOCKER_DRIVER: overlay2
+  before_script:
+    - docker info
+  script:
+    - docker build --target test -t tg-llm-proxy-test:latest .
+    - docker run --rm tg-llm-proxy-test:latest sh -c 'set -e; gofmt -l . > /tmp/f.txt; if [ -s /tmp/f.txt ]; then cat /tmp/f.txt; exit 1; fi; go vet -tags integration ./...; CGO_ENABLED=1 go test -race -tags integration ./... -count=1'
+
+govulncheck:
+  stage: test
+  image: golang:1.27-alpine
+  script:
+    - go run golang.org/x/vuln/cmd/govulncheck@latest ./...

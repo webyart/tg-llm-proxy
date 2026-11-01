@@ -4,7 +4,7 @@ db_inspect.ps1 — the reader of the §5 database. README «Environment» promis
 expected (§5) → use scripts/db_inspect.ps1 (Go-tool)»), and it is the only way to look at the chat history
 without a Telegram account: /history of §6 needs a chat the bot already serves.
 
-It runs `go build -o bin\dbinspect.exe ./cmd/dbinspect` on demand and then that binary, because §3.1 says the
+It runs `go build -o bin/dbinspect.exe ./cmd/dbinspect` on demand and then that binary, because §3.1 says the
 host has no C toolchain and §5 says the DSN of a viewer is a separate, read-only one: mode=ro, no
 `_journal_mode`, no `_txlock` — the script can look at the database of a RUNNING bot and cannot change it
 (internal/store/inspect.go, TestOpenReadOnlyCannotWriteAndCannotRemode).
@@ -95,7 +95,7 @@ try {
         # where -race cannot (§11).
         $env:CGO_ENABLED = '0'
         New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot 'bin') | Out-Null
-        $build = (go build -o bin\dbinspect.exe ./cmd/dbinspect 2>&1 | Out-String)
+        $build = (go build -o bin/dbinspect.exe ./cmd/dbinspect 2>&1 | Out-String)
         if ($LASTEXITCODE -ne 0) {
             Write-Output "db_inspect: go build ./cmd/dbinspect exit $LASTEXITCODE — the reasons above (§9)"
             exit 1

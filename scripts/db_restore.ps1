@@ -66,7 +66,7 @@ try {
     if ($needsBuild) {
         $env:CGO_ENABLED = '0'
         New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot 'bin') | Out-Null
-        $build = (go build -o bin\dbrestore.exe ./cmd/dbrestore 2>&1 | Out-String)
+        $build = (go build -o bin/dbrestore.exe ./cmd/dbrestore 2>&1 | Out-String)
         if ($LASTEXITCODE -ne 0) {
             Write-Output $build.Trim()
             Write-Output "db_restore: go build ./cmd/dbrestore exit $LASTEXITCODE"

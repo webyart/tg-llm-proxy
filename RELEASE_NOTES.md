@@ -17,7 +17,7 @@ Production-конфигурация не требует webhook или стри�
 - Изолированная репетиция восстановления Docker named volume с rollback-инструкцией.
 - Docker multi-stage image, non-root runtime, healthcheck, build commit в логах, ротация логов 10 MB × 5.
 - Повторяемый pipeline `scripts/verify.ps1`: lint, unit, fixture maintenance, integration, build, leak scan и Docker race.
-- GitHub Actions workflow для Windows host checks и Ubuntu Docker race.
+- CI definitions для GitHub и GitLab; release pipeline `.gitlab-ci.yml` запускает Linux host checks, Docker race и govulncheck.
 
 ## Experimental: webhook
 
@@ -47,7 +47,7 @@ Webhook реализован как opt-in: публичный HTTPS URL, secret
 
 ## Известные ограничения
 
-- GitHub remote и внешний CI-run могут быть настроены после подготовки этого release candidate.
+- Внешний release CI выполняется в GitLab; GitHub Actions остаётся дополнительным workflow.
 - Живой `/unskip` acceptance выполняется отдельно на тестовом вопросе; production `row=16` не используется как fixture.
 - Стриминг выключен по умолчанию; точный 120-секундный 429 и реальный idle-stall покрыты тестами, но не повторены вживую.
 - Host-side `/healthz` на этом Docker Desktop может давать WARN при healthy in-container healthcheck.

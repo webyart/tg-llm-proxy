@@ -1,4 +1,4 @@
-# tg-llm-proxy v1.0.0 — release candidate
+# tg-llm-proxy v1.0.0
 
 Дата: 2026-11-01
 
@@ -42,14 +42,15 @@ Webhook реализован как opt-in: публичный HTTPS URL, secret
 
 - `pwsh -NoLogo -NoProfile -File scripts/verify.ps1 -WithVolumeRestore` — GREEN, FAIL 0.
 - `go run golang.org/x/vuln/cmd/govulncheck@latest ./...` — No vulnerabilities found.
-- Production container healthy, build commit `f344afd9cd7f`.
+- GitLab pipeline: host-checks, docker-race и govulncheck — GREEN.
+- Живой `/unskip` acceptance на новом `row=17`: suppression снят и снова установлен финальным `/skip`, `integrity=ok`.
 - Fake webhook acceptance: регистрация без drop, отсутствие polling, wrong-secret без model call, валидный POST
   с сохранением offset.
 
 ## Известные ограничения
 
 - Внешний release CI выполняется в GitLab; GitHub Actions остаётся дополнительным workflow.
-- Живой `/unskip` acceptance выполняется отдельно на тестовом вопросе; production `row=16` не используется как fixture.
 - Стриминг выключен по умолчанию; точный 120-секундный 429 и реальный idle-stall покрыты тестами, но не повторены вживую.
 - Host-side `/healthz` на этом Docker Desktop может давать WARN при healthy in-container healthcheck.
+- macOS использует проверенные Unix-ветки Linux; физический Mac acceptance не выполнялся.
 - Вложения, `/persona`, `/model select`, `/admin` и RAG относятся к следующим версиям.

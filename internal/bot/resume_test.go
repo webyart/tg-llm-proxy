@@ -272,3 +272,29 @@ func TestStartupCountsAQuestionTheModelCouldNotAnswer(t *testing.T) {
 		t.Fatalf("events(kind=%q) must be 1 after the failed replay, got %d err=%v", store.EventTimeout, timeouts, evErr)
 	}
 }
+
+func TestStartupDoesNotReplayAnAnswerWhoseDeliveryFailed(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	var interruptedModel = &fakeModel{response: model.Response{Content: "прерванный ответ"}, delay: 2 * time.Second}
+	var db = testStore(t)
+	var interrupted = newTestDispatcher(t, cfg, interruptedModel, &fakeReplier{}, db)
+	interruptDispatch(t, interrupted, testEvent(155, 11, 990, "/ask вопрос"))
+
+	var deliveryFailure = &fakeReplier{err: context.DeadlineExceeded}
+	var restarted = newTestDispatcher(t, cfg, &fakeModel{response: model.Response{Content: "ответ сохранён"}}, deliveryFailure, db)
+	var answered, pending, err = restarted.ResumeInterruptedQuestions(context.Background())
+	if err != nil {
+		t.Fatalf("ResumeInterruptedQuestions: %v", err)
+	}
+	if answered != 1 || pending != 0 {
+		t.Fatalf("a stored assistant row must not be called unanswered after a send failure: answered=%d pending=%d", answered, pending)
+	}
+	var left, leftErr = store.UnansweredQuestions(context.Background(), db, ResumeScanLimit)
+	if leftErr != nil || len(left) != 0 {
+		t.Fatalf("the stored answer must close the replay window, left=%v err=%v", left, leftErr)
+	}
+	var rows = assistantRows(t, db, 155)
+	if len(rows) != 1 || rows[0].Content != "ответ сохранён" {
+		t.Fatalf("want exactly one stored answer and no model replay, got %v", rows)
+	}
+}

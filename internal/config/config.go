@@ -93,10 +93,10 @@ const DefaultLogLevel = "info"
 // operator turns it on deliberately (§12 надёжность: a feature that changes the UX of every answer arrives
 // behind a row, not behind a deploy). The other three are the budgets of one streamed answer, and the numbers
 // come from the measurement of §14: ~48 SSE events per second, ~20 ms apart, and an answer of the size the
-// live volume holds measured 1m56s — a second per edit is the cadence §15 asks for, and five minutes is the
-// ceiling past which «the model is still writing» stops being an answer.
+// live volume holds measured 1m56s. A sustained one-second cadence reached a real Telegram retry_after=120
+// during the §11 live walk, so the default is five seconds; five minutes is the ceiling of the whole answer.
 const DefaultStreaming = false
-const DefaultStreamEditIntervalMS = int64(1000)
+const DefaultStreamEditIntervalMS = int64(5000)
 const DefaultStreamIdleSeconds = int64(30)
 const DefaultStreamTotalSeconds = int64(300)
 

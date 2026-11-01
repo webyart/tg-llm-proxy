@@ -40,11 +40,10 @@ const (
 	// returns an error without an answer). 5 s is the library default; §7 has no knob for it, so it is
 	// a constant here and not a setting.
 	InitTimeout = 5 * time.Second
-	// FloodSleepMax — the cap of the 429 sleep. Telegram can answer retry_after=60, and the worker that
-	// sleeps that long holds the per-chat lock of §10 День 4 («не слать следующее сообщение в этот чат»)
-	// — acceptable, but the sleep must not outlive the reply budget of §7, so it is capped and the
-	// context still wins.
-	FloodSleepMax = 30 * time.Second
+	// FloodSleepMax — the cap of the 429 sleep. The live streamed walk measured retry_after=120; a 30-second
+	// cap retried while the chat was still throttled and lost the tail. The per-chat lock stays held and the
+	// reply context still wins if its budget is shorter than the requested pause.
+	FloodSleepMax = 120 * time.Second
 	// PublishCommandsTimeout — setMyCommands is cosmetic, so it gets a short deadline instead of
 	// holding up the startup of §4 («cmd/bot/main.go: конфиг → store → … → bot»).
 	PublishCommandsTimeout = 5 * time.Second

@@ -150,6 +150,11 @@ func (c *OpenAI) Stream(ctx context.Context, req Request, h StreamHandler) (Resp
 			resp.Attempts = attempt
 			return resp, nil
 		}
+		if ctx.Err() != nil {
+			// The caller's deadline is not STREAM_TOTAL_DEADLINE_SECONDS. Keep its identity so the ask handler
+			// names TG_REPLY_DEADLINE_SECONDS (or process cancellation) instead of blaming the stream budget.
+			return resp, fmt.Errorf("%w (the caller's context ended the stream)", ctx.Err())
+		}
 		lastErr = err
 		// The Response of a failed stream is PARTIAL on purpose: the handler of §15 has to store and log
 		// exactly what arrived, because part of it is already on the user's screen. An error and a half

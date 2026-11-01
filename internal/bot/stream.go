@@ -1,8 +1,7 @@
-// stream.go — the §15 «стриминг ответов» on the Telegram side (§16 change 34). §15 asks for «правка одного
-// сообщения раз в ~1 с вместо одного sendMessage», and the measurement of §14 says what that has to absorb:
-// the model emits ~48 SSE events per second, so a literal edit-per-token would be ~48 edits per second in one
-// chat — Telegram tolerates roughly one edit per second per chat, which is why STREAM_EDIT_INTERVAL_MS of §7
-// exists and why the chunking logic of reply.go is reused rather than rewritten (§10 День 4 flood).
+// stream.go — the §15 «стриминг ответов» on the Telegram side (§16 change 34). The model emits ~48 SSE events
+// per second, so a literal edit-per-token would be a flood. Even a sustained one-second cadence reached a real
+// retry_after=120 in the §11 live walk; STREAM_EDIT_INTERVAL_MS therefore defaults to five seconds, and the
+// chunking logic of reply.go is reused rather than rewritten (§10 День 4 flood).
 //
 // Three rules of the existing design survive the stream, and each is the reason for one branch below:
 //

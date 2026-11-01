@@ -95,6 +95,7 @@ type Deps struct {
 	// monotonic guard of persistOffset continues the previous run instead of starting at 0.
 	StartOffset int64
 	BotName     string
+	BuildCommit string
 	// Token is only the redaction key of Sanitize (§12 security): it is never logged, never sent to
 	// the model and never written to SQLite — it is here so the errors of the library, which carry
 	// `https://api.telegram.org/bot<TOKEN>/<method>`, cannot leak it into slog.

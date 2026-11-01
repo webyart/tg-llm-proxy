@@ -220,7 +220,7 @@ func (r *streamReplier) lastEdit() string {
 
 // streamConfig — the §7 rows of §15 as the loader produces them, with the allowlist of §7 opened for the test
 // user (the deny-by-default of §16 change 13 otherwise refuses /ask before the model is ever asked).
-// STREAM_EDIT_INTERVAL_MS stays at the §7 default (1000 ms) unless a test passes an override: with the default,
+// STREAM_EDIT_INTERVAL_MS stays at the §7 default (5000 ms) unless a test passes an override: with the default,
 // a stream whose events all arrive inside one second gets exactly the treatment §15 promises — one placeholder,
 // no rewrite storm.
 func streamConfig(t *testing.T, overrides map[string]string) config.Config {
@@ -385,6 +385,31 @@ func TestStreamThinkingKeepsChatAliveAndPlain(t *testing.T) {
 			t.Errorf("interim rewrite %d must be plain text (§12 UX half-open entities), got %v", k, flags)
 		}
 		k++
+	}
+}
+
+func TestStreamTotalBudgetOutlivesTheOrdinaryReplyBudget(t *testing.T) {
+	var cfg = streamConfig(t, map[string]string{
+		"STRATA_TIMEOUT_SECONDS":        "1",
+		"TG_REPLY_DEADLINE_SECONDS":     "2",
+		"STREAM_IDLE_TIMEOUT_SECONDS":   "1",
+		"STREAM_TOTAL_DEADLINE_SECONDS": "10",
+	})
+	var m = &fakeStreamModel{steps: []streamStep{{content: "Ответ после двух секунд.", wait: 2200 * time.Millisecond}}}
+	var r = &streamReplier{}
+	var db = testStore(t)
+	var d = newTestDispatcher(t, cfg, m, r, db)
+
+	if err := dispatch(t, d, testEvent(108, 11, 2008, "/ask подожди")); err != nil {
+		t.Fatalf("/ask: %v", err)
+	}
+	var rows = assistantRows(t, db, 108)
+	if len(rows) != 1 || rows[0].Content != m.Content() {
+		t.Fatalf("the stream must outlive TG_REPLY_DEADLINE_SECONDS and store its answer, got %v", rows)
+	}
+	var last = r.lastEdit()
+	if !strings.Contains(last, m.Content()) {
+		t.Errorf("the final edit does not contain the delayed answer: %q", last)
 	}
 }
 

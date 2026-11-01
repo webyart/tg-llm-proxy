@@ -195,6 +195,27 @@ func TestStreamTotalCapEndsALongAnswer(t *testing.T) {
 	}
 }
 
+func TestStreamCallerDeadlineIsNotTheStreamTotalBudget(t *testing.T) {
+	var pieces = make([]string, 0, 20)
+	for i := 0; i < 20; i++ {
+		pieces = append(pieces, "кусок ")
+	}
+	var fake = testutil.NewStrata(t, "", testutil.StrataReply{
+		Model: "qwen-echo", StreamContent: pieces, StreamGap: 20 * time.Millisecond,
+	})
+	var c = clientFor(t, fake, Options{Attempts: 1, Stream: StreamSettings{Idle: time.Second, Total: 5 * time.Second}})
+	var ctx, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	var _, err = c.Stream(ctx, oneRequest("вопрос"), silentHandler())
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want the caller's deadline", err)
+	}
+	if errors.Is(err, ErrStreamTooLong) || errors.Is(err, ErrStreamStalled) {
+		t.Errorf("err = %v, want the caller's deadline, not a stream budget that did not expire", err)
+	}
+}
+
 // TestStreamRefusesAnEndpointThatIgnoredTheStream — a proxy that answers a stream request with plain JSON
 // (the OpenAI-compatible layer of §14 item 5 is exactly such a layer) must not end as ErrEmptyAnswer: the
 // problem is transport, and the message has to say so.

@@ -1,0 +1,83 @@
+#Requires -Version 7
+<#
+db_maintenance.ps1 — one scheduler-friendly §9 maintenance step: verified online backup, then retention.
+
+The backup is always a NEW timestamped file and is checked read-only by db_backup.ps1. Retention then runs through
+db_rotate.ps1: without -Apply it is only a dry-run; -Apply explicitly permits deletion of expired generated names.
+-Source is optional and has the same DB_PATH/process ENV/.env precedence as db_backup.ps1. The destination directory
+must be data/backups (or a child) or zzscratch (or a child), matching the rotation safety boundary.
+
+Usage:
+  .\scripts\db_maintenance.ps1                              # backup + dry-run retention, keep 7
+  .\scripts\db_maintenance.ps1 -Keep 14 -Apply              # backup + delete expired copies, keep 14
+  .\scripts\db_maintenance.ps1 -Source .\data\bot.db -Directory .\zzscratch\maintenance -Keep 2
+
+Task Scheduler should invoke pwsh with -NoLogo -NoProfile -File and the full path to this script. Registration is
+intentionally not performed by this script; test the exact command manually before scheduling it with -Apply.
+
+Exit: 0 — the new backup passed verification and the rotation plan/apply completed; 1 — any stage failed.
+#>
+
+[CmdletBinding()]
+param(
+    [string]$Source,
+    [string]$Directory,
+    [ValidateRange(1, 1000000)]
+    [int]$Keep = 7,
+    [switch]$Apply,
+    [switch]$Rebuild
+)
+
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$backupRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot 'data\backups'))
+$scratchRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot 'zzscratch'))
+
+function Test-WithinRoot([string]$path, [string]$root) {
+    $prefix = $root + [System.IO.Path]::DirectorySeparatorChar
+    return $path.Equals($root, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $path.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+if (-not $Directory) { $Directory = $backupRoot }
+elseif (-not [System.IO.Path]::IsPathRooted($Directory)) { $Directory = Join-Path $repoRoot $Directory }
+$Directory = [System.IO.Path]::GetFullPath($Directory)
+if ((-not (Test-WithinRoot $Directory $backupRoot)) -and (-not (Test-WithinRoot $Directory $scratchRoot))) {
+    Write-Output "db_maintenance: directory $Directory is outside the allowed roots $backupRoot and $scratchRoot"
+    exit 1
+}
+
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$Dest = Join-Path $Directory "bot-$stamp.db"
+if (Test-Path -LiteralPath $Dest) {
+    Write-Output "db_maintenance: destination $Dest already exists — backups never overwrite; retry after the timestamp changes"
+    exit 1
+}
+
+Push-Location $repoRoot
+try {
+    $backupArgs = @('-Dest', $Dest)
+    if ($Source) { $backupArgs += @('-Source', $Source) }
+    if ($Rebuild) { $backupArgs += '-Rebuild' }
+    & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'db_backup.ps1') @backupArgs
+    if ($LASTEXITCODE -ne 0) {
+        Write-Output "db_maintenance: backup failed; rotation was not run"
+        exit 1
+    }
+
+    $rotateArgs = @('-Directory', $Directory, '-Keep', $Keep)
+    if ($Apply) { $rotateArgs += '-Apply' }
+    if ($Rebuild) { $rotateArgs += '-Rebuild' }
+    & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'db_rotate.ps1') @rotateArgs
+    if ($LASTEXITCODE -ne 0) {
+        Write-Output "db_maintenance: the new backup exists and is verified, but retention failed: $Dest"
+        exit 1
+    }
+
+    $mode = 'dry-run retention; no old backup was deleted'
+    if ($Apply) { $mode = 'apply retention; only listed expired backups were deleted' }
+    Write-Output "db_maintenance: OK — verified backup $Dest; $mode (keep $Keep)"
+    exit 0
+}
+finally {
+    Pop-Location
+}

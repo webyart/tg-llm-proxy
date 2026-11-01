@@ -21,9 +21,12 @@ const (
 	CommandStart   = "start"
 	CommandHelp    = "help"
 	CommandPing    = "ping"
+	CommandStatus  = "status"
 	CommandModel   = "model"
 	CommandAsk     = "ask"
 	CommandReset   = "reset"
+	CommandSkip    = "skip"
+	CommandUnskip  = "unskip"
 	CommandHistory = "history"
 	CommandStats   = "stats"
 	CommandWhoAmI  = "whoami"
@@ -56,9 +59,12 @@ func (d *Dispatcher) registry() []Command {
 		{Name: CommandStart, Description: "регистрация чата и список команд", AlwaysAllowed: true, Handler: d.start},
 		{Name: CommandHelp, Description: "справка по командам", Handler: d.help},
 		{Name: CommandPing, Description: "health бота: pong + uptime", Handler: d.ping},
+		{Name: CommandStatus, Description: "стриминг, модель, uptime и ожидание ответа", Handler: d.status},
 		{Name: CommandModel, Description: "модель, endpoint и проверка STRATA (/model check)", Handler: d.modelInfo},
 		{Name: CommandAsk, Description: "вопрос модели", NeedsArgs: true, UsesModel: true, Handler: d.ask},
 		{Name: CommandReset, Description: "очистить контекст чата", Handler: d.reset},
+		{Name: CommandSkip, Description: "не восстанавливать текущий unanswered-вопрос при старте", Handler: d.skip},
+		{Name: CommandUnskip, Description: "снова разрешить recovery ранее пропущенного вопроса", Handler: d.unskip},
 		{Name: CommandHistory, Description: "последние N сообщений (по умолчанию 5)", Handler: d.history},
 		{Name: CommandStats, Description: "счётчики чата: сообщения, токены, ошибки", Handler: d.stats},
 		{Name: CommandWhoAmI, Description: "user_id и chat_id для TELEGRAM_ALLOWED_USERS", AlwaysAllowed: true, Handler: d.whoami},
@@ -106,6 +112,78 @@ func (d *Dispatcher) helpLines() []string {
 func (d *Dispatcher) ping(ctx context.Context, ev Event, arg string) error {
 	var up = time.Since(d.created).Round(time.Second)
 	return d.reply(ctx, ev.ChatID, fmt.Sprintf("pong %s (§6 /ping)", up))
+}
+
+// status — operational diagnostics for an allowed chat without a model call. LastVisibleMessage uses the same
+// definition of an unanswered question as startup recovery, including the /reset window of §5.
+func (d *Dispatcher) status(ctx context.Context, ev Event, arg string) error {
+	var rowID, role, err = store.LastVisibleMessage(ctx, d.deps.DB, ev.ChatID)
+	if err != nil {
+		return err
+	}
+	var streaming = "выключен"
+	if d.deps.Cfg.Streaming {
+		streaming = fmt.Sprintf("включён — правки каждые %d мс, idle %d с, total %d с",
+			d.deps.Cfg.StreamEditIntervalMS, d.deps.Cfg.StreamIdleSeconds, d.deps.Cfg.StreamTotalSeconds)
+	}
+	var pending = "нет"
+	if rowID > 0 && role == store.RoleUser {
+		pending = fmt.Sprintf("да — сообщение §5 id=%d", rowID)
+		var skipped, suppress, skipErr = store.ResumeSkip(ctx, d.deps.DB, ev.ChatID)
+		if skipErr != nil {
+			return skipErr
+		}
+		if suppress && skipped == rowID {
+			pending += "; автовосстановление отключено (/skip)"
+		}
+	}
+	var commit = d.deps.BuildCommit
+	if commit == "" {
+		commit = "dev"
+	}
+	var lines = []string{
+		"Состояние бота (§6 /status):",
+		"Build: " + commit,
+		"Uptime: " + time.Since(d.created).Round(time.Second).String(),
+		"Модель: " + d.deps.Cfg.StrataModel,
+		"Стриминг: " + streaming,
+		"Последний вопрос чата ждёт ответа: " + pending,
+	}
+	return d.reply(ctx, ev.ChatID, strings.Join(lines, "\n"))
+}
+
+// skip — suppress startup recovery of only the newest visible unanswered question. The row and its history stay
+// untouched, and a newer question has another id, so it does not inherit the suppression.
+func (d *Dispatcher) skip(ctx context.Context, ev Event, arg string) error {
+	var rowID, role, err = store.LastVisibleMessage(ctx, d.deps.DB, ev.ChatID)
+	if err != nil {
+		return err
+	}
+	if rowID == 0 || role != store.RoleUser {
+		return d.reply(ctx, ev.ChatID, "Нет ожидающего ответа вопроса: пропускать нечего (§6 /skip).")
+	}
+	if err := store.SetResumeSkip(ctx, d.deps.DB, ev.ChatID, rowID); err != nil {
+		return err
+	}
+	return d.reply(ctx, ev.ChatID, fmt.Sprintf(
+		"Автовосстановление вопроса §5 id=%d отключено при следующих запусках. История сохранена; следующий вопрос будет обрабатываться как обычно (§6 /skip).", rowID))
+}
+
+// unskip removes this chat's suppression without making an immediate model call. Startup still applies its
+// newest-visible-question rule, so an older row does not jump ahead of a newer conversation.
+func (d *Dispatcher) unskip(ctx context.Context, ev Event, arg string) error {
+	var questionID, found, err = store.ResumeSkip(ctx, d.deps.DB, ev.ChatID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return d.reply(ctx, ev.ChatID, "Нет отключённого автовосстановления для этого чата: изменений не требуется (§6 /unskip).")
+	}
+	if err := store.ClearResumeSkip(ctx, d.deps.DB, ev.ChatID); err != nil {
+		return err
+	}
+	return d.reply(ctx, ev.ChatID, fmt.Sprintf(
+		"Автовосстановление вопроса §5 id=%d снова разрешено. Модель сейчас не вызывается: попытка будет сделана при следующем перезапуске, если этот вопрос останется самым новым без ответа (§6 /unskip).", questionID))
 }
 
 // whoami — §6, and §16 change 13: allowed even when the bot is closed, because this is how a user
@@ -188,7 +266,14 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 		return d.reply(ctx, ev.ChatID, msgAskNeedsText)
 	}
 
-	var replyCtx, cancel = context.WithTimeout(ctx, time.Duration(d.deps.Cfg.ReplyDeadlineSeconds)*time.Second)
+	var streamer, sender, canStream = d.streamingPossible()
+	var replyBudget = d.deps.Cfg.ReplyDeadlineSeconds
+	if canStream {
+		// The stream has its own model budget. The ordinary reply budget remains around it for the context read,
+		// SQLite write and Telegram delivery; a shorter outer context must not cut STREAM_TOTAL_DEADLINE_SECONDS.
+		replyBudget += d.deps.Cfg.StreamTotalSeconds
+	}
+	var replyCtx, cancel = context.WithTimeout(ctx, time.Duration(replyBudget)*time.Second)
 	defer cancel()
 
 	var messages, err = d.BuildMessages(replyCtx, ev.ChatID)
@@ -200,7 +285,6 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 	// stream, a sender that can edit) the answer arrives as ONE message that is rewritten as the model writes
 	// it. The two paths return the same Response and the same invariant holds underneath: exactly one assistant
 	// row of §5, written after the final answer, never per token (§10 День 3).
-	var streamer, sender, canStream = d.streamingPossible()
 	var session *streamSession
 	var resp model.Response
 	var modelErr error

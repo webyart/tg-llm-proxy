@@ -648,4 +648,33 @@ func TestUnansweredQuestions(t *testing.T) {
 	if zero, zeroErr := UnansweredQuestions(ctx, db, 0); zeroErr != nil || len(zero) != 0 {
 		t.Fatalf("limit=0 must ask for nothing, got %d rows err=%v", len(zero), zeroErr)
 	}
+
+	if err := SetResumeSkip(ctx, db, 55, secondQuestionID); err != nil {
+		t.Fatalf("SetResumeSkip: %v", err)
+	}
+	if skipped, found, skipErr := ResumeSkip(ctx, db, 55); skipErr != nil || !found || skipped != secondQuestionID {
+		t.Fatalf("ResumeSkip = %d found=%v err=%v, want %d/true/nil", skipped, found, skipErr, secondQuestionID)
+	}
+	var suppressed, suppressErr = UnansweredQuestions(ctx, db, 10)
+	if suppressErr != nil || len(suppressed) != 1 || suppressed[0].ID != waitingQuestion {
+		t.Fatalf("the explicitly skipped row must stay out of recovery, got %+v err=%v", suppressed, suppressErr)
+	}
+	var newerID, newerErr = Append(ctx, db, Message{ChatID: 55, UserID: 7, Role: RoleUser,
+		Content: "новый вопрос после /skip", TelegramMessageID: intPtr(957)})
+	if newerErr != nil {
+		t.Fatalf("Append after /skip: %v", newerErr)
+	}
+	var resumed, resumeErr = UnansweredQuestions(ctx, db, 10)
+	if resumeErr != nil || len(resumed) != 2 || resumed[0].ID != newerID || resumed[1].ID != waitingQuestion {
+		t.Fatalf("a newer question must not inherit the old suppression, got %+v err=%v", resumed, resumeErr)
+	}
+	if err := ClearResumeSkip(ctx, db, 55); err != nil {
+		t.Fatalf("ClearResumeSkip: %v", err)
+	}
+	if err := ClearResumeSkip(ctx, db, 55); err != nil {
+		t.Fatalf("repeated ClearResumeSkip: %v", err)
+	}
+	if _, found, err := ResumeSkip(ctx, db, 55); err != nil || found {
+		t.Fatalf("the suppression must be gone after ClearResumeSkip, found=%v err=%v", found, err)
+	}
 }

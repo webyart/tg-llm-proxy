@@ -33,7 +33,7 @@ func TestRegistryCoversTheTableOfSection6(t *testing.T) {
 		byName[cmd.Name] = cmd
 		i++
 	}
-	var want = []string{CommandStart, CommandHelp, CommandPing, CommandModel, CommandAsk, CommandReset, CommandHistory, CommandStats, CommandWhoAmI}
+	var want = []string{CommandStart, CommandHelp, CommandPing, CommandStatus, CommandModel, CommandAsk, CommandReset, CommandSkip, CommandUnskip, CommandHistory, CommandStats, CommandWhoAmI}
 	var j = 0
 	for j < len(want) {
 		if _, ok := byName[want[j]]; !ok {
@@ -47,8 +47,8 @@ func TestRegistryCoversTheTableOfSection6(t *testing.T) {
 	if !byName[CommandAsk].NeedsArgs {
 		t.Fatalf("/ask needs the question (§6)")
 	}
-	if byName[CommandHelp].UsesModel || byName[CommandPing].UsesModel {
-		t.Fatalf("/help and /ping must not touch the model (§6, §12 производительность)")
+	if byName[CommandHelp].UsesModel || byName[CommandPing].UsesModel || byName[CommandStatus].UsesModel || byName[CommandSkip].UsesModel || byName[CommandUnskip].UsesModel {
+		t.Fatalf("/help, /ping, /status, /skip and /unskip must not touch the model (§6, §12 производительность)")
 	}
 	if !byName[CommandStart].AlwaysAllowed || !byName[CommandWhoAmI].AlwaysAllowed {
 		t.Fatalf("§16 change 13: /start and /whoami answer even a closed bot")
@@ -88,6 +88,141 @@ func TestPingAndWhoami(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("§6 /whoami must show %q, got %q", want, text)
 		}
+	}
+}
+
+func TestStatusReportsStreamingAndPendingQuestion(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "STREAMING_ENABLED": "true"})
+	var r = &fakeReplier{}
+	var db = testStore(t)
+	var d = newTestDispatcher(t, cfg, nil, r, db)
+	d.deps.BuildCommit = "test-commit"
+
+	if err := dispatch(t, d, testEvent(100, 11, 302, "/status")); err != nil {
+		t.Fatalf("/status: %v", err)
+	}
+	var first = r.texts()[0]
+	for _, want := range []string{"Build: test-commit", "Uptime:", "Модель: " + cfg.StrataModel, "Стриминг: включён", "5000 мс", "300 с", "Последний вопрос чата ждёт ответа: нет"} {
+		if !strings.Contains(first, want) {
+			t.Errorf("/status must show %q, got %q", want, first)
+		}
+	}
+
+	if err := store.EnsureChat(context.Background(), db, 100, 11, ""); err != nil {
+		t.Fatalf("EnsureChat: %v", err)
+	}
+	if _, err := store.Append(context.Background(), db, store.Message{ChatID: 100, UserID: 11, Role: store.RoleUser, Content: "вопрос", TelegramMessageID: intPtr(303)}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := dispatch(t, d, testEvent(100, 11, 304, "/status")); err != nil {
+		t.Fatalf("/status with a pending question: %v", err)
+	}
+	var texts = r.texts()
+	if len(texts) != 2 || !strings.Contains(texts[1], "Последний вопрос чата ждёт ответа: да") {
+		t.Fatalf("the newest visible user row must be reported as pending, got %q", texts)
+	}
+}
+
+func TestSkipSuppressesOnlyTheCurrentQuestion(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	var r = &fakeReplier{}
+	var db = testStore(t)
+	var d = newTestDispatcher(t, cfg, nil, r, db)
+	var ctx = context.Background()
+
+	if err := dispatch(t, d, testEvent(100, 11, 305, "/skip")); err != nil {
+		t.Fatalf("/skip without a pending question: %v", err)
+	}
+	if !strings.Contains(r.joined(), "пропускать нечего") {
+		t.Fatalf("/skip must report the absence of a pending question, got %q", r.joined())
+	}
+	if err := store.EnsureChat(ctx, db, 100, 11, ""); err != nil {
+		t.Fatalf("EnsureChat: %v", err)
+	}
+	var questionID, err = store.Append(ctx, db, store.Message{ChatID: 100, UserID: 11, Role: store.RoleUser, Content: "оставить в истории", TelegramMessageID: intPtr(306)})
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	for _, updateID := range []int64{307, 308} {
+		if err := dispatch(t, d, testEvent(100, 11, updateID, "/skip")); err != nil {
+			t.Fatalf("/skip: %v", err)
+		}
+	}
+	var left, leftErr = store.UnansweredQuestions(ctx, db, 10)
+	if leftErr != nil || len(left) != 0 {
+		t.Fatalf("/skip must suppress startup recovery, left=%v err=%v", left, leftErr)
+	}
+	var history, historyErr = store.HistoryOfChat(ctx, db, 100, 10)
+	if historyErr != nil || len(history) != 1 || history[0].ID != questionID {
+		t.Fatalf("/skip must not delete history, got %+v err=%v", history, historyErr)
+	}
+	if err := dispatch(t, d, testEvent(100, 11, 309, "/status")); err != nil {
+		t.Fatalf("/status after /skip: %v", err)
+	}
+	if !strings.Contains(r.texts()[len(r.texts())-1], "автовосстановление отключено (/skip)") {
+		t.Fatalf("/status must show the explicit suppression, got %q", r.joined())
+	}
+	var newerID, newerErr = store.Append(ctx, db, store.Message{ChatID: 100, UserID: 11, Role: store.RoleUser, Content: "новый вопрос", TelegramMessageID: intPtr(310)})
+	if newerErr != nil {
+		t.Fatalf("Append newer question: %v", newerErr)
+	}
+	left, leftErr = store.UnansweredQuestions(ctx, db, 10)
+	if leftErr != nil || len(left) != 1 || left[0].ID != newerID {
+		t.Fatalf("the newer question must remain recoverable, left=%+v err=%v", left, leftErr)
+	}
+}
+
+func TestUnskipRestoresRecoveryWithoutCallingTheModel(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	var m = &fakeModel{}
+	var r = &fakeReplier{}
+	var db = testStore(t)
+	var d = newTestDispatcher(t, cfg, m, r, db)
+	var ctx = context.Background()
+
+	if err := dispatch(t, d, testEvent(100, 11, 311, "/unskip")); err != nil {
+		t.Fatalf("/unskip without suppression: %v", err)
+	}
+	if !strings.Contains(r.joined(), "Нет отключённого автовосстановления") {
+		t.Fatalf("/unskip must be idempotent when no suppression exists, got %q", r.joined())
+	}
+	if err := store.EnsureChat(ctx, db, 100, 11, ""); err != nil {
+		t.Fatalf("EnsureChat: %v", err)
+	}
+	var questionID, err = store.Append(ctx, db, store.Message{ChatID: 100, UserID: 11, Role: store.RoleUser, Content: "повторить при старте", TelegramMessageID: intPtr(312)})
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := dispatch(t, d, testEvent(100, 11, 313, "/skip")); err != nil {
+		t.Fatalf("/skip: %v", err)
+	}
+	if err := dispatch(t, d, testEvent(100, 11, 314, "/unskip")); err != nil {
+		t.Fatalf("/unskip: %v", err)
+	}
+	var last = r.texts()[len(r.texts())-1]
+	if !strings.Contains(last, "следующем перезапуске") || !strings.Contains(last, "id=") {
+		t.Fatalf("/unskip must explain when recovery can happen, got %q", last)
+	}
+	if err := dispatch(t, d, testEvent(100, 11, 315, "/unskip")); err != nil {
+		t.Fatalf("repeated /unskip: %v", err)
+	}
+	var left, leftErr = store.UnansweredQuestions(ctx, db, 10)
+	if leftErr != nil || len(left) != 1 || left[0].ID != questionID {
+		t.Fatalf("/unskip must make the same question recoverable, left=%+v err=%v", left, leftErr)
+	}
+	var history, historyErr = store.HistoryOfChat(ctx, db, 100, 10)
+	if historyErr != nil || len(history) != 1 || history[0].ID != questionID {
+		t.Fatalf("/unskip must not change history, got %+v err=%v", history, historyErr)
+	}
+	if err := dispatch(t, d, testEvent(100, 11, 316, "/status")); err != nil {
+		t.Fatalf("/status after /unskip: %v", err)
+	}
+	last = r.texts()[len(r.texts())-1]
+	if strings.Contains(last, "автовосстановление отключено") {
+		t.Fatalf("/status must no longer report suppression, got %q", last)
+	}
+	if m.callCount() != 0 {
+		t.Fatalf("/skip and /unskip must never call the model, got %d calls", m.callCount())
 	}
 }
 

@@ -299,21 +299,33 @@ func TestAskOverFakeTelegram(t *testing.T) {
 
 	// §10 День 4 «setMyCommands при старте»: the menu Telegram shows for «/» comes from the registry of
 	// §6, so the count is the registry length and a new v2 command appears here without editing run.go.
-	waitFor(t, "setMyCommands reached the fake Telegram", func() bool { return len(tgAPI.Commands()) == 9 })
+	waitFor(t, "setMyCommands reached the fake Telegram", func() bool { return len(tgAPI.Commands()) == 12 })
 	var menu = tgAPI.Commands()
 	var i = 0
 	var sawAsk = false
+	var sawStatus = false
+	var sawSkip = false
+	var sawUnskip = false
 	for i < len(menu) {
 		if menu[i].Command == "ask" {
 			sawAsk = true
+		}
+		if menu[i].Command == "status" {
+			sawStatus = true
+		}
+		if menu[i].Command == "skip" {
+			sawSkip = true
+		}
+		if menu[i].Command == "unskip" {
+			sawUnskip = true
 		}
 		if strings.Contains(menu[i].Command, " ") || strings.Contains(menu[i].Command, "/") {
 			t.Errorf("setMyCommands sent %q: the names are lowercase, without the slash and without arguments (§6)", menu[i].Command)
 		}
 		i++
 	}
-	if !sawAsk {
-		t.Errorf("the menu of §6 has no /ask: %v", menu)
+	if !sawAsk || !sawStatus || !sawSkip || !sawUnskip {
+		t.Errorf("the menu of §6 must contain /ask, /status, /skip and /unskip: %v", menu)
 	}
 	// §10 День 4: New calls getMe (WithCheckInitTimeout), so the fake must answer it — a fake that did
 	// not would make bot.New fail and the test would die in startBot rather than here.
@@ -437,7 +449,7 @@ func TestDeniedUser(t *testing.T) {
 	var run = startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{
 		ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second,
 	}, 0)
-	waitFor(t, "the menu of §6 is published", func() bool { return len(tgAPI.Commands()) == 9 })
+	waitFor(t, "the menu of §6 is published", func() bool { return len(tgAPI.Commands()) == 12 })
 
 	// /whoami is AlwaysAllowed in §6, so the same user is answered for that command and refused for /ask:
 	// the difference between the two proves that the gate is the allowlist of §7 and not a dead bot.
@@ -490,7 +502,7 @@ func TestOffsetSurvivesRestart(t *testing.T) {
 	var first = startBot(t, ctx, cfg, firstDB, newClient(t, cfg, strata), tgAPI, bot.Options{
 		ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second,
 	}, storedOffset(t, firstDB))
-	waitFor(t, "the first run published the menu", func() bool { return len(tgAPI.Commands()) == 9 })
+	waitFor(t, "the first run published the menu", func() bool { return len(tgAPI.Commands()) == 12 })
 
 	tgAPI.PushText(71, chatID, userID, "/ask первый")
 	waitFor(t, "the first run answered", func() bool { return tgAPI.Calls("sendMessage") >= 1 })
@@ -572,7 +584,7 @@ func TestLongAnswerIsEscapedThenChunked(t *testing.T) {
 	var run = startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{
 		ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second,
 	}, 0)
-	waitFor(t, "the menu of §6 is published", func() bool { return len(tgAPI.Commands()) == 9 })
+	waitFor(t, "the menu of §6 is published", func() bool { return len(tgAPI.Commands()) == 12 })
 
 	tgAPI.PushText(81, chatID, userID, "/ask длинный ответ")
 	waitFor(t, "the long answer left the bot in pieces", func() bool { return tgAPI.Calls("sendMessage") >= 2 })
@@ -675,7 +687,7 @@ func TestTelegram429SleepsInItsChat(t *testing.T) {
 	var run = startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{
 		ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second,
 	}, 0)
-	waitFor(t, "the menu of §6 is published", func() bool { return len(tgAPI.Commands()) == 9 })
+	waitFor(t, "the menu of §6 is published", func() bool { return len(tgAPI.Commands()) == 12 })
 
 	tgAPI.FailNext("sendMessage", 429, "Too Many Requests: retry after 1", 1)
 	var began = time.Now()
@@ -719,7 +731,7 @@ func TestTelegramErrorIsSanitized(t *testing.T) {
 	var run = startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{
 		ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second,
 	}, 0)
-	waitFor(t, "the menu of §6 is published", func() bool { return len(tgAPI.Commands()) == 9 })
+	waitFor(t, "the menu of §6 is published", func() bool { return len(tgAPI.Commands()) == 12 })
 
 	tgAPI.FailNext("sendMessage", 403, "Forbidden: bot was blocked by the user", 0)
 	tgAPI.PushText(101, chatID, userID, "/ask после блокировки")
@@ -762,7 +774,7 @@ func TestBotNameSuffixNeedsGetMe(t *testing.T) {
 	var run = startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{
 		ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second,
 	}, 0)
-	waitFor(t, "the menu of §6 is published", func() bool { return len(tgAPI.Commands()) == 9 })
+	waitFor(t, "the menu of §6 is published", func() bool { return len(tgAPI.Commands()) == 12 })
 
 	// The fake answers getMe with username «FakeBot» (§11), so the suffix of the first update is ours and
 	// п.2 still lowercases the name.
@@ -813,7 +825,7 @@ func TestRedeliveredUpdateIsAnsweredOnce(t *testing.T) {
 	var first = startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{
 		ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second, Workers: 2,
 	}, storedOffset(t, db))
-	waitFor(t, "the first run published the menu", func() bool { return len(tgAPI.Commands()) == 9 })
+	waitFor(t, "the first run published the menu", func() bool { return len(tgAPI.Commands()) == 12 })
 
 	tgAPI.PushText(91, chatID, userID, "/ask один")
 	waitFor(t, "the question was answered", func() bool { return tgAPI.Calls("sendMessage") >= 1 })
@@ -890,7 +902,7 @@ func TestStreamedAnswerEditsOneMessage(t *testing.T) {
 	var run = startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{
 		ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second, Workers: 2,
 	}, storedOffset(t, db))
-	waitFor(t, "the menu of §10 День 4", func() bool { return len(tgAPI.Commands()) == 9 })
+	waitFor(t, "the menu of §10 День 4", func() bool { return len(tgAPI.Commands()) == 12 })
 
 	tgAPI.PushText(140, chatID, userID, "/ask один")
 	// The last rewrite is what the user keeps on screen, so that is the moment the test waits for — the

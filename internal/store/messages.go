@@ -33,8 +33,8 @@ const (
 	RoleSystem    = "system"
 )
 
-// StateLastUpdateID — the only key of bot_state in v1 (§5: the offset of getUpdates, read back
-// through bot.WithInitialOffset at every start, §10 День 4).
+// StateLastUpdateID — the getUpdates offset of bot_state, read back through bot.WithInitialOffset at every
+// start (§5, §10 День 4). Per-chat resume_skip_ keys live in resume.go beside the startup-recovery helpers.
 const StateLastUpdateID = "last_update_id"
 
 // The kinds of events of §6 and §10 День 3/День 4: a denied user, a model failure after every
@@ -334,8 +334,8 @@ func RowIDByTelegramMessageID(ctx context.Context, db *sql.DB, chatID int64, tel
 //
 // Only rows with a telegram_message_id qualify. The replay stays idempotent because uq_messages_chat_tg_id
 // of §5 rejects the second question row of the same update (§2 п.7), and a row without that key has no such
-// guard to fall back on (§13 риск «повторные ответы»). At most `limit` chats are looked at, newest activity
-// first: the scan runs at the start of the process and must not grow with the age of the database
+// guard to fall back on (§13 риск «повторные ответы»). An exact row suppressed by /skip stays in history but is
+// left out. At most `limit` chats are looked at, newest activity first: the scan must not grow with the database
 // (§9: no unbounded work).
 func UnansweredQuestions(ctx context.Context, db *sql.DB, limit int) ([]Message, error) {
 	if limit <= 0 {
@@ -378,6 +378,14 @@ func UnansweredQuestions(ctx context.Context, db *sql.DB, limit int) ([]Message,
 			return nil, rowErr
 		}
 		if row.ID == 0 || row.Role != RoleUser || row.TelegramMessageID == nil {
+			i++
+			continue
+		}
+		var skipped, suppress, skipErr = ResumeSkip(ctx, db, chats[i].chatID)
+		if skipErr != nil {
+			return nil, skipErr
+		}
+		if suppress && skipped == row.ID {
 			i++
 			continue
 		}

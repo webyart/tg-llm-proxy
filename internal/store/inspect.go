@@ -383,8 +383,8 @@ func EventCounts(ctx context.Context, db *sql.DB) ([]KindCount, error) {
 	return found, nil
 }
 
-// StateEntry — one row of the §5 `bot_state` table (today: last_update_id, the offset that must survive a
-// restart). A viewer that cannot see the offset cannot tell a stuck poller from a quiet chat (§13).
+// StateEntry — one row of the §5 `bot_state` table (last_update_id and per-chat resume_skip_ markers). A viewer
+// that cannot see the offset cannot tell a stuck poller from a quiet chat (§13).
 type StateEntry struct {
 	Key   string
 	Value string

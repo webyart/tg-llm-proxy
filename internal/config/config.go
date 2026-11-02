@@ -100,11 +100,11 @@ const DefaultLogLevel = "info"
 // behind a row, not behind a deploy). The other three are the budgets of one streamed answer, and the numbers
 // come from the measurement of §14: ~48 SSE events per second, ~20 ms apart, and an answer of the size the
 // live volume holds measured 1m56s. A sustained one-second cadence reached a real Telegram retry_after=120
-// during the §11 live walk, so the default is five seconds; five minutes is the ceiling of the whole answer.
+// during the §11 live walk, so the default is five seconds; fifteen minutes is the ceiling of the whole answer.
 const DefaultStreaming = false
 const DefaultStreamEditIntervalMS = int64(5000)
 const DefaultStreamIdleSeconds = int64(30)
-const DefaultStreamTotalSeconds = int64(300)
+const DefaultStreamTotalSeconds = int64(900)
 
 // The bounds of the §15 rows. The floor of the edit interval is what Telegram tolerates: editing one message
 // more than once a second is how a bot reaches the flood of §10 День 4, and 250 ms is the shortest interval

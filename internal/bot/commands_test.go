@@ -102,7 +102,7 @@ func TestStatusReportsStreamingAndPendingQuestion(t *testing.T) {
 		t.Fatalf("/status: %v", err)
 	}
 	var first = r.texts()[0]
-	for _, want := range []string{"Build: test-commit", "Uptime:", "Модель: " + cfg.StrataModel, "Стриминг: включён", "5000 мс", "300 с", "Последний вопрос чата ждёт ответа: нет"} {
+	for _, want := range []string{"Build: test-commit", "Uptime:", "Модель: " + cfg.StrataModel, "Стриминг: включён", "5000 мс", "900 с", "Последний вопрос чата ждёт ответа: нет"} {
 		if !strings.Contains(first, want) {
 			t.Errorf("/status must show %q, got %q", want, first)
 		}

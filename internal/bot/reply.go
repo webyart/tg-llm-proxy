@@ -174,3 +174,26 @@ func CutRunes(text string, maxRunes int) (string, bool) {
 // TruncatedMarker — the notice of §5 «обрезка входящего текста с пометкой», in the language the user
 // speaks (§6 answers are Russian).
 const TruncatedMarker = "… (текст обрезан по MAX_INPUT_CHARS)"
+
+func isParseEntitiesError(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "can't parse entities")
+}
+
+func plainForParseFallback(text string, parseMode string) string {
+	switch parseMode {
+	case ParseMarkdownV2:
+		runes := []rune(text)
+		out := make([]rune, 0, len(runes))
+		for i := 0; i < len(runes); i++ {
+			if runes[i] == '\\' && i+1 < len(runes) && strings.ContainsRune("_*[]()~`>#+-=|{}.!\\", runes[i+1]) {
+				continue
+			}
+			out = append(out, runes[i])
+		}
+		return string(out)
+	case ParseHTML:
+		return strings.NewReplacer("&lt;", "<", "&gt;", ">", "&amp;", "&").Replace(text)
+	default:
+		return text
+	}
+}

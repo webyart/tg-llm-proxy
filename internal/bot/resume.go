@@ -108,7 +108,7 @@ func (d *Dispatcher) ResumeInterruptedQuestions(ctx context.Context) (answered i
 			// no-duplicate window of §13, not an unanswered question to replay on the next start.
 			var newestID, newestRole, checkErr = store.LastVisibleMessage(ctx, d.deps.DB, ev.ChatID)
 			if checkErr == nil && newestRole == store.RoleAssistant && newestID > row.ID {
-				d.deps.Logger.Error("the answer of §5 was stored but its Telegram delivery failed; the next start will not repeat it",
+				d.deps.Logger.Error("the answer was stored, but Telegram delivery is incomplete; automatic replay stays disabled to prevent duplicates",
 					"chat_id", ev.ChatID, "question_row", row.ID,
 					"error", Sanitize(chainErr, d.deps.Token))
 				answered++

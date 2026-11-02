@@ -341,6 +341,16 @@ func (r *telegramReplier) send(ctx context.Context, chatID int64, text string, m
 		if err == nil {
 			return nil
 		}
+		if isParseEntitiesError(err) && params.ParseMode != "" {
+			params.Text = plainForParseFallback(text, r.cfg.ParseMode)
+			params.ParseMode = ""
+			var _, fallbackErr = r.bot.SendMessage(ctx, params)
+			if fallbackErr == nil {
+				r.logger.Warn("telegram rejected formatted text; delivered it as plain text", "chat_id", chatID)
+				return nil
+			}
+			err = fallbackErr
+		}
 		var flood *tgbot.TooManyRequestsError
 		if !errors.As(err, &flood) || flood.RetryAfter <= 0 || attempt >= 1 {
 			// Anything else (403 the bot was blocked, 400 a bad parse mode) is the caller's problem:
@@ -407,6 +417,16 @@ func (r *telegramReplier) EditStreamMessage(ctx context.Context, chatID int64, m
 		params.ParseMode = parseModeOf(r.cfg.ParseMode)
 	}
 	var _, err = r.bot.EditMessageText(ctx, params)
+	if isParseEntitiesError(err) && params.ParseMode != "" {
+		params.Text = plainForParseFallback(text, r.cfg.ParseMode)
+		params.ParseMode = ""
+		var _, fallbackErr = r.bot.EditMessageText(ctx, params)
+		if fallbackErr == nil {
+			r.logger.Warn("telegram rejected the formatted stream finalization; edited it as plain text", "chat_id", chatID, "message_id", messageID)
+			return nil
+		}
+		err = fallbackErr
+	}
 	return err
 }
 

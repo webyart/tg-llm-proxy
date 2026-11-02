@@ -22,3 +22,9 @@ func TestDefaultTelegramHTTPClientUsesExtendedTLSHandshakeBudget(t *testing.T) {
 		t.Fatal("cloned transport must retain proxy and dial behavior of http.DefaultTransport")
 	}
 }
+
+func TestTelegramInitTimeoutCoversTLSHandshake(t *testing.T) {
+	if InitTimeout < TLSHandshakeTimeout {
+		t.Fatalf("InitTimeout = %s, TLSHandshakeTimeout = %s; startup must not expire first", InitTimeout, TLSHandshakeTimeout)
+	}
+}

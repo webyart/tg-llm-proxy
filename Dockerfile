@@ -31,9 +31,10 @@ ENV DB_PATH=/data/bot.db
 EXPOSE 8080
 # §8.1 HEALTHCHECK: curl is not in the image, wget is part of alpine's busybox. The shell form (not the
 # JSON form) is deliberate: /bin/sh expands HEALTH_PORT, so a container started with another §7 port is
-# still probed on the port it actually listens on instead of being marked unhealthy at 8080.
+# still probed on the port it actually listens on instead of being marked unhealthy at 8080. --proxy off keeps
+# the loopback probe local even when Telegram uses HTTPS_PROXY; proxying it can return a false 503.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --start-interval=1s \
-  CMD wget -qO- "http://127.0.0.1:${HEALTH_PORT:-8080}/healthz" || exit 1
+  CMD wget --proxy off -qO- "http://127.0.0.1:${HEALTH_PORT:-8080}/healthz" || exit 1
 ENTRYPOINT ["/bot"]
 
 FROM golang:1.27-alpine AS test

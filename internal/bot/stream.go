@@ -370,12 +370,12 @@ func (s *streamSession) deliver(ctx context.Context, d *Dispatcher, full string)
 	if !s.posted || s.messageID == 0 {
 		return d.Send(ctx, s.chatID, full)
 	}
-	if err := s.edit(ctx, chunks[0], true); err != nil {
-		// The placeholder stays as it was: the tail below still has to reach the chat, and the caller of §12
-		// reports the delivery failure through the log, not by losing the answer.
+	finalErr := s.edit(ctx, chunks[0], true)
+	if finalErr != nil {
+		// The tail still has to reach the chat, but a missing final edit is a delivery failure, not success.
 		d.deps.Logger.Warn("the streamed answer could not be finalized",
 			"chat_id", s.chatID, "edits", s.edits, "edit_failures", s.editFailures,
-			"error", Sanitize(err, d.deps.Token),
+			"error", Sanitize(finalErr, d.deps.Token),
 		)
 	}
 	var i = 1
@@ -385,7 +385,7 @@ func (s *streamSession) deliver(ctx context.Context, d *Dispatcher, full string)
 		}
 		i++
 	}
-	return nil
+	return finalErr
 }
 
 // broken — the stream stopped with part of the answer already on the screen. §10 День 3 writes no assistant row

@@ -1169,3 +1169,69 @@ func TestInlineMenuAndCallback(t *testing.T) {
 	}
 	run.stop()
 }
+
+func TestParseErrorFallsBackToPlainMessage(t *testing.T) {
+	ctx := context.Background()
+	path := dbFile(t)
+	tgAPI := testutil.NewTelegram(t, secretToken)
+	strata := testutil.NewStrata(t, secretStrataKey, testutil.StrataReply{Content: "Точка. Восклицание! Плюс +"})
+	cfg := integrationEnv(t, path, strata.BaseURL(), map[string]string{"PARSE_MODE": "MarkdownV2"})
+	db := openStore(t, path)
+	run := startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second}, 0)
+	waitFor(t, "menu published", func() bool { return len(tgAPI.Commands()) == 13 })
+
+	tgAPI.FailNext("sendMessage", 400, "Bad Request: can't parse entities: Character '.' is reserved", 0)
+	tgAPI.PushText(190, chatID, userID, "/ask проверка пунктуации")
+	waitFor(t, "plain fallback delivered", func() bool { return len(tgAPI.Sent()) == 1 })
+	if tgAPI.Calls("sendMessage") != 2 {
+		t.Fatalf("sendMessage calls=%d, want one rejected formatted attempt and one plain fallback", tgAPI.Calls("sendMessage"))
+	}
+	sent := tgAPI.Sent()[0]
+	if sent.ParseMode != "" {
+		t.Fatalf("fallback parse_mode=%q, want plain", sent.ParseMode)
+	}
+	if strings.Contains(sent.Text, `\.`) || !strings.Contains(sent.Text, "Точка.") {
+		t.Fatalf("fallback text is not readable plain content: %q", sent.Text)
+	}
+	if len(rowsOf(t, db)) != 2 {
+		t.Fatal("fallback must keep exactly one user and one assistant row")
+	}
+	run.stop()
+}
+
+func TestStreamFinalEditParseErrorFallsBackOnSameMessage(t *testing.T) {
+	ctx := context.Background()
+	path := dbFile(t)
+	tgAPI := testutil.NewTelegram(t, secretToken)
+	strata := testutil.NewStrata(t, secretStrataKey, testutil.StrataReply{
+		StreamContent: []string{"Длинный ответ. ", "Продолжение! ", "Финал + конец."},
+		StreamUsage:   true,
+	})
+	cfg := integrationEnv(t, path, strata.BaseURL(), map[string]string{
+		"PARSE_MODE": "MarkdownV2", "STREAMING_ENABLED": "true", "STREAM_IDLE_TIMEOUT_SECONDS": "4",
+	})
+	db := openStore(t, path)
+	run := startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second}, 0)
+	waitFor(t, "menu published", func() bool { return len(tgAPI.Commands()) == 13 })
+
+	tgAPI.FailNext("editMessageText", 400, "Bad Request: can't parse entities: Character '.' is reserved", 0)
+	tgAPI.PushText(191, chatID, userID, "/ask длинный ответ")
+	waitFor(t, "plain final edit delivered", func() bool { return len(tgAPI.Edits()) == 1 })
+	if tgAPI.Calls("editMessageText") != 2 {
+		t.Fatalf("editMessageText calls=%d, want formatted failure and plain fallback", tgAPI.Calls("editMessageText"))
+	}
+	if len(tgAPI.Sent()) != 1 {
+		t.Fatalf("stream must keep one placeholder message, got %d sends", len(tgAPI.Sent()))
+	}
+	edit := tgAPI.Edits()[0]
+	if edit.MessageID != tgAPI.Sent()[0].MessageID {
+		t.Fatalf("fallback edited id=%d, want original placeholder id=%d", edit.MessageID, tgAPI.Sent()[0].MessageID)
+	}
+	if edit.ParseMode != "" || strings.Contains(edit.Text, `\.`) || !strings.Contains(edit.Text, "Финал + конец.") {
+		t.Fatalf("fallback final edit is not complete plain content: %+v", edit)
+	}
+	if len(rowsOf(t, db)) != 2 {
+		t.Fatal("stream fallback must keep exactly one user and one assistant row")
+	}
+	run.stop()
+}

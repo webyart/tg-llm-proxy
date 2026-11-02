@@ -1,3 +1,13 @@
+# tg-llm-proxy v1.4.0
+
+## Minor release
+
+- Добавлена `/persona` с пресетами `assistant`, `coder`, `writer`, `translator`, поддержкой `/persona custom <текст>` и `/persona reset`.
+- Persona выбирается независимо для каждого чата и применяется как system prompt со следующего запроса. Настройка сохраняется после рестарта и не удаляется при `/model reset` или `/stream reset`.
+- `/status` показывает effective persona; inline-меню содержит 14 команд.
+- Добавлена append-only миграция `schema_version=4` с таблицей `chat_personas`; существующие сообщения, модель, streaming и offset не меняются.
+- Store, bot и integration тесты покрывают пресеты, custom, изоляцию чатов, reset и публикацию команды.
+
 # tg-llm-proxy v1.3.1
 
 ## Hotfix

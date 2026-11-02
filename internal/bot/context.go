@@ -17,7 +17,11 @@ func (d *Dispatcher) BuildMessages(ctx context.Context, chatID int64) ([]model.M
 		return nil, err
 	}
 
-	var prompt = strings.TrimSpace(d.deps.Cfg.SystemPrompt)
+	prompt, _, _, err := d.effectivePersona(ctx, chatID)
+	if err != nil {
+		return nil, err
+	}
+	prompt = strings.TrimSpace(prompt)
 	var budget = int(d.deps.Cfg.MaxContextChars)
 	var used = Runes(prompt)
 	var newestFirst = []store.Message{}

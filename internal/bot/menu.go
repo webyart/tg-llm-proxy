@@ -18,6 +18,7 @@ func (d *Dispatcher) menuMarkup() models.InlineKeyboardMarkup {
 		{"Спросить", CommandAsk},
 		{"Модель", CommandModel},
 		{"Стриминг", CommandStream},
+		{"Persona", CommandPersona},
 		{"Статус", CommandStatus},
 		{"История", CommandHistory},
 		{"Сброс", CommandReset},

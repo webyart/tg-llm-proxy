@@ -87,13 +87,13 @@ try {
     & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'db_prune.ps1') -Source $legacy -EventsDays 100000 -Apply -Backup (Join-Path $work 'legacy-pre-migration.db')
     if ($LASTEXITCODE -ne 0) { throw 'pre-versioning adoption failed' }
     $legacyAfter = Get-DatabaseCounts $legacy
-    foreach ($want in @('schema_version=3', 'table_schema_migrations=3', 'table_events=2', 'table_messages=4', 'last_update_id=4242', 'integrity=ok')) {
+    foreach ($want in @('schema_version=4', 'table_schema_migrations=4', 'table_events=2', 'table_messages=4', 'last_update_id=4242', 'integrity=ok')) {
         if ($legacyAfter -notcontains $want) { throw "migration result misses $want" }
     }
     $beforeCore = @($legacyBefore | Where-Object { $_ -notmatch '^(schema_version|table_schema_migrations)=' })
     $afterCore = @($legacyAfter | Where-Object { $_ -notmatch '^(schema_version|table_schema_migrations)=' })
     if (Compare-Object $beforeCore $afterCore) { throw 'migration changed application data' }
-    Write-Output 'maintenance acceptance: pre-versioning backup adopted at schema_version=3 without application-data changes'
+    Write-Output 'maintenance acceptance: pre-versioning backup adopted at schema_version=4 without application-data changes'
 
     $oldNames = @('bot-20000101-000000.db', 'bot-20000102-000000.db')
     foreach ($name in $oldNames + @('bot-manual.db')) {

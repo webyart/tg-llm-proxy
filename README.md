@@ -7,12 +7,12 @@ Telegram-бот-прокси между пользователями и лока
 
 ## Возможности
 
-- 13 команд: `/start`, `/help`, `/ping`, `/status`, `/ask`, `/reset`, `/skip`, `/unskip`, `/history`, `/model`, `/stream`, `/stats`, `/whoami`.
-- `/start` и `/help` открывают inline-меню с 13 кнопками команд; callback проходит через тот же Dispatcher.
+- 14 команд: `/start`, `/help`, `/ping`, `/status`, `/ask`, `/reset`, `/skip`, `/unskip`, `/history`, `/model`, `/stream`, `/persona`, `/stats`, `/whoami`.
+- `/start` и `/help` открывают inline-меню с 14 кнопками команд; callback проходит через тот же Dispatcher.
 - История и независимый контекст каждого чата в SQLite/WAL.
 - Allowlist по Telegram user id, rate limiting, per-chat lock и ограничение параллельных запросов к модели.
 - Обработка timeout/5xx/пустых ответов, Telegram 429 и восстановление незавершённых вопросов после рестарта.
-- Версионированные миграции через `schema_migrations` (текущая схема — версия 3).
+- Версионированные миграции через `schema_migrations` (текущая схема — версия 4).
 - Backup/restore, ротация копий и age-based retention с dry-run по умолчанию.
 - Безопасное восстановление Docker named volume.
 - Docker multi-stage build, non-root runtime, healthcheck, build commit и ротация логов 10 MB × 5.
@@ -168,7 +168,7 @@ Reverse proxy или туннель должен перенаправлять п
 | `/start` | регистрация чата и список команд |
 | `/help` | справка |
 | `/ping` | `pong` и uptime |
-| `/status` | build, модель, стриминг, pending и suppression |
+| `/status` | build, модель, persona, стриминг, pending и suppression |
 | `/ask <текст>` | запрос к модели; обычный текст работает так же |
 | `/reset` | скрыть старый контекст без удаления истории |
 | `/skip` | запретить recovery текущего unanswered-вопроса |
@@ -178,6 +178,7 @@ Reverse proxy или туннель должен перенаправлять п
 | `/model select <id>` | выбрать модель текущего чата из `GET /models` |
 | `/model reset` | вернуть модель по умолчанию `STRATA_MODEL` |
 | `/stream [on\|off\|reset]` | стриминг текущего чата; без аргумента — состояние |
+| `/persona` | пресеты и текущая роль; `assistant`, `coder`, `writer`, `translator`, `custom <текст>`, `reset` |
 | `/stats` | сообщения, токены и ошибки текущего чата |
 | `/whoami` | `user_id`, `chat_id` и состояние allowlist |
 
@@ -203,7 +204,7 @@ Release CI — `.gitlab-ci.yml`: Linux host checks, race непосредств�
 .\scripts\db_inspect.ps1 -Integrity
 ```
 
-`schema_version=0` означает backup до версионирования; при следующем writable `store.Open` он автоматически становится 3 без изменения прикладных строк.
+`schema_version=0` означает backup до версионирования; при следующем writable `store.Open` он автоматически становится 4 без изменения прикладных строк.
 
 ### Backup и scratch restore
 
@@ -306,7 +307,7 @@ docker compose up -d
 - Startup recovery не имеет age cap и рассматривает только самый новый visible unanswered-вопрос чата.
 - Host-side `/healthz` на Docker Desktop может давать WARN при healthy in-container healthcheck.
 - macOS использует те же Unix-ветки, что и проверенный Linux; физический Mac acceptance не выполнялся.
-- Вложения, `/persona`, `/admin` и RAG относятся к следующим версиям.
+- Вложения, `/admin` и RAG относятся к следующим версиям.
 
 ## Документы
 

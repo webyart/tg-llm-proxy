@@ -33,7 +33,7 @@ func TestRegistryCoversTheTableOfSection6(t *testing.T) {
 		byName[cmd.Name] = cmd
 		i++
 	}
-	var want = []string{CommandStart, CommandHelp, CommandPing, CommandStatus, CommandModel, CommandAsk, CommandReset, CommandSkip, CommandUnskip, CommandHistory, CommandStats, CommandWhoAmI}
+	var want = []string{CommandStart, CommandHelp, CommandPing, CommandStatus, CommandModel, CommandStream, CommandAsk, CommandReset, CommandSkip, CommandUnskip, CommandHistory, CommandStats, CommandWhoAmI}
 	var j = 0
 	for j < len(want) {
 		if _, ok := byName[want[j]]; !ok {

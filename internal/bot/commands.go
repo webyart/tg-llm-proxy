@@ -23,6 +23,7 @@ const (
 	CommandPing    = "ping"
 	CommandStatus  = "status"
 	CommandModel   = "model"
+	CommandStream  = "stream"
 	CommandAsk     = "ask"
 	CommandReset   = "reset"
 	CommandSkip    = "skip"
@@ -61,6 +62,7 @@ func (d *Dispatcher) registry() []Command {
 		{Name: CommandPing, Description: "health бота: pong + uptime", Handler: d.ping},
 		{Name: CommandStatus, Description: "стриминг, модель, uptime и ожидание ответа", Handler: d.status},
 		{Name: CommandModel, Description: "модель, endpoint, /model check, select и reset", Handler: d.modelInfo},
+		{Name: CommandStream, Description: "стриминг для этого чата: on, off, reset", Handler: d.streamControl},
 		{Name: CommandAsk, Description: "вопрос модели", NeedsArgs: true, UsesModel: true, Handler: d.ask},
 		{Name: CommandReset, Description: "очистить контекст чата", Handler: d.reset},
 		{Name: CommandSkip, Description: "не восстанавливать текущий unanswered-вопрос при старте", Handler: d.skip},
@@ -121,10 +123,17 @@ func (d *Dispatcher) status(ctx context.Context, ev Event, arg string) error {
 	if err != nil {
 		return err
 	}
+	streamEnabled, streamOverride, streamErr := d.streamingEnabled(ctx, ev.ChatID)
+	if streamErr != nil {
+		return streamErr
+	}
 	var streaming = "выключен"
-	if d.deps.Cfg.Streaming {
+	if streamEnabled {
 		streaming = fmt.Sprintf("включён — правки каждые %d мс, idle %d с, total %d с",
 			d.deps.Cfg.StreamEditIntervalMS, d.deps.Cfg.StreamIdleSeconds, d.deps.Cfg.StreamTotalSeconds)
+	}
+	if streamOverride {
+		streaming += " (override этого чата)"
 	}
 	var pending = "нет"
 	if rowID > 0 && role == store.RoleUser {
@@ -323,7 +332,10 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 		return d.reply(ctx, ev.ChatID, msgAskNeedsText)
 	}
 
-	var streamer, sender, canStream = d.streamingPossible()
+	streamer, sender, canStream, streamErr := d.streamingPossible(ctx, ev.ChatID)
+	if streamErr != nil {
+		return streamErr
+	}
 	var replyBudget = d.deps.Cfg.ReplyDeadlineSeconds
 	if canStream {
 		// The stream has its own model budget. The ordinary reply budget remains around it for the context read,
@@ -342,8 +354,8 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 		return modelErr
 	}
 
-	// §15 (§16 change 34): with STREAMING_ENABLED=true and everything it needs in place (a client that can
-	// stream, a sender that can edit) the answer arrives as ONE message that is rewritten as the model writes
+	// §15 (§16 change 34): with effective per-chat streaming enabled and everything it needs in place
+	// (a client that can stream, a sender that can edit) the answer arrives as ONE message rewritten as the model writes
 	// it. The two paths return the same Response and the same invariant holds underneath: exactly one assistant
 	// row of §5, written after the final answer, never per token (§10 День 3).
 	var session *streamSession

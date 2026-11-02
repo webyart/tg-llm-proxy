@@ -27,6 +27,7 @@ import (
 
 	"bot/internal/config"
 	"bot/internal/model"
+	"bot/internal/store"
 )
 
 // The texts of the streaming placeholders, in the language of §6. The counter is in RUNES because that is the
@@ -107,23 +108,77 @@ type streamSession struct {
 // way §10 День 3 always did.
 const deliveryFailureBudget = 3
 
-// streamingPossible — the three things §15 needs, checked where they live: the row of §7, a client that can
-// stream, and a sender that can edit. A missing one is not an error, it is the plain path of §10 День 3, and
-// the operator can read which one is in use from the start line of §7 (PrintConfig) and from the log line of
-// the answered question.
-func (d *Dispatcher) streamingPossible() (model.Streamer, StreamSender, bool) {
-	if !d.deps.Cfg.Streaming {
-		return nil, nil, false
+func (d *Dispatcher) streamingEnabled(ctx context.Context, chatID int64) (bool, bool, error) {
+	enabled := d.deps.Cfg.Streaming
+	if d.deps.DB == nil {
+		return enabled, false, nil
+	}
+	override, found, err := store.ChatStreaming(ctx, d.deps.DB, chatID)
+	if err != nil {
+		return false, false, err
+	}
+	if found {
+		enabled = override
+	}
+	return enabled, found, nil
+}
+
+// streamingPossible — the effective per-chat setting, a client that can stream, and a sender that can edit.
+// A missing capability is the plain path of §10 День 3; a store failure is returned instead of silently changing mode.
+func (d *Dispatcher) streamingPossible(ctx context.Context, chatID int64) (model.Streamer, StreamSender, bool, error) {
+	enabled, _, err := d.streamingEnabled(ctx, chatID)
+	if err != nil || !enabled {
+		return nil, nil, false, err
 	}
 	var streamer, canStream = d.deps.Model.(model.Streamer)
 	if !canStream {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 	var sender, canEdit = d.deps.Replier.(StreamSender)
 	if !canEdit {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
-	return streamer, sender, true
+	return streamer, sender, true, nil
+}
+
+func (d *Dispatcher) streamControl(ctx context.Context, ev Event, arg string) error {
+	action := strings.ToLower(strings.TrimSpace(arg))
+	switch action {
+	case "on", "off":
+		enabled := action == "on"
+		if err := store.EnsureChat(ctx, d.deps.DB, ev.ChatID, ev.UserID, ev.ChatTitle); err != nil {
+			return err
+		}
+		if err := store.SetChatStreaming(ctx, d.deps.DB, ev.ChatID, enabled); err != nil {
+			return err
+		}
+		state := "выключен"
+		if enabled {
+			state = "включён"
+		}
+		return d.reply(ctx, ev.ChatID, "Стриминг для этого чата "+state+". Настройка сохранена и переживёт рестарт. /stream reset — вернуть общий STREAMING_ENABLED.")
+	case "reset":
+		if err := store.ClearChatStreaming(ctx, d.deps.DB, ev.ChatID); err != nil {
+			return err
+		}
+	case "":
+	default:
+		return d.reply(ctx, ev.ChatID, "Использование: /stream — состояние, /stream on, /stream off, /stream reset — общий STREAMING_ENABLED.")
+	}
+
+	enabled, override, err := d.streamingEnabled(ctx, ev.ChatID)
+	if err != nil {
+		return err
+	}
+	state := "выключен"
+	if enabled {
+		state = "включён"
+	}
+	source := "общий STREAMING_ENABLED"
+	if override {
+		source = "настройка этого чата"
+	}
+	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Стриминг для этого чата: %s. Источник: %s. /stream on, /stream off, /stream reset.", state, source))
 }
 
 func (d *Dispatcher) newStreamSession(ctx context.Context, chatID int64, sender StreamSender) *streamSession {

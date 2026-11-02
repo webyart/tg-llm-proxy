@@ -7,14 +7,14 @@ Telegram-бот-прокси между пользователями и лока
 
 ## Возможности
 
-- 12 команд: `/start`, `/help`, `/ping`, `/status`, `/ask`, `/reset`, `/skip`, `/unskip`, `/history`, `/model`, `/stats`, `/whoami`.
-- `/start` и `/help` открывают inline-меню с 12 кнопками команд; callback проходит через тот же Dispatcher.
+- 13 команд: `/start`, `/help`, `/ping`, `/status`, `/ask`, `/reset`, `/skip`, `/unskip`, `/history`, `/model`, `/stream`, `/stats`, `/whoami`.
+- `/start` и `/help` открывают inline-меню с 13 кнопками команд; callback проходит через тот же Dispatcher.
 - История и независимый контекст каждого чата в SQLite/WAL.
 - Allowlist по Telegram user id, rate limiting, per-chat lock и ограничение параллельных запросов к модели.
 - Обработка timeout/5xx/пустых ответов, Telegram 429 и восстановление незавершённых вопросов после рестарта.
-- Версионированные миграции через `schema_migrations` (текущая схема — версия 2).
+- Версионированные миграции через `schema_migrations` (текущая схема — версия 3).
 - Backup/restore, ротация копий и age-based retention с dry-run по умолчанию.
-- Версионированные миграции и безопасное восстановление Docker named volume.
+- Безопасное восстановление Docker named volume.
 - Docker multi-stage build, non-root runtime, healthcheck, build commit и ротация логов 10 MB × 5.
 - Unit, integration и race-тесты, fixture maintenance acceptance и `govulncheck`.
 
@@ -140,7 +140,7 @@ STREAM_IDLE_TIMEOUT_SECONDS=30
 STREAM_TOTAL_DEADLINE_SECONDS=300
 ```
 
-Стриминг переписывает одно сообщение по мере генерации. По умолчанию выключен. `TG_REPLY_DEADLINE_SECONDS` не обрезает общий stream deadline.
+Стриминг переписывает одно сообщение по мере генерации. По умолчанию выключен. `/stream on` включает его только для текущего чата, `/stream off` выключает, `/stream reset` возвращает общий `STREAMING_ENABLED`; override хранится в SQLite и переживает рестарт. `/status` показывает эффективное значение. `TG_REPLY_DEADLINE_SECONDS` не обрезает общий stream deadline.
 
 ### Webhook (experimental)
 
@@ -173,6 +173,7 @@ Reverse proxy или туннель должен перенаправлять п
 | `/model [check]` | модель, endpoint и проверка доступности |
 | `/model select <id>` | выбрать модель текущего чата из `GET /models` |
 | `/model reset` | вернуть модель по умолчанию `STRATA_MODEL` |
+| `/stream [on\|off\|reset]` | стриминг текущего чата; без аргумента — состояние |
 | `/stats` | сообщения, токены и ошибки текущего чата |
 | `/whoami` | `user_id`, `chat_id` и состояние allowlist |
 
@@ -198,7 +199,7 @@ Release CI — `.gitlab-ci.yml`: Linux host checks, race непосредств�
 .\scripts\db_inspect.ps1 -Integrity
 ```
 
-`schema_version=0` означает backup до версионирования; при следующем writable `store.Open` он автоматически становится 2 без изменения прикладных строк.
+`schema_version=0` означает backup до версионирования; при следующем writable `store.Open` он автоматически становится 3 без изменения прикладных строк.
 
 ### Backup и scratch restore
 

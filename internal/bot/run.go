@@ -37,9 +37,9 @@ const (
 	// gives up (wait_updates.go), which is why the http.Client timeout must be larger (§12 reliability).
 	DefaultPollTimeout = 30 * time.Second
 	// InitTimeout — getMe at New time (§10 День 4: New calls getMe with WithCheckInitTimeout and
-	// returns an error without an answer). 5 s is the library default; §7 has no knob for it, so it is
-	// a constant here and not a setting.
-	InitTimeout = 5 * time.Second
+	// returns an error without an answer). It covers the same slow route as TLSHandshakeTimeout; the
+	// library default of 5 s can otherwise restart the container before polling has a chance to start.
+	InitTimeout = 30 * time.Second
 	// TLSHandshakeTimeout tolerates a slow or intermittently filtered Telegram route without changing
 	// the long-poll budget. The Go default is 10 s; transient route failures must not force a reconnect loop.
 	TLSHandshakeTimeout = 30 * time.Second

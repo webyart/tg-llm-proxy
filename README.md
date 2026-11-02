@@ -120,6 +120,17 @@ docker compose logs -f bot
 При `PARSE_MODE=MarkdownV2` сохраняются заголовки, жирный и курсивный текст, `code`, code fences и
 http/https-ссылки. Обычные специальные символы экранируются, а небезопасные схемы ссылок не пропускаются.
 
+### Сеть Telegram
+
+TLS handshake timeout Telegram transport — 30 секунд вместо стандартных 10; long-poll бюджет и повторы библиотеки сохраняются. Если прямой маршрут нестабилен, в `.env` можно задать стандартные proxy-переменные процесса:
+
+```env
+HTTPS_PROXY=http://host.docker.internal:10808
+NO_PROXY=127.0.0.1,localhost,host.docker.internal
+```
+
+`host.docker.internal` заменяет loopback proxy хоста при запуске в Docker. `NO_PROXY` обязателен для локальной STRATA, чтобы её трафик и API key не отправлялись через proxy. Постоянные timeout после 30 секунд означают неисправность сети/VPN, а не ошибку форматирования бота.
+
 ### Стриминг
 
 ```env

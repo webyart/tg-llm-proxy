@@ -40,6 +40,9 @@ const (
 	// returns an error without an answer). 5 s is the library default; §7 has no knob for it, so it is
 	// a constant here and not a setting.
 	InitTimeout = 5 * time.Second
+	// TLSHandshakeTimeout tolerates a slow or intermittently filtered Telegram route without changing
+	// the long-poll budget. The Go default is 10 s; transient route failures must not force a reconnect loop.
+	TLSHandshakeTimeout = 30 * time.Second
 	// FloodSleepMax — the cap of the 429 sleep. The live streamed walk measured retry_after=120; a 30-second
 	// cap retried while the chat was still throttled and lost the tail. The per-chat lock stays held and the
 	// reply context still wins if its budget is shorter than the requested pause.
@@ -66,6 +69,12 @@ type Options struct {
 	HTTPClient *http.Client
 	// WebhookSecretToken enables the X-Telegram-Bot-Api-Secret-Token check on the webhook handler.
 	WebhookSecretToken string
+}
+
+func defaultTelegramHTTPClient(poll time.Duration) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSHandshakeTimeout = TLSHandshakeTimeout
+	return &http.Client{Transport: transport, Timeout: poll + 5*time.Second}
 }
 
 // NewTelegram — the library bot wired to d, plus the handlers of §10 День 4:
@@ -99,7 +108,7 @@ func (d *Dispatcher) NewTelegram(opts Options) (*tgbot.Bot, error) {
 	}
 	var client = opts.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: poll + 5*time.Second}
+		client = defaultTelegramHTTPClient(poll)
 	}
 
 	var setting = []tgbot.Option{

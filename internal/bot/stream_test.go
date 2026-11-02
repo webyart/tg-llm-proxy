@@ -169,9 +169,8 @@ func (r *streamReplier) EditStreamMessage(ctx context.Context, chatID int64, mes
 	if r.editErr != nil {
 		return r.editErr
 	}
-	if messageID != r.messageID || r.messageID == 0 {
-		// that lost its own message id, and every rewrite of the chat would land nowhere.
-		return fmt.Errorf("the edit went to message %d while the placeholder of this session is %d ", messageID, r.messageID)
+	if messageID <= 0 || messageID > r.messageID {
+		return fmt.Errorf("the edit went to unknown message %d, latest posted id is %d", messageID, r.messageID)
 	}
 	r.edits = append(r.edits, text)
 	r.parsed = append(r.parsed, parse)
@@ -463,19 +462,8 @@ func TestLongStreamedAnswerArrivesComplete(t *testing.T) {
 	if r.editCount() == 0 {
 		t.Fatalf("the placeholder must become the answer, no rewrite happened")
 	}
-	var last = r.lastEdit()
-	var tail = r.texts()
-	if len(tail) < 1 {
-		t.Fatalf("the part of the answer past MAX_MESSAGE_CHUNK must arrive as new messages of UX, got %d", len(tail))
-	}
-	var j = 0
-	for j < len(tail) {
-		if Runes(tail[j]) > int(cfg.MaxMessageChunk) {
-			t.Fatalf("a tail message of UX passes the limit: %d symbols", Runes(tail[j]))
-		}
-		j++
-	}
-	var joined = last + "\n" + strings.Join(tail, "\n")
+	everything = append(everything, r.texts()...)
+	var joined = strings.Join(everything, "\n")
 	if !strings.Contains(joined, "Начало") || !strings.Contains(joined, "Конец.") {
 		t.Fatalf("a streamed answer longer than one message must still reach the chat complete, got %q", joined)
 	}
@@ -625,5 +613,28 @@ func TestStreamViewsFitOneMessage(t *testing.T) {
 			}
 		})
 		c++
+	}
+}
+
+func TestStreamRotatesToNextMessageBeforeCompletion(t *testing.T) {
+	cfg := streamConfig(t, map[string]string{"MAX_MESSAGE_CHUNK": "64", "PARSE_MODE": "MarkdownV2"})
+	r := &streamReplier{}
+	d := newTestDispatcher(t, cfg, nil, r, testStore(t))
+	s := d.newStreamSession(context.Background(), 106, r)
+	s.answer.WriteString(strings.Repeat("слово ", 30))
+
+	s.refresh()
+	s.refresh()
+	if r.postCount() < 2 {
+		t.Fatalf("overflow created %d messages before completion, want at least 2", r.postCount())
+	}
+	if len(r.texts()) != 0 {
+		t.Fatalf("tail was bulk-sent through Replier.Send: %q", r.texts())
+	}
+	if err := s.deliver(context.Background(), d, s.answer.String()); err != nil {
+		t.Fatalf("finalizing rotated messages: %v", err)
+	}
+	if r.editCount() < 2 {
+		t.Fatalf("finalization edited only %d messages, want all existing parts", r.editCount())
 	}
 }

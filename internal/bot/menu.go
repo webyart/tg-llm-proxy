@@ -50,16 +50,34 @@ func (d *Dispatcher) sendMenu(ctx context.Context, chatID int64, text string) er
 	return d.reply(ctx, chatID, text)
 }
 
+func (d *Dispatcher) callbackText(data string) (string, bool) {
+	if strings.HasPrefix(data, "cmd:") {
+		name := strings.TrimPrefix(data, "cmd:")
+		if _, ok := d.index[name]; ok {
+			return "/" + name, true
+		}
+		return "", false
+	}
+	if strings.HasPrefix(data, "persona:") {
+		action := strings.TrimPrefix(data, "persona:")
+		if action == "reset" || action == "custom" {
+			return "/persona " + action, true
+		}
+		for _, preset := range personaPresets {
+			if action == preset.name {
+				return "/persona " + action, true
+			}
+		}
+	}
+	return "", false
+}
+
 func (d *Dispatcher) callbackEventOf(upd *models.Update) (Event, bool) {
 	if upd == nil || upd.CallbackQuery == nil || upd.CallbackQuery.Message.Message == nil {
 		return Event{}, false
 	}
-	data := strings.TrimSpace(upd.CallbackQuery.Data)
-	if !strings.HasPrefix(data, "cmd:") {
-		return Event{}, false
-	}
-	name := strings.TrimPrefix(data, "cmd:")
-	if _, ok := d.index[name]; !ok {
+	text, ok := d.callbackText(strings.TrimSpace(upd.CallbackQuery.Data))
+	if !ok {
 		return Event{}, false
 	}
 	callback := upd.CallbackQuery
@@ -70,7 +88,7 @@ func (d *Dispatcher) callbackEventOf(upd *models.Update) (Event, bool) {
 		ChatID:            message.Chat.ID,
 		ChatType:          string(message.Chat.Type),
 		ChatTitle:         chatTitle(message.Chat),
-		Text:              "/" + name,
+		Text:              text,
 	}
 	if callback.From.ID != 0 {
 		ev.UserID = callback.From.ID

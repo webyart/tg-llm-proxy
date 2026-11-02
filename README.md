@@ -178,7 +178,7 @@ Reverse proxy или туннель должен перенаправлять п
 | `/model select <id>` | выбрать модель текущего чата из `GET /models` |
 | `/model reset` | вернуть модель по умолчанию `STRATA_MODEL` |
 | `/stream [on\|off\|reset]` | стриминг текущего чата; без аргумента — состояние |
-| `/persona` | пресеты и текущая роль; `assistant`, `coder`, `writer`, `translator`, `custom <текст>`, `reset` |
+| `/persona` | inline-меню и текущая роль; `assistant`, `coder`, `writer`, `translator`, `custom <текст>`, `reset` |
 | `/stats` | сообщения, токены и ошибки текущего чата |
 | `/whoami` | `user_id`, `chat_id` и состояние allowlist |
 

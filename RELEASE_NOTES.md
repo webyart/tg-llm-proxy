@@ -1,3 +1,11 @@
+# tg-llm-proxy v1.4.1
+
+## Patch release
+
+- `/persona` теперь открывает inline-меню: `assistant`, `coder`, `writer`, `translator`, `custom` и `reset`.
+- Persona callbacks принимают только зарегистрированные действия, проходят существующий allowlist и Dispatcher; `custom` показывает синтаксис ввода роли.
+- Добавлены unit и end-to-end integration проверки клавиатуры, callback и сохранения выбора в SQLite.
+
 # tg-llm-proxy v1.4.0
 
 ## Minor release

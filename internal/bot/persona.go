@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"bot/internal/store"
+
+	"github.com/go-telegram/bot/models"
 )
 
 type personaPreset struct {
@@ -40,6 +42,38 @@ func (d *Dispatcher) effectivePersona(ctx context.Context, chatID int64) (string
 		}
 	}
 	return prompt, name, true, nil
+}
+
+func personaMarkup() models.InlineKeyboardMarkup {
+	labels := []struct {
+		text string
+		data string
+	}{
+		{"Assistant", "persona:assistant"},
+		{"Coder", "persona:coder"},
+		{"Writer", "persona:writer"},
+		{"Translator", "persona:translator"},
+		{"Своя роль", "persona:custom"},
+		{"Сбросить", "persona:reset"},
+	}
+	rows := make([][]models.InlineKeyboardButton, 0, (len(labels)+1)/2)
+	for index := 0; index < len(labels); index += 2 {
+		row := []models.InlineKeyboardButton{{Text: labels[index].text, CallbackData: labels[index].data}}
+		if index+1 < len(labels) {
+			row = append(row, models.InlineKeyboardButton{Text: labels[index+1].text, CallbackData: labels[index+1].data})
+		}
+		rows = append(rows, row)
+	}
+	return models.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+func (d *Dispatcher) sendPersonaMenu(ctx context.Context, chatID int64, text string) error {
+	if sender, ok := d.deps.Replier.(interface {
+		SendMenu(context.Context, int64, string, models.InlineKeyboardMarkup) error
+	}); ok {
+		return sender.SendMenu(ctx, chatID, Escape(text, d.deps.Cfg.ParseMode), personaMarkup())
+	}
+	return d.reply(ctx, chatID, text)
 }
 
 func (d *Dispatcher) personaControl(ctx context.Context, ev Event, arg string) error {
@@ -92,5 +126,5 @@ func (d *Dispatcher) personaControl(ctx context.Context, ev Event, arg string) e
 		lines = append(lines, fmt.Sprintf("/persona %s — %s", preset.name, preset.description))
 	}
 	lines = append(lines, "/persona custom <текст> — своя роль", "/persona reset — вернуть глобальный SYSTEM_PROMPT")
-	return d.reply(ctx, ev.ChatID, strings.Join(lines, "\n"))
+	return d.sendPersonaMenu(ctx, ev.ChatID, strings.Join(lines, "\n"))
 }

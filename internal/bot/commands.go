@@ -21,6 +21,7 @@ const (
 	CommandStatus  = "status"
 	CommandModel   = "model"
 	CommandStream  = "stream"
+	CommandPersona = "persona"
 	CommandAsk     = "ask"
 	CommandReset   = "reset"
 	CommandSkip    = "skip"
@@ -55,6 +56,7 @@ func (d *Dispatcher) registry() []Command {
 		{Name: CommandStatus, Description: "стриминг, модель, uptime и ожидание ответа", Handler: d.status},
 		{Name: CommandModel, Description: "модель, endpoint, /model check, select и reset", Handler: d.modelInfo},
 		{Name: CommandStream, Description: "стриминг для этого чата: on, off, reset", Handler: d.streamControl},
+		{Name: CommandPersona, Description: "роль модели для этого чата: пресеты, custom, reset", Handler: d.personaControl},
 		{Name: CommandAsk, Description: "вопрос модели", NeedsArgs: true, UsesModel: true, Handler: d.ask},
 		{Name: CommandReset, Description: "очистить контекст чата", Handler: d.reset},
 		{Name: CommandSkip, Description: "не восстанавливать текущий unanswered-вопрос при старте", Handler: d.skip},
@@ -140,11 +142,19 @@ func (d *Dispatcher) status(ctx context.Context, ev Event, arg string) error {
 	if modelErr != nil {
 		return modelErr
 	}
+	_, persona, personaOverride, personaErr := d.effectivePersona(ctx, ev.ChatID)
+	if personaErr != nil {
+		return personaErr
+	}
+	if personaOverride {
+		persona += " (override этого чата)"
+	}
 	var lines = []string{
-		"Состояние бота :",
+		"Состояние бота:",
 		"Build: " + commit,
 		"Uptime: " + time.Since(d.created).Round(time.Second).String(),
 		"Модель: " + selected,
+		"Persona: " + persona,
 		"Стриминг: " + streaming,
 		"Последний вопрос чата ждёт ответа: " + pending,
 	}

@@ -208,7 +208,7 @@ Backup использует `VACUUM INTO` и не останавливает wri
 .\scripts\db_maintenance.ps1 -Keep 7 -Apply
 ```
 
-Без `-Apply` ротация только печатает план. Удаляются только автоматические имена `bot-YYYYMMDD-HHMMSS.db`, минимум одна копия сохраняется. Task Scheduler не настраивается автоматически.
+Без `-Apply` ротация только печатает план. Удаляются только автоматические имена `bot-YYYYMMDD-HHMMSS.db`, минимум одна копия сохраняется.
 
 ### Age-based retention
 
@@ -221,15 +221,18 @@ Backup использует `VACUUM INTO` и не останавливает wri
 
 По умолчанию выбираются только события старше 90 дней; удаление сообщений отключено. Каждый `-Apply` сначала создаёт и проверяет новый backup, а после удаления повторяет `integrity_check`.
 
-### Backup production Docker volume
+### Backup production Docker volume и расписание
 
 ```powershell
-docker compose stop bot
-docker compose cp bot:/data/bot.db .\zzscratch\volume-bot.db
-docker compose up -d
-.\scripts\db_backup.ps1 -Source .\zzscratch\volume-bot.db -Dest .\zzscratch\volume-backup.db
-.\scripts\test-volume-restore.ps1 -Source .\zzscratch\volume-backup.db
+.\scripts\db_volume_maintenance.ps1 -Keep 7
+.\scripts\install_maintenance_schedule.ps1           # preview
+.\scripts\install_maintenance_schedule.ps1 -Register # ежедневно в 04:00
+.\scripts\test-volume-restore.ps1 -Source .\data\backups\bot-YYYYMMDD-HHMMSS.db
 ```
+
+Maintenance чисто останавливает бота, копирует `/data/bot.db`, перезапускает контейнер и проверяет integrity/schema новой копии в `data/backups`. По умолчанию старые backup и история не удаляются; `-Apply` или `-ApplyRetention` включают только ротацию файлов.
+
+Windows Task Scheduler запускает задачу от текущего пользователя в интерактивном сеансе; стандартные ограничения питания задачи также действуют. Существующая задача не перезаписывается. В действии сохраняются абсолютные пути к репозиторию и текущему `pwsh.exe` — после их перемещения или обновления пути задачу нужно пересоздать. На macOS/Linux зарегистрируйте `db_volume_maintenance.ps1 -Keep 7` через cron или systemd.
 
 Чистая остановка checkpointит WAL. Репетиция использует отдельный compose-проект и не создаёт второй Telegram poller.
 

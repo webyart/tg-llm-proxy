@@ -119,11 +119,72 @@ func trailingEscapes(runes []rune) int {
 // only mode whose escaping marks change the length of a piece mid-word, so it is the mode the escape-aware cut
 // is written for; HTML and plain cut on whitespace alone.
 func (d *Dispatcher) chunksOf(text string) []string {
-	var escaped = Escape(text, d.deps.Cfg.ParseMode)
 	if d.deps.Cfg.ParseMode != ParseMarkdownV2 {
-		return Chunk(escaped, int(d.deps.Cfg.MaxMessageChunk))
+		return Chunk(Escape(text, d.deps.Cfg.ParseMode), int(d.deps.Cfg.MaxMessageChunk))
 	}
-	return ChunkEscaped(escaped, int(d.deps.Cfg.MaxMessageChunk))
+	return markdownV2Chunks(text, int(d.deps.Cfg.MaxMessageChunk))
+}
+
+func markdownV2Chunks(text string, maxRunes int) []string {
+	blocks := codeFencePattern.FindAllStringIndex(text, -1)
+	if len(blocks) == 0 {
+		return markdownV2TextChunks(text, maxRunes)
+	}
+	out := []string{}
+	cursor := 0
+	for _, block := range blocks {
+		out = append(out, markdownV2TextChunks(text[cursor:block[0]], maxRunes)...)
+		out = append(out, markdownV2CodeChunks(text[block[0]:block[1]], maxRunes)...)
+		cursor = block[1]
+	}
+	out = append(out, markdownV2TextChunks(text[cursor:], maxRunes)...)
+	return out
+}
+
+func markdownV2TextChunks(text string, maxRunes int) []string {
+	if text == "" {
+		return nil
+	}
+	formatted := formatMarkdownV2(text)
+	if Runes(formatted) <= maxRunes {
+		return []string{formatted}
+	}
+	budget := (maxRunes - 16) / 2
+	if budget < 1 {
+		budget = 1
+	}
+	parts := Chunk(text, budget)
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		out = append(out, formatMarkdownV2(part))
+	}
+	return out
+}
+
+func markdownV2CodeChunks(block string, maxRunes int) []string {
+	formatted := formatMarkdownV2(block)
+	if Runes(formatted) <= maxRunes {
+		return []string{formatted}
+	}
+	newline := strings.Index(block, "\n")
+	match := codeFencePattern.FindStringSubmatch(block)
+	if newline < 0 || match == nil {
+		return markdownV2TextChunks(block, maxRunes)
+	}
+	opening := block[:newline]
+	budget := (maxRunes - Runes(opening) - 16) / 2
+	if budget < 1 {
+		budget = 1
+	}
+	parts := Chunk(match[1], budget)
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if !strings.HasSuffix(part, "\n") {
+			part += "\n"
+		}
+		out = append(out, formatMarkdownV2(opening+"\n"+part+"```"))
+	}
+	return out
 }
 
 // already delivered must not be delivered twice).

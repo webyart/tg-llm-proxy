@@ -19,6 +19,9 @@ services:
         # §14.1: the Telegram token is still an open question, so `docker compose up` must not fail
         # with «no .env file» while the placeholder of §10 День 5 is in use.
         required: false
+      # Optional non-secret network overrides (HTTPS_PROXY/NO_PROXY), persistent across scheduled restarts.
+      - path: data/telegram-proxy.env
+        required: false
     environment:
       DB_PATH: /data/bot.db
       # §7/§8.1: inside the container 127.0.0.1 is the container's OWN loopback, so the .env value that is

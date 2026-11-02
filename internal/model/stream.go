@@ -33,7 +33,7 @@ import (
 // of §7 puts on the ENV rows behind them are narrower, and config_test owns them.
 const (
 	DefaultStreamIdle     = 30 * time.Second
-	DefaultStreamTotal    = 300 * time.Second
+	DefaultStreamTotal    = 900 * time.Second
 	DefaultStreamProgress = time.Second
 	// StreamLineLimit — one SSE line. An OpenAI-compatible chunk is a few hundred bytes; a megabyte is the
 	// room of a provider that puts a whole answer into one line, and more than that is not an answer.

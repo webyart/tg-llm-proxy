@@ -20,9 +20,12 @@ var InitSQL string
 //go:embed migrations/002_chat_settings.sql
 var ChatSettingsSQL string
 
+//go:embed migrations/003_chat_streaming.sql
+var ChatStreamingSQL string
+
 // MigrationSQL is the ordered, append-only migration history. The slice index plus one is the permanent schema
 // version recorded in schema_migrations; existing entries must never be edited after deployment.
-var MigrationSQL = []string{InitSQL, ChatSettingsSQL}
+var MigrationSQL = []string{InitSQL, ChatSettingsSQL, ChatStreamingSQL}
 
 // SchemaVersion returns the newest applied migration, or zero for a pre-versioning backup.
 func SchemaVersion(ctx context.Context, db *sql.DB) (int, error) {

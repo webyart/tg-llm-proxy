@@ -1,4 +1,13 @@
-# Post-v1.2.1 maintenance (unreleased)
+# tg-llm-proxy v1.3.0
+
+## Minor release
+
+- Добавлены `/stream`, `/stream on`, `/stream off` и `/stream reset`: стриминг можно включить только для тестового чата, сохранив общий `STREAMING_ENABLED=false` для остальных.
+- `/status` показывает эффективную настройку и наличие override; inline-меню содержит 13 команд. Выбор стриминга независим от `/model reset` и сохраняется после рестарта.
+- Добавлена append-only миграция `schema_version=3` с таблицей `chat_streaming`; существующие сообщения, настройки модели и offset не меняются.
+- Unit, integration и race-тесты покрывают изоляцию чатов, reset, оба пути ответа и публикацию команды.
+
+## Maintenance и сетевые исправления
 
 - Добавлен `db_volume_maintenance.ps1`: clean-stop snapshot production named volume, перезапуск бота и проверка integrity/schema backup.
 - Добавлен preview/registration Windows Task Scheduler: ежедневно в 04:00, без автоматического удаления старых копий. На macOS/Linux используется cron/systemd.

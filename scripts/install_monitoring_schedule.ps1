@@ -1,7 +1,8 @@
 #Requires -Version 7
 <#
-install_monitoring_schedule.ps1 — preview or register the Windows container-health monitor.
+install_monitoring_schedule.ps1 — preview or register the hidden Windows container-health monitor.
 
+conhost.exe --headless prevents a console window; pwsh also receives -WindowStyle Hidden.
 Default: inspect the bot every five minutes and alert through notify-telegram.ps1 on failure/recovery.
 Existing tasks are never overwritten (/F is not used). On macOS/Linux use cron or systemd instead.
 
@@ -34,8 +35,13 @@ if (-not (Get-Command -Name schtasks -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
+$conhost = Join-Path $env:SystemRoot 'System32\conhost.exe'
+if (-not (Test-Path -LiteralPath $conhost -PathType Leaf)) {
+    Write-Output "install_monitoring_schedule: headless console host is missing: $conhost"
+    exit 1
+}
 $pwsh = (Get-Process -Id $PID).Path
-$action = "`"$pwsh`" -NoLogo -NoProfile -File `"$monitor`""
+$action = "`"$conhost`" --headless `"$pwsh`" -NoLogo -NoProfile -WindowStyle Hidden -File `"$monitor`""
 $createArgs = @('/Create', '/TN', $TaskName, '/SC', 'MINUTE', '/MO', $IntervalMinutes, '/TR', $action)
 Write-Output "Task action: $action"
 Write-Output "Registration command: schtasks $($createArgs -join ' ')"

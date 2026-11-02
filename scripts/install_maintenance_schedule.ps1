@@ -1,7 +1,8 @@
 #Requires -Version 7
 <#
-install_maintenance_schedule.ps1 — preview or register the daily Windows Task Scheduler entry for volume maintenance.
+install_maintenance_schedule.ps1 — preview or register the hidden daily Windows Task Scheduler entry for volume maintenance.
 
+conhost.exe --headless prevents a console window; pwsh also receives -WindowStyle Hidden.
 Default action: db_volume_maintenance.ps1 -Keep 7, with retention in dry-run mode, so no old backup is deleted.
 -ExternalDirectory adds a verified external copy. -ApplyRetention adds -Apply explicitly. Existing tasks are never
 overwritten (/F is not used). Failure alerts use the existing Telegram token and allowlist.
@@ -39,8 +40,13 @@ if (-not (Get-Command -Name schtasks -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
+$conhost = Join-Path $env:SystemRoot 'System32\conhost.exe'
+if (-not (Test-Path -LiteralPath $conhost -PathType Leaf)) {
+    Write-Output "install_maintenance_schedule: headless console host is missing: $conhost"
+    exit 1
+}
 $pwsh = (Get-Process -Id $PID).Path
-$action = "`"$pwsh`" -NoLogo -NoProfile -File `"$maintenance`" -Keep 7"
+$action = "`"$conhost`" --headless `"$pwsh`" -NoLogo -NoProfile -WindowStyle Hidden -File `"$maintenance`" -Keep 7"
 if ($ExternalDirectory) {
     if (-not [System.IO.Path]::IsPathRooted($ExternalDirectory)) { $ExternalDirectory = Join-Path $repoRoot $ExternalDirectory }
     $ExternalDirectory = [System.IO.Path]::GetFullPath($ExternalDirectory)

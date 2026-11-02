@@ -28,3 +28,16 @@ func TestMarkdownChunksKeepCodeFencesBalanced(t *testing.T) {
 		}
 	}
 }
+
+func TestMarkdownChunksPackShortSegments(t *testing.T) {
+	answer := "## Одно\n\nТекст.\n\n```go\nfmt.Println(1)\n```\n\n## Два\n\nЕщё текст.\n\n```go\nfmt.Println(2)\n```"
+	chunks := markdownV2Chunks(answer, 512)
+	if len(chunks) > 2 {
+		t.Fatalf("short markdown segments produced %d messages, want at most 2", len(chunks))
+	}
+	for _, chunk := range chunks {
+		if strings.Count(chunk, "```")%2 != 0 {
+			t.Fatalf("packed chunk has an unbalanced fence: %q", chunk)
+		}
+	}
+}

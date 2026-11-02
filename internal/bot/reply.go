@@ -138,7 +138,24 @@ func markdownV2Chunks(text string, maxRunes int) []string {
 		cursor = block[1]
 	}
 	out = append(out, markdownV2TextChunks(text[cursor:], maxRunes)...)
-	return out
+	return packMarkdownV2Chunks(out, maxRunes)
+}
+
+func packMarkdownV2Chunks(parts []string, maxRunes int) []string {
+	packed := []string{}
+	for _, part := range parts {
+		if len(packed) == 0 {
+			packed = append(packed, part)
+			continue
+		}
+		last := len(packed) - 1
+		if Runes(packed[last])+1+Runes(part) <= maxRunes {
+			packed[last] += "\n" + part
+		} else {
+			packed = append(packed, part)
+		}
+	}
+	return packed
 }
 
 func markdownV2TextChunks(text string, maxRunes int) []string {

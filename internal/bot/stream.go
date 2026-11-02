@@ -58,16 +58,18 @@ type StreamSender interface {
 // streamSession — one streamed answer of one chat. The callbacks of the stream run on the single goroutine
 // that reads the SSE body (model.StreamHandler says so), so this struct needs no lock for its own counters;
 type streamSession struct {
-	ctx      context.Context
-	chatID   int64
-	sender   StreamSender
-	interval time.Duration
-	maxRunes int
-	start    time.Time
+	ctx        context.Context
+	chatID     int64
+	sender     StreamSender
+	dispatcher *Dispatcher
+	interval   time.Duration
+	maxRunes   int
+	start      time.Time
 
-	messageID int64
-	posted    bool
-	answer    strings.Builder
+	messageID  int64
+	messageIDs []int64
+	posted     bool
+	answer     strings.Builder
 
 	edits        int
 	skipped      int // rewrites the cadence of refused
@@ -160,12 +162,13 @@ func (d *Dispatcher) newStreamSession(ctx context.Context, chatID int64, sender 
 		interval = time.Duration(config.DefaultStreamEditIntervalMS) * time.Millisecond
 	}
 	return &streamSession{
-		ctx:      ctx,
-		chatID:   chatID,
-		sender:   sender,
-		interval: interval,
-		maxRunes: int(d.deps.Cfg.MaxMessageChunk),
-		start:    time.Now(),
+		ctx:        ctx,
+		chatID:     chatID,
+		sender:     sender,
+		dispatcher: d,
+		interval:   interval,
+		maxRunes:   int(d.deps.Cfg.MaxMessageChunk),
+		start:      time.Now(),
 	}
 }
 
@@ -190,6 +193,7 @@ func (s *streamSession) progress(info model.StreamInfo) {
 		s.post()
 		return
 	}
+	s.rotate()
 	if !s.due() {
 		s.skipped++
 		return
@@ -212,11 +216,20 @@ func (s *streamSession) refresh() {
 		s.post()
 		return
 	}
+	s.rotate()
 	if !s.due() {
 		s.skipped++
 		return
 	}
 	s.edit(s.ctx, s.partialView(), false)
+}
+
+func (s *streamSession) rotate() {
+	chunks := s.dispatcher.chunksOf(s.answer.String())
+	for len(s.messageIDs) < len(chunks) && !s.muted {
+		index := len(s.messageIDs)
+		s.postText(plainForParseFallback(chunks[index], s.dispatcher.deps.Cfg.ParseMode))
+	}
 }
 
 // partialView — what the chat may see of an unfinished answer: its head inside the budget of one message, the
@@ -244,8 +257,16 @@ func (s *streamSession) partialView() string {
 // head — the part of the answer the placeholder can carry once `reserve` symbols of the message are given to the
 // the message, and sending more than the limit is the 400 Telegram answers «too long» rather than a reason to
 // grow the message.
+func (s *streamSession) currentAnswer() string {
+	chunks := s.dispatcher.chunksOf(s.answer.String())
+	if len(chunks) == 0 {
+		return s.answer.String()
+	}
+	return plainForParseFallback(chunks[len(chunks)-1], s.dispatcher.deps.Cfg.ParseMode)
+}
+
 func (s *streamSession) head(reserve int) string {
-	var text = s.answer.String()
+	var text = s.currentAnswer()
 	var runes = []rune(text)
 	var room = s.maxRunes - reserve
 	if room < 0 {
@@ -264,17 +285,22 @@ func (s *streamSession) due() bool {
 
 // session goes muted: the answer keeps accumulating and leaves through d.Send at the end of the stream.
 func (s *streamSession) post() {
-	var text = StreamPlaceholder
+	text := StreamPlaceholder
 	if s.answer.Len() > 0 {
 		text = s.partialView()
 	}
-	var id, err = s.sender.SendStreamMessage(s.ctx, s.chatID, text)
+	s.postText(text)
+}
+
+func (s *streamSession) postText(text string) {
+	id, err := s.sender.SendStreamMessage(s.ctx, s.chatID, text)
 	if err != nil {
 		s.postFailures++
 		s.muteIfBroken()
 		return
 	}
 	s.messageID, s.posted, s.lastEdit = id, true, time.Now()
+	s.messageIDs = append(s.messageIDs, id)
 	s.edits++
 }
 
@@ -288,9 +314,13 @@ func (s *streamSession) muteIfBroken() {
 
 func (s *streamSession) edit(ctx context.Context, text string, parse bool) error {
 	if !s.posted || s.messageID == 0 {
-		return fmt.Errorf("there is no message to edit ")
+		return fmt.Errorf("there is no message to edit")
 	}
-	var err = s.sender.EditStreamMessage(ctx, s.chatID, s.messageID, text, parse)
+	return s.editMessage(ctx, s.messageID, text, parse)
+}
+
+func (s *streamSession) editMessage(ctx context.Context, messageID int64, text string, parse bool) error {
+	err := s.sender.EditStreamMessage(ctx, s.chatID, messageID, text, parse)
 	if err != nil {
 		s.editFailures++
 		s.muteIfBroken()
@@ -309,25 +339,28 @@ func (s *streamSession) deliver(ctx context.Context, d *Dispatcher, full string)
 	if len(chunks) == 0 {
 		return nil // an empty answer is the error of and never reaches this call
 	}
-	if !s.posted || s.messageID == 0 {
+	if !s.posted || len(s.messageIDs) == 0 {
 		return d.Send(ctx, s.chatID, full)
 	}
-	finalErr := s.edit(ctx, chunks[0], true)
-	if finalErr != nil {
-		// The tail still has to reach the chat, but a missing final edit is a delivery failure, not success.
-		d.deps.Logger.Warn("the streamed answer could not be finalized",
+	var firstErr error
+	for index, chunk := range chunks {
+		var err error
+		if index < len(s.messageIDs) {
+			err = s.editMessage(ctx, s.messageIDs[index], chunk, true)
+		} else {
+			err = d.deps.Replier.Send(ctx, s.chatID, chunk)
+		}
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr != nil {
+		d.deps.Logger.Warn("one or more streamed messages could not be finalized",
 			"chat_id", s.chatID, "edits", s.edits, "edit_failures", s.editFailures,
-			"error", Sanitize(finalErr, d.deps.Token),
+			"error", Sanitize(firstErr, d.deps.Token),
 		)
 	}
-	var i = 1
-	for i < len(chunks) {
-		if err := d.deps.Replier.Send(ctx, s.chatID, chunks[i]); err != nil {
-			return err
-		}
-		i++
-	}
-	return finalErr
+	return firstErr
 }
 
 // for a failed call, and this branch keeps that rule visible in the chat: the message says it is unfinished, so
@@ -346,7 +379,7 @@ func (s *streamSession) broken(ctx context.Context, d *Dispatcher, reason string
 // Telegram refuses for length leaves the user with the placeholder of «Модель думает…» forever.
 func (s *streamSession) brokenView(reason string) string {
 	var notice = fitNotice(msgStreamBroken, reason, s.maxRunes)
-	var runes = []rune(s.answer.String())
+	var runes = []rune(s.currentAnswer())
 	var keep = s.maxRunes - Runes(notice)
 	if keep < 0 {
 		keep = 0

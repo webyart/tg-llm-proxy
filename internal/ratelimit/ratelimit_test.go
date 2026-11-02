@@ -1,6 +1,3 @@
-// ratelimit_test.go — the §11 unit level for the two guards of §12: the token bucket of
-// RATE_LIMIT_PER_MINUTE and the per-chat lock. The clock is injected (§11 "rate limit" must not
-// sleep a real minute), and the lock tests assert the ORDER, which is what §10 День 6 DoD
 // ("нет перепутанных ответов") actually depends on.
 package ratelimit
 
@@ -35,10 +32,10 @@ func TestAllowUpToLimitThenBlocks(t *testing.T) {
 	var l = New(3).WithClock(clock.Now)
 
 	if !l.Allow(1) || !l.Allow(1) || !l.Allow(1) {
-		t.Fatalf("the first three answers of the window must pass (§7 RATE_LIMIT_PER_MINUTE=3)")
+		t.Fatalf("the first three answers of the window must pass ")
 	}
 	if l.Allow(1) {
-		t.Fatalf("the fourth answer inside one window must be refused (§12 reliability)")
+		t.Fatalf("the fourth answer inside one window must be refused ")
 	}
 	var wait = l.RetryAfter(1)
 	if wait <= 0 || wait > Window {
@@ -75,7 +72,7 @@ func TestWindowExpires(t *testing.T) {
 		t.Fatalf("the hit at t must be out of the window at t+62s, got %d want 1", got)
 	}
 	if !l.Allow(7) {
-		t.Fatalf("after the oldest hit expired a new answer must pass (§7 per-minute window)")
+		t.Fatalf("after the oldest hit expired a new answer must pass ")
 	}
 }
 
@@ -86,7 +83,7 @@ func TestZeroMeansUnlimited(t *testing.T) {
 	var i = 0
 	for i < 1000 {
 		if !l.Allow(42) {
-			t.Fatalf("RATE_LIMIT_PER_MINUTE=0 means no limit (§7), the %d-th answer was refused", i)
+			t.Fatalf("RATE_LIMIT_PER_MINUTE=0 means no limit , the %d-th answer was refused", i)
 		}
 		i++
 	}
@@ -106,7 +103,7 @@ func TestUsersAreIndependent(t *testing.T) {
 		t.Fatalf("the same user must be limited by their own window")
 	}
 	if !l.Allow(2) {
-		t.Fatalf("another user has their own window (§12: the limit is per user, not global)")
+		t.Fatalf("another user has their own window ")
 	}
 }
 
@@ -129,7 +126,7 @@ func TestConcurrentAllowIsNotOverTheLimit(t *testing.T) {
 	}
 	wg.Wait()
 	if passed != 5 {
-		t.Fatalf("exactly the limit may pass under concurrency, got %d want 5 (§12 reliability)", passed)
+		t.Fatalf("exactly the limit may pass under concurrency, got %d want 5 ", passed)
 	}
 }
 
@@ -172,12 +169,12 @@ func TestWithChatKeepsOneChatSerialized(t *testing.T) {
 	wg.Wait()
 
 	if maxInside != 1 {
-		t.Fatalf("two runs of one chat must never overlap, the peak was %d (§12 per-chat lock)", maxInside)
+		t.Fatalf("two runs of one chat must never overlap, the peak was %d ", maxInside)
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	if len(order) != 2 || order[0] != "long" || order[1] != "short" {
-		t.Fatalf("the answers of one chat must stay in arrival order, got %v (§10 День 6 DoD)", order)
+		t.Fatalf("the answers of one chat must stay in arrival order, got %v ", order)
 	}
 }
 
@@ -214,7 +211,7 @@ func TestDifferentChatsRunInParallel(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatalf("two different chats must not block each other (§12 performance)")
+		t.Fatalf("two different chats must not block each other ")
 	}
 }
 
@@ -241,13 +238,13 @@ func TestWithChatCancelDoesNotLockTheChatForever(t *testing.T) {
 		return nil
 	})
 	if err != context.Canceled {
-		t.Fatalf("a cancelled wait must return context.Canceled, got %v (the cancellable lock of §12 Производительность)", err)
+		t.Fatalf("a cancelled wait must return context.Canceled, got %v ", err)
 	}
 
 	close(release)
 	wg.Wait()
 	if locks.Held(55) {
-		t.Fatalf("a cancelled wait must not leave the chat locked forever (§10 День 3 budget must free the queue)")
+		t.Fatalf("a cancelled wait must not leave the chat locked forever ")
 	}
 	if err := locks.WithChat(context.Background(), 55, func() error { return nil }); err != nil {
 		t.Fatalf("the chat must be usable again after the release, got %v", err)

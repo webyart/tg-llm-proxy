@@ -1,7 +1,3 @@
-// health_test.go — §11 Store/health levels: /healthz answers 200 on the loopback port of §7, the
-// compose HEALTHCHECK target of §8.1 (`wget -qO- http://127.0.0.1:8080/healthz`), and a cancelled
-// context stops the listener inside the 2-second window this package sets (§10 День 1: graceful shutdown;
-// §8.1: Docker sends SIGKILL when its stop grace ends).
 package health
 
 import (
@@ -15,7 +11,6 @@ import (
 	"time"
 )
 
-// freePort — an OS-assigned loopback port, so a test never collides with HEALTH_PORT 8080 of §7.
 func freePort(t *testing.T) int64 {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -47,14 +42,14 @@ func TestHealthzAnswers200(t *testing.T) {
 			t.Fatal(readErr)
 		}
 		if response.StatusCode != http.StatusOK {
-			t.Fatalf("GET %s answered %d, §8.1 HEALTHCHECK needs 200", Path, response.StatusCode)
+			t.Fatalf("GET %s answered %d, HEALTHCHECK needs 200", Path, response.StatusCode)
 		}
 		if string(body) != "ok" {
-			t.Fatalf("the body is %q, §12 security: the probe answer carries no configuration", body)
+			t.Fatalf("the body is %q, security: the probe answer carries no configuration", body)
 		}
 		return
 	}
-	t.Fatalf("GET %s never answered (§8.1 HEALTHCHECK): %v", Path, last)
+	t.Fatalf("GET %s never answered : %v", Path, last)
 }
 
 func TestOtherPathIs404(t *testing.T) {
@@ -72,7 +67,7 @@ func TestOtherPathIs404(t *testing.T) {
 		}
 		response.Body.Close()
 		if response.StatusCode != http.StatusNotFound {
-			t.Fatalf("an unknown path answered %d, §6: only %s is exposed", response.StatusCode, Path)
+			t.Fatalf("an unknown path answered %d,: only %s is exposed", response.StatusCode, Path)
 		}
 		return
 	}
@@ -91,10 +86,10 @@ func TestCancelStopsInsideTwoSeconds(t *testing.T) {
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("Run returned %v, the clean stop of §10 День 1: a cancelled context is a clean stop", err)
+			t.Fatalf("Run returned %v, the clean stop of: a cancelled context is a clean stop", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatalf("the listener did not stop inside 2 seconds (the budget of this package; §8.1: Docker's stop grace is 10 s by default)")
+		t.Fatalf("the listener did not stop inside 2 seconds ")
 	}
 }
 
@@ -108,17 +103,14 @@ func TestTakenPortFailsWithThePortNamed(t *testing.T) {
 
 	err = New(port).Run(context.Background())
 	if err == nil {
-		t.Fatalf("Run bound a port another listener holds (§12 reliability: the start must fail)")
+		t.Fatalf("Run bound a port another listener holds ")
 	}
 	if !strings.Contains(err.Error(), fmt.Sprintf("%d", port)) {
-		t.Errorf("the error does not name the port of §7 HEALTH_PORT, an operator has to guess: %v", err)
+		t.Errorf("the error does not name the port of HEALTH_PORT, an operator has to guess: %v", err)
 	}
 }
 
-// TestListenNamesTheTakenPortAtOnce — the case measured on this machine: the local STRATA proxy of §14
 // item 7 holds 127.0.0.1:8080, and the old main printed «health is listening on 127.0.0.1: 8080» because
-// the bind lived in a goroutine whose error only arrived in the final select, after getMe of §10 День 4
-// had burned the timeout of §7. Listen is synchronous, so the caller learns the truth before the claim.
 func TestListenNamesTheTakenPortAtOnce(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -129,9 +121,9 @@ func TestListenNamesTheTakenPortAtOnce(t *testing.T) {
 
 	var server = New(port)
 	if listenErr := server.Listen(); listenErr == nil {
-		t.Fatalf("Listen took a port another listener holds (§10 День 5 DoD: /healthz must answer on the port of §7)")
+		t.Fatalf("Listen took a port another listener holds ")
 	} else if !strings.Contains(listenErr.Error(), fmt.Sprintf("%d", port)) || !strings.Contains(listenErr.Error(), "HEALTH_PORT") {
-		t.Errorf("Listen must name §7 HEALTH_PORT and the number, got: %v", listenErr)
+		t.Errorf("Listen must name HEALTH_PORT and the number, got: %v", listenErr)
 	}
 	if server.Port() != port {
 		t.Errorf("Port reports %d while nothing was bound on %d — the start line would describe a port the process does not own", server.Port(), port)
@@ -139,7 +131,6 @@ func TestListenNamesTheTakenPortAtOnce(t *testing.T) {
 }
 
 // TestListenThenRunServes — Listen does not consume the listener: Run afterwards still answers 200 on the
-// very port Listen reported, and a second Listen is a no-op rather than a second bind (§12 reliability:
 // the printed «health is listening» line has to describe the fact, and main calls both functions).
 func TestListenThenRunServes(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -150,10 +141,10 @@ func TestListenThenRunServes(t *testing.T) {
 		t.Fatal(err)
 	}
 	if again := server.Listen(); again != nil {
-		t.Errorf("the second Listen re-bound and failed: %v (§12 reliability: Run calls Listen again)", again)
+		t.Errorf("the second Listen re-bound and failed: %v ", again)
 	}
 	if server.Port() != port {
-		t.Errorf("Port is %d, the listener holds %d (§7 HEALTH_PORT)", server.Port(), port)
+		t.Errorf("Port is %d, the listener holds %d ", server.Port(), port)
 	}
 	go func() { _ = server.Run(ctx) }()
 
@@ -168,7 +159,7 @@ func TestListenThenRunServes(t *testing.T) {
 		}
 		response.Body.Close()
 		if response.StatusCode != http.StatusOK {
-			t.Fatalf("GET %s answered %d after an explicit Listen (§8.1 HEALTHCHECK needs 200)", Path, response.StatusCode)
+			t.Fatalf("GET %s answered %d after an explicit Listen ", Path, response.StatusCode)
 		}
 		return
 	}

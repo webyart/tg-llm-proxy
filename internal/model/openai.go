@@ -1,11 +1,5 @@
-// openai.go — the STRATA client of §10 День 3: POST {base}/chat/completions and GET {base}/models
-// in the OpenAI-compatible shape (§14 item 5 confirmed the real endpoint speaks exactly that: 200
-// on {base}/v1/chat/completions, 404 on {base}/chat/completions — §16 change 26).
-//
-// The two rules of §10 День 3 this file is responsible for:
 //  1. retries — AT MOST Attempts attempts (2 by default), exponential backoff, and ONLY for network
 //     errors and 5xx. A 4xx, an empty answer or a cancelled context is returned immediately:
-//     repeating a wrong key or a wrong path cannot succeed, and §7 says the total budget of
 //     retries + timeout + the answer into Telegram is TG_REPLY_DEADLINE_SECONDS.
 //  2. the time budget — every attempt shares ONE budget of STRATA_TIMEOUT_SECONDS, not one per
 //     attempt. The deadline is taken from the caller's context when it is shorter, and the sleep
@@ -26,16 +20,14 @@ import (
 	"unicode"
 )
 
-// The defaults §10 День 3 fixes when the caller of New leaves a field empty.
 const (
 	DefaultAttempts      = 2
 	DefaultBackoff       = 250 * time.Millisecond
 	DefaultTimeout       = 60 * time.Second
 	BodyLimit            = 300
-	TelegramBudgetNotice = "the budget of STRATA_TIMEOUT_SECONDS is spent — the answer is not retried again (§10 День 3)"
+	TelegramBudgetNotice = "the budget of STRATA_TIMEOUT_SECONDS is spent — the answer is not retried again "
 )
 
-// Options — everything the client needs from §7: the two joined URLs (config.JoinURL), the key,
 // the model, the budget, the retry shape and the GPU concurrency gate.
 type Options struct {
 	ChatURL       string
@@ -47,14 +39,11 @@ type Options struct {
 	Backoff       time.Duration
 	MaxConcurrent int
 	HTTPClient    *http.Client
-	// Stream carries the budgets of the §15 «стриминг ответов» path (§16 change 34): the three rows of §7
 	// STREAM_IDLE_TIMEOUT_SECONDS, STREAM_TOTAL_DEADLINE_SECONDS and the progress cadence. A zero value means
 	// the defaults of stream.go — a client built by a test streams with those defaults and no test has to
-	// repeat the table of §7.
 	Stream StreamSettings
 }
 
-// OpenAI — the Client of §4 implemented over the OpenAI-compatible API.
 type OpenAI struct {
 	chatURL   string
 	modelsURL string
@@ -68,11 +57,10 @@ type OpenAI struct {
 	stream    StreamSettings
 }
 
-// New — build the client, filling the defaults of §10 День 3. A missing ChatURL is a configuration
 // problem and is reported instead of producing a client that would fail on the first /ask.
 func New(o Options) (*OpenAI, error) {
 	if strings.TrimSpace(o.ChatURL) == "" {
-		return nil, fmt.Errorf("the model client needs the chat URL of §7 (STRATA_BASE_URL), it is empty")
+		return nil, fmt.Errorf("the model client needs the chat URL of (STRATA_BASE_URL), it is empty")
 	}
 	if o.Timeout <= 0 {
 		o.Timeout = DefaultTimeout
@@ -108,13 +96,10 @@ func New(o Options) (*OpenAI, error) {
 	}, nil
 }
 
-// Complete — one chat request within ONE budget of §7 (see the retry rules at the top of the file).
 // The returned Latency covers the whole call, retries and the wait for a free slot included,
-// because that is what the user waited for (§6 «⏱ latency, tokens»).
 func (c *OpenAI) Complete(ctx context.Context, req Request) (Response, error) {
 	var start = time.Now()
 
-	// §12 performance: MAX_CONCURRENT_MODEL_REQUESTS bounds the parallel load of the GPU. Waiting
 	// for a slot consumes the budget too, so the wait is interruptible by the caller's context.
 	if cap(c.sem) > 0 {
 		select {
@@ -153,7 +138,7 @@ func (c *OpenAI) Complete(ctx context.Context, req Request) (Response, error) {
 		if attempt == c.attempts {
 			break
 		}
-		var wait = c.backoff * time.Duration(1<<(attempt-1)) // exponential, §10 День 3
+		var wait = c.backoff * time.Duration(1<<(attempt-1)) // exponential,
 		if deadline, ok := attemptCtx.Deadline(); ok && time.Until(deadline) <= wait {
 			return Response{}, fmt.Errorf("%w (retry %d of %d skipped: %s)", lastErr, attempt+1, c.attempts, TelegramBudgetNotice)
 		}
@@ -163,17 +148,14 @@ func (c *OpenAI) Complete(ctx context.Context, req Request) (Response, error) {
 		case <-time.After(wait):
 		}
 	}
-	return Response{}, fmt.Errorf("%w (after %d attempts, §10 День 3)", lastErr, c.attempts)
+	return Response{}, fmt.Errorf("%w (after %d attempts)", lastErr, c.attempts)
 }
 
-// Retryable — §10 День 3: only network errors and 5xx are retried. A 4xx (APIError.Retryable is
 // false), an empty answer and a cancelled context all end the call at once.
 func Retryable(err error) bool {
 	// A spent budget is not the network class, and this check has to come FIRST: context.DeadlineExceeded
 	// implements Timeout() and Is(), so it satisfies net.Error and the branch below would retry an answer
-	// whose time is simply up. Measured 2026-10-31 by the §15 stream tests, where a stalled stream was
 	// retried for exactly this reason — a second wall for the user and a second slot of
-	// MAX_CONCURRENT_MODEL_REQUESTS of §12 spent on an answer they already watched die.
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return false
 	}
@@ -183,7 +165,7 @@ func Retryable(err error) bool {
 	}
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {
-		return true // connection refused, DNS, TLS — the network class of §10 День 3
+		return true // connection refused, DNS, TLS — the network class of
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) {
@@ -192,9 +174,6 @@ func Retryable(err error) bool {
 	return false
 }
 
-// chatMessage/chatRequest/chatResponse — the wire shape of the OpenAI-compatible API (§14 item 5).
-// `stream` is false for Complete and true for the §15 path of stream.go; both end in ONE final answer and one
-// assistant row of §5 (§10 День 3). The events of the streamed path have their own shape in chatChunk,
 // because a streamed event carries a `delta`, not a `message`.
 type chatMessage struct {
 	Role    string `json:"role"`
@@ -238,15 +217,13 @@ type modelsResponse struct {
 	} `json:"data"`
 }
 
-// attempt — one HTTP round trip. The Authorization header is set only when STRATA_API_KEY of §7 is
-// not empty, and it is never logged (§12 security).
 func (c *OpenAI) attempt(ctx context.Context, req Request, attempt int) (Response, error) {
 	var model = req.Model
 	if model == "" {
 		model = c.model
 	}
 	if model == "" {
-		return Response{}, fmt.Errorf("the model of §7 (STRATA_MODEL) is not set, attempt %d", attempt)
+		return Response{}, fmt.Errorf("the model of (STRATA_MODEL) is not set, attempt %d", attempt)
 	}
 
 	var body, err = json.Marshal(chatRequest{Model: model, Messages: toWire(req.Messages), Stream: false})
@@ -267,7 +244,6 @@ func (c *OpenAI) attempt(ctx context.Context, req Request, attempt int) (Respons
 	var res, doErr = c.client.Do(httpReq)
 	if doErr != nil {
 		// A deadline of the budget is not a retryable network failure: the budget is already spent,
-		// so a second attempt would only overshoot TG_REPLY_DEADLINE_SECONDS (§10 День 3).
 		if ctx.Err() != nil {
 			return Response{}, fmt.Errorf("%w: %s", ctx.Err(), TelegramBudgetNotice)
 		}
@@ -289,12 +265,10 @@ func (c *OpenAI) attempt(ctx context.Context, req Request, attempt int) (Respons
 	return Decode(res.StatusCode, payload, model, attempt)
 }
 
-// Decode — the 2xx body of a chat.completion into the §5 columns of a Response. An empty choices
-// list or an empty message content is ErrEmptyAnswer (§10 День 3): nothing of it may reach SQLite.
 func Decode(status int, payload []byte, model string, attempt int) (Response, error) {
 	var parsed chatResponse
 	if err := json.Unmarshal(payload, &parsed); err != nil {
-		return Response{}, fmt.Errorf("the endpoint answered %d with something that is not a chat.completion (§14 item 5): %w", status, err)
+		return Response{}, fmt.Errorf("the endpoint answered %d with something that is not a chat.completion : %w", status, err)
 	}
 	if parsed.Error != nil && strings.TrimSpace(parsed.Error.Message) != "" {
 		return Response{}, &APIError{Status: status, Body: Flatten(parsed.Error.Message, BodyLimit)}
@@ -323,8 +297,6 @@ func Decode(status int, payload []byte, model string, attempt int) (Response, er
 	return out, nil
 }
 
-// Models — GET {base}/models: the probe of §6 `/model check` and of internal/health (§4). It is not
-// retried: §10 День 3 limits the retries to the chat path, and a diagnostic that sleeps would make
 // `/model` slower than the answer it reports on.
 func (c *OpenAI) Models(ctx context.Context) ([]string, error) {
 	var httpReq, err = http.NewRequestWithContext(ctx, http.MethodGet, c.modelsURL, nil)
@@ -362,10 +334,9 @@ func (c *OpenAI) Models(ctx context.Context) ([]string, error) {
 	if err := json.Unmarshal(payload, &bare); err == nil {
 		return bare, nil
 	}
-	return nil, fmt.Errorf("GET %s answered %d with something that is not a model list (§6 /model check)", c.modelsURL, res.StatusCode)
+	return nil, fmt.Errorf("GET %s answered %d with something that is not a model list ", c.modelsURL, res.StatusCode)
 }
 
-// toWire — the roles of §5 onto the wire roles of the OpenAI-compatible API.
 func toWire(messages []Message) []chatMessage {
 	var out = make([]chatMessage, 0, len(messages))
 	for _, m := range messages {
@@ -375,7 +346,6 @@ func toWire(messages []Message) []chatMessage {
 }
 
 // Flatten — one line of at most limit runes for an error text. The body of a provider can be a full
-// HTML page, and §12 security keeps provider bodies and the texts of the model out of the logs.
 func Flatten(text string, limit int) string {
 	if limit <= 0 {
 		return ""

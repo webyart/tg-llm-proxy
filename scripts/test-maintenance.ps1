@@ -1,6 +1,5 @@
 #Requires -Version 7
 <#
-test-maintenance.ps1 — repeatable §9 acceptance on a NEW fixture database, never on data/bot.db or the live volume.
 
 Covers backup → scratch restore → counter comparison, verified external copy without overwrite, maintenance
 dry-run/apply rotation, and integrity of every retained generated backup. -WithVolumeRestore additionally runs the

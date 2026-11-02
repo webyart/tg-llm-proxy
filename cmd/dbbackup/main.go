@@ -1,8 +1,6 @@
-// Command dbbackup — the online backup behind scripts/db_backup.ps1. It copies the SQLite file of §5 with
 // SQLite's VACUUM INTO while the bot may still be writing: the source is opened read-only and the destination
 // is verified after the copy, so a supposedly good backup is not trusted just because it has a size.
 //
-// Like cmd/dbinspect, this is deliberately not part of the runtime image of §8.1: the maintenance tooling
 // stays on the host and reads the file, not the container.
 package main
 
@@ -22,13 +20,13 @@ func die(format string, args ...any) {
 }
 
 func main() {
-	var source = flag.String("source", "", "database file to copy (§7 DB_PATH; required)")
+	var source = flag.String("source", "", "database file to copy ")
 	var destination = flag.String("dest", "", "new backup file; must not exist yet (required)")
 	var timeout = flag.Duration("timeout", 120*time.Second, "how long the whole backup and verification may take")
 	flag.Parse()
 
 	if *source == "" {
-		die("-source is required (§7 DB_PATH; scripts/db_backup.ps1 passes it)")
+		die("-source is required ")
 	}
 	if *destination == "" {
 		die("-dest is required — backups never overwrite an existing file")

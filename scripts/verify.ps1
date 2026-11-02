@@ -1,6 +1,5 @@
 #Requires -Version 7
 <#
-verify.ps1 — the complete local verification pipeline of §9 and §11.
 
 Runs lint, Unit + Store, fixture maintenance/external-copy acceptance, loopback Telegram notification acceptance,
 Integration + leak scan, build, and the containerized race detector. -WithVolumeRestore also covers isolated restore
@@ -67,7 +66,7 @@ try {
     Invoke-Stage 'build + empty ENV refusal' 'build.ps1'
 
     if ($SkipRace) {
-        Add-Result 'race (tagged)' 'SKIP' 0 '-SkipRace was given; §3.1 requires the Docker test image'
+        Add-Result 'race (tagged)' 'SKIP' 0 '-SkipRace was given; requires the Docker test image'
     }
     else {
         $raceArgs = @('-Tagged')

@@ -1,13 +1,11 @@
 #Requires -Version 7
 <#
-db_backup.ps1 — online backup of the §5 SQLite database through scripts/db_backup.exe.
 
 The source stays available while the bot is running: store.Backup opens it read-only and SQLite's VACUUM INTO
 copies a consistent snapshot. The destination must be a new file; backups never overwrite existing files.
 After the copy, dbbackup opens the destination read-only and runs PRAGMA integrity_check, so a file that exists
 but is not a sound backup is reported as a failure.
 
--Source comes from the parameter, the process ENV, or .env (§7 DB_PATH). -Dest defaults to a timestamped file
 under .\data\backups (gitignored with data/).
 
 Usage:
@@ -47,7 +45,7 @@ function ReadEnvValue([string]$name) {
 if (-not $Source) { $Source = $env:DB_PATH }
 if (-not $Source) { $Source = ReadEnvValue 'DB_PATH' }
 if (-not $Source) {
-    Write-Output 'db_backup: DB_PATH is not set in the process ENV or in .env — pass -Source ..\data\bot.db (§7 row DB_PATH)'
+    Write-Output 'db_backup: DB_PATH is not set in the process ENV or in .env — pass -Source ..\data\bot.db '
     exit 1
 }
 if (-not $Dest) {
@@ -61,7 +59,7 @@ $Source = [System.IO.Path]::GetFullPath($Source)
 $Dest = [System.IO.Path]::GetFullPath($Dest)
 
 if (-not (Test-Path -LiteralPath $Source)) {
-    Write-Output "db_backup: source $Source does not exist — for the Docker volume copy bot:/data/bot.db to a local file first (§9), or pass -Source"
+    Write-Output "db_backup: source $Source does not exist — for the Docker volume copy bot:/data/bot.db to a local file first , or pass -Source"
     exit 1
 }
 
@@ -81,10 +79,10 @@ try {
         New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot 'bin') | Out-Null
         $build = (go build -o bin/dbbackup.exe ./cmd/dbbackup 2>&1 | Out-String)
         if ($LASTEXITCODE -ne 0) {
-            Write-Output "db_backup: go build ./cmd/dbbackup exit $LASTEXITCODE — the reasons above (§9)"
+            Write-Output "db_backup: go build ./cmd/dbbackup exit $LASTEXITCODE — the reasons above "
             exit 1
         }
-        Write-Output 'db_backup: built bin\dbbackup.exe (a maintenance tool, deliberately not in the image of §8.1)'
+        Write-Output 'db_backup: built bin\dbbackup.exe '
     }
 
     & $exe -source $Source -dest $Dest
@@ -93,7 +91,7 @@ try {
         Write-Output 'db_backup: OK — the destination opened read-only and integrity_check answered ok and the bot schema is present'
         exit 0
     }
-    Write-Output "db_backup: exit $code — the backup was not made, or the copy failed verification (§12 reliability)"
+    Write-Output "db_backup: exit $code — the backup was not made, or the copy failed verification "
     exit 1
 }
 finally {

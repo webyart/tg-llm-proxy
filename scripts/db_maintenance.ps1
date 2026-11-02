@@ -1,6 +1,5 @@
 #Requires -Version 7
 <#
-db_maintenance.ps1 — one scheduler-friendly §9 maintenance step: verified online backup, retention, optional external copy.
 
 The backup is always a NEW timestamped file and is checked read-only by db_backup.ps1. Retention then runs through
 db_rotate.ps1: without -Apply it is only a dry-run; -Apply explicitly permits deletion of expired generated names.

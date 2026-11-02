@@ -1,24 +1,14 @@
-// Command dbinspect — the reader behind `scripts/db_inspect.ps1` (§9). sqlite3 CLI is not installed on this
-// host (§2 «sqlite3 CLI | absent | expected (§5) → use scripts/db_inspect.ps1 (Go-tool)»), so the only way
-// to look at the chat history of §5 without a Telegram account is a Go tool over the same file the bot
 // writes.
 //
-// §4 deviation (the same one README «§4 deviation» records for the bot): the plan draws the entry points
 // under cmd/, and this one really does live there — `cmd/dbinspect` — because a second `package main` cannot
 // sit next to the root one. It is built on demand by scripts/db_inspect.ps1 (`go build -o bin\dbinspect.exe
-// ./cmd/dbinspect`) and is deliberately NOT part of the runtime image of §8.1: a maintenance reader has no
 // business inside the container of a bot.
 //
 // What it guarantees, and what it refuses:
 //
-//	store.OpenReadOnlySnapshot — a read-only open: mode=ro, or mode=ro&immutable=1 when no -wal of §5 sits next
-//	                   to the file and the mount refuses the plain one (the named volume of §8.1 read through
 //	                   `-v …:/data:ro` after a clean stop). Either way no statement of this program can change
-//	                   the database of a running bot (§5 case D), and journal_mode is left alone (§5: it belongs
 //	                   to the file) — but the mode is PRINTED, because a journal_mode read through an immutable
-//	                   handle describes the handle, not the file (§12 reliability).
 //	No migration, no PRAGMA write, no _txlock: a viewer does not take the write lock of a live bot.
-//	Nothing here prints a value of §7 — the database holds chat texts (§12 security forbids tokens and full
 //	model texts in the LOGS, and this output is a human reading a file, not a log).
 package main
 
@@ -38,7 +28,6 @@ import (
 )
 
 // exitError — a message plus the exit code the script should leave with. Three codes, because the script has
-// to tell the three failures apart (§9: a missing DB_PATH is not a corrupted database):
 //
 //	1 — the database could not be opened or read (nothing was printed about its content),
 //	2 — the database opened and answered, and the answer is bad (integrity_check ≠ ok),
@@ -51,26 +40,25 @@ type exitError struct {
 func (e *exitError) Error() string { return e.text }
 
 // die — the one exit path: the message goes to stderr so that a piped human still sees the report on stdout,
-// and §12 reliability keeps the reason specific enough to act on.
 func die(code int, format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "dbinspect: "+format+"\n", args...)
 	os.Exit(code)
 }
 
 func main() {
-	var path = flag.String("path", "", "the database file to read (§7 DB_PATH; the script takes it from .env) — required")
-	var limit = flag.Int("limit", 20, "how many rows of each list to print (§9 -limit)")
-	var chat = flag.Int64("chat", 0, "restrict the chats and messages sections to one chat_id (§5 chats.chat_id); 0 means every chat")
-	var integrity = flag.Bool("integrity", false, "run PRAGMA integrity_check of §15 and exit 2 when the file is not sound")
-	var counts = flag.Bool("counts", false, "print the machine-readable block of key=value numbers instead of the human report (scripts/test-restart.ps1 of §9 compares two such blocks across a kill/restart); integrity_check is always part of this block")
-	var timeout = flag.Duration("timeout", 15*time.Second, "how long the whole read may take (the reader itself waits 5 s per lock, §5 ReadOnlyBusyTimeout)")
+	var path = flag.String("path", "", "the database file to read  — required")
+	var limit = flag.Int("limit", 20, "how many rows of each list to print ")
+	var chat = flag.Int64("chat", 0, "restrict the chats and messages sections to one chat_id ; 0 means every chat")
+	var integrity = flag.Bool("integrity", false, "run PRAGMA integrity_check of and exit 2 when the file is not sound")
+	var counts = flag.Bool("counts", false, "print the machine-readable block of key=value numbers instead of the human report ; integrity_check is always part of this block")
+	var timeout = flag.Duration("timeout", 15*time.Second, "how long the whole read may take ")
 	flag.Parse()
 
 	if strings.TrimSpace(*path) == "" {
-		die(1, "-path is required (§9: scripts/db_inspect.ps1 passes DB_PATH of §7; the local default is .\\data\\bot.db)")
+		die(1, "-path is required ")
 	}
 	if *limit <= 0 {
-		die(1, "-limit is %d, want a positive number (§9 -limit)", *limit)
+		die(1, "-limit is %d, want a positive number ", *limit)
 	}
 
 	var ctx, cancel = context.WithTimeout(context.Background(), *timeout)
@@ -86,7 +74,6 @@ func main() {
 	}
 }
 
-// run — the report. One read-only handle for every section (§5: a viewer holds one connection), and each
 // section is printed even when it is empty: «0 rows» is information, a missing section is not.
 func run(ctx context.Context, path string, chatID int64, limit int, integrity bool, counts bool) error {
 	db, mode, openErr := store.OpenReadOnlySnapshot(ctx, path)
@@ -100,14 +87,10 @@ func run(ctx context.Context, path string, chatID int64, limit int, integrity bo
 		return &exitError{1, fmt.Sprintf(`the file "%s" disappeared while opening it: %v`, path, statErr)}
 	}
 
-	// journal_mode is a property of the FILE (§5), so a read of it says something about the database, not
 	// about this connection. foreign_keys/busy_timeout are deliberately NOT printed: they describe the
 	// reader's own connection and would read as «the bot has foreign_keys off», which is a lie.
 	var journal, journalErr = store.Pragma(ctx, db, "journal_mode")
 	if counts {
-		// The machine block is read by a script that asserts `journal_mode=wal` (§5: WAL is what makes the
-		// hard kill of §10 День 4 survivable). A reader that cannot name it must say so — printing an empty
-		// value would let the script compare two empty strings and call it a pass (§12 reliability).
 		if journalErr != nil {
 			return &exitError{1, "journal_mode: " + journalErr.Error()}
 		}
@@ -117,11 +100,11 @@ func run(ctx context.Context, path string, chatID int64, limit int, integrity bo
 		journal = "не прочитан: " + journalErr.Error()
 	}
 
-	fmt.Printf("Database (§5, read-only — §9 scripts/db_inspect.ps1)\n")
+	fmt.Printf("Database \n")
 	fmt.Printf("  path          %s\n", path)
 	fmt.Printf("  size          %s, modified %s\n", humanBytes(info.Size()), info.ModTime().Format(time.RFC3339))
 	fmt.Printf("  open mode     %s\n", modeNote(mode))
-	fmt.Printf("  journal_mode  %s (§5: belongs to the file; the viewer never changes it)%s\n", journal, journalCaveat(mode))
+	fmt.Printf("  journal_mode  %s %s\n", journal, journalCaveat(mode))
 	var schemaVersion, schemaErr = store.SchemaVersion(ctx, db)
 	var schemaText = "0 (pre-versioning backup)"
 	if schemaErr != nil {
@@ -136,15 +119,8 @@ func run(ctx context.Context, path string, chatID int64, limit int, integrity bo
 }
 
 // countsReport — the machine-readable twin of the human report: one `key=value` line per number. A PowerShell
-// check (scripts/test-restart.ps1, §10 День 4 «kill → рестарт → офсет не потерян») compares two snapshots of
 // the same file instead of parsing a table it did not design; the numbers come from the SAME store functions
 // the human sections call, because a check that re-implements a query drifts from the query the operator
-// reads (§12 reliability). Unlike the human report, integrity_check always runs here: the whole point of
-// comparing snapshots across a hard kill is to see that the file is still sound (§5 WAL, §10 День 4).
-//
-// `open_mode` and `wal_side_file` are part of the block for the same reason §5 keeps `bot_state_offset_found`
-// beside the offset: a number read through one of the two read-only handles of §9 means something slightly
-// different, and a script that compares snapshots has to compare them on the same terms (§12 reliability).
 func countsReport(w io.Writer, ctx context.Context, db *sql.DB, path, journal string, mode store.ReadOnlyMode) error {
 	var offset, found, offsetErr = store.LastUpdateID(ctx, db)
 	if offsetErr != nil {
@@ -168,10 +144,8 @@ func countsReport(w io.Writer, ctx context.Context, db *sql.DB, path, journal st
 	}
 
 	fmt.Fprintf(w, "path=%s\n", path)
-	// Which handle the numbers came through, and whether the WAL of §5 is sitting next to the file. A snapshot
 	// taken through the immutable open reports journal_mode of the handle ("delete" even for a WAL file,
 	// measured in the container on 2026-10-31), and that is the one difference a script must not average away
-	// when it compares two snapshots of the same volume (§12 reliability).
 	fmt.Fprintf(w, "open_mode=%s\n", countKey(string(mode)))
 	fmt.Fprintf(w, "wal_side_file=%s\n", map[bool]string{true: "present", false: "absent"}[store.WALSideFilePresent(path)])
 	fmt.Fprintf(w, "journal_mode=%s\n", countKey(journal))
@@ -179,7 +153,6 @@ func countsReport(w io.Writer, ctx context.Context, db *sql.DB, path, journal st
 	fmt.Fprintf(w, "schema_version=%d\n", schemaVersion)
 	fmt.Fprintf(w, "last_update_id=%d\n", offset)
 	// found=false means the bot_state row does not exist yet — a fresh database, where the poller starts from
-	// 0 (§5). The script has to tell «offset 0» from «no offset row at all», so both numbers are printed.
 	fmt.Fprintf(w, "bot_state_offset_found=%t\n", found)
 	for _, table := range tables {
 		fmt.Fprintf(w, "table_%s=%d\n", countKey(table.Name), table.Rows)
@@ -189,14 +162,12 @@ func countsReport(w io.Writer, ctx context.Context, db *sql.DB, path, journal st
 	}
 	if verdict != "ok" {
 		// The counts were read, so a broken file is a bad ANSWER and not an unreadable file: exit 2 is the
-		// code scripts/db_inspect.ps1 already reserves for it (§10 День 2 DoD: о битом файле нельзя молчать).
-		return &exitError{2, fmt.Sprintf("integrity_check answered %q (§15) — make a backup before touching it", firstLine(verdict))}
+		return &exitError{2, fmt.Sprintf("integrity_check answered %q  — make a backup before touching it", firstLine(verdict))}
 	}
 	return nil
 }
 
 // countKey — a key of the machine block, and the value of a word-like field (journal_mode, integrity) put
-// through the same filter. §5 keeps `events.kind` free TEXT on purpose (messages.go: a new refusal reason
 // must not need a migration), so a kind could carry a space or a dot, and the reader of this block greps
 // `^[a-z0-9_]+=`. Everything outside that alphabet becomes "_"; no value is ever dropped.
 func countKey(name string) string {
@@ -214,14 +185,13 @@ func countKey(name string) string {
 
 // modeNote — the open mode in the human report. The plain open is the normal case and needs one line; the
 // immutable open needs the reason and the limit of what it can see, because a reader who is not told may take
-// the numbers of a stopped container for the numbers of a running bot (§12 UX: the caveat belongs next to the
 // number, not in a manual nobody reads).
 func modeNote(mode store.ReadOnlyMode) string {
 	if mode != store.ReadOnlyModeImmutable {
-		return "mode=ro (§5: the accurate reader — it attaches the WAL of §5, so committed pages still in the WAL are visible)"
+		return "mode=ro "
 	}
-	var side = store.WALSideFile("bot.db") // «bot.db-wal»: the name the reader looked for, spelled out in the note
-	return "mode=ro&immutable=1 (§9: the plain open was refused by a read-only mount and no " + side + " file sits next to the database, so the main file already holds every committed page of §5 — this is the state after the clean stop of §8.1, not after a kill; through this handle the WAL machinery is not attached, so journal_mode below describes the handle)"
+	var side = store.WALSideFile("bot.db")
+	return "mode=ro&immutable=1 (self-contained snapshot after a clean stop; no " + side + " file present)"
 }
 
 // journalCaveat — the second half of the journal_mode line, empty for the plain open.
@@ -229,21 +199,19 @@ func journalCaveat(mode store.ReadOnlyMode) string {
 	if mode != store.ReadOnlyModeImmutable {
 		return ""
 	}
-	return " — measured through the immutable handle: it answers \"delete\" for a WAL file too (measured 2026-10-31 in the container of §8.1), so this line says nothing about the journal mode of the file"
+	return " — measured through the immutable handle: it answers \"delete\" for a WAL file too , so this line says nothing about the journal mode of the file"
 }
 
 // sections — the five reports over the open handle, in the order an operator asks questions: is the poller
 // alive (bot_state), is anything being refused (events by kind), which chats exist, what was said, and is the
-// file physically sound (§15). Every section prints even when empty: «(empty)» is information, a missing
-// section is not (§12 reliability).
 func sections(ctx context.Context, db *sql.DB, chatID int64, limit int, integrity bool) error {
 	state, stateErr := store.StateEntries(ctx, db)
 	if stateErr != nil {
 		return &exitError{1, stateErr.Error()}
 	}
-	fmt.Println("bot_state (§5 — the offset that must survive a restart)")
+	fmt.Println("bot_state ")
 	if len(state) == 0 {
-		fmt.Println("  (empty — no poll offset stored yet, §5 getUpdates starts from 0)")
+		fmt.Println("  ")
 	}
 	for _, row := range state {
 		fmt.Printf("  %-16s %s\n", row.Key, row.Value)
@@ -254,7 +222,7 @@ func sections(ctx context.Context, db *sql.DB, chatID int64, limit int, integrit
 	if kindErr != nil {
 		return &exitError{1, kindErr.Error()}
 	}
-	fmt.Println("events by kind (§6 — denied = allowlist of §7, flood = Telegram 429, model_error = STRATA)")
+	fmt.Println("events by kind ")
 	if len(kinds) == 0 {
 		fmt.Println("  (empty — nothing refused, rate-limited or broken yet)")
 	}
@@ -268,15 +236,15 @@ func sections(ctx context.Context, db *sql.DB, chatID int64, limit int, integrit
 		return &exitError{1, chatErr.Error()}
 	}
 	if chatID > 0 {
-		fmt.Printf("chats (§5, newest activity first, chat_id=%d, up to %d)\n", chatID, limit)
+		fmt.Printf("chats (chat_id=%d, up to %d)\n", chatID, limit)
 	} else {
-		fmt.Printf("chats (§5, newest activity first, up to %d)\n", limit)
+		fmt.Printf("chats (up to %d)\n", limit)
 	}
 	if len(chats) == 0 {
 		if chatID > 0 {
-			fmt.Printf("  (empty — chat_id=%d is not registered, §5: /start of §6 creates the row)\n", chatID)
+			fmt.Printf("  (empty — chat_id=%d is not registered)\n", chatID)
 		} else {
-			fmt.Println("  (empty — no chat has ever said /start, §6)")
+			fmt.Println("  (empty — no chat registered)")
 		}
 	}
 	var chatTable = newTable("chat_id", "user_id", "messages", "last_active_at (UTC)", "title")
@@ -292,9 +260,9 @@ func sections(ctx context.Context, db *sql.DB, chatID int64, limit int, integrit
 		return &exitError{1, msgErr.Error()}
 	}
 	if chatID > 0 {
-		fmt.Printf("messages (§5, newest first, chat_id=%d, up to %d)\n", chatID, limit)
+		fmt.Printf("messages (chat_id=%d, up to %d)\n", chatID, limit)
 	} else {
-		fmt.Printf("messages (§5, newest first, every chat, up to %d)\n", limit)
+		fmt.Printf("messages (every chat, up to %d)\n", limit)
 	}
 	if len(messages) == 0 {
 		fmt.Println("  (empty — no message stored for this filter)")
@@ -312,7 +280,7 @@ func sections(ctx context.Context, db *sql.DB, chatID int64, limit int, integrit
 	if eventErr != nil {
 		return &exitError{1, eventErr.Error()}
 	}
-	fmt.Printf("events (§5, newest first, up to %d)\n", limit)
+	fmt.Printf("events (up to %d)\n", limit)
 	if len(events) == 0 {
 		fmt.Println("  (empty)")
 	}
@@ -334,17 +302,16 @@ func sections(ctx context.Context, db *sql.DB, chatID int64, limit int, integrit
 		return &exitError{1, integrityErr.Error()}
 	}
 	fmt.Println()
-	fmt.Println("integrity_check (§15, on demand — the scheduled form is v2)")
+	fmt.Println("integrity_check ")
 	for _, line := range strings.Split(verdict, "\n") {
 		fmt.Printf("  %s\n", line)
 	}
 	if verdict != "ok" {
-		return &exitError{2, fmt.Sprintf("integrity_check answered %q (§10 День 2 DoD: о битом файле нельзя молчать) — make a backup of §15 before touching it", firstLine(verdict))}
+		return &exitError{2, fmt.Sprintf("integrity_check answered %q  — make a backup of before touching it", firstLine(verdict))}
 	}
 	return nil
 }
 
-// resetMarks — one line about the /reset marks of §5 when any printed chat has one. It is a note rather than a
 // table column for the same reason as modelOf: the column would be «—» on almost every row of an ordinary
 // database, while the rare case is exactly the one an operator needs to see («the history is in the file, the
 // context just starts after context_reset_at»).
@@ -358,11 +325,10 @@ func resetMarks(chats []store.ChatRow) {
 	if len(marks) == 0 {
 		return
 	}
-	fmt.Printf("  /reset marks (§5 chats.context_reset_at, the rows before it are stored but out of the context): %s\n",
+	fmt.Printf("  /reset marks : %s\n",
 		strings.Join(marks, ", "))
 }
 
-// modelOf — the model names that appear in the printed rows (§7 STRATA_MODEL). A footer instead of a column:
 // the same model repeats on every row and a 20-column-wide table would push the content off the screen.
 func modelOf(messages []store.RecentMessage) {
 	var seen = map[string]bool{}
@@ -374,12 +340,10 @@ func modelOf(messages []store.RecentMessage) {
 		}
 	}
 	if len(names) > 0 {
-		fmt.Printf("  models in these rows: %s (§7 STRATA_MODEL)\n", strings.Join(names, ", "))
+		fmt.Printf("  models in these rows: %s \n", strings.Join(names, ", "))
 	}
 }
 
-// tokenPair — «in→out» of §5, «—» where both columns are NULL: a user row carries no token counts, and
-// printing 0→0 there would report a measurement that never happened (§12 reliability).
 func tokenPair(row store.RecentMessage) string {
 	if row.TokensIn < 0 && row.TokensOut < 0 {
 		return "—"
@@ -388,7 +352,6 @@ func tokenPair(row store.RecentMessage) string {
 }
 
 // dash — the readable NULL of the reader: -1 is what store.RecentMessage/EventRow carry for a NULL column of
-// §5, and «—» is what a human should see instead of a plausible-looking id of 0.
 func dash(value int64) string {
 	if value < 0 {
 		return "—"
@@ -413,7 +376,6 @@ func newTable(headers ...string) *table {
 }
 
 // write — one row. Values go through fmt.Sprint so the columns accept int64 and string alike; a newline
-// inside a chat text (§5 content is free text) would break the row, so it is flattened here — the reader
 // shows a table, the full text is one /history or one SELECT away.
 func (t *table) write(values ...any) {
 	var cells = make([]string, 0, len(values))
@@ -425,11 +387,9 @@ func (t *table) write(values ...any) {
 
 func (t *table) flush() {
 	// tabwriter buffers until Flush; an error here means stdout itself is gone, which is the shell's
-	// problem (§9: the script pipes this into a file or a pager), so it is not worth a code path.
 	_ = t.w.Flush()
 }
 
-// brief — a text cut to max RUNES with an ellipsis. §16 change 7 is the reason this counts runes: кириллица
 // is two bytes in UTF-8, so a byte-wise cut lands in the middle of a letter and prints garbage.
 func brief(text string, max int) string {
 	var runes = []rune(strings.TrimSpace(text))
@@ -442,8 +402,6 @@ func brief(text string, max int) string {
 	return string(runes[:max-1]) + "…"
 }
 
-// humanBytes — the file size the way §8.1 speaks about it (bot.db is a few dozen KiB in a fresh volume and
-// grows with the chat history of §5).
 func humanBytes(size int64) string {
 	const unit = 1024
 	if size < unit {
@@ -460,7 +418,6 @@ func humanBytes(size int64) string {
 }
 
 // firstLine — the first line of a multi-line SQLite verdict: the exit message has to stay one line for
-// scripts (§9 scripts/*.ps1 read $LASTEXITCODE and the last line of output, not a paragraph).
 func firstLine(text string) string {
 	if idx := strings.IndexByte(text, '\n'); idx >= 0 {
 		return text[:idx]

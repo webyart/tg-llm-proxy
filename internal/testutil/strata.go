@@ -1,8 +1,5 @@
-// strata.go — the fake STRATA of §11 («Фейковый STRATA обязателен: прототип можно тестировать,
-// когда сервер недоступен») and of the §10 День 3 DoD («интеграционный тест против httptest-фейка:
 // успех, timeout, 500, пустой ответ, 500→успех после ретрая»).
 //
-// The fake serves the paths the REAL endpoint serves (§16 change 26: /v1/chat/completions and
 // /v1/models, 404 on anything else), so a client that passes here passes on the real server too —
 // a fake rooted at "/chat/completions" would hide exactly the URL bug this project already hit.
 package testutil
@@ -20,26 +17,22 @@ import (
 )
 
 // StrataReply — one scripted answer. Replies are consumed in order; once the script is exhausted the
-// LAST reply repeats, which is how "the server stays broken" is expressed (§10 День 3 case "500",
-// §10 День 6 «остановка STRATA»).
 type StrataReply struct {
 	Status       int           // 0 means 200
 	Content      string        // choices[0].message.content of the OpenAI shape
 	NoContent    bool          // answer with a null content, which real providers do send
-	EmptyChoices bool          // answer 200 with choices: [] (§10 День 3 «пустой ответ»)
+	EmptyChoices bool          // answer 200 with choices: []
 	TokensIn     int64         // usage.prompt_tokens
 	TokensOut    int64         // usage.completion_tokens
-	NoUsage      bool          // omit the usage object (§5 keeps tokens_in/tokens_out NULL)
-	Model        string        // the model name to echo (§6 /model)
-	Delay        time.Duration // hold the response open — the "timeout" case of §10 День 3
-	Models       []string      // the list for GET /v1/models (§6 /model check)
+	NoUsage      bool          // omit the usage object
+	Model        string        // the model name to echo
+	Delay        time.Duration // hold the response open — the "timeout" case of
+	Models       []string      // the list for GET /v1/models
 
-	// The streaming fields of §15 (§16 change 34). They are used only when the REQUEST asks for a stream
 	// (`"stream": true` in the body), which is how one fake serves both paths of the client. The shapes below
-	// are the ones measured on the real endpoint of §14: one `data:` line per delta, keepalive comment lines,
 	// `data: [DONE]` at the end, and `usage` inside the stream without `stream_options`.
 	StreamContent     []string      // one element per `delta.content` event — the answer arriving by pieces
-	StreamReasoning   []string      // `delta.reasoning_content` events: the thinking channel of §14
+	StreamReasoning   []string      // `delta.reasoning_content` events: the thinking channel of
 	StreamGap         time.Duration // pause BETWEEN the events (a healthy stream measures ~20 ms apart)
 	StreamStall       time.Duration // pause before the LAST event — the stall of STREAM_IDLE_TIMEOUT_SECONDS
 	StreamGarbage     int           // inject this many `data:` lines that are not JSON (a broken provider)
@@ -50,7 +43,6 @@ type StrataReply struct {
 	StreamContentType string        // content-type to answer — a proxy that ignored the stream answers JSON
 }
 
-// Strata — the running fake. The counters live under a mutex because §10 День 6 runs parallel
 // messages of one chat against it.
 type Strata struct {
 	Server    *httptest.Server
@@ -59,12 +51,11 @@ type Strata struct {
 	mu        sync.Mutex
 	chatCalls int
 	getCalls  int
-	otherCall int // requests that hit neither /v1/chat/completions nor /v1/models (§16 change 26 404)
+	otherCall int // requests that hit neither /v1/chat/completions nor /v1/models
 	lastBody  string
 	lastAuth  string
 }
 
-// NewStrata — start the fake. An empty wantKey means the endpoint needs no Authorization (the §7 row
 // STRATA_API_KEY may be empty); a non-empty key makes the fake answer 401 without the header, which
 // is what the real endpoint did when this project probed it.
 func NewStrata(t *testing.T, wantKey string, replies ...StrataReply) *Strata {
@@ -77,27 +68,22 @@ func NewStrata(t *testing.T, wantKey string, replies ...StrataReply) *Strata {
 	mux.HandleFunc("/v1/chat/completions", s.handleChat)
 	mux.HandleFunc("/v1/models", s.handleModels)
 	// Everything else answers 404 — the measured behaviour of the real endpoint without the /v1
-	// prefix (§16 change 26), so a client that joins the wrong URL fails here as well.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.otherCall++
 		s.mu.Unlock()
-		http.Error(w, "the fake serves only /v1/chat/completions and /v1/models (§16 change 26)", http.StatusNotFound)
+		http.Error(w, "the fake serves only /v1/chat/completions and /v1/models ", http.StatusNotFound)
 	})
 	s.Server = httptest.NewServer(mux)
 	t.Cleanup(s.Server.Close)
 	return s
 }
 
-// BaseURL — what belongs in STRATA_BASE_URL of §7. The client normalizes it to exactly one /v1
-// (§16 change 26), so the bare server URL is the honest value for a test configuration.
 func (s *Strata) BaseURL() string { return s.Server.URL }
 
-// ChatURL / ModelsURL — the two joins of §7 over that base.
 func (s *Strata) ChatURL() string   { return s.Server.URL + "/v1/chat/completions" }
 func (s *Strata) ModelsURL() string { return s.Server.URL + "/v1/models" }
 
-// ChatCalls — how many chat requests reached the fake (§10 День 3: the retry case expects exactly 2,
 // the empty-answer case exactly 1).
 func (s *Strata) ChatCalls() int {
 	s.mu.Lock()
@@ -105,25 +91,19 @@ func (s *Strata) ChatCalls() int {
 	return s.chatCalls
 }
 
-// ModelsCalls — how many GET /models requests arrived (§6 /model check counts one).
 func (s *Strata) ModelsCalls() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.getCalls
 }
 
-// OtherCalls — requests that reached neither endpoint: the 404 of §16 change 26, which is how a wrong
-// STRATA_BASE_URL of §7 shows itself. A client that retries such a request is caught by the test of
-// §10 День 3 («4xx не ретраится») through this counter.
 func (s *Strata) OtherCalls() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.otherCall
 }
 
-// LastRequestBody — the JSON the client sent last: §11 asserts the model name and the glued context
 // through it. LastAuthorization is exposed for the assertion "the header is sent" and must never be
-// printed (§12 security).
 func (s *Strata) LastRequestBody() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -151,7 +131,6 @@ func (s *Strata) authorized(r *http.Request) bool {
 }
 
 // handleChat — the scripted answer. The Delay waits on the REQUEST context, so a client whose budget
-// of §10 День 3 ran out does not leave the fake serving a response nobody reads: the timeout case
 // stays fast instead of a sleeping test.
 func (s *Strata) handleChat(w http.ResponseWriter, r *http.Request) {
 	var raw, readErr = io.ReadAll(io.LimitReader(r.Body, 1<<20))
@@ -168,7 +147,7 @@ func (s *Strata) handleChat(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	if !s.authorized(r) {
-		http.Error(w, "the fake expects the key of §7 (STRATA_API_KEY)", http.StatusUnauthorized)
+		http.Error(w, "the fake expects the key of (STRATA_API_KEY)", http.StatusUnauthorized)
 		return
 	}
 
@@ -181,7 +160,7 @@ func (s *Strata) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if answer.Status >= 400 {
-		http.Error(w, "the fake is broken (§10 День 3: 500, retryable)", answer.Status)
+		http.Error(w, "the fake is broken ", answer.Status)
 		return
 	}
 
@@ -190,7 +169,6 @@ func (s *Strata) handleChat(w http.ResponseWriter, r *http.Request) {
 		model = requestModel(string(raw)) // echo what the client asked for, as a real server does
 	}
 
-	// §15 (§16 change 34): a request that asks for a stream is answered as SSE when the script carries the
 	// stream shape. A script WITHOUT it answers plain JSON to the same request — that is the proxy bug the
 	// client of stream.go refuses to read as an empty model answer.
 	if answer.hasStream() && requestWantsStream(string(raw)) {
@@ -210,7 +188,7 @@ func (s *Strata) handleChat(w http.ResponseWriter, r *http.Request) {
 		"choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": "stop"}},
 	}
 	if answer.EmptyChoices {
-		payload["choices"] = []any{} // §10 День 3 «пустой ответ»
+		payload["choices"] = []any{} // «пустой ответ»
 	}
 	if !answer.NoUsage {
 		payload["usage"] = map[string]any{
@@ -223,16 +201,15 @@ func (s *Strata) handleChat(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(payload) // an already-gone client is not a failure of the fake
 }
 
-// handleModels — GET /v1/models in the OpenAI envelope of §6 (`/model check`).
 func (s *Strata) handleModels(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	var index = s.getCalls
 	s.getCalls++
-	s.lastAuth = r.Header.Get("Authorization") // §7 sends the key on both endpoints (§6 /model check)
+	s.lastAuth = r.Header.Get("Authorization") // sends the key on both endpoints
 	s.mu.Unlock()
 
 	if !s.authorized(r) {
-		http.Error(w, "the fake expects the key of §7 (STRATA_API_KEY)", http.StatusUnauthorized)
+		http.Error(w, "the fake expects the key of (STRATA_API_KEY)", http.StatusUnauthorized)
 		return
 	}
 	var ids = s.reply(index).Models
@@ -248,7 +225,6 @@ func (s *Strata) handleModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // requestModel — the model name the client sent, read out of the request body. A malformed body gives
-// an empty name, so the assertion of the test says what is wrong (§12 UX).
 func requestModel(raw string) string {
 	var decoded struct {
 		Model string `json:"model"`
@@ -259,7 +235,6 @@ func requestModel(raw string) string {
 	return decoded.Model
 }
 
-// requestWantsStream — the `"stream": true` flag of §15. The fake serves both paths, so it has to read the
 // flag the same way the client sets it.
 func requestWantsStream(raw string) bool {
 	var decoded struct {
@@ -272,23 +247,17 @@ func requestWantsStream(raw string) bool {
 }
 
 // hasStream — does this reply carry the stream shape at all? A reply that only scripts the plain path stays
-// a plain reply even when the client asks for a stream (§15: the guard of the client needs that case).
 func (r StrataReply) hasStream() bool {
 	return len(r.StreamContent) > 0 || len(r.StreamReasoning) > 0 || r.StreamUsage || r.StreamNoDone ||
 		r.StreamStall > 0 || r.StreamGap > 0 || r.StreamGarbage > 0 || r.StreamKeepalive
 }
 
-// writeStream — the SSE answer of §15 in the shape measured on the real endpoint of §14 on 2026-10-31:
-//
-//	data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}
-//	: keepalive comment                                                    (2–3 per answer)
-//	data: …{"delta":{"reasoning_content":"Thinking"}}                      (the thinking of this model)
-//	data: …{"delta":{"content":"Привет"}}                                  (the answer, one event per token)
-//	data: …{"choices":[],"usage":{"prompt_tokens":79,"completion_tokens":167}}
-//	data: [DONE]
-//
-// The sleeps obey the REQUEST context: a client whose budget of §7 ran out does not leave the fake writing
-// events nobody reads, which is what keeps a stall test short (§10 День 3 does the same for Delay).
+// data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}
+// : keepalive comment                                                    (2–3 per answer)
+// data: …{"delta":{"reasoning_content":"Thinking"}}                      (the thinking of this model)
+// data: …{"delta":{"content":"Привет"}}                                  (the answer, one event per token)
+// data: …{"choices":[],"usage":{"prompt_tokens":79,"completion_tokens":167}}
+// data: [DONE]
 func (s *Strata) writeStream(r *http.Request, w http.ResponseWriter, answer StrataReply, model string) {
 	var contentType = strings.TrimSpace(answer.StreamContentType)
 	if contentType == "" {
@@ -305,7 +274,7 @@ func (s *Strata) writeStream(r *http.Request, w http.ResponseWriter, answer Stra
 			return true // a scripted event that cannot be built is not worth an aborted test
 		}
 		if _, err = fmt.Fprintf(w, "data: %s\n\n", line); err != nil {
-			return false // the client is gone (it gave up on its budget of §7)
+			return false // the client is gone
 		}
 		if canFlush {
 			flusher.Flush() // without a flush the client sees one wall of text at the end, not a stream
@@ -313,7 +282,7 @@ func (s *Strata) writeStream(r *http.Request, w http.ResponseWriter, answer Stra
 		return true
 	}
 	var comment = func() {
-		if _, err := fmt.Fprint(w, ": keepalive of the fake (§14 measured these)\n\n"); err != nil {
+		if _, err := fmt.Fprint(w, ": keepalive of the fake \n\n"); err != nil {
 			return
 		}
 		if canFlush {
@@ -363,7 +332,7 @@ func (s *Strata) writeStream(r *http.Request, w http.ResponseWriter, answer Stra
 		}
 	}
 	for i := 0; i < answer.StreamGarbage; i++ {
-		if _, err := fmt.Fprint(w, "data: {this is not json (§15: a broken line of a provider)}\n\n"); err != nil {
+		if _, err := fmt.Fprint(w, "data: {this is not json }\n\n"); err != nil {
 			return
 		}
 		if canFlush {

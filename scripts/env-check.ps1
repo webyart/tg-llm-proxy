@@ -1,6 +1,5 @@
 #Requires -Version 7
 <#
-env-check.ps1 — §2: green checks "before work": Go, git, pwsh, C-compileryes/no,
   Docker demon + допдо (network GOPROXY, .env token, STRATA network, dirs structure, git repo).
 
 Usage:
@@ -47,7 +46,6 @@ else {
     Check 'git on PATH' $false "git not installed — $installHint" $false
 }
 
-# --- 4. git repo initialized at repo root (§2) ---
 Check 'git repo initialized' (Test-Path -LiteralPath (Join-Path $repoRoot '.git')) "repo root: $repoRoot" $false
 
 # --- 5. Docker demon + compose ---
@@ -67,9 +65,8 @@ foreach ($cand in @('gcc', 'cl', 'clang')) {
     $found = Get-Command -Name $cand -ErrorAction SilentlyContinue
     if ($found) { $cc = $cand; break }
 }
-Check 'C-compiler' $true "present: $(if ($cc) { $cc } else { 'none' }) — not needed: pebbled std uses pure-Go modernc.org/sqlite (§2)" $true
+Check 'C-compiler' $true "present: $(if ($cc) { $cc } else { 'none' }) — not needed: pebbled std uses pure-Go modernc.org/sqlite " $true
 
-# --- 7. Go cache + proxy vars (§3) ---
 $gopath = $env:GOPATH
 if (-not $gopath) { $gopath = (go env GOPATH 2>&1 | Select-Object -First 1) }
 $gocache = $env:GOCACHE
@@ -77,16 +74,14 @@ if (-not $gocache) { $gocache = (go env GOCACHE 2>&1 | Select-Object -First 1) }
 $goproxy = $env:GOPROXY
 if (-not $goproxy) { $goproxy = (go env GOPROXY 2>&1 | Select-Object -First 1) }
 $cacheNote = "GOPROXY=$goproxy GOCACHE=$gocache GOPATH=$gopath"
-Check 'Go cache + proxy vars' (($goproxy -ne '') -and ($gocache -ne '')) "$cacheNote — for project-local cache use scripts\Setup.ps1 (§3 .cache/)" $true
+Check 'Go cache + proxy vars' (($goproxy -ne '') -and ($gocache -ne '')) "$cacheNote — for project-local cache use scripts\Setup.ps1 " $true
 
-# --- 8. dirs structure (§4 Day 1: cmd/bot, internal, bin, data, scripts) ---
 $missingDirs = @()
 foreach ($d in @('cmd\bot', 'internal', 'bin', 'data', 'scripts')) {
     if (-not (Test-Path -LiteralPath (Join-Path $repoRoot $d) -PathType 'Container')) { $missingDirs += , $d }
 }
 Check 'dirs structure' ($missingDirs.Count -eq 0) "missing: $(if ($missingDirs.Count) { $missingDirs -join ', ' } else { 'none' }) — Day 1 code creation in progress" $true
 
-# --- 9. .env: TELEGRAM_BOT_TOKEN (§7) — required in runtime, checked in env-check ---
 $envPath = Join-Path $repoRoot '.env'
 $tokenSet = $false
 $envNote = 'TOKEN not set'
@@ -101,9 +96,8 @@ elseif ($env:TELEGRAM_BOT_TOKEN) {
     $envNote = 'from process ENV (no .env file)'
 }
 if ($tokenSet) { $envNote = "TELEGRAM_BOT_TOKEN set ($envNote)" }
-Check '.env: token' $tokenSet "$envNote — §7 required: copy .env.example → .env or export (Docker compose: env_file)" $true
+Check '.env: token' $tokenSet "$envNote — required: copy .env.example → .env or export (Docker compose: env_file)" $true
 
-# --- 10. STRATA network (§2: network for Go + STRATA) ---
 $base = $env:STRATA_BASE_URL
 if (-not $base) {
     if (Test-Path -LiteralPath $envPath) {
@@ -123,18 +117,15 @@ try {
 catch {
     $modelsNote = "GET $base/v1/models — error: $($_.Exception.Message)"
 }
-Check 'STRATA network' $modelsOk "$modelsNote (Day 4 checks — network for Go proxy + STRATA, §2)" $true
+Check 'STRATA network' $modelsOk "$modelsNote " $true
 
-# --- 11. sqlite3 CLI (§5: expected absent → use Go-tool) ---
 $sqliteCli = Get-Command -Name sqlite3 -ErrorAction SilentlyContinue
-Check 'sqlite3 CLI' $true "present: $(if ($sqliteCli) { 'yes' } else { 'no' }) — plan §5: no CLI expected, use Go-tool scripts/db_inspect.ps1" $true
+Check 'sqlite3 CLI' $true "present: $(if ($sqliteCli) { 'yes' } else { 'no' }) — plan: no CLI expected, use Go-tool scripts/db_inspect.ps1" $true
 
-# --- 12. Telegram API from a Go process (§2: the network the BOT has, not the one PowerShell has) ---
 # Measured 2026-10-31 on this machine: `Invoke-RestMethod …/getMe` answers 200 (WinINET proxy
 # 127.0.0.1:10808 is enabled in HKCU\…\Internet Settings), while the same request from a Go process times
 # out: http.Transport honours only HTTPS_PROXY/HTTP_PROXY of the PROCESS ENV, and the registry proxy is not
 # part of that ENV. So a check that asks PowerShell reports «network OK» while run.ps1 dies at getMe of
-# §10 День 4 (§12 reliability: a check must describe the process that has to work, not the shell that runs
 # the check). Inside the container the story is different — there the same binary polls Telegram directly.
 $tcpOk = $false
 $tcpNote = ''
@@ -163,12 +154,12 @@ if ($IsWindows) {
     }
 }
 if ($tcpOk -or $goProxy) {
-    $bypassNote = if ($env:NO_PROXY) { "NO_PROXY=$env:NO_PROXY" } else { 'NO_PROXY is empty, so a model of §7 on the loopback would be sent through the proxy — run.ps1 -UseSystemProxy sets the bypass' }
+    $bypassNote = if ($env:NO_PROXY) { "NO_PROXY=$env:NO_PROXY" } else { 'NO_PROXY is empty, so a model of on the loopback would be sent through the proxy — run.ps1 -UseSystemProxy sets the bypass' }
     $proxyNote = if ($goProxy) { "the Go process will use HTTPS_PROXY=$goProxy ($bypassNote)" } else { 'no HTTPS_PROXY is needed' }
-    Check 'Telegram API from Go' $true "$tcpNote; $proxyNote (§10 День 4: getMe must answer for the bot itself)"
+    Check 'Telegram API from Go' $true "$tcpNote; $proxyNote "
 }
 else {
-    $hint = if ($systemProxy) { "the system proxy is $systemProxy — start the bot with scripts/run.ps1 -UseSystemProxy or export HTTPS_PROXY=http://$systemProxy" } else { 'no system proxy is enabled either — the bot needs a route to api.telegram.org or a container (§8.1)' }
+    $hint = if ($systemProxy) { "the system proxy is $systemProxy — start the bot with scripts/run.ps1 -UseSystemProxy or export HTTPS_PROXY=http://$systemProxy" } else { 'no system proxy is enabled either — the bot needs a route to api.telegram.org or a container ' }
     Check 'Telegram API from Go' $false "$tcpNote and HTTPS_PROXY is empty — run.ps1 will stop at getMe; $hint" $true
 }
 

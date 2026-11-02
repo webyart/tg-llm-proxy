@@ -1058,6 +1058,24 @@ func TestInlineMenuAndCallback(t *testing.T) {
 	if !strings.Contains(tgAPI.Joined(), "pong") {
 		t.Fatalf("callback /ping must answer pong, got %q", tgAPI.Joined())
 	}
+	tgAPI.PushText(182, chatID, userID, "/persona")
+	waitFor(t, "persona menu was sent", func() bool { return tgAPI.Calls("sendMessage") == 3 })
+	if !strings.Contains(tgAPI.Sent()[2].ReplyMarkup, "persona:coder") {
+		t.Fatalf("persona response has no coder button: %q", tgAPI.Sent()[2].ReplyMarkup)
+	}
+	tgAPI.Push(models.Update{ID: 183, CallbackQuery: &models.CallbackQuery{
+		ID: "cb-persona", Data: "persona:coder", From: models.User{ID: userID, Username: "tester"},
+		Message: models.MaybeInaccessibleMessage{Message: &models.Message{
+			ID: 183, Date: int(time.Now().Unix()), Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate},
+		}},
+	}})
+	waitFor(t, "persona callback selected coder", func() bool {
+		return tgAPI.Calls("answerCallbackQuery") == 2 && tgAPI.Calls("sendMessage") == 4
+	})
+	prompt, found, err := store.ChatPersona(context.Background(), db, chatID)
+	if err != nil || !found || !strings.Contains(prompt, "senior software engineer") {
+		t.Fatalf("persona callback did not persist coder: prompt=%q found=%v err=%v", prompt, found, err)
+	}
 	run.stop()
 }
 

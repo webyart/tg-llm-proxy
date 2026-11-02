@@ -57,6 +57,20 @@ func TestCallbackEventUsesOnlyRegisteredCommands(t *testing.T) {
 	if !ok || ev.Text != "/ping" || ev.ChatID != 100 || ev.UserID != 11 || ev.UpdateID != 181 {
 		t.Fatalf("callbackEventOf = %+v ok=%v", ev, ok)
 	}
+	update.CallbackQuery.Data = "persona:coder"
+	ev, ok = d.callbackEventOf(update)
+	if !ok || ev.Text != "/persona coder" {
+		t.Fatalf("persona callback = %+v ok=%v", ev, ok)
+	}
+	update.CallbackQuery.Data = "persona:custom"
+	ev, ok = d.callbackEventOf(update)
+	if !ok || ev.Text != "/persona custom" {
+		t.Fatalf("custom callback must show the custom-prompt syntax, got %+v", ev)
+	}
+	update.CallbackQuery.Data = "persona:unknown"
+	if _, ok := d.callbackEventOf(update); ok {
+		t.Fatal("an unregistered persona callback must be rejected")
+	}
 	update.CallbackQuery.Data = "cmd:unknown"
 	if _, ok := d.callbackEventOf(update); ok {
 		t.Fatal("an unregistered callback must be rejected")

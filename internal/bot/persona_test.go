@@ -23,6 +23,20 @@ func TestPersonaPresetCustomScopeAndReset(t *testing.T) {
 			t.Fatalf("persona list misses %q: %q", want, joined)
 		}
 	}
+	if len(r.menus) != 1 {
+		t.Fatalf("/persona must send one inline menu, got %d", len(r.menus))
+	}
+	seen := map[string]bool{}
+	for _, row := range r.menus[0].InlineKeyboard {
+		for _, button := range row {
+			seen[button.CallbackData] = true
+		}
+	}
+	for _, want := range []string{"persona:assistant", "persona:coder", "persona:writer", "persona:translator", "persona:custom", "persona:reset"} {
+		if !seen[want] {
+			t.Errorf("persona menu misses %q", want)
+		}
+	}
 	if err := dispatch(t, d, testEvent(100, 11, 4001, "/persona coder")); err != nil {
 		t.Fatalf("/persona coder: %v", err)
 	}

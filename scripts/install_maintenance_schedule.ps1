@@ -3,11 +3,13 @@
 install_maintenance_schedule.ps1 — preview or register the daily Windows Task Scheduler entry for volume maintenance.
 
 Default action: db_volume_maintenance.ps1 -Keep 7, with retention in dry-run mode, so no old backup is deleted.
--ApplyRetention adds -Apply explicitly. Existing tasks are never overwritten (/F is not used).
+-ExternalDirectory adds a verified external copy. -ApplyRetention adds -Apply explicitly. Existing tasks are never
+overwritten (/F is not used). Failure alerts use the existing Telegram token and allowlist.
 
 Usage:
   .\scripts\install_maintenance_schedule.ps1
   .\scripts\install_maintenance_schedule.ps1 -Register
+  .\scripts\install_maintenance_schedule.ps1 -ExternalDirectory E:\tg-llm-proxy-backups -Register
   .\scripts\install_maintenance_schedule.ps1 -Time 04:30 -TaskName tg-llm-proxy-maintenance -Register
   .\scripts\install_maintenance_schedule.ps1 -ApplyRetention -Register
 #>
@@ -17,6 +19,7 @@ param(
     [string]$TaskName = 'tg-llm-proxy-maintenance',
     [ValidatePattern('^([01][0-9]|2[0-3]):[0-5][0-9]$')]
     [string]$Time = '04:00',
+    [string]$ExternalDirectory,
     [switch]$ApplyRetention,
     [switch]$Register
 )
@@ -38,6 +41,11 @@ if (-not (Get-Command -Name schtasks -ErrorAction SilentlyContinue)) {
 
 $pwsh = (Get-Process -Id $PID).Path
 $action = "`"$pwsh`" -NoLogo -NoProfile -File `"$maintenance`" -Keep 7"
+if ($ExternalDirectory) {
+    if (-not [System.IO.Path]::IsPathRooted($ExternalDirectory)) { $ExternalDirectory = Join-Path $repoRoot $ExternalDirectory }
+    $ExternalDirectory = [System.IO.Path]::GetFullPath($ExternalDirectory)
+    $action += " -ExternalDirectory `"$ExternalDirectory`""
+}
 if ($ApplyRetention) { $action += ' -Apply' }
 $createArgs = @('/Create', '/TN', $TaskName, '/SC', 'DAILY', '/ST', $Time, '/TR', $action)
 

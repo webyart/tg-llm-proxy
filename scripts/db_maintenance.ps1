@@ -1,21 +1,23 @@
 #Requires -Version 7
 <#
-db_maintenance.ps1 — one scheduler-friendly §9 maintenance step: verified online backup, then retention.
+db_maintenance.ps1 — one scheduler-friendly §9 maintenance step: verified online backup, retention, optional external copy.
 
 The backup is always a NEW timestamped file and is checked read-only by db_backup.ps1. Retention then runs through
 db_rotate.ps1: without -Apply it is only a dry-run; -Apply explicitly permits deletion of expired generated names.
 -Source is optional and has the same DB_PATH/process ENV/.env precedence as db_backup.ps1. The destination directory
-must be data/backups (or a child) or zzscratch (or a child), matching the rotation safety boundary.
+must be data/backups (or a child) or zzscratch (or a child), matching the rotation safety boundary. -ExternalDirectory
+adds a non-overwriting SHA-256- and SQLite-verified copy after the local backup and rotation succeed.
 
 Usage:
   .\scripts\db_maintenance.ps1                              # backup + dry-run retention, keep 7
   .\scripts\db_maintenance.ps1 -Keep 14 -Apply              # backup + delete expired copies, keep 14
   .\scripts\db_maintenance.ps1 -Source .\data\bot.db -Directory .\zzscratch\maintenance -Keep 2
+  .\scripts\db_maintenance.ps1 -ExternalDirectory E:\tg-llm-proxy-backups
 
 Task Scheduler should invoke pwsh with -NoLogo -NoProfile -File and the full path to this script. Registration is
 intentionally not performed by this script; test the exact command manually before scheduling it with -Apply.
 
-Exit: 0 — the new backup passed verification and the rotation plan/apply completed; 1 — any stage failed.
+Exit: 0 — backup, retention, and any requested external copy passed; 1 — any stage failed.
 #>
 
 [CmdletBinding()]
@@ -24,6 +26,7 @@ param(
     [string]$Directory,
     [ValidateRange(1, 1000000)]
     [int]$Keep = 7,
+    [string]$ExternalDirectory,
     [switch]$Apply,
     [switch]$Rebuild
 )
@@ -71,6 +74,14 @@ try {
     if ($LASTEXITCODE -ne 0) {
         Write-Output "db_maintenance: the new backup exists and is verified, but retention failed: $Dest"
         exit 1
+    }
+
+    if ($ExternalDirectory) {
+        & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'db_offsite_copy.ps1') -Source $Dest -Directory $ExternalDirectory
+        if ($LASTEXITCODE -ne 0) {
+            Write-Output "db_maintenance: the local backup exists and is verified, but external copy failed: $Dest"
+            exit 1
+        }
     }
 
     $mode = 'dry-run retention; no old backup was deleted'

@@ -2,9 +2,10 @@
 <#
 verify.ps1 — the complete local verification pipeline of §9 and §11.
 
-Runs lint, Unit + Store, fixture-based maintenance acceptance, Integration + leak scan, build, and the containerized race detector. Every stage runs
-in its own pwsh process because the stage scripts use exit; one red stage therefore does not hide the results
-of the others. The final table distinguishes PASS, FAIL, WARN and SKIP; any FAIL makes the pipeline exit 1.
+Runs lint, Unit + Store, fixture maintenance/external-copy acceptance, loopback Telegram notification acceptance,
+Integration + leak scan, build, and the containerized race detector. -WithVolumeRestore also covers isolated restore
+and container monitoring. Every stage runs in its own pwsh process because the stage scripts use exit; one red stage
+therefore does not hide the others. The final table distinguishes PASS, FAIL, WARN and SKIP; any FAIL exits 1.
 
 Usage:
   .\scripts\verify.ps1
@@ -57,6 +58,7 @@ try {
     $maintenanceArgs = @()
     if ($WithVolumeRestore) { $maintenanceArgs += '-WithVolumeRestore' }
     Invoke-Stage 'maintenance acceptance' 'test-maintenance.ps1' $maintenanceArgs
+    Invoke-Stage 'notification acceptance' 'test-notifications.ps1'
 
     $smokeArgs = @()
     if ($SkipHealth) { $smokeArgs += '-SkipHealth' }

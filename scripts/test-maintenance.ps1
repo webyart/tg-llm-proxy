@@ -2,9 +2,10 @@
 <#
 test-maintenance.ps1 — repeatable §9 acceptance on a NEW fixture database, never on data/bot.db or the live volume.
 
-Covers backup → scratch restore → counter comparison, maintenance dry-run/apply rotation, and integrity of every
-retained generated backup. -WithVolumeRestore additionally runs the isolated compose-volume rehearsal and therefore
-requires Docker plus tg-llm-proxy-bot:latest. All fixture files are removed in finally.
+Covers backup → scratch restore → counter comparison, verified external copy without overwrite, maintenance
+dry-run/apply rotation, and integrity of every retained generated backup. -WithVolumeRestore additionally runs the
+isolated compose-volume and container-monitor rehearsals and therefore requires Docker plus tg-llm-proxy-bot:latest.
+All fixture files and containers are removed in finally.
 
 Usage:
   .\scripts\test-maintenance.ps1
@@ -70,6 +71,15 @@ try {
     Assert-SameCounts $source $restored
     Write-Output 'maintenance acceptance: backup/restore counters match'
 
+    $external = Join-Path $work 'external-copy'
+    & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'db_offsite_copy.ps1') -Source $backup -Directory $external
+    if ($LASTEXITCODE -ne 0) { throw 'external copy acceptance failed' }
+    $externalBackup = Join-Path $external 'manual-backup.db'
+    Assert-SameCounts $backup $externalBackup
+    & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'db_offsite_copy.ps1') -Source $backup -Directory $external
+    if ($LASTEXITCODE -eq 0) { throw 'external copy overwrote an existing destination' }
+    Write-Output 'maintenance acceptance: external copy matches and existing destinations are never overwritten'
+
     $legacy = Join-Path $work 'legacy.db'
     & $fixtureExe -path $legacy -pre-version
     if ($LASTEXITCODE -ne 0) { throw 'legacy dbfixture failed' }
@@ -132,6 +142,8 @@ try {
     if ($WithVolumeRestore) {
         & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'test-volume-restore.ps1') -Source $backup
         if ($LASTEXITCODE -ne 0) { throw 'isolated volume restore rehearsal failed' }
+        & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'test-container-monitor.ps1')
+        if ($LASTEXITCODE -ne 0) { throw 'container monitor acceptance failed' }
     }
 }
 catch {

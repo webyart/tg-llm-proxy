@@ -174,7 +174,7 @@ Reverse proxy или туннель должен перенаправлять п
 .\scripts\test-maintenance.ps1 -WithVolumeRestore
 ```
 
-Pipeline включает gofmt/vet, PowerShell parser, unit/store, fixture backup/restore/rotate/prune/migration, fake Telegram + fake STRATA, build, secret leak scan и Docker race.
+Pipeline включает gofmt/vet, PowerShell parser, unit/store, fixture backup/restore/external-copy/rotate/prune/migration, loopback Telegram alerts, fake Telegram + fake STRATA, build, secret leak scan и Docker race. `-WithVolumeRestore` добавляет volume restore и container-monitor acceptance.
 
 Release CI — `.gitlab-ci.yml`: Linux host checks, race непосредственно в `golang:1.27-alpine` и `govulncheck`. Docker-in-Docker не требуется. `.github/workflows/verify.yml` сохранён как дополнительный workflow.
 
@@ -230,9 +230,30 @@ Backup использует `VACUUM INTO` и не останавливает wri
 .\scripts\test-volume-restore.ps1 -Source .\data\backups\bot-YYYYMMDD-HHMMSS.db
 ```
 
-Maintenance чисто останавливает бота, копирует `/data/bot.db`, перезапускает контейнер и проверяет integrity/schema новой копии в `data/backups`. По умолчанию старые backup и история не удаляются; `-Apply` или `-ApplyRetention` включают только ротацию файлов.
+Maintenance чисто останавливает бота, копирует `/data/bot.db`, перезапускает контейнер и проверяет integrity/schema новой копии в `data/backups`. По умолчанию старые backup и история не удаляются; `-Apply` или `-ApplyRetention` включают только ротацию файлов. Ошибка запускает plain-text Telegram-уведомление всем id из `TELEGRAM_ALLOWED_USERS`.
 
-Windows Task Scheduler запускает задачу от текущего пользователя в интерактивном сеансе; стандартные ограничения питания задачи также действуют. Существующая задача не перезаписывается. В действии сохраняются абсолютные пути к репозиторию и текущему `pwsh.exe` — после их перемещения или обновления пути задачу нужно пересоздать. На macOS/Linux зарегистрируйте `db_volume_maintenance.ps1 -Keep 7` через cron или systemd.
+### Внешняя копия backup
+
+```powershell
+.\scripts\db_volume_maintenance.ps1 -ExternalDirectory E:\tg-llm-proxy-backups
+.\scripts\install_maintenance_schedule.ps1 -ExternalDirectory E:\tg-llm-proxy-backups -Register
+.\scripts\db_offsite_copy.ps1 -Source .\data\backups\bot-YYYYMMDD-HHMMSS.db -Directory \\NAS\backups\tg-llm-proxy
+```
+
+Внешняя копия создаётся после локального backup, не перезаписывает файлы и проверяется по SHA-256 и SQLite integrity/schema. Каталог должен действительно находиться на другом диске, NAS или в синхронизируемом облачном хранилище — скрипт не может подтвердить физическое расположение. Если ежедневная задача уже существует, сначала удалите её в Task Scheduler: регистратор намеренно не перезаписывает задачи.
+
+### Мониторинг контейнера и уведомления
+
+```powershell
+.\scripts\watch_container.ps1
+.\scripts\install_monitoring_schedule.ps1           # preview
+.\scripts\install_monitoring_schedule.ps1 -Register # каждые 5 минут
+.\scripts\notify-telegram.ps1 -Message 'tg-llm-proxy: test'
+```
+
+Монитор отправляет алерт при сбое и восстановлении, повторяет неизменный failure не чаще одного раза в 6 часов и не перезапускает контейнер автоматически. Во время штатного clean-stop backup проверка пропускается. Состояние подавления хранится в `data/monitoring/container-alert.json`. Уведомления используют существующие token/allowlist, не принимают token аргументом и не печатают его.
+
+Windows Task Scheduler запускает задачи от текущего пользователя в интерактивном сеансе; стандартные ограничения питания также действуют. Существующие задачи не перезаписываются. В действиях сохраняются абсолютные пути к репозиторию и текущему `pwsh.exe` — после их перемещения или обновления пути задачи нужно пересоздать. На macOS/Linux зарегистрируйте maintenance и monitor через cron или systemd.
 
 Чистая остановка checkpointит WAL. Репетиция использует отдельный compose-проект и не создаёт второй Telegram poller.
 

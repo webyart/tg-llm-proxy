@@ -37,9 +37,8 @@ const (
 	// gives up (wait_updates.go), which is why the http.Client timeout must be larger (§12 reliability).
 	DefaultPollTimeout = 30 * time.Second
 	// InitTimeout — getMe at New time (§10 День 4: New calls getMe with WithCheckInitTimeout and
-	// returns an error without an answer). It covers the same slow route as TLSHandshakeTimeout; the
-	// library default of 5 s can otherwise restart the container before polling has a chance to start.
-	InitTimeout = 30 * time.Second
+	// returns an error without an answer). Two route attempts may each need a TLS handshake before polling starts.
+	InitTimeout = 65 * time.Second
 	// TLSHandshakeTimeout tolerates a slow or intermittently filtered Telegram route without changing
 	// the long-poll budget. The Go default is 10 s; transient route failures must not force a reconnect loop.
 	TLSHandshakeTimeout = 30 * time.Second
@@ -65,7 +64,7 @@ type Options struct {
 	// SkipGetMe — WithSkipGetMe, for a fake that does not serve getMe. NewTelegram needs the username
 	// of the bot for the normalization of §6, so with SkipGetMe the BotName of Deps is what stays.
 	SkipGetMe bool
-	// HTTPClient — the client of WithHTTPClient; nil → a client whose Timeout is PollTimeout + 5s.
+	// HTTPClient — the client of WithHTTPClient; nil → long poll plus two bounded route handshakes.
 	HTTPClient *http.Client
 	// WebhookSecretToken enables the X-Telegram-Bot-Api-Secret-Token check on the webhook handler.
 	WebhookSecretToken string
@@ -74,7 +73,10 @@ type Options struct {
 func defaultTelegramHTTPClient(poll time.Duration) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSHandshakeTimeout = TLSHandshakeTimeout
-	return &http.Client{Transport: transport, Timeout: poll + 5*time.Second}
+	return &http.Client{
+		Transport: newTelegramFallbackTransport(transport),
+		Timeout:   poll + 2*TLSHandshakeTimeout + 5*time.Second,
+	}
 }
 
 // NewTelegram — the library bot wired to d, plus the handlers of §10 День 4:

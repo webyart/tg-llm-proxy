@@ -122,15 +122,18 @@ http/https-ссылки. Обычные специальные символы э
 
 ### Сеть Telegram
 
-TLS handshake timeout Telegram transport — 30 секунд вместо стандартных 10; стартовый `getMe` также получает 30 секунд вместо 5, чтобы медленный маршрут не вызывал restart loop. Long-poll бюджет и повторы библиотеки сохраняются. Если прямой маршрут нестабилен, создайте локальный `data/telegram-proxy.env`:
+TLS handshake timeout Telegram transport — 30 секунд вместо стандартных 10; стартовый `getMe` получает до 65 секунд на две попытки маршрута. При ошибке proxy только `getMe`/`getUpdates` автоматически пробуют direct route; `sendMessage` и edit никогда не повторяются через fallback, чтобы не создать дубли. Если прямой маршрут нестабилен, создайте локальный `data/telegram-proxy.env`:
 
 ```env
 HTTPS_PROXY=http://host.docker.internal:10808
 HTTP_PROXY=http://host.docker.internal:10808
 NO_PROXY=127.0.0.1,localhost,host.docker.internal
+https_proxy=http://host.docker.internal:10808
+http_proxy=http://host.docker.internal:10808
+no_proxy=127.0.0.1,localhost,host.docker.internal
 ```
 
-Compose подхватывает этот optional файл при каждом запуске, включая scheduled maintenance; он gitignored и не попадает в Docker context. `host.docker.internal` заменяет loopback proxy хоста. `NO_PROXY` обязателен для локальной STRATA, чтобы её трафик и API key не отправлялись через proxy. Для host-запуска вне Docker используйте `run.ps1 -UseSystemProxy`. Постоянные timeout означают неисправность сети/VPN, а не ошибку бота.
+Compose подхватывает этот optional файл при каждом запуске, включая scheduled maintenance; он gitignored и не попадает в Docker context. `host.docker.internal` заменяет loopback proxy хоста. `NO_PROXY` обязателен для локальной STRATA, чтобы её трафик и API key не отправлялись через proxy. Docker HEALTHCHECK дополнительно использует `wget --proxy off`, поэтому loopback probe не зависит от proxy. Для host-запуска вне Docker используйте `run.ps1 -UseSystemProxy`. Постоянные timeout означают неисправность сети/VPN, а не ошибку бота.
 
 ### Стриминг
 

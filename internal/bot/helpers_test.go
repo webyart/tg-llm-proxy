@@ -1,6 +1,3 @@
-// helpers_test.go — the fakes §11 requires for the §6 scenarios without a Telegram API, a token or a
-// GPU: a recording Replier, a scripted model.Client and the in-memory SQLite of §5. The config comes
-// from config.LoadFrom, so the tests exercise the REAL defaults and bounds of §7 instead of a copy.
 package bot
 
 import (
@@ -78,7 +75,6 @@ func (f *fakeReplier) count() int {
 }
 
 // fakeModel — model.Client with a script: a Response, an error, a delay (for the per-chat order of
-// §12), a panic (for the recovery of §12) and a model list (for /model check of §6).
 type fakeModel struct {
 	mu         sync.Mutex
 	calls      int
@@ -87,14 +83,14 @@ type fakeModel struct {
 	err        error
 	panicky    bool
 	delay      time.Duration
-	contentFor func(req model.Request) string // the answer of §6 per request, when the test needs it
+	contentFor func(req model.Request) string // the answer of per request, when the test needs it
 	models     []string
 	modelsErr  error
 }
 
 func (m *fakeModel) Complete(ctx context.Context, req model.Request) (model.Response, error) {
 	if m.panicky {
-		panic("the fake model exploded (§12 надёжность: panic recovery)")
+		panic("the fake model exploded ")
 	}
 	m.mu.Lock()
 	m.calls++
@@ -149,7 +145,6 @@ func (m *fakeModel) lastRequest() model.Request {
 	return m.requests[len(m.requests)-1]
 }
 
-// testConfig — the §7 loader with the test ENV. PARSE_MODE=plain keeps the assertions about the text
 // readable (the escaping itself is tested in reply_test.go).
 func testConfig(t *testing.T, overrides map[string]string) config.Config {
 	t.Helper()
@@ -164,12 +159,11 @@ func testConfig(t *testing.T, overrides map[string]string) config.Config {
 	}
 	var cfg, problems = config.LoadFrom(raw)
 	if len(problems) > 0 {
-		t.Fatalf("config.LoadFrom rejected the test ENV (§7 validation): %v", problems)
+		t.Fatalf("config.LoadFrom rejected the test ENV : %v", problems)
 	}
 	return cfg
 }
 
-// testStore — the in-memory SQLite of §5 with a unique name (§5 note: cache=shared is dangerous
 // between tests of one package, so the name carries the test name).
 func testStore(t *testing.T) *sql.DB {
 	t.Helper()
@@ -178,7 +172,6 @@ func testStore(t *testing.T) *sql.DB {
 
 // testStoreNamed — a fresh DB for one sub-case of a table-driven test: cache=shared means two cases
 // that ask for the same name share the rows, which would make a "one row" assertion pass by accident.
-// The name is sanitized because store.MemoryDSN accepts a bare identifier only (§5: the name lands in
 // the URI path).
 func testStoreNamed(t *testing.T, name string) *sql.DB {
 	t.Helper()
@@ -202,12 +195,8 @@ func testStoreNamed(t *testing.T, name string) *sql.DB {
 	return db
 }
 
-// newTestDispatcher — the wiring of §10 День 4 without the library: the offset writer is the real
-// store.SetLastUpdateID of §5, so the offset assertions read the same row a restart would read. The
-// optional logger is for §10 День 7 («логи slog (JSON) с chat_id, latency_ms, model»): a test that cares
 // about the log shape passes a JSON handler, everyone else keeps the silent default of New.
 //
-// The model and the replier are the INTERFACES of §4/§6 rather than the fakes below, because §15 tests need a
 // model that can stream and a replier that can edit — an optional capability is only reachable through the
 // interface it is asserted against (streamingPossible of stream.go).
 func newTestDispatcher(t *testing.T, cfg config.Config, m model.Client, r Replier, db *sql.DB, logger ...*slog.Logger) *Dispatcher {
@@ -232,18 +221,17 @@ func newTestDispatcher(t *testing.T, cfg config.Config, m model.Client, r Replie
 		Replier:     r,
 		Token:       cfg.BotToken,
 		BotName:     "TestBot",
-		StartOffset: offset, // the restart case of §5: the dispatcher continues from bot_state
+		StartOffset: offset, // the restart case of: the dispatcher continues from bot_state
 		Offset: func(ctx context.Context, updateID int64) error {
 			return store.SetLastUpdateID(ctx, db, updateID)
 		},
 	}
 	if len(logger) > 0 && logger[0] != nil {
-		deps.Logger = logger[0] // §10 День 7: the caller reads the JSON lines the process would write
+		deps.Logger = logger[0] //: the caller reads the JSON lines the process would write
 	}
 	return New(deps)
 }
 
-// testEvent — one message of §6 as run.go would build it from models.Update.
 func testEvent(chatID int64, userID int64, tgMessageID int64, text string) Event {
 	return Event{
 		UpdateID:          tgMessageID + 1000,
@@ -256,7 +244,6 @@ func testEvent(chatID int64, userID int64, tgMessageID int64, text string) Event
 	}
 }
 
-// merge — a small helper for the §7 overrides of the tests.
 func merge(base map[string]string, extra map[string]string) map[string]string {
 	var out = map[string]string{}
 	var k string
@@ -269,13 +256,11 @@ func merge(base map[string]string, extra map[string]string) map[string]string {
 	return out
 }
 
-// dispatch — Dispatch with a fresh ctx and a fatal error on failure (the tests of §6 never want a
 // silent refusal to look like a pass).
 func dispatch(t *testing.T, d *Dispatcher, ev Event) error {
 	t.Helper()
 	return d.Dispatch(context.Background(), ev)
 }
 
-// intPtr — the nullable token columns of §5 (tokens_in, tokens_out) need a pointer, and &10 is not
 // legal Go.
 func intPtr(v int64) *int64 { return &v }

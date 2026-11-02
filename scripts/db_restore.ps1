@@ -1,6 +1,5 @@
 #Requires -Version 7
 <#
-db_restore.ps1 — verify a §5 backup and restore it into a NEW file under zzscratch.
 
 Both source and destination are opened read-only for integrity_check and the required bot-schema check. The copy
 uses SQLite VACUUM INTO rather than copying database pages by hand. Existing destinations are never overwritten.

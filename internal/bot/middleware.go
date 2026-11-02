@@ -1,6 +1,3 @@
-// middleware.go — the four guards of §10 День 4 («middleware: allowlist, rate limit, per-chat lock,
-// panic recovery») plus the idempotency step of §2 п.7. Each one answers the user itself and returns
-// nil: a refusal of §6/§7 is an ANSWER, not a failure, and the dispatch log of §12 stays for real
 // errors only.
 package bot
 
@@ -13,24 +10,17 @@ import (
 	"bot/internal/store"
 )
 
-// msgPanic — §12 надёжность: «один сбой STRATA ≠ падение бота» and the same for our own bugs.
-const msgPanic = "Бот ошибся на этом сообщении (panic перехвачен, §12 надёжность). Попробуй ещё раз."
+const msgPanic = "Бот не смог обработать это сообщение. Попробуй ещё раз."
 
-// msgTooOften — §7 RATE_LIMIT_PER_MINUTE with the concrete wait (§12 UX: say what to do).
-const msgTooOftenFormat = "Слишком часто: не больше %d запросов в минуту (§7 RATE_LIMIT_PER_MINUTE). Подожди %s и попробуй ещё раз."
+const msgTooOftenFormat = "Слишком часто: не больше %d запросов в минуту. Подожди %s и попробуй ещё раз."
 
-// stored — the UNIQUE guard of §5 `uq_messages_chat_tg_id` used as the idempotency key of §2 п.7: the incoming
 // message is written BEFORE the model call, so the second delivery of the same update after a restart (or a
 // redelivery by Telegram) hits the constraint. Only the paths with UsesModel get a row — /help and /ping are not
-// conversation content of §5. Hitting the constraint does not yet say whether the update was ANSWERED: the guard
-// separates «answered, stay silent» (§10 День 6) from «interrupted mid-generation, answer it now» (§11) by
 // comparing the row of this update with the newest row of the chat, see the comment inside.
 func (d *Dispatcher) stored(next HandlerFunc) HandlerFunc {
 	return func(ctx context.Context, ev Event, cmd Command) error {
 		var question = ev.Question
 		if !cmd.UsesModel || question == "" {
-			// §6: `/ask` without an argument is answered with a hint, and a hint is not a question —
-			// an empty user row would put noise into the context of §5.
 			return next(ctx, ev, cmd)
 		}
 		var tgID = ev.TelegramMessageID
@@ -43,43 +33,32 @@ func (d *Dispatcher) stored(next HandlerFunc) HandlerFunc {
 		})
 		if err != nil {
 			if store.IsDuplicate(err) {
-				// §13 risk «повторные ответы»: the row of this update exists. Whether that means
-				// «this update was already answered» is a different question, and preparing the §11 item
 				// «Ctrl-C / docker compose down при длинном /ask» (2026-10-31) settled the case the old
 				// comment simply assumed: this very function writes role='user' BEFORE the model call,
-				// while the offset of §5 is acknowledged only after the handler (Dispatch → persistOffset),
 				// so a process stopped in the middle of a generation leaves the question stored and
 				// unanswered. Silence there was not a second line of defence against a duplicate answer — it
-				// was the loss of the user's question with nothing in the audit of §5 to show for it. (What
 				// happens next was measured the same day: Telegram does NOT hand such an update back, so the
-				// second chance this guard used to be written as waiting for is the scan of resume.go, §15.)
 				//
 				// The guard therefore asks the database, and it asks it about THIS update: the row of the
-				// question has an id (§5 AUTOINCREMENT), and the answer of §6 is the next row of the same
-				// chat (commands.go appends it before sending, §10 День 3 «ровно одна запись assistant»).
 				// So the question of this update is still waiting exactly when its own row is the newest row
-				// the context of §5 sees. Comparing roles only would be wrong in the ordinary case of a user
 				// who asked twice: the chat then ends with the row of the SECOND question, and the answer to
 				// the first one — already given — would look missing.
 				var questionID, rowErr = store.RowIDByTelegramMessageID(ctx, d.deps.DB, ev.ChatID, tgID)
 				if rowErr != nil {
-					// The read that decides «answer or stay silent» failed. §13 names a duplicate answer as
-					// the risk this middleware guards, so the conservative branch is the silence of §10
-					// День 4, and §12 reliability puts the reason in the log rather than in a manual.
-					d.deps.Logger.Error("the redelivered update stays unanswered: the row of §5 could not be read",
+					d.deps.Logger.Error("the redelivered update stays unanswered: the row of could not be read",
 						"chat_id", ev.ChatID, "telegram_message_id", tgID,
 						"error", Sanitize(rowErr, d.deps.Token))
 					return nil
 				}
 				var lastID, lastRole, lastErr = store.LastVisibleMessage(ctx, d.deps.DB, ev.ChatID)
 				if lastErr != nil {
-					d.deps.Logger.Error("the redelivered update stays unanswered: the newest row of §5 could not be read",
+					d.deps.Logger.Error("the redelivered update stays unanswered: the newest message could not be read",
 						"chat_id", ev.ChatID, "telegram_message_id", tgID,
 						"error", Sanitize(lastErr, d.deps.Token))
 					return nil
 				}
 				if questionID != 0 && questionID == lastID && lastRole == store.RoleUser {
-					d.deps.Logger.Info("the question of this update has no answer of §6 yet, answering it",
+					d.deps.Logger.Info("this update's question has no answer yet; answering it",
 						"chat_id", ev.ChatID, "telegram_message_id", tgID, "question_row", questionID)
 					return next(ctx, ev, cmd)
 				}
@@ -94,9 +73,7 @@ func (d *Dispatcher) stored(next HandlerFunc) HandlerFunc {
 	}
 }
 
-// allowed — §7 deny-by-default with §16 change 13: /start and /whoami answer even a closed bot,
 // otherwise a user could never read their own id to get into TELEGRAM_ALLOWED_USERS. The refusal is
-// audited as events(kind='denied') (§10 День 4 DoD).
 func (d *Dispatcher) allowed(next HandlerFunc) HandlerFunc {
 	return func(ctx context.Context, ev Event, cmd Command) error {
 		if cmd.AlwaysAllowed || d.deps.Cfg.Allows(ev.UserID) {
@@ -110,8 +87,6 @@ func (d *Dispatcher) allowed(next HandlerFunc) HandlerFunc {
 	}
 }
 
-// limited — RATE_LIMIT_PER_MINUTE of §7, applied only to the commands that reach the GPU
-// (UsesModel): the limit of §12 exists to protect the model, not SQLite.
 func (d *Dispatcher) limited(next HandlerFunc) HandlerFunc {
 	return func(ctx context.Context, ev Event, cmd Command) error {
 		if !cmd.UsesModel {
@@ -129,10 +104,7 @@ func (d *Dispatcher) limited(next HandlerFunc) HandlerFunc {
 	}
 }
 
-// locked — §12 «per-chat lock гарантирует порядок ответов в одном чате». The wait for the lock is
 // cancellable (ratelimit.WithChat), so an expired reply budget frees the queue instead of parking
-// a goroutine (§12 «Производительность»: per-chat lock гарантирует порядок в чате; бюджет ответа —
-// §7 TG_REPLY_DEADLINE_SECONDS).
 func (d *Dispatcher) locked(next HandlerFunc) HandlerFunc {
 	return func(ctx context.Context, ev Event, cmd Command) error {
 		return d.deps.Locks.WithChat(ctx, ev.ChatID, func() error {
@@ -141,7 +113,6 @@ func (d *Dispatcher) locked(next HandlerFunc) HandlerFunc {
 	}
 }
 
-// recovered — §12 надёжность «panic recovery в обработчике». Outermost of the chain (§10 День 4):
 // a panic in the store write or in a command handler must not take the process down, and the user
 // gets an answer instead of silence.
 func (d *Dispatcher) recovered(next HandlerFunc) HandlerFunc {
@@ -164,7 +135,6 @@ func (d *Dispatcher) recovered(next HandlerFunc) HandlerFunc {
 	}
 }
 
-// messageIDOrNull — §5: telegram_message_id is NULL for model answers, and 0 is not a Telegram id.
 func messageIDOrNull(id int64) *int64 {
 	if id == 0 {
 		return nil

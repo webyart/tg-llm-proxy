@@ -1,18 +1,9 @@
-// telegram.go — the fake Telegram Bot API of §11 («Фейк Telegram обязателен для интеграционного теста
-// без токена и без сети (и именно он проверяет разбиение/экранирование ответов)») and of the §10 День 4
 // DoD («интеграционный тест с фейковым getUpdates»).
 //
-// The fake speaks the wire shape of the library, because §10 День 4 points the real client at it with
 // `bot.WithServerURL`: the library POSTs a multipart form to `{url}/bot{token}/{method}` and reads the
 // `{"ok": …, "result": …, "error_code": …}` envelope back (raw_request.go of v1.27.0). Serving anything
-// else would test a bot that does not exist. Four methods are enough for §6: getMe (New calls it and
-// fails without an answer — §10 День 4), getUpdates (long polling with the offset semantics of §5),
-// sendMessage (the chunked answer of §12 UX) and setMyCommands (the command menu of §10 День 4).
 //
-// The offset semantics are the point of the restart test (§11 уровень «Integration»): Telegram treats
 // `offset` as a confirmation, so every update below it is gone forever. The fake does the same — that
-// is what makes `bot.WithInitialOffset` + `bot_state` of §5 provable, and `Replay` is the second line
-// of defence of §2 п.7: an update that comes back must be swallowed by the UNIQUE guard of §5, not
 // answered twice.
 package testutil
 
@@ -31,21 +22,15 @@ import (
 	"github.com/go-telegram/bot/models"
 )
 
-// SentMessage — one sendMessage the fake received (§11: the fake is what checks the chunking and the
-// parse mode of §7, because nothing else in the test knows how the answer left the process).
 type SentMessage struct {
 	ChatID      int64
 	Text        string
 	ParseMode   string
 	ReplyMarkup string
-	// MessageID is the id the fake handed back in the result of sendMessage — the id §15 addresses every
-	// rewrite to (§16 change 34). It is never 0: a real Telegram id is not 0, and run.go refuses an answer
 	// with no id precisely so that a stream cannot pretend it was rewritten into nothing.
 	MessageID int
 }
 
-// SentEdit — one editMessageText the fake received (§15, §16 change 34). The rewrite of a streamed answer is
-// the half of §15 the Replier fakes of internal/bot cannot show: they record texts, but only the Bot API sees
 // whether the id and the parse mode came with them.
 type SentEdit struct {
 	ChatID    int64
@@ -63,7 +48,6 @@ type WebhookRegistration struct {
 }
 
 // TelegramFailure — one-shot error answer in the envelope of the Bot API. Code 429 with RetryAfter is
-// the flood case of §10 День 4 («на исходящем sendMessage библиотека возвращает TooManyRequestsError
 // → спать ровно RetryAfter секунд, записать events(kind='flood')»).
 type TelegramFailure struct {
 	Method      string // "" means the NEXT call of any method
@@ -73,18 +57,14 @@ type TelegramFailure struct {
 }
 
 // Telegram — the running fake. Every field is behind a mutex: the library polls and answers from
-// several goroutines, and §10 День 6 pushes parallel messages of one chat through it.
 type Telegram struct {
 	Server *httptest.Server
 	// Token is the token the path must carry: `{url}/bot{token}/{method}`. A different token in the
-	// path is a wiring mistake, and the fake answers 401 instead of pretending success (§12 security).
 	Token string
-	// BotUsername is what getMe reports (§10 День 4: run.go reads the name from getMe, because §6
 	// normalization has to strip the `@BotName` suffix Telegram appends in groups).
 	BotUsername string
 	// BotID is the numeric half of the token, echoed by getMe.
 	BotID int64
-	// MaxBlock caps the long-poll wait: the library asks for `timeout = pollTimeout - 1s` (§10 День 4),
 	// and a test must not sit for a minute waiting for an empty batch.
 	MaxBlock time.Duration
 
@@ -92,24 +72,23 @@ type Telegram struct {
 	pending     []models.Update
 	delivered   []models.Update // confirmed by an offset — Replay puts them back
 	sent        []SentMessage
-	edits       []SentEdit   // the rewrites of §15 (§16 change 34)
+	edits       []SentEdit   // the rewrites of
 	sentIDs     map[int]bool // the ids this fake handed out: an edit of an id it never gave is a wiring bug
 	calls       map[string]int
 	commands    []models.BotCommand
 	webhook     *WebhookRegistration
 	failures    []TelegramFailure
 	wrongTokens int
-	offsets     []string // the offset params the library sent, for the offset assertions of §5
+	offsets     []string // the offset params the library sent, for the offset assertions of
 	wake        chan struct{}
 	nextSendID  int
 }
 
 // NewTelegram — start the fake. The token is mandatory: the path check is what proves run.go passed
-// TELEGRAM_BOT_TOKEN of §7 to the library rather than to the fake's imagination.
 func NewTelegram(t *testing.T, token string) *Telegram {
 	t.Helper()
 	if strings.TrimSpace(token) == "" {
-		t.Fatalf("the fake Telegram needs the token to check the request path (§12 security)")
+		t.Fatalf("the fake Telegram needs the token to check the request path ")
 	}
 	var s = &Telegram{
 		Token:       token,
@@ -128,10 +107,8 @@ func NewTelegram(t *testing.T, token string) *Telegram {
 	return s
 }
 
-// URL — the value for `bot.WithServerURL` (§11, §16 change 16). The library appends `/bot<token>/`.
 func (s *Telegram) URL() string { return s.Server.URL }
 
-// Push — one scripted update. The update is delivered until an offset confirms it (§5).
 func (s *Telegram) Push(upd models.Update) {
 	s.mu.Lock()
 	s.pending = append(s.pending, upd)
@@ -139,8 +116,6 @@ func (s *Telegram) Push(upd models.Update) {
 	s.notify()
 }
 
-// PushText — an incoming text message of §6, the shape Telegram sends for a command or plain text.
-// Update id and message id are the same number here on purpose: nothing in §5 depends on it, and the
 // offset assertions read better when one number identifies the whole update.
 func (s *Telegram) PushText(updateID, chatID, userID int64, text string) models.Update {
 	var upd = models.Update{
@@ -157,8 +132,6 @@ func (s *Telegram) PushText(updateID, chatID, userID int64, text string) models.
 	return upd
 }
 
-// Replay — the redelivery case of §2 п.7: the updates the offset had already confirmed come back. A
-// correct dispatcher must answer none of them (§13 риск «повторные ответы после рестарта»).
 func (s *Telegram) Replay() {
 	s.mu.Lock()
 	s.pending = append(s.pending, s.delivered...)
@@ -169,7 +142,6 @@ func (s *Telegram) Replay() {
 }
 
 // FailNext — the next call of `method` answers the error envelope instead of a result (the flood case
-// of §10 День 4, the reliability of §12). One failure per call: the retry has to succeed.
 func (s *Telegram) FailNext(method string, code int, description string, retryAfter int) {
 	s.mu.Lock()
 	s.failures = append(s.failures, TelegramFailure{Method: method, Code: code, Description: description, RetryAfter: retryAfter})
@@ -183,7 +155,6 @@ func (s *Telegram) Calls(method string) int {
 	return s.calls[method]
 }
 
-// Sent — the messages the bot sent, in the order it sent them (§11: the chunk order of §12 UX).
 func (s *Telegram) Sent() []SentMessage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -192,7 +163,6 @@ func (s *Telegram) Sent() []SentMessage {
 	return out
 }
 
-// Texts — only the texts of Sent, for the content assertions of §6.
 func (s *Telegram) Texts() []string {
 	var sent = s.Sent()
 	var out = make([]string, 0, len(sent))
@@ -204,11 +174,9 @@ func (s *Telegram) Texts() []string {
 	return out
 }
 
-// Joined — every sent text glued with "\n": the chunks of one answer (§16 change 7 cuts at a word,
 // the user still reads one message).
 func (s *Telegram) Joined() string { return strings.Join(s.Texts(), "\n") }
 
-// Edits — the rewrites of §15 the fake received, in order (§16 change 34). `Calls("editMessageText")` counts
 // them; this says what each one addressed and carried.
 func (s *Telegram) Edits() []SentEdit {
 	s.mu.Lock()
@@ -218,8 +186,6 @@ func (s *Telegram) Edits() []SentEdit {
 	return out
 }
 
-// EditStrings — only the texts of Edits. The whole point of §15 is that these are ONE message seen at
-// several moments of its growth, not several messages (§12 UX «не спамит»).
 func (s *Telegram) EditStrings() []string {
 	var edits = s.Edits()
 	var out = make([]string, 0, len(edits))
@@ -231,7 +197,6 @@ func (s *Telegram) EditStrings() []string {
 	return out
 }
 
-// Commands — what setMyCommands published (§10 День 4: «setMyCommands при старте»).
 func (s *Telegram) Commands() []models.BotCommand {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -252,7 +217,6 @@ func (s *Telegram) Webhook() (WebhookRegistration, bool) {
 	return out, true
 }
 
-// Offsets — the `offset` values of the getUpdates requests, in order (§5 «Offset long polling»).
 func (s *Telegram) Offsets() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -261,7 +225,6 @@ func (s *Telegram) Offsets() []string {
 	return out
 }
 
-// WrongTokens — requests whose path carried another token (§12 security: a mixed-up token shows up
 // here instead of in the log).
 func (s *Telegram) WrongTokens() int {
 	s.mu.Lock()
@@ -280,19 +243,18 @@ func (s *Telegram) notify() {
 
 // handle — the Bot API envelope. The library sends every method as a POST to
 // `{url}/bot{token}/{method}`, so the path is the method table and the multipart form is the params
-// (raw_request.go of v1.27.0, §16 change 16).
 func (s *Telegram) handle(w http.ResponseWriter, r *http.Request) {
 	var path = strings.TrimPrefix(r.URL.Path, "/")
 	var token, method, ok = splitBotPath(path)
 	if !ok {
-		http.Error(w, "the fake serves only {url}/bot{token}/{method} (§16 change 16)", http.StatusNotFound)
+		http.Error(w, "the fake serves only {url}/bot{token}/{method} ", http.StatusNotFound)
 		return
 	}
 	if token != s.Token {
 		s.mu.Lock()
 		s.wrongTokens++
 		s.mu.Unlock()
-		writeError(w, http.StatusUnauthorized, "the token of the path is not the token of the fake (§12 security)", 0)
+		writeError(w, http.StatusUnauthorized, "the token of the path is not the token of the fake ", 0)
 		return
 	}
 	if err := r.ParseMultipartForm(1 << 20); err != nil {
@@ -318,7 +280,6 @@ func (s *Telegram) handle(w http.ResponseWriter, r *http.Request) {
 	case "sendMessage":
 		s.handleSendMessage(w, r)
 	case "editMessageText":
-		// §15 (§16 change 34): the rewriting half of a streamed answer. Only run.go calls it.
 		s.handleEditMessageText(w, r)
 	case "setMyCommands":
 		s.handleSetMyCommands(w, r)
@@ -327,8 +288,7 @@ func (s *Telegram) handle(w http.ResponseWriter, r *http.Request) {
 	case "answerCallbackQuery":
 		writeOK(w, true)
 	default:
-		// §6 v1 needs no other method; answering ok would hide a wrong call (§12 reliability).
-		writeError(w, http.StatusNotFound, "the fake does not serve "+method+" — v1 of §6 uses getMe, getUpdates, sendMessage, setMyCommands, and §15 adds editMessageText", 0)
+		writeError(w, http.StatusNotFound, "the fake does not serve "+method+" — v1 of uses getMe, getUpdates, sendMessage, setMyCommands, and adds editMessageText", 0)
 	}
 }
 
@@ -346,7 +306,6 @@ func (s *Telegram) takeFailure(method string) (TelegramFailure, bool) {
 	return TelegramFailure{}, false
 }
 
-// handleGetUpdates — the offset of §5: `offset` confirms everything below it (Telegram removes those
 // updates), so the fake removes them too and only Replay brings them back.
 func (s *Telegram) handleGetUpdates(w http.ResponseWriter, r *http.Request) {
 	var offsetText = r.FormValue("offset")
@@ -360,9 +319,7 @@ func (s *Telegram) handleGetUpdates(w http.ResponseWriter, r *http.Request) {
 
 	var batch = s.take(offset, int(limit))
 	if len(batch) == 0 && timeout > 0 {
-		// The long poll of §10 День 4: the library asks for `pollTimeout - 1s` and keeps the connection
 		// open; the fake waits, but never longer than MaxBlock — otherwise every empty poll costs a
-		// minute of test time (§11: tests must stay fast enough for §10 День 6).
 		var wait = time.Duration(timeout) * time.Second
 		if s.MaxBlock > 0 && wait > s.MaxBlock {
 			wait = s.MaxBlock
@@ -380,7 +337,6 @@ func (s *Telegram) handleGetUpdates(w http.ResponseWriter, r *http.Request) {
 }
 
 // take — one getUpdates batch: updates with `update_id >= offset` are returned, updates below the
-// offset are confirmed and leave the queue forever (§5 «Offset long polling», §10 День 4
 // «сдвигается на processed update_id»).
 func (s *Telegram) take(offset int64, limit int) []models.Update {
 	s.mu.Lock()
@@ -400,24 +356,22 @@ func (s *Telegram) take(offset int64, limit int) []models.Update {
 			i++
 			continue
 		}
-		keep = append(keep, upd) // the limit of §10 День 4 (the library sends 100)
+		keep = append(keep, upd) // the limit of (the library sends 100)
 		i++
 	}
 	s.pending = keep
 	return batch
 }
 
-// handleSendMessage — record the answer of §6 exactly as the Bot API sees it: chat_id, text,
-// parse_mode. That is what §11 checks about the chunking and the escaping of §12 UX.
 func (s *Telegram) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	var chatID, err = strconv.ParseInt(strings.TrimSpace(r.FormValue("chat_id")), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "chat_id is required (§6: the answer goes to one chat)", 0)
+		writeError(w, http.StatusBadRequest, "chat_id is required ", 0)
 		return
 	}
 	var text = r.FormValue("text")
 	if text == "" {
-		writeError(w, http.StatusBadRequest, "text is required (§12 UX: an empty answer is not an answer)", 0)
+		writeError(w, http.StatusBadRequest, "text is required ", 0)
 		return
 	}
 	s.mu.Lock()
@@ -436,7 +390,6 @@ func (s *Telegram) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleEditMessageText — the rewrite of §15 (§16 change 34). Recorded exactly as the Bot API sees it: the id
 // being rewritten, the chat it lives in, the text, and whether the request carried a parse_mode. The id is
 // checked against the ids this fake handed out, because that is the one thing about a stream that a fake must
 // be strict about: a bot that rewrites an id it never received a reply for is editing somebody else's message
@@ -444,17 +397,17 @@ func (s *Telegram) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 func (s *Telegram) handleEditMessageText(w http.ResponseWriter, r *http.Request) {
 	var chatID, err = strconv.ParseInt(strings.TrimSpace(r.FormValue("chat_id")), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "chat_id is required (§15: the rewrite goes to one chat)", 0)
+		writeError(w, http.StatusBadRequest, "chat_id is required ", 0)
 		return
 	}
 	var messageID, parseErr = strconv.ParseInt(strings.TrimSpace(r.FormValue("message_id")), 10, 64)
 	if parseErr != nil {
-		writeError(w, http.StatusBadRequest, "message_id is required (§15: a rewrite addresses the placeholder it was given)", 0)
+		writeError(w, http.StatusBadRequest, "message_id is required ", 0)
 		return
 	}
 	var text = r.FormValue("text")
 	if text == "" {
-		writeError(w, http.StatusBadRequest, "text is required (§12 UX: an empty answer is not an answer)", 0)
+		writeError(w, http.StatusBadRequest, "text is required ", 0)
 		return
 	}
 	s.mu.Lock()
@@ -469,14 +422,13 @@ func (s *Telegram) handleEditMessageText(w http.ResponseWriter, r *http.Request)
 	}
 	s.mu.Unlock()
 	if !known {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("the fake never handed out message id %d to edit (§15: an edit must address the id sendMessage returned)", messageID), 0)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("the fake never handed out message id %d to edit ", messageID), 0)
 		return
 	}
 
 	// Telegram answers the edited message, not `true`. The date is what makes models.Message parseable
 	// (its UnmarshalJSON decides «accessible» by `date`), same reason as in handleSendMessage; `edit_date`
 	// is what the Bot API puts on a rewritten message. models.Message has no parse_mode field, which is why
-	// the mode of the REQUEST is what the fake records (§11: the fake is what knows how it left).
 	writeOK(w, models.Message{
 		ID:       int(messageID),
 		Date:     int(time.Now().Unix()),
@@ -516,7 +468,6 @@ func (s *Telegram) handleSetWebhook(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, true)
 }
 
-// handleSetMyCommands — the menu of §10 День 4; the commands arrive as a JSON string inside the form.
 func (s *Telegram) handleSetMyCommands(w http.ResponseWriter, r *http.Request) {
 	var raw = r.FormValue("commands")
 	var cmds = []models.BotCommand{}
@@ -555,14 +506,13 @@ func writeOK(w http.ResponseWriter, result any) {
 
 // writeError — the failure envelope the library turns into ErrorForbidden / TooManyRequestsError and
 // friends (raw_request.go). `retryAfter` lands in parameters.retry_after, which is the field
-// TooManyRequestsError.RetryAfter of §10 День 4 reads. The HTTP status itself is ignored by the
 // library, but the fake sets it anyway so a real client would see the same thing.
 func writeError(w http.ResponseWriter, code int, description string, retryAfter int) {
 	if code == 0 {
 		code = http.StatusBadRequest
 	}
 	if description == "" {
-		description = "the fake was told to fail (§10 День 4)"
+		description = "the fake was told to fail "
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)

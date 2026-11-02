@@ -1,6 +1,5 @@
 #Requires -Version 7
 <#
-test-volume-restore.ps1 — rehearse the §9 production-volume restore runbook in an ISOLATED compose project.
 
 The fixed project tg-llm-proxy-restore-rehearsal and its bot-data volume must not exist before the run. The script
 restores a verified backup into zzscratch, creates (but never starts) the isolated bot container, copies the file

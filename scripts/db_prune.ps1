@@ -1,6 +1,5 @@
 #Requires -Version 7
 <#
-db_prune.ps1 — age-based §5 retention with a safe dry-run default.
 
 Defaults: events older than 90 days are candidates; message pruning is disabled. -Apply requires and automatically
 creates a NEW verified pre-prune backup before opening the source for writing. Existing backup paths are refused.

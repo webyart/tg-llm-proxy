@@ -1,16 +1,6 @@
-// messages.go — the CRUD of §10 День 2 over the schema of §5: Append, RecentByChat, ClearChat,
-// Stats (§10 День 2 DoD names exactly these four), plus the two service tables the same §5
-// defines — `bot_state` (the offset of getUpdates that survives a restart, §5 «Offset long
-// polling») and `events` (kind='denied' | 'model_error' | 'flood', §6 and §10 День 3).
-//
-// Three rules of §5/§10 shape this file:
 //  1. `uq_messages_chat_tg_id` is the second line of defence against repeated answers after a
-//     restart (§2 п.7): a second Append with the same telegram_message_id must fail loudly, and
 //     IsDuplicate says which constraint fired, because the caller has to treat a duplicate as
-//     "already answered" rather than as a broken database (§13 risk "повторные ответы").
-//  2. `/reset` does not delete history (§5 `context_reset_at`, §6 «/reset»): RecentByChat hides
 //     the rows before the mark, `/history` still sees them. ClearChat therefore moves the mark.
-//  3. role is checked by the schema CHECK (§5), so an unknown role is rejected here before the
 //     SQL reaches SQLite — the error text names the allowed set instead of a constraint code.
 package store
 
@@ -26,7 +16,6 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
-// The roles of the §5 CHECK constraint on messages.role.
 const (
 	RoleUser      = "user"
 	RoleAssistant = "assistant"
@@ -34,37 +23,26 @@ const (
 )
 
 // StateLastUpdateID — the getUpdates offset of bot_state, read back through bot.WithInitialOffset at every
-// start (§5, §10 День 4). Per-chat resume_skip_ keys live in resume.go beside the startup-recovery helpers.
 const StateLastUpdateID = "last_update_id"
 
-// The kinds of events of §6 and §10 День 3/День 4: a denied user, a model failure after every
-// retry, a Telegram 429. The kind is free TEXT in §5, so the constants live here.
 const (
 	EventDenied     = "denied"
 	EventModelError = "model_error"
 	EventFlood      = "flood"
 	EventCommand    = "command"
-	// EventLimit — the refusal of RATE_LIMIT_PER_MINUTE (§7). §5 keeps kind free TEXT precisely so a
-	// new service event does not need a migration; §12 reliability wants the refusal auditable.
-	EventLimit = "limit"
-	// EventTimeout — a budget of §7 ran out before an answer was written (§12 UX): one model call under
+	EventLimit      = "limit"
 	// STRATA_TIMEOUT_SECONDS, or the whole answer under TG_REPLY_DEADLINE_SECONDS. Which of the two expired,
 	// the detail of the row says by name; measured 2026-10-31 with 15/30 it is the model budget that goes first.
 	EventTimeout = "timeout"
 )
 
 // ErrDuplicateMessage — the second Append with the same (chat_id, telegram_message_id) hit
-// uq_messages_chat_tg_id (§5). IsDuplicate reports it to the caller, which answers "already
-// processed" instead of retrying an insert that will never succeed (§13 risk).
-var ErrDuplicateMessage = errors.New("this telegram_message_id is already stored for the chat (§5 uq_messages_chat_tg_id)")
+var ErrDuplicateMessage = errors.New("this telegram_message_id is already stored for the chat ")
 
-// ErrRole — a role outside the §5 CHECK ('user','assistant','system'). Naming it here keeps the
 // mistake in the Go layer instead of surfacing as an opaque sqlite constraint violation.
-var ErrRole = fmt.Errorf("the message role must be one of %s/%s/%s (§5 CHECK on messages.role)", RoleUser, RoleAssistant, RoleSystem)
+var ErrRole = fmt.Errorf("the message role must be one of %s/%s/%s ", RoleUser, RoleAssistant, RoleSystem)
 
-// Message — one row of the messages table of §5. The pointers are the nullable columns: a model
 // answer has no telegram_message_id, and tokens/latency stay NULL when the provider said nothing
-// (§5 «NULL для ответов модели»). CreatedAt is filled by SQLite (datetime('now'), UTC — §5).
 type Message struct {
 	ID                int64
 	ChatID            int64
@@ -79,9 +57,6 @@ type Message struct {
 	CreatedAt         string
 }
 
-// ChatStats — the counters of `/stats` (§6: messages, tokens, errors of one chat). Errors and Timeouts are
-// kept apart the way §5 keeps the kinds apart: 'model_error' is a call that came back broken, 'timeout' is a
-// budget of §7 that ran out. Measured 2026-10-31 one live timeout left the error counter untouched, which an
 // operator reads as «nothing failed» unless the two numbers are shown separately.
 type ChatStats struct {
 	Messages  int64
@@ -93,9 +68,7 @@ type ChatStats struct {
 	LastAt    string
 }
 
-// EnsureChat — the registration of `/start` (§6: "регистрация чата в SQLite"). It is an upsert
 // because an incoming message can arrive before /start: Append calls the same statement, so a
-// chat row always exists and foreign_keys=1 of the DSN (§5) cannot reject the insert.
 // title stays as it was when the new title is NULL (Telegram gives no title for private chats).
 func EnsureChat(ctx context.Context, db *sql.DB, chatID int64, userID int64, title string) error {
 	var _, err = db.ExecContext(ctx, `
@@ -109,16 +82,13 @@ func EnsureChat(ctx context.Context, db *sql.DB, chatID int64, userID int64, tit
 	return err
 }
 
-// Append — one message of one chat (§5). The chat row is ensured in the same call: §5 puts
 // REFERENCES chats(chat_id) on messages, so an insert into an unregistered chat would be a
-// foreign-key violation, and the DSN turns foreign_keys on for every connection (§5 «Прагмы»).
-// A duplicate telegram_message_id returns an error for which IsDuplicate is true (§5 UNIQUE index).
 func Append(ctx context.Context, db *sql.DB, m Message) (int64, error) {
 	if m.Role != RoleUser && m.Role != RoleAssistant && m.Role != RoleSystem {
 		return 0, ErrRole
 	}
 	if strings.TrimSpace(m.Content) == "" {
-		return 0, fmt.Errorf("the content of a message is NOT NULL and empty (§5 messages.content)")
+		return 0, fmt.Errorf("the content of a message is NOT NULL and empty ")
 	}
 	if err := EnsureChat(ctx, db, m.ChatID, m.UserID, ""); err != nil {
 		return 0, err
@@ -141,14 +111,13 @@ func Append(ctx context.Context, db *sql.DB, m Message) (int64, error) {
 }
 
 // scanMessages — the one scan of the messages columns, shared by RecentByChat and HistoryOfChat
-// (§5 has nine columns; a second copy of the Scan would drift the moment a column is added). The
 // nullable columns become pointers, and the caller's newest-first order is reversed here into the
 // chronological order the model request needs.
 func scanMessages(rows *sql.Rows) ([]Message, error) {
 	var out = []Message{}
 	for rows.Next() {
 		var m = Message{}
-		var model sql.NullString // messages.model is TEXT (§5)
+		var model sql.NullString // messages.model is TEXT
 		var tgID, tokensIn, tokensOut, latency sql.NullInt64
 		if err := rows.Scan(&m.ID, &m.ChatID, &m.Role, &m.Content, &tokensIn, &tokensOut,
 			&model, &latency, &tgID, &m.CreatedAt); err != nil {
@@ -184,20 +153,16 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 }
 
 // ContextResetIDKey — the bot_state key that remembers the id watermark of `/reset` for one chat
-// ("context_reset_id:<chat_id>"). §5 marks the reset with the TEXT column context_reset_at, but
 // datetime('now') has SECOND resolution, so a message that arrives in the same second as /reset
-// would be hidden from the context forever — §5 also gives messages an AUTOINCREMENT id, so the
 // watermark is stored as an id and context_reset_at stays the human-readable audit mark.
 func ContextResetIDKey(chatID int64) string {
 	return fmt.Sprintf("context_reset_id:%d", chatID)
 }
 
 // contextFilter — the WHERE fragment of RecentByChat. The id watermark wins when it exists (the
-// precise rule of §10 День 2), context_reset_at is the fallback for a chat reset before this
 // watermark existed, and "1=1" is a chat that was never reset.
 //
 // The fragment is built from two fixed strings, never from user input: chatID only ever reaches
-// the query as a bound parameter (§12 security).
 func contextFilter(ctx context.Context, db *sql.DB, chatID int64) (string, []any, error) {
 	var watermark sql.NullInt64
 	var err = db.QueryRowContext(ctx, `SELECT CAST(value AS INTEGER) FROM bot_state WHERE key = ?`,
@@ -220,10 +185,7 @@ func contextFilter(ctx context.Context, db *sql.DB, chatID int64) (string, []any
 	return "1 = 1", nil, nil
 }
 
-// RecentByChat — the context of §5 «Правила контекста (v1)»: the last `limit` messages of the
-// chat, read newest-first because that is what idx_messages_chat_time of §5 is for, and returned
 // oldest → newest so the glued history is chronological. The messages a /reset hid are excluded
-// (contextFilter), which is why ClearChat deletes nothing and /history still sees them (§6).
 func RecentByChat(ctx context.Context, db *sql.DB, chatID int64, limit int) ([]Message, error) {
 	if limit <= 0 {
 		return []Message{}, nil
@@ -248,8 +210,6 @@ func RecentByChat(ctx context.Context, db *sql.DB, chatID int64, limit int) ([]M
 	return scanMessages(rows)
 }
 
-// HistoryOfChat — `/history [N]` of §6: the last N rows INCLUDING the ones hidden by /reset,
-// oldest → newest. It is deliberately a separate function: §5 gives RecentByChat and /history two
 // different semantics, and one function with a flag would eventually mix them.
 func HistoryOfChat(ctx context.Context, db *sql.DB, chatID int64, limit int) ([]Message, error) {
 	if limit <= 0 {
@@ -265,20 +225,11 @@ func HistoryOfChat(ctx context.Context, db *sql.DB, chatID int64, limit int) ([]
 	return scanMessages(rows)
 }
 
-// LastVisibleMessage — the id and the role of the newest message of the chat that the context of §5 still
-// sees: the same window RecentByChat glues (contextFilter — the id watermark of a /reset of §6, otherwise
-// context_reset_at of §5). It exists to answer exactly one question: did the last question of this chat
 // receive an answer? RoleAssistant means it did; RoleUser with this row being the row of an incoming update
-// means the question is stored and nothing ever answered it — the state the §11 item «Ctrl-C / docker compose
-// down при длинном /ask» is about, because stored of §2 п.7 writes role='user' BEFORE the model call while the
-// offset of §5 is acknowledged only after the handler (Dispatch → persistOffset), so a process that dies in the
-// middle of a generation leaves a question in the database with no answer at all — and, as the §11 container walk
-// of 2026-10-31 measured, with no update that Telegram hands back either. The scan of resume.go (the §15 item)
 // reads this function per chat instead of waiting for an update that never comes. The id is part of the answer,
 // not decoration: «the chat ends with a question» and «THIS update's question is still waiting» differ as soon as
 // the user asked twice, and only the newest row can be the one awaiting its answer — see RowIDByTelegramMessageID.
 // Zero id and empty role with no error
-// when the chat has no visible row: a fresh chat, or a /reset of §6 that hid every one of them.
 func LastVisibleMessage(ctx context.Context, db *sql.DB, chatID int64) (int64, string, error) {
 	var filter, args, err = contextFilter(ctx, db, chatID)
 	if err != nil {
@@ -301,10 +252,6 @@ func LastVisibleMessage(ctx context.Context, db *sql.DB, chatID int64) (int64, s
 	return id, role, nil
 }
 
-// RowIDByTelegramMessageID — the id of the row an incoming update of §2 п.7 already left in §5, or 0 when the
-// chat has no such row. It reads through uq_messages_chat_tg_id of §5 WITHOUT the window of contextFilter: the
-// row of an update is a fact about the incoming side, while the window of §5 is a fact about what the model of
-// §7 gets to see. Compared against the newest visible row of LastVisibleMessage it separates the two states
 // the dedup guard used to confuse: an answered question has a newer row after it, an interrupted one is the
 // newest row of the chat.
 func RowIDByTelegramMessageID(ctx context.Context, db *sql.DB, chatID int64, telegramMessageID int64) (int64, error) {
@@ -321,27 +268,17 @@ func RowIDByTelegramMessageID(ctx context.Context, db *sql.DB, chatID int64, tel
 	return id, nil
 }
 
-// UnansweredQuestions — the questions that §5 kept and §6 never answered: the §15 item «догонять вопрос,
 // оборванный внутри обработчика». A chat is in that state exactly when its newest VISIBLE row is
-// role='user'. commands.go writes the row of the answer BEFORE sending it (§10 День 3 «ровно одна запись
-// assistant»), so any other newest row — an assistant row, or no visible row at all after a /reset of §6 —
-// means the chat is caught up. This is the very fact the dedup guard of §2 п.7 reads for one incoming
 // update (LastVisibleMessage), read here per chat and without an update in hand, and that is the point:
-// measured 2026-10-31 in the container walk of §8.1 (§11 manual), a stop inside the handler leaves the
-// offset of §5 behind the update, but Telegram does NOT hand such an update back — the restarted poller
 // asked for update_id 920551680 from the stored offset 920551679 and got empty batches for 9.5 minutes.
 // Nothing ever asks about that question again, so the row would sit unanswered forever.
 //
 // Only rows with a telegram_message_id qualify. The replay stays idempotent because uq_messages_chat_tg_id
-// of §5 rejects the second question row of the same update (§2 п.7), and a row without that key has no such
-// guard to fall back on (§13 риск «повторные ответы»). An exact row suppressed by /skip stays in history but is
 // left out. At most `limit` chats are looked at, newest activity first: the scan must not grow with the database
-// (§9: no unbounded work).
 func UnansweredQuestions(ctx context.Context, db *sql.DB, limit int) ([]Message, error) {
 	if limit <= 0 {
 		return []Message{}, nil
 	}
-	// The chats are read in one pass and closed before the per-chat reads begin: §5 sets no pool limit,
 	// but a scan that keeps a connection open while borrowing another is the kind of cleverness that turns
 	// into a deadlock the day someone adds SetMaxOpenConns.
 	type chatRow struct {
@@ -389,8 +326,6 @@ func UnansweredQuestions(ctx context.Context, db *sql.DB, limit int) ([]Message,
 			i++
 			continue
 		}
-		// messages of §5 has no user_id column — the chats row has (§5), and the bot needs it for the
-		// allowlist of §7 and for the events of §5 the replay of the question writes.
 		row.UserID = chats[i].userID
 		out = append(out, row)
 		i++
@@ -398,10 +333,6 @@ func UnansweredQuestions(ctx context.Context, db *sql.DB, limit int) ([]Message,
 	return out, nil
 }
 
-// lastVisibleRow — the newest row the context of §5 sees for one chat, as a whole Message.
-// LastVisibleMessage returns the id and the role, which is all the guard of §2 п.7 compares; the startup
-// scan needs the text and the telegram_message_id of that row too, because it rebuilds the update of §6
-// from them. No row and no error when the chat has no visible row (a fresh chat, or a /reset of §6 that hid
 // every one of them).
 func lastVisibleRow(ctx context.Context, db *sql.DB, chatID int64) (Message, error) {
 	var filter, args, err = contextFilter(ctx, db, chatID)
@@ -429,13 +360,10 @@ func lastVisibleRow(ctx context.Context, db *sql.DB, chatID int64) (Message, err
 	return found[0], nil
 }
 
-// ClearChat — `/reset` of §6: the context starts from now, nothing is deleted («история не
-// удаляется — /history её видит», §5). Both marks are written in one transaction (§5 WAL with
 // `_txlock=immediate` makes the write transaction immediate, so a concurrent writer of another
 // connection cannot interleave between the two statements):
-//   - context_reset_at of §5, the human-readable audit mark;
-//   - the id watermark in bot_state, the precise rule (see ContextResetIDKey for why §5 alone is
-//     not precise enough: datetime('now') counts seconds).
+//
+//	not precise enough: datetime('now') counts seconds).
 //
 // It returns how many messages the model will no longer see.
 func ClearChat(ctx context.Context, db *sql.DB, chatID int64) (int64, error) {
@@ -471,9 +399,6 @@ func ClearChat(ctx context.Context, db *sql.DB, chatID int64) (int64, error) {
 	return maxID, nil
 }
 
-// Stats — the counters of `/stats` (§6: «число сообщений, токенов, ошибок»). Errors come from the
-// events table of §5, attributed through the user of the chat, because §5 gives events a user_id
-// and no chat_id — the same attribution the denial events of §6 use.
 func Stats(ctx context.Context, db *sql.DB, chatID int64) (ChatStats, error) {
 	var stats = ChatStats{}
 	var lastAt sql.NullString
@@ -487,8 +412,6 @@ func Stats(ctx context.Context, db *sql.DB, chatID int64) (ChatStats, error) {
 	// The model of the LAST answer, not MAX(model). Measured 2026-10-31: a chat answered first by
 	// qwen3.8-flash-next-nvfp4-nvfp4-nvidia and later by qwen3.8-flash-next-iq3_s printed the FIRST name
 	// in /stats, because MAX over TEXT is lexicographic — and that line is read as «this model serves my
-	// chat now». §6 does not even ask for a model in /stats, so if the line stays it has to be true: the
-	// model of the most recent assistant row, next to its latency and token counts (§12 «логи с model»).
 	// No model answered yet → empty string, and the /stats handler prints the line only when it is not empty.
 	var lastModel sql.NullString
 	if modelErr := db.QueryRowContext(ctx, `
@@ -496,7 +419,7 @@ func Stats(ctx context.Context, db *sql.DB, chatID int64) (ChatStats, error) {
 		WHERE m.chat_id = ? AND m.role = ? AND m.model IS NOT NULL
 		ORDER BY m.id DESC LIMIT 1`, chatID, RoleAssistant).
 		Scan(&lastModel); modelErr != nil && !errors.Is(modelErr, sql.ErrNoRows) {
-		return stats, fmt.Errorf("store.Stats: the last answered model of chat %d: %w (§5 messages.model)", chatID, modelErr)
+		return stats, fmt.Errorf("store.Stats: the last answered model of chat %d: %w ", chatID, modelErr)
 	}
 	if lastModel.Valid {
 		stats.Model = lastModel.String
@@ -511,20 +434,18 @@ func Stats(ctx context.Context, db *sql.DB, chatID int64) (ChatStats, error) {
 		return stats, err
 	}
 	if userID.Valid {
-		// One grouped read for every kind instead of one query per kind: §5 keeps kind free TEXT precisely so a
 		// new service event needs no migration, and `/stats` must not go blind when a new kind appears while the
-		// ones it knows stay counted (§6 counters, §5 events by kind).
 		var kindRows, rowsErr = db.QueryContext(ctx, `
 			SELECT kind, COUNT(*) FROM events WHERE user_id = ? GROUP BY kind`, userID.Int64)
 		if rowsErr != nil {
-			return stats, fmt.Errorf("store.Stats: the event kinds of user %d: %w (§5 events)", userID.Int64, rowsErr)
+			return stats, fmt.Errorf("store.Stats: the event kinds of user %d: %w ", userID.Int64, rowsErr)
 		}
 		defer kindRows.Close()
 		for kindRows.Next() {
 			var kind = ""
 			var count = int64(0)
 			if scanErr := kindRows.Scan(&kind, &count); scanErr != nil {
-				return stats, fmt.Errorf("store.Stats: an events row of user %d: %w (§5 events)", userID.Int64, scanErr)
+				return stats, fmt.Errorf("store.Stats: an events row of user %d: %w ", userID.Int64, scanErr)
 			}
 			switch kind {
 			case EventModelError:
@@ -534,22 +455,19 @@ func Stats(ctx context.Context, db *sql.DB, chatID int64) (ChatStats, error) {
 			}
 		}
 		if rowsErr = kindRows.Err(); rowsErr != nil {
-			return stats, fmt.Errorf("store.Stats: reading the event kinds of user %d: %w (§5 events)", userID.Int64, rowsErr)
+			return stats, fmt.Errorf("store.Stats: reading the event kinds of user %d: %w ", userID.Int64, rowsErr)
 		}
 	}
 	return stats, nil
 }
 
-// LogEvent — one service row of the events table of §5 (kind: denied, model_error, flood, command).
 // The detail carries the class of the error, NEVER the token and never the full text of the model
-// (§12 security: logs and service rows stay free of secrets and of user content at LOG_LEVEL=info).
 func LogEvent(ctx context.Context, db *sql.DB, userID int64, kind string, detail string) error {
 	var _, err = db.ExecContext(ctx, `INSERT INTO events (user_id, kind, detail) VALUES (?, ?, ?)`,
 		userID, kind, nullable(detail))
 	return err
 }
 
-// CountEvents — how many rows of one kind exist (§10 День 3 DoD: after every failed attempt the
 // ONLY thing written is events(kind='model_error'), which a test counts with this helper).
 func CountEvents(ctx context.Context, db *sql.DB, kind string) (int64, error) {
 	var count = int64(0)
@@ -557,10 +475,7 @@ func CountEvents(ctx context.Context, db *sql.DB, kind string) (int64, error) {
 	return count, err
 }
 
-// SetState — one row of bot_state of §5 (the service state of the process, TEXT value). The upsert
-// is what makes the offset of getUpdates survive a restart (§5 «Offset long polling»): the library
 // keeps lastUpdateID in memory only, so the value has to be written after every processed update
-// and read back with bot.WithInitialOffset on the next start (§10 День 4).
 func SetState(ctx context.Context, db *sql.DB, key string, value string) error {
 	var _, err = db.ExecContext(ctx, `
 		INSERT INTO bot_state (key, value) VALUES (?, ?)
@@ -570,7 +485,6 @@ func SetState(ctx context.Context, db *sql.DB, key string, value string) error {
 
 // GetState — the value of one bot_state key. The bool is "the key exists": a fresh database has no
 // 'last_update_id' at all, and starting from 0 is a different decision than starting from a stored
-// offset of 0 (§5: an unset offset must not silently become offset=1).
 func GetState(ctx context.Context, db *sql.DB, key string) (string, bool, error) {
 	var value sql.NullString
 	var err = db.QueryRowContext(ctx, `SELECT value FROM bot_state WHERE key = ?`, key).Scan(&value)
@@ -583,15 +497,11 @@ func GetState(ctx context.Context, db *sql.DB, key string) (string, bool, error)
 	return value.String, true, nil
 }
 
-// SetLastUpdateID — the 'last_update_id' row of §5 through SetState.
 func SetLastUpdateID(ctx context.Context, db *sql.DB, offset int64) error {
 	return SetState(ctx, db, StateLastUpdateID, strconv.FormatInt(offset, 10))
 }
 
-// LastUpdateID — the stored offset of getUpdates (§5). found=false means "the process has never
-// processed an update", which §10 День 4 reads as "no WithInitialOffset, start from the beginning".
 // A value that is not an integer is reported as an error rather than treated as 0: a corrupted
-// offset would silently replay or skip messages (§13 risk «повторные ответы»).
 func LastUpdateID(ctx context.Context, db *sql.DB) (int64, bool, error) {
 	var text, found, err = GetState(ctx, db, StateLastUpdateID)
 	if err != nil || !found {
@@ -599,13 +509,11 @@ func LastUpdateID(ctx context.Context, db *sql.DB) (int64, bool, error) {
 	}
 	var offset, parseErr = strconv.ParseInt(text, 10, 64)
 	if parseErr != nil {
-		return 0, false, fmt.Errorf("bot_state %s = %q is not an integer offset (§5: the offset of getUpdates): %w", StateLastUpdateID, text, parseErr)
+		return 0, false, fmt.Errorf("bot_state %s = %q is not an integer offset : %w", StateLastUpdateID, text, parseErr)
 	}
 	return offset, true, nil
 }
 
-// IsDuplicate — whether an Append error is the UNIQUE guard of §5 rather than a real database
-// failure. §10 День 4 treats it as "this update was already answered" (the restart case of §2 п.7)
 // and anything else as an error to report.
 func IsDuplicate(err error) bool {
 	return errors.Is(err, ErrDuplicateMessage)
@@ -614,7 +522,6 @@ func IsDuplicate(err error) bool {
 // isUniqueTelegramID — the driver-level recognition of the constraint. The message of SQLite names
 // the columns ("UNIQUE constraint failed: messages.chat_id, messages.telegram_message_id"), so the
 // code alone (SQLITE_CONSTRAINT) is not enough to tell the telegram_message_id guard apart from,
-// say, a foreign-key violation of the same class (§5 lists both).
 func isUniqueTelegramID(err error) bool {
 	var driverErr = (*sqlite.Error)(nil)
 	if !errors.As(err, &driverErr) {
@@ -627,8 +534,6 @@ func isUniqueTelegramID(err error) bool {
 	return strings.Contains(driverErr.Error(), "messages.telegram_message_id")
 }
 
-// nullable — an empty Go string as a SQL NULL. §5 keeps title, model and detail nullable, and an
-// empty string there would mean "the answer was empty", which is a different fact (§5 «NULL для
 // ответов модели»).
 func nullable(value string) any {
 	if value == "" {

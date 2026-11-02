@@ -1,6 +1,3 @@
-// store_test.go — the §10 День 2 DoD of the store: Open + Ping + PRAGMA journal_mode/foreign_keys,
-// WAL created in the first run, the schema of §5 through go:embed, an idempotent second start, the
-// §11 memory pool, and the rejection of a bad DSN / a typo in a pragma (§11 Store levels).
 package store
 
 import (
@@ -11,9 +8,7 @@ import (
 	"testing"
 )
 
-// TestOpenFileWAL — §10 День 2 DoD: Open + Ping + PRAGMA journal_mode/foreign_keys, WAL created in
 // the first run. Every pragma of the reference DSN is read back, including the two pragms that only
-// exist through `_pragma=` (§5 spikes 25/28).
 func TestOpenFileWAL(t *testing.T) {
 	db, path := openTemp(t)
 	defer db.Close()
@@ -23,7 +18,6 @@ func TestOpenFileWAL(t *testing.T) {
 		JournalModePragma: "wal",
 		ForeignKeysPragma: RuntimeForeignKeys,
 		BusyTimeoutPragma: RuntimeBusyTimeout,
-		// §5: the DSN promises NORMAL; SQLite reports `PRAGMA synchronous` as the INTEGER 1, which is
 		// NORMAL (the driver enum accepts 0/OFF, 1/NORMAL, 2/FULL, 3/EXTRA). Measured on this host.
 		SynchronousPragma:       "1",
 		JournalSizeLimitPragma:  RuntimeJournalSizeLimit,
@@ -35,23 +29,20 @@ func TestOpenFileWAL(t *testing.T) {
 			t.Fatalf("PRAGMA %s: %v", name, err)
 		}
 		if !strings.EqualFold(got, expected) {
-			t.Fatalf("PRAGMA %s = %q, the reference DSN of §5 promises %q", name, got, expected)
+			t.Fatalf("PRAGMA %s = %q, the reference DSN of promises %q", name, got, expected)
 		}
 	}
 
-	// §10 День 2 DoD: WAL created in the first run — the sidecar exists while a connection is live.
 	if _, err := db.ExecContext(ctx, "INSERT INTO chats (chat_id, user_id) VALUES (1, 7)"); err != nil {
 		t.Fatalf("the first write failed: %v", err)
 	}
 	for _, sidecar := range []string{path + "-wal", path + "-shm"} {
 		if _, err := os.Stat(sidecar); err != nil {
-			t.Fatalf("%s is absent, §5 WAL needs it while the database is open: %v", sidecar, err)
+			t.Fatalf("%s is absent, WAL needs it while the database is open: %v", sidecar, err)
 		}
 	}
 }
 
-// TestOpenAppliesSchema — §10 День 2: the repositories of §5 are applied on every start, and the
-// guard uq_messages_chat_tg_id of §5 is what stops a duplicate answer after a restart.
 func TestOpenAppliesSchema(t *testing.T) {
 	db, _ := openTemp(t)
 	defer db.Close()
@@ -60,7 +51,7 @@ func TestOpenAppliesSchema(t *testing.T) {
 	for _, table := range []string{"chats", "messages", "bot_state", "events"} {
 		var count int
 		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table).Scan(&count); err != nil {
-			t.Fatalf("the table %s of §5 is missing after Open: %v", table, err)
+			t.Fatalf("the table %s of is missing after Open: %v", table, err)
 		}
 		if count != 0 {
 			t.Fatalf("%s holds %d rows on a fresh database", table, count)
@@ -72,31 +63,24 @@ func TestOpenAppliesSchema(t *testing.T) {
 	if _, err := db.ExecContext(ctx, "INSERT INTO messages (chat_id, telegram_message_id, role, content) VALUES (1, 7, 'user', 'hi')"); err != nil {
 		t.Fatal(err)
 	}
-	// §5: the guard uq_messages_chat_tg_id is the partial UNIQUE index that stops a repeated answer
-	// after a container restart (§2 point 7, §13).
 	if _, err := db.ExecContext(ctx, "INSERT INTO messages (chat_id, telegram_message_id, role, content) VALUES (1, 7, 'assistant', 'again')"); err == nil {
-		t.Fatalf("uq_messages_chat_tg_id of §5 accepted a second row with telegram_message_id=7")
+		t.Fatalf("uq_messages_chat_tg_id of accepted a second row with telegram_message_id=7")
 	}
 	// The answer of the model carries no telegram_message_id, so the partial index leaves it alone.
 	if _, err := db.ExecContext(ctx, "INSERT INTO messages (chat_id, role, content, model) VALUES (1, 'assistant', 'reply', 'qwen')"); err != nil {
-		t.Fatalf("the answer row was refused, §5 stores answers without telegram_message_id: %v", err)
+		t.Fatalf("the answer row was refused, stores answers without telegram_message_id: %v", err)
 	}
-	// §5: foreign_keys=1 makes REFERENCES enforced on this connection.
 	if _, err := db.ExecContext(ctx, "INSERT INTO messages (chat_id, role, content) VALUES (999, 'user', 'x')"); err == nil {
-		t.Fatalf("the REFERENCES of §5 are not enforced: a message for an absent chat was accepted")
+		t.Fatalf("the REFERENCES of are not enforced: a message for an absent chat was accepted")
 	}
-	// §5 CHECK on role: a role outside user/assistant/system is refused by the schema itself.
 	if _, err := db.ExecContext(ctx, "INSERT INTO messages (chat_id, role, content) VALUES (1, 'robot', 'x')"); err == nil {
-		t.Fatalf("the CHECK (role IN ('user','assistant','system')) of §5 accepted role=robot")
+		t.Fatalf("the CHECK (role IN ('user','assistant','system')) of accepted role=robot")
 	}
-	// §5 bot_state: the getUpdates offset survives a restart (§5 comment on bot_state).
 	if _, err := db.ExecContext(ctx, "INSERT INTO bot_state (key, value) VALUES ('last_update_id', '42')"); err != nil {
-		t.Fatalf("bot_state refused the offset row (§5): %v", err)
+		t.Fatalf("bot_state refused the offset row : %v", err)
 	}
 }
 
-// TestApplySchemaIsIdempotent — §5: one migration set, every clause with IF NOT EXISTS, applied on
-// every start; the driver refuses a ';' inside one query, so Statements splits the text (§5
 // «invalid semicolon separator in query»).
 func TestApplySchemaIsIdempotent(t *testing.T) {
 	db, _ := openTemp(t)
@@ -108,19 +92,17 @@ func TestApplySchemaIsIdempotent(t *testing.T) {
 		t.Fatalf("Statements(InitSQL): %v", err)
 	}
 	if len(statements) != 6 {
-		t.Fatalf("001_init.sql split into %d statements, §5 ships 4 tables and 2 indexes: %v", len(statements), statements)
+		t.Fatalf("001_init.sql split into %d statements, ships 4 tables and 2 indexes: %v", len(statements), statements)
 	}
 	for _, statement := range statements {
-		// The ';' of a comment or of a string literal is not a separator (§5: the driver refuses a
 		// semicolon inside one query), so the check runs on the code of the statement.
 		if strings.Contains(codeText(statement), ";") {
-			t.Fatalf("statement %q carries a ';' in its code — the driver refuses it (§5)", firstLine(statement))
+			t.Fatalf("statement %q carries a ';' in its code — the driver refuses it ", firstLine(statement))
 		}
 	}
-	// A second and third apply of the same text must be a no-op (§10 День 2: on every start).
 	for round := 1; round <= 3; round++ {
 		if err := ApplySchema(ctx, db); err != nil {
-			t.Fatalf("ApplySchema round %d failed (the migration of §5 is idempotent): %v", round, err)
+			t.Fatalf("ApplySchema round %d failed : %v", round, err)
 		}
 	}
 	if _, err := db.ExecContext(ctx, "INSERT INTO chats (chat_id, user_id) VALUES (5, 7)"); err != nil {
@@ -134,7 +116,7 @@ func TestApplySchemaIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if kept != 1 {
-		t.Fatalf("the repeated migration changed the rows: %d kept, §5 keeps 1", kept)
+		t.Fatalf("the repeated migration changed the rows: %d kept, keeps 1", kept)
 	}
 	// The comment text of 001_init.sql contains ';' — a naive split would cut a comment in half.
 	if _, err := Statements("-- a comment with ; inside\nCREATE TABLE IF NOT EXISTS t (a);"); err != nil {
@@ -147,11 +129,10 @@ func TestApplySchemaIsIdempotent(t *testing.T) {
 		t.Fatalf("Statements refused a trailing comment: %v", err)
 	}
 	if _, err := Statements("CREATE TABLE t (a TEXT DEFAULT 'unterminated);"); err == nil {
-		t.Fatalf("Statements accepted an unterminated quoted token (§5: one malformed statement)")
+		t.Fatalf("Statements accepted an unterminated quoted token ")
 	}
 }
 
-// TestOpenRestartKeepsWAL — §5 + §10 День 2: the journal_mode lives in the FILE, so the second start
 // finds wal without being told twice; a clean db.Close checkpoints and leaves only bot.db.
 func TestOpenRestartKeepsWAL(t *testing.T) {
 	db, path := openTemp(t)
@@ -163,27 +144,26 @@ func TestOpenRestartKeepsWAL(t *testing.T) {
 
 	again, err := Open(ctx, path)
 	if err != nil {
-		t.Fatalf("the second start failed (%v), §5 applies the idempotent migration on every start", err)
+		t.Fatalf("the second start failed (%v), applies the idempotent migration on every start", err)
 	}
 	mode, err := Pragma(ctx, again, JournalModePragma)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if mode != "wal" {
-		t.Fatalf("after a restart journal_mode = %q, §5 stores wal in the file itself", mode)
+		t.Fatalf("after a restart journal_mode = %q, stores wal in the file itself", mode)
 	}
 	var kept int
 	if err := again.QueryRowContext(ctx, "SELECT COUNT(*) FROM chats WHERE chat_id = 42").Scan(&kept); err != nil {
 		t.Fatal(err)
 	}
 	if kept != 1 {
-		t.Fatalf("the restart kept %d rows, §5 keeps them all", kept)
+		t.Fatalf("the restart kept %d rows, keeps them all", kept)
 	}
-	// §5 table row: a correct Close runs the checkpoint, so no sidecar survives.
 	again.Close()
 	for _, sidecar := range []string{path + "-wal", path + "-shm"} {
 		if _, err := os.Stat(sidecar); err == nil {
-			t.Fatalf("%s survived db.Close (§5: the checkpoint runs on close)", sidecar)
+			t.Fatalf("%s survived db.Close ", sidecar)
 		}
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -191,7 +171,6 @@ func TestOpenRestartKeepsWAL(t *testing.T) {
 	}
 }
 
-// TestMain — §5: sqlite.StrictPragmas is process-wide, off by default and NOT a DSN parameter (the
 // driver copies it into every connection at Connect), so it is turned on before the first sql.Open.
 // main.go does the same through store.EnableStrictPragmas; the test binary mirrors that wiring.
 func TestMain(m *testing.M) {
@@ -199,42 +178,36 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// TestOpenRejectsBadDSN — §11 DoD: a bad DSN falls on the first Ping, not on the first query.
 func TestOpenRejectsBadDSN(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 
-	// A file:-path is refused by the whitelist before sql.Open (§5 rule (c)).
 	if _, err := Open(ctx, "file:/data/bot.db?_journal_mode=666"); err == nil {
-		t.Fatalf("Open accepted a file: DSN the operator owns (§5 rule (c))")
+		t.Fatalf("Open accepted a file: DSN the operator owns ( rule (c))")
 	}
 
-	// §5 spike 11: sql.Open itself stays silent about an invalid value, so the Ping is the first
 	// place the problem can surface — and Open quotes the DSN in its error.
 	dsn := "file:" + EscapePath(dir+"/bot.db") + "?_journal_mode=666"
 	db, err := sql.Open(sqliteDriver, dsn)
 	if err != nil {
-		t.Fatalf("sql.Open reported the invalid value itself (§5 spike 11 expects silence here): %v", err)
+		t.Fatalf("sql.Open reported the invalid value itself : %v", err)
 	}
 	pingErr := db.PingContext(ctx)
 	db.Close()
 	if pingErr == nil {
-		t.Fatalf("the Ping accepted _journal_mode=666, §5 spike 11 rejects it in connect")
+		t.Fatalf("the Ping accepted _journal_mode=666, spike 11 rejects it in connect")
 	}
 	if _, err := Open(ctx, dir+"/bot.db?_journal_mode=666"); err == nil {
-		t.Fatalf("Open accepted a path carrying a query (§5 rule (b): ? hijacks the query part)")
+		t.Fatalf("Open accepted a path carrying a query ( rule (b): ? hijacks the query part)")
 	}
 
-	// §5 spike 5: SQLite does not create the location of the database.
 	if bad := unwritablePath(t); bad != "" {
 		if _, err := Open(ctx, bad); err == nil {
-			t.Fatalf("Open of %q succeeded, §5 expects an error that quotes the DSN", bad)
+			t.Fatalf("Open of %q succeeded, expects an error that quotes the DSN", bad)
 		}
 	}
 }
 
-// TestOpenRejectsPragmaTypo — §11 DoD «typo in a pragma»: an unknown name is not an error, it is
-// silence (§5 table row `_bogus_key`), so the whitelist refuses it before the driver.
 func TestOpenRejectsPragmaTypo(t *testing.T) {
 	ctx := context.Background()
 	db, _ := openTemp(t)
@@ -242,21 +215,18 @@ func TestOpenRejectsPragmaTypo(t *testing.T) {
 
 	for _, name := range []string{"journal_mod", "foriegn_keys", "sync", "_journal_size_limit", "_pragma", "dqs", "txlock", "pragma", "", "ATTACH 'x.db' AS x"} {
 		if _, err := Pragma(ctx, db, name); err == nil {
-			t.Fatalf("Pragma(%q) reported nothing; §5 keeps this name outside the whitelist, so a typo would read as an empty value", name)
+			t.Fatalf("Pragma(%q) reported nothing; keeps this name outside the whitelist, so a typo would read as an empty value", name)
 		}
 	}
-	// The DSN spelling of a pinned name is accepted (§5 spike 11: the key carries the '_' prefix).
 	if mode, err := Pragma(ctx, db, "_journal_mode"); err != nil || !strings.EqualFold(mode, "wal") {
-		t.Fatalf("Pragma(\"_journal_mode\") = %q, %v (§5 accepts the DSN spelling)", mode, err)
+		t.Fatalf("Pragma(\"_journal_mode\") = %q, %v ", mode, err)
 	}
 }
 
-// TestOpenMemoryPool — §5 + §11: `file:mem…?mode=memory&cache=shared` keeps the schema visible to
-// every pooled connection; without cache=shared the pool answers `no such table` (§5 spike 9).
 func TestOpenMemoryPool(t *testing.T) {
 	db, err := OpenMemory(context.Background(), "pool")
 	if err != nil {
-		t.Fatalf("OpenMemory of the §11 pool failed: %v", err)
+		t.Fatalf("OpenMemory of the pool failed: %v", err)
 	}
 	defer db.Close()
 
@@ -265,22 +235,20 @@ func TestOpenMemoryPool(t *testing.T) {
 		t.Fatal(err)
 	}
 	if mode != "memory" {
-		t.Fatalf("the memory pool reports journal_mode=%q (§5: WAL is unavailable in memory)", mode)
+		t.Fatalf("the memory pool reports journal_mode=%q ", mode)
 	}
 	if _, err := db.Exec("INSERT INTO chats (chat_id, user_id) VALUES (1, 7)"); err != nil {
 		t.Fatal(err)
 	}
-	// §11 MaxOpenConns(4): every pooled connection sees the same shared cache.
 	for i := 0; i < 4; i++ {
 		var count int
 		if err := db.QueryRow("SELECT COUNT(*) FROM chats").Scan(&count); err != nil {
-			t.Fatalf("connection %d of the pool lost the schema (§5 spike 9): %v", i, err)
+			t.Fatalf("connection %d of the pool lost the schema : %v", i, err)
 		}
 		if count != 1 {
-			t.Fatalf("connection %d of the pool sees %d rows, §5 keeps one shared cache", i, count)
+			t.Fatalf("connection %d of the pool sees %d rows, keeps one shared cache", i, count)
 		}
 	}
-	// §5: cache=shared makes the name the identity of the database — the same name is the same
 	// database, which is why a test name has to be unique per test.
 	other, err := OpenMemory(context.Background(), "pool")
 	if err != nil {
@@ -292,27 +260,26 @@ func TestOpenMemoryPool(t *testing.T) {
 		t.Fatal(err)
 	}
 	if shared != 1 {
-		t.Fatalf("the same memory name produced a separate database (§5 cache=shared): %d rows", shared)
+		t.Fatalf("the same memory name produced a separate database : %d rows", shared)
 	}
 }
 
-// TestStrictPragmasRejectsMultiStatement — §5 case B + §13 «_pragma through %3B»: the second line of
 // defence rejects a `_pragma` value that is more than one statement, in the validation phase, so
 // nothing is created on disk.
 func TestStrictPragmasRejectsMultiStatement(t *testing.T) {
 	if !StrictPragmasEnabled() {
-		t.Fatalf("the tests ran without EnableStrictPragmas (§5: main sets it before the first sql.Open)")
+		t.Fatalf("the tests ran without EnableStrictPragmas ")
 	}
 	dir := t.TempDir()
 	dsn := "file:" + EscapePath(dir+"/bot.db") + "?_pragma=foreign_keys(1)%3BATTACH 'x.db' AS x"
 	db, err := sql.Open(sqliteDriver, dsn)
 	if err != nil {
-		t.Fatalf("sql.Open is expected to stay silent here (§5 spike 11): %v", err)
+		t.Fatalf("sql.Open is expected to stay silent here : %v", err)
 	}
 	err = db.Ping()
 	db.Close()
 	if err == nil {
-		t.Fatalf("the Ping accepted a multi-statement _pragma (§5 case B: ATTACH would create x.db)")
+		t.Fatalf("the Ping accepted a multi-statement _pragma ")
 	}
 	if !strings.Contains(err.Error(), "more than one SQL statement") {
 		t.Fatalf("the Ping rejected the payload with an unexpected error: %v", err)
@@ -322,28 +289,25 @@ func TestStrictPragmasRejectsMultiStatement(t *testing.T) {
 		t.Fatal(err)
 	}
 	// sqlite3_open creates the file before the validation phase rejects the DSN, so the database
-	// itself exists; what must NOT exist is the file ATTACH would have created (§5 case B).
 	if _, err := os.Stat(dir + "/bot.db"); err != nil {
 		t.Fatalf("the database file was not even created: %v", err)
 	}
 	if _, err := os.Stat(dir + "/x.db"); err == nil {
-		t.Fatalf("x.db exists — the ATTACH of the payload ran (§5 case B)")
+		t.Fatalf("x.db exists — the ATTACH of the payload ran ")
 	}
 	if len(entries) != 1 {
-		t.Fatalf("the rejected payload left %d files: %v (§5: the rejection runs in validation, before any parameter)", len(entries), entries)
+		t.Fatalf("the rejected payload left %d files: %v ", len(entries), entries)
 	}
 }
 
-// TestOpenRejectsBadDSNLeavesPlainFile — §10 День 2 DoD: an `_journal_mode=666` typo surfaces from
 // db.Ping() and the file stays journal_mode=delete with no -wal/-shm. The rejection runs in the
-// validation phase of connect, before PRAGMA journal_mode is applied (§5 spike 11).
 func TestOpenRejectsBadDSNLeavesPlainFile(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/bot.db"
 	dsn := "file:" + EscapePath(path) + "?_journal_mode=666"
 	db, err := sql.Open(sqliteDriver, dsn)
 	if err != nil {
-		t.Fatalf("sql.Open is expected to stay silent (§5 spike 11): %v", err)
+		t.Fatalf("sql.Open is expected to stay silent : %v", err)
 	}
 	if err := db.Ping(); err == nil {
 		db.Close()
@@ -352,10 +316,10 @@ func TestOpenRejectsBadDSNLeavesPlainFile(t *testing.T) {
 	db.Close()
 
 	if _, err := os.Stat(path + "-wal"); err == nil {
-		t.Fatalf("-wal exists after a rejected DSN (§10 День 2 DoD: it must not)")
+		t.Fatalf("-wal exists after a rejected DSN ")
 	}
 	if _, err := os.Stat(path + "-shm"); err == nil {
-		t.Fatalf("-shm exists after a rejected DSN (§10 День 2 DoD: it must not)")
+		t.Fatalf("-shm exists after a rejected DSN ")
 	}
 	plain, err := sql.Open(sqliteDriver, "file:"+EscapePath(path))
 	if err != nil {
@@ -367,12 +331,10 @@ func TestOpenRejectsBadDSNLeavesPlainFile(t *testing.T) {
 		t.Fatalf("the file of the rejected DSN cannot be read: %v", err)
 	}
 	if mode != "delete" {
-		t.Fatalf("journal_mode of the rejected file = %q, §10 День 2 DoD: the file stays delete", mode)
+		t.Fatalf("journal_mode of the rejected file = %q, DoD: the file stays delete", mode)
 	}
 }
 
-// TestMemoryStoreSharedAcrossPool — §10 День 2 DoD: rows written on one pooled connection are seen
-// on the others, which only works through cache=shared (§5).
 func TestMemoryStoreSharedAcrossPool(t *testing.T) {
 	db, err := OpenMemory(context.Background(), "sharedpool")
 	if err != nil {
@@ -382,7 +344,6 @@ func TestMemoryStoreSharedAcrossPool(t *testing.T) {
 	if _, err := db.Exec("INSERT INTO chats (chat_id, user_id) VALUES (11, 7)"); err != nil {
 		t.Fatal(err)
 	}
-	// rows1 holds the first connection while rows2 opens the second (§5 spike 9 check).
 	rows1, err := db.Query("SELECT chat_id FROM chats")
 	if err != nil {
 		t.Fatal(err)
@@ -390,7 +351,7 @@ func TestMemoryStoreSharedAcrossPool(t *testing.T) {
 	defer rows1.Close()
 	rows2, err := db.Query("SELECT chat_id FROM chats")
 	if err != nil {
-		t.Fatalf("the second pooled connection lost the table (§5 cache=shared): %v", err)
+		t.Fatalf("the second pooled connection lost the table : %v", err)
 	}
 	defer rows2.Close()
 	for _, pair := range []struct {
@@ -409,15 +370,14 @@ func TestMemoryStoreSharedAcrossPool(t *testing.T) {
 			t.Fatal(err)
 		}
 		if len(seen) != 1 || seen[0] != 11 {
-			t.Fatalf("%s sees %v, §5 keeps one shared cache of the same rows", pair.name, seen)
+			t.Fatalf("%s sees %v, keeps one shared cache of the same rows", pair.name, seen)
 		}
 	}
 	if open := db.Stats().OpenConnections; open < 2 {
-		t.Fatalf("the pool kept %d open connections, §11 MaxOpenConns(4) allows two at once", open)
+		t.Fatalf("the pool kept %d open connections, MaxOpenConns(4) allows two at once", open)
 	}
 }
 
-// TestMemoryDSNNeedsCacheShared — §10 День 2 DoD: the §11 DSN of §5 with cache=shared keeps the
 // schema across the pool.
 func TestMemoryDSNNeedsCacheShared(t *testing.T) {
 	db, err := sql.Open(sqliteDriver, "file:memshared?mode=memory&cache=shared&_foreign_keys=1&_busy_timeout=5000")
@@ -428,22 +388,20 @@ func TestMemoryDSNNeedsCacheShared(t *testing.T) {
 	db.SetMaxOpenConns(MaxOpenConns)
 	db.SetMaxIdleConns(MaxIdleConns)
 	if err := ApplySchema(context.Background(), db); err != nil {
-		t.Fatalf("the schema of §5 did not reach the shared memory pool: %v", err)
+		t.Fatalf("the schema of did not reach the shared memory pool: %v", err)
 	}
 	if _, err := db.Exec("INSERT INTO chats (chat_id, user_id) VALUES (3, 7)"); err != nil {
 		t.Fatal(err)
 	}
 	var count int
 	if err := db.QueryRow("SELECT COUNT(*) FROM chats").Scan(&count); err != nil {
-		t.Fatalf("the shared cache pool lost the table (§5 cache=shared): %v", err)
+		t.Fatalf("the shared cache pool lost the table : %v", err)
 	}
 	if count != 1 {
-		t.Fatalf("the shared cache sees %d rows (§5 keeps 1)", count)
+		t.Fatalf("the shared cache sees %d rows ", count)
 	}
 }
 
-// TestPrivateMemoryNotSharedAcrossPool — §10 День 2 DoD: without cache=shared a memory database
-// belongs to one connection, so the second pooled connection answers `no such table` (§5 spike 9).
 func TestPrivateMemoryNotSharedAcrossPool(t *testing.T) {
 	db, err := sql.Open(sqliteDriver, "file:membroken?mode=memory&_foreign_keys=1&_busy_timeout=5000")
 	if err != nil {
@@ -462,16 +420,14 @@ func TestPrivateMemoryNotSharedAcrossPool(t *testing.T) {
 	defer rows1.Close()
 	_, err = db.Query("SELECT COUNT(*) FROM chats")
 	if err == nil {
-		t.Fatalf("a memory database without cache=shared was visible on the second connection (§5 spike 9)")
+		t.Fatalf("a memory database without cache=shared was visible on the second connection ")
 	}
 	if !strings.Contains(err.Error(), "no such table") {
 		t.Fatalf("the second connection failed with an unexpected error: %v", err)
 	}
 }
 
-// TestMemoryPoolKeepsIdleConn — §10 День 2 DoD: with MaxIdleConns(2) the pooled database survives
 // repeated rounds; with idle=0 the pool closes the connection on returning it and the shared-cache
-// memory database disappears with it (§5 spike 9 — the reason §11 pins idle at 2).
 func TestMemoryPoolKeepsIdleConn(t *testing.T) {
 	ctx := context.Background()
 	dsn, err := MemoryDSN("idle")
@@ -491,28 +447,24 @@ func TestMemoryPoolKeepsIdleConn(t *testing.T) {
 	if _, err := db.Exec("INSERT INTO chats (chat_id, user_id) VALUES (9, 7)"); err != nil {
 		t.Fatal(err)
 	}
-	// §11: the returned connection stays idle in the pool instead of being closed (DBStats has no
 	// MaxIdleConns field on this toolchain — MaxIdleClosed is the counter that proves it).
 	stats := db.Stats()
 	if stats.MaxIdleClosed != 0 {
-		t.Fatalf("MaxIdleClosed = %d, §11 pins MaxIdleConns(2): the pool must not close idle connections", stats.MaxIdleClosed)
+		t.Fatalf("MaxIdleClosed = %d, pins MaxIdleConns(2): the pool must not close idle connections", stats.MaxIdleClosed)
 	}
 	if stats.MaxOpenConnections != MaxOpenConns {
-		t.Fatalf("MaxOpenConnections = %d, §11 pins %d", stats.MaxOpenConnections, MaxOpenConns)
+		t.Fatalf("MaxOpenConnections = %d, pins %d", stats.MaxOpenConnections, MaxOpenConns)
 	}
 	for round := 0; round < 5; round++ {
 		var count int
 		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM chats").Scan(&count); err != nil {
-			t.Fatalf("the pooled database vanished after round %d (§5 spike 9): %v", round, err)
+			t.Fatalf("the pooled database vanished after round %d : %v", round, err)
 		}
 		if count != 1 {
-			t.Fatalf("round %d sees %d rows, §5 keeps 1", round, count)
+			t.Fatalf("round %d sees %d rows, keeps 1", round, count)
 		}
 	}
 
-	// The same DSN with idle=0 is the shape §11 forbids: the pool closes the connection between the
-	// statements, and the shared-cache memory database disappears with it — the schema of §5 cannot
-	// even be applied (§5 spike 9).
 	brokenDSN, err := MemoryDSN("idlezero")
 	if err != nil {
 		t.Fatal(err)
@@ -526,22 +478,20 @@ func TestMemoryPoolKeepsIdleConn(t *testing.T) {
 	broken.SetMaxIdleConns(0)
 	err = ApplySchema(ctx, broken)
 	if err == nil {
-		t.Fatalf("idle=0 applied the schema of §5 cleanly, §5 spike 9 says the pool drops the memory database")
+		t.Fatalf("idle=0 applied the schema of cleanly, spike 9 says the pool drops the memory database")
 	}
 	if !strings.Contains(err.Error(), "no such table") {
 		t.Fatalf("idle=0 failed with an unexpected error: %v", err)
 	}
 	if broken.Stats().MaxIdleClosed == 0 {
-		t.Fatalf("MaxIdleClosed = 0 with idle=0, §11: the pool closes the returned connection")
+		t.Fatalf("MaxIdleClosed = 0 with idle=0,: the pool closes the returned connection")
 	}
 }
 
-// TestMemoryStoreNoWAL — §10 День 2 DoD: WAL is silently unavailable in memory (§5), so the memory
-// pool reports `memory` and Open accepts exactly that answer (§5 table row).
 func TestMemoryStoreNoWAL(t *testing.T) {
 	db, err := OpenMemory(context.Background(), "nowal")
 	if err != nil {
-		t.Fatalf("OpenMemory must not fall on the WAL request of §5: %v", err)
+		t.Fatalf("OpenMemory must not fall on the WAL request of: %v", err)
 	}
 	defer db.Close()
 	mode, err := Pragma(context.Background(), db, JournalModePragma)
@@ -549,10 +499,10 @@ func TestMemoryStoreNoWAL(t *testing.T) {
 		t.Fatal(err)
 	}
 	if mode != "memory" {
-		t.Fatalf("journal_mode = %q in memory, §5 reports memory", mode)
+		t.Fatalf("journal_mode = %q in memory, reports memory", mode)
 	}
 	if _, err := Pragma(context.Background(), db, BusyTimeoutPragma); err != nil {
-		t.Fatalf("busy_timeout stays readable in memory (§11 keeps it in the DSN): %v", err)
+		t.Fatalf("busy_timeout stays readable in memory : %v", err)
 	}
 }
 
@@ -567,7 +517,6 @@ func openTemp(t *testing.T) (*sql.DB, string) {
 	return db, path
 }
 
-// unwritablePath — a path whose parent cannot exist (§5 spike 5: SQLite does not create the location
 // and answers SQLITE_CANTOPEN). A regular file used as a directory is that case on every OS.
 func unwritablePath(t *testing.T) string {
 	t.Helper()

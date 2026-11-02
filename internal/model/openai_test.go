@@ -1,8 +1,5 @@
-// openai_test.go — the §10 День 3 DoD: «интеграционный тест против httptest-фейка (успех, timeout,
 // 500, пустой ответ, 500→успех после ретрая — ровно одна строка assistant в БД)».
 //
-// The fake serves /v1/... exactly like the measured endpoint (§16 change 26), so these tests also
-// pin the URL join of §7: a client pointed at the fake with a base that has no /v1 must still reach
 // the handler, and a client aimed at a wrong path gets the 404 the real server gives.
 package model
 
@@ -20,8 +17,6 @@ import (
 	"bot/internal/testutil"
 )
 
-// clientFor — a client over the fake with a short budget, so the timeout case of §10 День 3 is
-// measured in milliseconds instead of waiting the 60 seconds of STRATA_TIMEOUT_SECONDS (§7).
 func clientFor(t *testing.T, fake *testutil.Strata, opts Options) *OpenAI {
 	t.Helper()
 	if opts.ChatURL == "" {
@@ -52,17 +47,14 @@ func clientFor(t *testing.T, fake *testutil.Strata, opts Options) *OpenAI {
 	return c
 }
 
-// oneRequest — the smallest request of §5: a system row plus one user row.
 func oneRequest(text string) Request {
 	return Request{Messages: []Message{
-		{Role: RoleSystem, Content: "system prompt of §7"},
+		{Role: RoleSystem, Content: "system prompt of"},
 		{Role: RoleUser, Content: text},
 	}}
 }
 
 // TestCompleteSuccess — the "успех" case: the answer, the model name and the usage land in the
-// Response of §4, one attempt is made, and the wire body carries the model of §7 plus both turns of
-// the glued context (§11 asserts the prompt through the recorded body).
 func TestCompleteSuccess(t *testing.T) {
 	var fake = testutil.NewStrata(t, "secret-key", testutil.StrataReply{
 		Content: "ответ модели", Model: "qwen-echo", TokensIn: 11, TokensOut: 22,
@@ -77,22 +69,22 @@ func TestCompleteSuccess(t *testing.T) {
 		t.Errorf("Content = %q, want the answer of the fake", res.Content)
 	}
 	if res.Model != "qwen-echo" {
-		t.Errorf("Model = %q, want the model the endpoint echoed (§6 /model)", res.Model)
+		t.Errorf("Model = %q, want the model the endpoint echoed ", res.Model)
 	}
 	if res.TokensIn == nil || *res.TokensIn != 11 || res.TokensOut == nil || *res.TokensOut != 22 {
-		t.Errorf("tokens = %v/%v, want 11/22 from usage (§5 tokens_in/tokens_out)", res.TokensIn, res.TokensOut)
+		t.Errorf("tokens = %v/%v, want 11/22 from usage ", res.TokensIn, res.TokensOut)
 	}
 	if res.Attempts != 1 {
-		t.Errorf("Attempts = %d, want 1 (§10 День 3: a success does not retry)", res.Attempts)
+		t.Errorf("Attempts = %d, want 1 ", res.Attempts)
 	}
 	if res.Latency <= 0 {
-		t.Error("Latency must cover the whole call (§6 «⏱ latency»)")
+		t.Error("Latency must cover the whole call ")
 	}
 	if fake.ChatCalls() != 1 {
 		t.Errorf("the fake got %d chat requests, want 1", fake.ChatCalls())
 	}
 	if fake.LastAuthorization() != "Bearer secret-key" {
-		t.Error("Authorization was not sent as Bearer (§7 STRATA_API_KEY)") // the value is not printed (§12 security)
+		t.Error("Authorization was not sent as Bearer ") // the value is not printed
 	}
 
 	var sent = decodeBody(t, fake.LastRequestBody())
@@ -100,14 +92,13 @@ func TestCompleteSuccess(t *testing.T) {
 		t.Errorf("the request carried model %q", sent.Model)
 	}
 	if len(sent.Messages) != 2 || sent.Messages[0].Role != RoleSystem || sent.Messages[1].Content != "вопрос" {
-		t.Errorf("the request carried %v, want the system prompt of §7 then the user text (§5 контекст)", sent.Messages)
+		t.Errorf("the request carried %v, want the system prompt of then the user text ", sent.Messages)
 	}
 	if sent.Stream {
-		t.Error("stream must be false in v1 (§10 День 3 stores one final answer)")
+		t.Error("stream must be false in v1 ")
 	}
 }
 
-// wireBody — the shape the fake recorded, decoded for the assertions of §11.
 type wireBody struct {
 	Model    string `json:"model"`
 	Stream   bool   `json:"stream"`
@@ -126,8 +117,6 @@ func decodeBody(t *testing.T, raw string) wireBody {
 	return body
 }
 
-// TestEmptyAnswerIsAnError — §10 День 3 «пустой ответ»: both the 200 with choices:[] and the 200
-// with a null content are errors, and neither retries (§13: an empty answer is not a network issue).
 func TestEmptyAnswerIsAnError(t *testing.T) {
 	for name, reply := range map[string]testutil.StrataReply{
 		"no choices":    {EmptyChoices: true},
@@ -139,18 +128,16 @@ func TestEmptyAnswerIsAnError(t *testing.T) {
 
 		var _, err = c.Complete(context.Background(), oneRequest("вопрос"))
 		if !errors.Is(err, ErrEmptyAnswer) {
-			t.Errorf("%s: err = %v, want ErrEmptyAnswer (§10 День 3)", name, err)
+			t.Errorf("%s: err = %v, want ErrEmptyAnswer ", name, err)
 		}
 		if fake.ChatCalls() != 1 {
-			t.Errorf("%s: %d requests, want 1 — an empty answer is not retried (§10 День 3 retries only 5xx and network)",
+			t.Errorf("%s: %d requests, want 1 — an empty answer is not retried ",
 				name, fake.ChatCalls())
 		}
 	}
 }
 
-// TestRetryAfterServerError — §10 День 3 «500 → успех после ретрая». The invariant of §10 День 3 is
 // what this pins down: the retry happens INSIDE Complete, so the caller stores ONE assistant row and
-// the retried attempts cannot add a second one or reorder the history (§13 risk «Ретраи модели →
 // дубли в истории»).
 func TestRetryAfterServerError(t *testing.T) {
 	var fake = testutil.NewStrata(t, "",
@@ -161,19 +148,18 @@ func TestRetryAfterServerError(t *testing.T) {
 
 	var res, err = c.Complete(context.Background(), oneRequest("вопрос"))
 	if err != nil {
-		t.Fatalf("Complete after a 500: %v (§10 День 3: a 5xx is retried)", err)
+		t.Fatalf("Complete after a 500: %v ", err)
 	}
 	if res.Content != "успех после ретрая" {
 		t.Errorf("Content = %q, want the answer of the second attempt", res.Content)
 	}
 	if res.Attempts != 2 {
-		t.Errorf("Attempts = %d, want 2 (§7 STRATA_MAX_ATTEMPTS = 2)", res.Attempts)
+		t.Errorf("Attempts = %d, want 2 ", res.Attempts)
 	}
 	if fake.ChatCalls() != 2 {
 		t.Errorf("the fake got %d requests, want 2 (one retry, not more)", fake.ChatCalls())
 	}
 
-	// The write invariant, measured against the schema of §5 instead of asserted in words: the bot of
 	// День 4 calls Append once with the Response of Complete, so a successful call — retried or not —
 	// produces exactly one assistant row.
 	var db, openErr = store.OpenMemory(context.Background(), "model_retry_"+t.Name())
@@ -195,14 +181,13 @@ func TestRetryAfterServerError(t *testing.T) {
 		t.Fatalf("HistoryOfChat: %v", queryErr)
 	}
 	if len(rows) != 1 || rows[0].Role != store.RoleAssistant || rows[0].Content != "успех после ретрая" {
-		t.Errorf("the retried call produced %d rows: %+v (§10 День 3: ровно одна строка assistant)", len(rows), rows)
+		t.Errorf("the retried call produced %d rows: %+v ", len(rows), rows)
 	}
 	if rows[0].Model != "qwen-echo" || rows[0].TokensOut == nil || *rows[0].TokensOut != 7 {
-		t.Errorf("the stored row lost its metadata: %+v (§5 model/tokens_out)", rows[0])
+		t.Errorf("the stored row lost its metadata: %+v ", rows[0])
 	}
 }
 
-// TestEveryAttemptFailsWritesOnlyEvents — §10 День 3 «при всех неудачных попытках пишется только
 // events(kind='model_error')». The fake stays broken (its last reply repeats), so Complete must fail
 // after exactly STRATA_MAX_ATTEMPTS attempts, and the caller writes no message row at all.
 func TestEveryAttemptFailsWritesOnlyEvents(t *testing.T) {
@@ -215,10 +200,10 @@ func TestEveryAttemptFailsWritesOnlyEvents(t *testing.T) {
 	}
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.Status != 500 {
-		t.Errorf("err = %v, want an APIError with status 500 (§10 День 3)", err)
+		t.Errorf("err = %v, want an APIError with status 500 ", err)
 	}
 	if fake.ChatCalls() != 2 {
-		t.Errorf("the fake got %d requests, want 2 (§7: 2 попытки, не больше)", fake.ChatCalls())
+		t.Errorf("the fake got %d requests, want 2 ", fake.ChatCalls())
 	}
 
 	var db, openErr = store.OpenMemory(context.Background(), "model_allfail_"+t.Name())
@@ -227,7 +212,6 @@ func TestEveryAttemptFailsWritesOnlyEvents(t *testing.T) {
 	}
 	defer db.Close()
 
-	// The rule of §10 День 3 in executable form: a failed call appends no message and writes the
 	// event row only. The client itself never touches the database — hence the zero first.
 	var events, countErr = store.CountEvents(context.Background(), db, store.EventModelError)
 	if countErr != nil {
@@ -241,16 +225,15 @@ func TestEveryAttemptFailsWritesOnlyEvents(t *testing.T) {
 	}
 	events, countErr = store.CountEvents(context.Background(), db, store.EventModelError)
 	if countErr != nil || events != 1 {
-		t.Errorf("events(model_error) = %d err=%v, want 1 (§6 /stats counts them)", events, countErr)
+		t.Errorf("events(model_error) = %d err=%v, want 1 ", events, countErr)
 	}
 	var rows, queryErr = store.HistoryOfChat(context.Background(), db, 1, 10)
 	if queryErr != nil || len(rows) != 0 {
-		t.Errorf("a failed model call stored %d messages (err %v) — only events may be written (§10 День 3)", len(rows), queryErr)
+		t.Errorf("a failed model call stored %d messages (err %v) — only events may be written ", len(rows), queryErr)
 	}
 }
 
 // TestClientErrorIsNotRetried — a 4xx repeats nothing: a wrong key or a wrong path cannot succeed on
-// a second attempt, and repeating it burns the budget of TG_REPLY_DEADLINE_SECONDS (§7, §10 День 3).
 func TestClientErrorIsNotRetried(t *testing.T) {
 	for _, status := range []int{400, 401, 403, 404, 429} {
 		var fake = testutil.NewStrata(t, "", testutil.StrataReply{Status: status})
@@ -263,7 +246,7 @@ func TestClientErrorIsNotRetried(t *testing.T) {
 			continue
 		}
 		if apiErr.Retryable() {
-			t.Errorf("status %d reported Retryable — §10 День 3 retries only 5xx and network errors", status)
+			t.Errorf("status %d reported Retryable — retries only 5xx and network errors", status)
 		}
 		if fake.ChatCalls() != 1 {
 			t.Errorf("status %d: the fake got %d requests, want 1", status, fake.ChatCalls())
@@ -271,26 +254,21 @@ func TestClientErrorIsNotRetried(t *testing.T) {
 	}
 }
 
-// TestMissingKeyIsRejectedByTheEndpoint — §7 STRATA_API_KEY: the fake answers 401 when the client
-// sends no Bearer header, and a 401 is not retried (§13: a wrong key has to surface at once).
 func TestMissingKeyIsRejectedByTheEndpoint(t *testing.T) {
 	var fake = testutil.NewStrata(t, "expected-key")
-	var c = clientFor(t, fake, Options{}) // no APIKey of §7
+	var c = clientFor(t, fake, Options{}) // no APIKey of
 
 	var _, err = c.Complete(context.Background(), oneRequest("вопрос"))
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.Status != 401 {
-		t.Errorf("err = %v, want a 401 from the endpoint (§7 STRATA_API_KEY)", err)
+		t.Errorf("err = %v, want a 401 from the endpoint ", err)
 	}
 	if fake.ChatCalls() != 1 {
-		t.Errorf("%d requests, want 1 (§10 День 3: a 4xx is not retried)", fake.ChatCalls())
+		t.Errorf("%d requests, want 1 ", fake.ChatCalls())
 	}
 }
 
-// TestTimeoutEndsTheBudget — §10 День 3 «timeout». The fake holds the response open for 400ms while
 // the budget of STRATA_TIMEOUT_SECONDS is 120ms, so the FIRST attempt already spends the budget: a
-// second attempt would overshoot TG_REPLY_DEADLINE_SECONDS (§7 «суммарный бюджет … не должен
-// превышать»), and §10 День 3 forbids it.
 func TestTimeoutEndsTheBudget(t *testing.T) {
 	var fake = testutil.NewStrata(t, "", testutil.StrataReply{Content: "поздно", Delay: 400 * time.Millisecond})
 	var c = clientFor(t, fake, Options{Timeout: 120 * time.Millisecond, Attempts: 2, Backoff: 5 * time.Millisecond})
@@ -300,21 +278,19 @@ func TestTimeoutEndsTheBudget(t *testing.T) {
 	var spent = time.Since(start)
 
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("err = %v, want context.DeadlineExceeded (§10 День 3 timeout)", err)
+		t.Errorf("err = %v, want context.DeadlineExceeded ", err)
 	}
 	if spent > 300*time.Millisecond {
 		t.Errorf("the call took %v with a 120ms budget: the timeout must end the whole budget, not one attempt", spent)
 	}
 	if fake.ChatCalls() != 1 {
-		t.Errorf("the fake got %d requests, want 1 (§10 День 3: a spent budget is not retried)", fake.ChatCalls())
+		t.Errorf("the fake got %d requests, want 1 ", fake.ChatCalls())
 	}
 	if !strings.Contains(err.Error(), TelegramBudgetNotice) {
-		t.Errorf("the error text does not name the budget: %v (§12 UX sends it to the user)", err)
+		t.Errorf("the error text does not name the budget: %v ", err)
 	}
 }
 
-// TestDeadlineOfTheHandlerWins — §10 День 3: the total budget of the answer (TG_REPLY_DEADLINE_SECONDS
-// of §7) arrives with the context of the caller, and a deadline SHORTER than STRATA_TIMEOUT_SECONDS
 // must be honoured, so День 4 can cap the whole turn.
 func TestDeadlineOfTheHandlerWins(t *testing.T) {
 	var fake = testutil.NewStrata(t, "", testutil.StrataReply{Content: "ответ", Delay: 300 * time.Millisecond})
@@ -326,17 +302,14 @@ func TestDeadlineOfTheHandlerWins(t *testing.T) {
 	var start = time.Now()
 	var _, err = c.Complete(ctx, oneRequest("вопрос"))
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("err = %v, want the deadline of the caller (§7 TG_REPLY_DEADLINE_SECONDS)", err)
+		t.Errorf("err = %v, want the deadline of the caller ", err)
 	}
 	if spent := time.Since(start); spent > 250*time.Millisecond {
-		t.Errorf("the call ran %v although the handler gave 100ms (§10 День 3 budget)", spent)
+		t.Errorf("the call ran %v although the handler gave 100ms ", spent)
 	}
 }
 
-// TestSpentBudgetIsNotRetryable — the trap §15 exposed. context.DeadlineExceeded implements Timeout() and
 // Is(), which makes it satisfy net.Error, so the network branch of Retryable would retry a call whose time is
-// simply up: the user waits a second wall, and a second slot of MAX_CONCURRENT_MODEL_REQUESTS of §12 goes to an
-// answer that is already lost. The guard in Retryable is what keeps §10 День 3 («ретраи — только сеть и 5xx»).
 func TestSpentBudgetIsNotRetryable(t *testing.T) {
 	for _, err := range []error{
 		context.DeadlineExceeded,
@@ -346,29 +319,27 @@ func TestSpentBudgetIsNotRetryable(t *testing.T) {
 		fmt.Errorf("%w: %s", ErrStreamTooLong, StreamNotice),
 	} {
 		if Retryable(err) {
-			t.Errorf("Retryable(%v) = true — a spent budget is not the network class (§10 День 3, §15)", err)
+			t.Errorf("Retryable(%v) = true — a spent budget is not the network class ", err)
 		}
 	}
 }
 
-// TestNetworkErrorIsRetriedOnce — §10 День 3 retries the network class too: a closed port answers
 // ECONNREFUSED on both attempts, and the call reports the failure after exactly two attempts.
 func TestNetworkErrorIsRetriedOnce(t *testing.T) {
 	var c = clientForNoFake(t, closedPort(t), Options{Attempts: 2, Backoff: 5 * time.Millisecond, Timeout: 2 * time.Second})
 
 	var _, err = c.Complete(context.Background(), oneRequest("вопрос"))
 	if err == nil {
-		t.Fatal("Complete succeeded against a port nobody listens on (§13 risk «STRATA недоступен»)")
+		t.Fatal("Complete succeeded against a port nobody listens on ")
 	}
 	if !Retryable(err) {
-		t.Errorf("Retryable(%v) = false — §10 День 3 retries the network class too", err)
+		t.Errorf("Retryable(%v) = false — retries the network class too", err)
 	}
 	if !strings.Contains(err.Error(), "after 2 attempts") {
-		t.Errorf("the error does not say how many attempts were made: %v (§7 STRATA_MAX_ATTEMPTS)", err)
+		t.Errorf("the error does not say how many attempts were made: %v ", err)
 	}
 }
 
-// TestModels — GET {base}/models of §6 `/model check`, the same join rule as the chat path (§16
 // change 26: the /v1 suffix is part of the endpoint).
 func TestModels(t *testing.T) {
 	var fake = testutil.NewStrata(t, "k", testutil.StrataReply{Models: []string{"qwen-test", "llama-3"}})
@@ -379,19 +350,17 @@ func TestModels(t *testing.T) {
 		t.Fatalf("Models: %v", err)
 	}
 	if len(models) != 2 || models[0] != "qwen-test" || models[1] != "llama-3" {
-		t.Errorf("Models = %v, want the two ids of the fake (§6 /model)", models)
+		t.Errorf("Models = %v, want the two ids of the fake ", models)
 	}
 	if fake.ModelsCalls() != 1 {
-		t.Errorf("the fake got %d GET requests, want 1 (§6 /model check)", fake.ModelsCalls())
+		t.Errorf("the fake got %d GET requests, want 1 ", fake.ModelsCalls())
 	}
 	if fake.LastAuthorization() != "Bearer k" {
-		t.Error("GET /models must carry the key of §7 too")
+		t.Error("GET /models must carry the key of too")
 	}
 }
 
-// TestWrongPathIsA404NotARetry — the §16 change 26 measurement: the real endpoint answers 404 when
 // the /v1 prefix is missing. A client aimed at a path that already carries /v1 in the wrong place
-// must fail with a 404 that NAMES the status (§12 UX: the user has to see what to fix), and must not
 // retry — repeating a path the server does not serve only wastes the budget.
 func TestWrongPathIsA404NotARetry(t *testing.T) {
 	var fake = testutil.NewStrata(t, "")
@@ -400,7 +369,7 @@ func TestWrongPathIsA404NotARetry(t *testing.T) {
 	var _, err = c.Complete(context.Background(), oneRequest("вопрос"))
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.Status != 404 {
-		t.Errorf("err = %v, want the 404 of §16 change 26", err)
+		t.Errorf("err = %v, want the 404 of", err)
 	}
 	if fake.ChatCalls() != 0 {
 		t.Errorf("the chat endpoint got %d requests, want 0 (the URL of the client does not name it)", fake.ChatCalls())
@@ -409,11 +378,10 @@ func TestWrongPathIsA404NotARetry(t *testing.T) {
 		t.Errorf("the server got %d unmatched requests, want 1 (a wrong URL is not retryable)", fake.OtherCalls())
 	}
 	if !strings.Contains(apiErr.Error(), "404") {
-		t.Errorf("the text of APIError does not name the status: %v (§12 UX)", apiErr)
+		t.Errorf("the text of APIError does not name the status: %v ", apiErr)
 	}
 }
 
-// TestConcurrencyGate — §7 MAX_CONCURRENT_MODEL_REQUESTS (§12 performance: the GPU is the scarce
 // resource). Two parallel calls against a slow fake run side by side when the gate is 2, and the
 // third waits for a free slot.
 func TestConcurrencyGate(t *testing.T) {
@@ -434,14 +402,13 @@ func TestConcurrencyGate(t *testing.T) {
 		}
 	}
 	if spent := time.Since(start); spent < 300*time.Millisecond {
-		t.Errorf("3 calls of 200ms with a gate of 2 finished in %v — the gate did not hold the third back (§7)", spent)
+		t.Errorf("3 calls of 200ms with a gate of 2 finished in %v — the gate did not hold the third back ", spent)
 	}
 	if fake.ChatCalls() != 3 {
 		t.Errorf("the fake got %d requests, want 3", fake.ChatCalls())
 	}
 }
 
-// TestGateReleasesAfterUse — §12 performance: waiting for a slot consumes the budget of §10 День 3,
 // so a caller that gives up while waiting must get an error, and the slot must return to the pool
 // afterwards (a leaked slot would block the bot forever).
 func TestGateReleasesAfterUse(t *testing.T) {
@@ -458,18 +425,17 @@ func TestGateReleasesAfterUse(t *testing.T) {
 	var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
 	if _, err := c.Complete(ctx, oneRequest("второй")); err == nil {
-		t.Error("the second call succeeded while the only slot was busy (§7 MAX_CONCURRENT_MODEL_REQUESTS)")
+		t.Error("the second call succeeded while the only slot was busy ")
 	}
 	if err := <-hold; err != nil {
 		t.Errorf("the first call failed: %v", err)
 	}
 	// With the slot free again the same client answers normally — the gate releases, it does not leak.
 	if _, err := c.Complete(context.Background(), oneRequest("после")); err != nil {
-		t.Errorf("the client stayed blocked after the slot was released: %v (§12 performance)", err)
+		t.Errorf("the client stayed blocked after the slot was released: %v ", err)
 	}
 }
 
-// closedPort — a URL whose port nobody listens on (§13 risk «STRATA недоступен»). The listener is
 // closed right away, which is the reliable way to get ECONNREFUSED on Windows.
 func closedPort(t *testing.T) string {
 	t.Helper()

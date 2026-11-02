@@ -1,9 +1,7 @@
 #Requires -Version 7
 <#
-Setup.ps1 — §11 Day 0 note: Git for Windows — installed (winget Git.Git), but
   its dir не automaticaly added to already-running PowerShell sessions PATH.
   Dot-source это скрипт: `. .\scripts\Setup.ps1` (dot + path!).
-  Also set Go-variablerning (plan §3): GOPROXY, GOCACHE, GOPATH (project-local .cache/).
 #>
 
 # Repo root = parent of scripts/
@@ -17,7 +15,6 @@ foreach ($dir in $gitDirs) {
     }
 }
 
-# Go-variablerning (plan §3: cache + proxy) — project-local
 $env:GOPROXY = 'https://proxy.golang.org,direct'
 $env:GOCACHE = Join-Path $repoRoot '.cache\gocache'
 $env:GOPATH = Join-Path $repoRoot '.cache\gopath'

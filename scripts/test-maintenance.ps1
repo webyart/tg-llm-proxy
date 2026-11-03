@@ -79,6 +79,16 @@ try {
     if ($LASTEXITCODE -eq 0) { throw 'external copy overwrote an existing destination' }
     Write-Output 'maintenance acceptance: external copy matches and existing destinations are never overwritten'
 
+    $encryptedExternal = Join-Path $work 'encrypted-external-copy'
+    & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'db_offsite_copy.ps1') -Source $backup -Directory $encryptedExternal -Encrypt -KeyPath (Join-Path $work 'test-encryption.key')
+    if ($LASTEXITCODE -ne 0) { throw 'encrypted external copy acceptance failed' }
+    $encryptedBackup = Join-Path $encryptedExternal 'manual-backup.db.enc'
+    $header = [System.IO.File]::ReadAllBytes($encryptedBackup)
+    if ([System.Text.Encoding]::ASCII.GetString($header, 0, 8) -ne 'TGDBENC1') { throw 'encrypted backup has no crypto header' }
+    & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'db_offsite_copy.ps1') -Source $backup -Directory $encryptedExternal -Encrypt -KeyPath (Join-Path $work 'test-encryption.key')
+    if ($LASTEXITCODE -eq 0) { throw 'encrypted external copy overwrote an existing destination' }
+    Write-Output 'maintenance acceptance: encrypted external copy has a crypto header, decrypts to a valid database, and is never overwritten'
+
     $legacy = Join-Path $work 'legacy.db'
     & $fixtureExe -path $legacy -pre-version
     if ($LASTEXITCODE -ne 0) { throw 'legacy dbfixture failed' }

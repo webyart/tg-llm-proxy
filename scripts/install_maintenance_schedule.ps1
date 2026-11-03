@@ -4,7 +4,7 @@ install_maintenance_schedule.ps1 — preview or register the hidden daily Window
 
 conhost.exe --headless prevents a console window; pwsh also receives -WindowStyle Hidden.
 Default action: db_volume_maintenance.ps1 -Keep 7, with retention in dry-run mode, so no old backup is deleted.
--ExternalDirectory adds a verified external copy. -ApplyRetention adds -Apply explicitly. Existing tasks are never
+-ExternalDirectory adds a verified external copy. -EncryptBackups encrypts it with AES-256-GCM. -ApplyRetention adds -Apply explicitly. Existing tasks are never
 overwritten (/F is not used). Failure alerts use the existing Telegram token and allowlist.
 
 Usage:
@@ -21,6 +21,7 @@ param(
     [ValidatePattern('^([01][0-9]|2[0-3]):[0-5][0-9]$')]
     [string]$Time = '04:00',
     [string]$ExternalDirectory,
+    [switch]$EncryptBackups,
     [switch]$ApplyRetention,
     [switch]$Register
 )
@@ -52,6 +53,7 @@ if ($ExternalDirectory) {
     $ExternalDirectory = [System.IO.Path]::GetFullPath($ExternalDirectory)
     $action += " -ExternalDirectory `"$ExternalDirectory`""
 }
+if ($EncryptBackups) { $action += ' -Encrypt' }
 if ($ApplyRetention) { $action += ' -Apply' }
 $createArgs = @('/Create', '/TN', $TaskName, '/SC', 'DAILY', '/ST', $Time, '/TR', $action)
 

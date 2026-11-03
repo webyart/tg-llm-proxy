@@ -7,8 +7,8 @@ Telegram-бот-прокси между пользователями и лока
 
 ## Возможности
 
-- 14 команд: `/start`, `/help`, `/ping`, `/status`, `/ask`, `/reset`, `/skip`, `/unskip`, `/history`, `/model`, `/stream`, `/persona`, `/stats`, `/whoami`.
-- `/start` и `/help` открывают inline-меню с 14 кнопками команд; callback проходит через тот же Dispatcher.
+- 15 команд: `/start`, `/help`, `/ping`, `/status`, `/ask`, `/reset`, `/skip`, `/unskip`, `/history`, `/model`, `/stream`, `/persona`, `/stats`, `/whoami`, `/admin`.
+- `/start` и `/help` открывают inline-меню с 15 кнопками команд; callback проходит через тот же Dispatcher.
 - История и независимый контекст каждого чата в SQLite/WAL.
 - Allowlist по Telegram user id, rate limiting, per-chat lock и ограничение параллельных запросов к модели.
 - Обработка timeout/5xx/пустых ответов, Telegram 429 и восстановление незавершённых вопросов после рестарта.
@@ -91,7 +91,7 @@ docker compose logs -f bot
 
 ## Конфигурация
 
-Полный список из 29 ENV-строк и их значения по умолчанию находится в `.env.example`.
+Полный список из 30 ENV-строк и их значения по умолчанию находится в `.env.example`. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
 
 ### Основные параметры
 
@@ -181,6 +181,7 @@ Reverse proxy или туннель должен перенаправлять п
 | `/persona` | inline-меню и текущая роль; `assistant`, `coder`, `writer`, `translator`, `custom <текст>`, `reset` |
 | `/stats` | сообщения, токены и ошибки текущего чата |
 | `/whoami` | `user_id`, `chat_id` и состояние allowlist |
+| `/admin` | агрегированные метрики; только для `TELEGRAM_ADMIN_USERS` |
 
 ## Проверка проекта
 
@@ -307,7 +308,7 @@ docker compose up -d
 - Startup recovery не имеет age cap и рассматривает только самый новый visible unanswered-вопрос чата.
 - Host-side `/healthz` на Docker Desktop может давать WARN при healthy in-container healthcheck.
 - macOS использует те же Unix-ветки, что и проверенный Linux; физический Mac acceptance не выполнялся.
-- Вложения, `/admin` и RAG относятся к следующим версиям.
+- Вложения и RAG относятся к следующим версиям.
 
 ## Безопасность
 
@@ -319,6 +320,6 @@ docker compose up -d
 
 ## Документы
 
-- `.env.example` — все 29 настроек с комментариями.
+- `.env.example` — все 30 настроек с комментариями.
 - `RELEASE_NOTES.md` — состав release candidate и результаты проверок.
 - `PLAN.md` — локальный подробный план и история изменений (gitignored).

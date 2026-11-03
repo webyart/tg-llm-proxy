@@ -29,6 +29,7 @@ func (d *Dispatcher) menuMarkup() models.InlineKeyboardMarkup {
 		{"Ping", CommandPing},
 		{"Помощь", CommandHelp},
 		{"Старт", CommandStart},
+		{"Админ", CommandAdmin},
 	}
 	rows := make([][]models.InlineKeyboardButton, 0, (len(labels)+1)/2)
 	for index := 0; index < len(labels); index += 2 {

@@ -63,9 +63,11 @@ func PrintConfig(cfg config.Config) {
 	if cfg.DenyByDefault {
 		// has one name — the name a real .env carries; the old spelling is refused by name in LoadFrom).
 		fmt.Println("TELEGRAM_ALLOWED_USERS is empty : the bot is closed, deny by default, only /start and /whoami answer ")
+		fmt.Println("TELEGRAM_ADMIN_USERS", len(cfg.AdminIDs), "entries")
 		return
 	}
 	fmt.Println("TELEGRAM_ALLOWED_USERS", len(cfg.UserIDs), "entries ")
+	fmt.Println("TELEGRAM_ADMIN_USERS", len(cfg.AdminIDs), "entries")
 }
 
 // loader for «валидация, понятные сообщения об ошибках», and this message names the variable and the

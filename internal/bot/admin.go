@@ -1,0 +1,44 @@
+package bot
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"bot/internal/store"
+)
+
+func (d *Dispatcher) admin(ctx context.Context, ev Event, arg string) error {
+	if !d.deps.Cfg.IsAdmin(ev.UserID) {
+		d.logEvent(ctx, ev.UserID, store.EventDenied, "admin")
+		return d.reply(ctx, ev.ChatID, "Команда доступна только администраторам.")
+	}
+	stats, err := store.AdminStats(ctx, d.deps.DB)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(d.deps.Cfg.DBPath)
+	if err != nil {
+		return fmt.Errorf("database file is unavailable: %w", err)
+	}
+	lines := []string{
+		"Администрирование:",
+		fmt.Sprintf("Чатов: %d", stats.Chats),
+		fmt.Sprintf("Сообщений: %d", stats.Messages),
+		fmt.Sprintf("Событий: %d (команд %d, model_error %d, timeout %d)", stats.Events, stats.Commands, stats.ModelErrors, stats.Timeouts),
+		fmt.Sprintf("Вопросов без ответа: %d", stats.Pending),
+		fmt.Sprintf("Размер SQLite: %.1f KiB", float64(info.Size())/1024),
+		"Модель по умолчанию: " + d.deps.Cfg.StrataModel,
+		"Uptime: " + timeSince(d.created),
+	}
+	if stats.LastActive != "" {
+		lines = append(lines, "Последняя активность: "+stats.LastActive+" UTC")
+	}
+	return d.reply(ctx, ev.ChatID, strings.Join(lines, "\n"))
+}
+
+func timeSince(start time.Time) string {
+	return time.Since(start).Round(time.Second).String()
+}

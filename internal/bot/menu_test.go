@@ -32,7 +32,7 @@ func TestMenuMarkupAndStartSendInlineKeyboard(t *testing.T) {
 			seen[button.CallbackData] = true
 		}
 	}
-	for _, name := range []string{CommandAsk, CommandModel, CommandStream, CommandPersona, CommandStatus, CommandHistory, CommandReset, CommandSkip, CommandUnskip, CommandStats, CommandWhoAmI, CommandPing, CommandHelp, CommandStart} {
+	for _, name := range []string{CommandAsk, CommandModel, CommandStream, CommandPersona, CommandStatus, CommandHistory, CommandReset, CommandSkip, CommandUnskip, CommandStats, CommandWhoAmI, CommandPing, CommandHelp, CommandStart, CommandAdmin} {
 		if !seen["cmd:"+name] {
 			t.Errorf("menu misses cmd:%s", name)
 		}

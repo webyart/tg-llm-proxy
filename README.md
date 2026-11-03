@@ -101,7 +101,7 @@ docker compose logs -f bot
 | `TELEGRAM_BOT_TOKEN` | обязательный | Telegram token, без значения запуск запрещён |
 | `STRATA_BASE_URL` | `http://host.docker.internal:8000` | OpenAI-compatible base URL без обязательного `/v1` |
 | `STRATA_MODEL` | `qwen2.5-7b-instruct` | id модели из `GET /v1/models` |
-| `STRATA_TRANSCRIPTION_MODEL` | `STRATA_MODEL` | модель для `/audio/transcriptions` |
+| `STRATA_TRANSCRIPTION_MODEL` | `whisper-1` | модель для `/audio/transcriptions` |
 | `STRATA_API_KEY` | пусто | ключ endpoint, если требуется |
 | `STRATA_TIMEOUT_SECONDS` | 60 | таймаут одной попытки модели |
 | `TG_REPLY_DEADLINE_SECONDS` | 90 | общий бюджет ответа; должен быть больше timeout |

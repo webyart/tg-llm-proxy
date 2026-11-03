@@ -79,11 +79,10 @@ func (c *OpenAI) transcribeAttempt(ctx context.Context, req TranscriptionRequest
 	if err := writer.WriteField("model", modelName); err != nil {
 		return "", err
 	}
-	name := strings.TrimSpace(req.FileName)
-	if name == "" {
-		name = "voice.ogg"
-	}
-	part, err := writer.CreateFormFile("file", name)
+	part, err := writer.CreatePart(map[string][]string{
+		"Content-Disposition": {`form-data; name="file"; filename="voice.ogg"`},
+		"Content-Type":        {"audio/ogg"},
+	})
 	if err != nil {
 		return "", err
 	}

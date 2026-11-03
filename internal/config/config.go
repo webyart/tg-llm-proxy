@@ -71,6 +71,7 @@ const DefaultBaseURL = "http://host.docker.internal:8000"
 const V1Path = "/v1"
 const DefaultDBPath = "./data/bot.db"
 const DefaultSystemPrompt = "You are a helpful assistant."
+const DefaultTranscriptionModel = "whisper-1"
 const DefaultTimeoutSeconds = int64(60)
 const DefaultDeadlineSeconds = int64(90)
 const DefaultRecoveryMaxAgeHours = int64(24)
@@ -460,7 +461,7 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	cfg.StrataModel = model
 	cfg.TranscriptionModel = strings.TrimSpace(raw["STRATA_TRANSCRIPTION_MODEL"])
 	if cfg.TranscriptionModel == "" {
-		cfg.TranscriptionModel = model
+		cfg.TranscriptionModel = DefaultTranscriptionModel
 	}
 
 	var timeout, badTimeout = Num(raw, "STRATA_TIMEOUT_SECONDS", DefaultTimeoutSeconds, 1, 3600)

@@ -5,9 +5,9 @@ import (
 	"testing"
 )
 
-func TestTranscriptionModelDefaultsToChatModel(t *testing.T) {
+func TestTranscriptionModelDefaultsToWhisper(t *testing.T) {
 	cfg, problems := LoadFrom(map[string]string{"TELEGRAM_BOT_TOKEN": "123:fake", "STRATA_MODEL": "chat-model"})
-	if len(problems) != 0 || cfg.TranscriptionModel != "chat-model" {
+	if len(problems) != 0 || cfg.TranscriptionModel != DefaultTranscriptionModel {
 		t.Fatalf("transcription model=%q problems=%v", cfg.TranscriptionModel, problems)
 	}
 	cfg, problems = LoadFrom(map[string]string{"TELEGRAM_BOT_TOKEN": "123:fake", "STRATA_TRANSCRIPTION_MODEL": "voice-model"})

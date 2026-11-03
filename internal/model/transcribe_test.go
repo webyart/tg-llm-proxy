@@ -40,7 +40,7 @@ func TestTranscribeSendsMultipartAudio(t *testing.T) {
 	if err != nil || text != "распознанный текст" {
 		t.Fatalf("text=%q err=%v", text, err)
 	}
-	if !strings.HasPrefix(contentType, "multipart/form-data;") || !strings.Contains(requestBody, `name="model"`) || !strings.Contains(requestBody, "voice-model") || !strings.Contains(requestBody, `filename="voice.ogg"`) || !strings.Contains(requestBody, "OggS-audio") {
+	if !strings.HasPrefix(contentType, "multipart/form-data;") || !strings.Contains(requestBody, `name="model"`) || !strings.Contains(requestBody, "voice-model") || !strings.Contains(requestBody, `filename="voice.ogg"`) || !strings.Contains(requestBody, "OggS-audio") || !strings.Contains(requestBody, "Content-Type: audio/ogg") {
 		t.Fatalf("multipart request is incomplete; content-type=%q", contentType)
 	}
 }

@@ -21,6 +21,7 @@ var Env = []string{
 	"STRATA_API_KEY",
 	"STRATA_TIMEOUT_SECONDS",
 	"TG_REPLY_DEADLINE_SECONDS",
+	"RECOVERY_MAX_AGE_HOURS",
 	"STREAMING_ENABLED",
 	"STREAM_EDIT_INTERVAL_MS",
 	"STREAM_IDLE_TIMEOUT_SECONDS",
@@ -71,6 +72,7 @@ const DefaultDBPath = "./data/bot.db"
 const DefaultSystemPrompt = "You are a helpful assistant."
 const DefaultTimeoutSeconds = int64(60)
 const DefaultDeadlineSeconds = int64(90)
+const DefaultRecoveryMaxAgeHours = int64(24)
 const DefaultContextMessages = int64(20)
 const DefaultMaxContextChars = int64(8000)
 const DefaultMaxInputChars = int64(4000)
@@ -111,6 +113,7 @@ type Config struct {
 	StrataModel          string
 	TimeoutSeconds       int64
 	ReplyDeadlineSeconds int64
+	RecoveryMaxAgeHours  int64
 	// rewritten as the model writes; StreamEditIntervalMS is the cadence of those rewrites; StreamIdleSeconds
 	// is the pause between two SSE events past which the stream is considered dead; StreamTotalSeconds is the
 	// ceiling of one streamed answer. The semantics of TimeoutSeconds and ReplyDeadlineSeconds do NOT change
@@ -464,6 +467,10 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	if deadline <= timeout {
 		problems = Push(problems, "ENV TG_REPLY_DEADLINE_SECONDS is not greater than STRATA_TIMEOUT_SECONDS: the total budget of the retries, the timeout and the answer into Telegram must exceed the timeout of one attempt ")
 	}
+
+	recoveryMaxAge, badRecoveryMaxAge := Num(raw, "RECOVERY_MAX_AGE_HOURS", DefaultRecoveryMaxAgeHours, 0, 8760)
+	cfg.RecoveryMaxAgeHours = recoveryMaxAge
+	problems = Push(problems, badRecoveryMaxAge)
 
 	// answer a different question: «how long may ONE non-streamed call take» and «how long may the user wait
 	// while the answer itself can take minutes — a stall and a long answer cannot share one number.

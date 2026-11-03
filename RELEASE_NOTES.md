@@ -1,3 +1,11 @@
+# tg-llm-proxy v1.6.1
+
+## Reliability patch
+
+- Добавлен `RECOVERY_MAX_AGE_HOURS=24`: startup recovery не вызывает модель для unanswered-вопросов старше 24 часов.
+- Просроченный вопрос остаётся в истории и автоматически получает suppression, как при `/skip`; `/status` показывает это состояние. `0` отключает age cap.
+- Повреждённый timestamp останавливает recovery с ошибкой вместо скрытого обхода лимита. Добавлены config и startup regression-тесты.
+
 # tg-llm-proxy v1.6.0
 
 ## Minor release

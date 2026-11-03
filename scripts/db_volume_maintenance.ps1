@@ -4,7 +4,7 @@ db_volume_maintenance.ps1 — clean-stop production snapshot, verified maintenan
 
 Stops the bot, copies /data/bot.db, restarts through docker-up.ps1 -NoBuild, then runs db_maintenance.ps1 on the
 checkpointed file. Backup integrity and schema are verified before success. -ExternalDirectory requests an additional
-verified copy. Failures trigger plain-text Telegram alerts unless -NoNotify is set. -Apply affects only backup-file
+verified copy; -Encrypt encrypts that external copy with AES-256-GCM. Failures trigger plain-text Telegram alerts unless -NoNotify is set. -Apply affects only backup-file
 rotation; message history is never deleted. install_maintenance_schedule.ps1 registers the daily Windows task.
 
 Usage:
@@ -21,6 +21,8 @@ param(
     [ValidateRange(1, 1000000)]
     [int]$Keep = 7,
     [string]$ExternalDirectory,
+    [switch]$Encrypt,
+    [string]$EncryptionKeyPath,
     [switch]$Apply,
     [switch]$Rebuild,
     [switch]$NoNotify
@@ -51,6 +53,8 @@ try {
 
         $maintenanceArgs = @('-Source', $source, '-Directory', (Join-Path $repoRoot 'data\backups'), '-Keep', $Keep)
         if ($ExternalDirectory) { $maintenanceArgs += @('-ExternalDirectory', $ExternalDirectory) }
+        if ($Encrypt) { $maintenanceArgs += '-Encrypt' }
+        if ($EncryptionKeyPath) { $maintenanceArgs += @('-EncryptionKeyPath', $EncryptionKeyPath) }
         if ($Apply) { $maintenanceArgs += '-Apply' }
         if ($Rebuild) { $maintenanceArgs += '-Rebuild' }
         & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'db_maintenance.ps1') @maintenanceArgs

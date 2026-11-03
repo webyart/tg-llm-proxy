@@ -5,7 +5,7 @@ The backup is always a NEW timestamped file and is checked read-only by db_backu
 db_rotate.ps1: without -Apply it is only a dry-run; -Apply explicitly permits deletion of expired generated names.
 -Source is optional and has the same DB_PATH/process ENV/.env precedence as db_backup.ps1. The destination directory
 must be data/backups (or a child) or zzscratch (or a child), matching the rotation safety boundary. -ExternalDirectory
-adds a non-overwriting SHA-256- and SQLite-verified copy after the local backup and rotation succeed.
+adds a verified copy after local backup and rotation; -Encrypt makes that external copy AES-256-GCM encrypted.
 
 Usage:
   .\scripts\db_maintenance.ps1                              # backup + dry-run retention, keep 7
@@ -26,6 +26,8 @@ param(
     [ValidateRange(1, 1000000)]
     [int]$Keep = 7,
     [string]$ExternalDirectory,
+    [switch]$Encrypt,
+    [string]$EncryptionKeyPath,
     [switch]$Apply,
     [switch]$Rebuild
 )
@@ -76,7 +78,10 @@ try {
     }
 
     if ($ExternalDirectory) {
-        & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'db_offsite_copy.ps1') -Source $Dest -Directory $ExternalDirectory
+        $offsiteArgs = @('-Source', $Dest, '-Directory', $ExternalDirectory)
+        if ($Encrypt) { $offsiteArgs += '-Encrypt' }
+        if ($EncryptionKeyPath) { $offsiteArgs += @('-KeyPath', $EncryptionKeyPath) }
+        & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'db_offsite_copy.ps1') @offsiteArgs
         if ($LASTEXITCODE -ne 0) {
             Write-Output "db_maintenance: the local backup exists and is verified, but external copy failed: $Dest"
             exit 1

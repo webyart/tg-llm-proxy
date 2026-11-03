@@ -252,12 +252,12 @@ Maintenance чисто останавливает бота, копирует `/d
 ### Внешняя копия backup
 
 ```powershell
-.\scripts\db_volume_maintenance.ps1 -ExternalDirectory E:\tg-llm-proxy-backups
-.\scripts\install_maintenance_schedule.ps1 -ExternalDirectory E:\tg-llm-proxy-backups -Register
-.\scripts\db_offsite_copy.ps1 -Source .\data\backups\bot-YYYYMMDD-HHMMSS.db -Directory \\NAS\backups\tg-llm-proxy
+.\scripts\db_volume_maintenance.ps1 -ExternalDirectory E:\tg-llm-proxy-backups -Encrypt
+.\scripts\install_maintenance_schedule.ps1 -ExternalDirectory E:\tg-llm-proxy-backups -EncryptBackups -Register
+.\scripts\db_offsite_copy.ps1 -Source .\data\backups\bot-YYYYMMDD-HHMMSS.db -Directory \\NAS\backups\tg-llm-proxy -Encrypt
 ```
 
-Внешняя копия создаётся после локального backup, не перезаписывает файлы и проверяется по SHA-256 и SQLite integrity/schema. Каталог должен действительно находиться на другом диске, NAS или в синхронизируемом облачном хранилище — скрипт не может подтвердить физическое расположение. Если ежедневная задача уже существует, сначала удалите её в Task Scheduler: регистратор намеренно не перезаписывает задачи.
+Без `-Encrypt` копия проверяется по SHA-256 и SQLite. С `-Encrypt` на внешний диск/NAS записывается только `.db.enc`: AES-256-GCM, проверка через временную расшифровку в scratch и SQLite integrity/schema. Ключ `data/backup-encryption.key` не покидает компьютер и должен храниться отдельно от backup — без него восстановление невозможно. Каталог должен действительно быть внешним; скрипт не подтверждает физическое расположение. Если ежедневная задача уже существует, сначала удалите её в Task Scheduler: регистратор намеренно не перезаписывает задачи.
 
 ### Мониторинг контейнера и уведомления
 

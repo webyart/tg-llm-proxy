@@ -1,3 +1,12 @@
+# tg-llm-proxy v1.4.4
+
+## Security patch
+
+- Внешняя backup-копия поддерживает AES-256-GCM: на NAS/cloud/другой диск записывается только `bot-...db.enc`, plaintext SQLite не покидает компьютер.
+- Ключ создаётся один раз в `data/backup-encryption.key`, не попадает в Git/Docker context и остаётся под restrictive ACL. Его нужно сохранить отдельно: без него восстановить backup невозможно.
+- Перед успехом зашифрованная копия расшифровывается во временный scratch и проходит SQLite integrity/schema. Scratch затем удаляется. Повторная запись существующего файла запрещена.
+- `db_volume_maintenance.ps1 -Encrypt` и `install_maintenance_schedule.ps1 -EncryptBackups` включают шифрование. Acceptance покрывает roundtrip, tamper rejection, crypto header и no-overwrite.
+
 # tg-llm-proxy v1.4.3
 
 ## Security patch

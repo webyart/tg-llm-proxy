@@ -15,6 +15,8 @@ package bot
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"bot/internal/store"
 )
@@ -38,10 +40,8 @@ const ResumeScanLimit = 20
 // other update, so a chat that left TELEGRAM_ALLOWED_USERS while its question was waiting gets the refusal text
 // it would have got live, not an answer. That is the allowlist working, not the scan misbehaving.
 //
-// `STRATA_TIMEOUT_SECONDS` stays 60 and this scan has no age cap. A question whose answer is longer than one call
-// budget is retried at every start — unless the operator explicitly suppresses exactly that row with /skip. The
-// suppression is stored in bot_state, leaves history untouched, never applies to a newer question, and can be
-// removed later with /unskip without making an immediate model call.
+// RECOVERY_MAX_AGE_HOURS bounds automatic retries. An expired row receives the same bot_state suppression as
+// /skip without another model call; history stays intact. /unskip does not override the age cap.
 func (d *Dispatcher) ResumeInterruptedQuestions(ctx context.Context) (answered int, pending int, err error) {
 	if d.deps.DB == nil {
 		return 0, 0, nil
@@ -59,6 +59,20 @@ func (d *Dispatcher) ResumeInterruptedQuestions(ctx context.Context) (answered i
 			return answered, pending, err
 		}
 		var row = rows[i]
+		expired, ageErr := recoveryExpired(row.CreatedAt, d.deps.Cfg.RecoveryMaxAgeHours, time.Now().UTC())
+		if ageErr != nil {
+			return answered, pending, ageErr
+		}
+		if expired {
+			if skipErr := store.SetResumeSkip(ctx, d.deps.DB, row.ChatID, row.ID); skipErr != nil {
+				return answered, pending, skipErr
+			}
+			d.deps.Logger.Info("startup recovery skipped an expired question",
+				"chat_id", row.ChatID, "question_row", row.ID, "stored_at_utc", row.CreatedAt,
+				"max_age_hours", d.deps.Cfg.RecoveryMaxAgeHours)
+			i++
+			continue
+		}
 		var ev = Event{
 			TelegramMessageID: *row.TelegramMessageID,
 			ChatID:            row.ChatID,
@@ -122,4 +136,15 @@ func (d *Dispatcher) ResumeInterruptedQuestions(ctx context.Context) (answered i
 		i++
 	}
 	return answered, pending, nil
+}
+
+func recoveryExpired(createdAt string, maxAgeHours int64, now time.Time) (bool, error) {
+	if maxAgeHours <= 0 {
+		return false, nil
+	}
+	created, err := time.Parse(time.DateTime, createdAt)
+	if err != nil {
+		return false, fmt.Errorf("recovery question created_at %q is not a UTC SQLite timestamp: %w", createdAt, err)
+	}
+	return now.Sub(created) > time.Duration(maxAgeHours)*time.Hour, nil
 }

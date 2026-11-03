@@ -238,8 +238,8 @@ func TestOldNameOfTheRowIsRefusedByName(t *testing.T) {
 }
 
 func TestEnvIsTheRowsOfTheTable(t *testing.T) {
-	if len(Env) != 30 {
-		t.Errorf("Env holds %d names, want 30 including the dedicated admin allowlist", len(Env))
+	if len(Env) != 31 {
+		t.Errorf("Env holds %d names, want 31 including the recovery age cap", len(Env))
 	}
 	var seen = map[string]bool{}
 	var i = 0

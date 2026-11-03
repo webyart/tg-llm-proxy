@@ -195,7 +195,7 @@ func (d *Dispatcher) unskip(ctx context.Context, ev Event, arg string) error {
 		return err
 	}
 	return d.reply(ctx, ev.ChatID, fmt.Sprintf(
-		"Автовосстановление вопроса id=%d снова разрешено. Модель сейчас не вызывается: попытка будет сделана при следующем перезапуске, если этот вопрос останется самым новым без ответа.", questionID))
+		"Автовосстановление вопроса id=%d снова разрешено. Модель сейчас не вызывается: попытка будет сделана при следующем перезапуске, если этот вопрос останется самым новым без ответа и не превысит RECOVERY_MAX_AGE_HOURS.", questionID))
 }
 
 // learns the id to put into TELEGRAM_ALLOWED_USERS.

@@ -92,7 +92,7 @@ docker compose logs -f bot
 
 ## Конфигурация
 
-Полный список из 30 ENV-строк и их значения по умолчанию находится в `.env.example`. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
+Полный список из 31 ENV-строки и их значения по умолчанию находится в `.env.example`. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
 
 ### Основные параметры
 
@@ -104,6 +104,7 @@ docker compose logs -f bot
 | `STRATA_API_KEY` | пусто | ключ endpoint, если требуется |
 | `STRATA_TIMEOUT_SECONDS` | 60 | таймаут одной попытки модели |
 | `TG_REPLY_DEADLINE_SECONDS` | 90 | общий бюджет ответа; должен быть больше timeout |
+| `RECOVERY_MAX_AGE_HOURS` | 24 | максимальный возраст unanswered-вопроса для автоматического recovery; `0` отключает лимит |
 | `DB_PATH` | `./data/bot.db` | host SQLite; в compose — `/data/bot.db` |
 | `TELEGRAM_ALLOWED_USERS` | пусто = deny by default | список user id через запятую |
 | `CONTEXT_MESSAGES` | 20 | размер окна истории |
@@ -306,7 +307,7 @@ docker compose up -d
 
 - Production использует long polling; живой HTTPS webhook acceptance не выполнен.
 - Стриминг реализован и проверен вживую, но остаётся opt-in. Точный 120-секундный 429 и реальный idle-stall покрыты только тестами.
-- Startup recovery не имеет age cap и рассматривает только самый новый visible unanswered-вопрос чата.
+- Startup recovery рассматривает только самый новый visible unanswered-вопрос чата и ограничен `RECOVERY_MAX_AGE_HOURS` (24 часа по умолчанию).
 - Host-side `/healthz` на Docker Desktop может давать WARN при healthy in-container healthcheck.
 - macOS использует те же Unix-ветки, что и проверенный Linux; физический Mac acceptance не выполнялся.
 - Содержимое вложений не сохраняется: незавершённый запрос после рестарта требует повторной отправки файла. Voice, видео и RAG пока не поддерживаются.
@@ -321,6 +322,6 @@ docker compose up -d
 
 ## Документы
 
-- `.env.example` — все 30 настроек с комментариями.
+- `.env.example` — все настройки (31) с комментариями.
 - `RELEASE_NOTES.md` — состав release candidate и результаты проверок.
 - `PLAN.md` — локальный подробный план и история изменений (gitignored).

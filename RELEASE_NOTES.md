@@ -1,3 +1,12 @@
+# tg-llm-proxy v1.4.6
+
+## Reliability patch
+
+- Мониторинг учитывает не только Docker health: три повторные ошибки Telegram или STRATA за 10 минут вызывают Telegram-уведомление, даже если контейнер healthy.
+- Повторные runtime alerts подавляются на 6 часов; единичные сбои не создают уведомлений. Состояние хранится в `data/monitoring/runtime-alert.json`.
+- Исправлен flaky restart acceptance: тест ждёт сохранения processed offset после ответа Telegram, а не проверяет его преждевременно.
+- Добавлены scratch acceptance для threshold и suppression без реальных уведомлений.
+
 # tg-llm-proxy v1.4.5
 
 ## CI quota patch

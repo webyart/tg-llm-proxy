@@ -59,6 +59,7 @@ try {
     Invoke-Stage 'maintenance acceptance' 'test-maintenance.ps1' $maintenanceArgs
     Invoke-Stage 'notification acceptance' 'test-notifications.ps1'
     Invoke-Stage 'backup crypto acceptance' 'test-backup-crypto.ps1'
+    Invoke-Stage 'runtime monitor acceptance' 'test-runtime-monitor.ps1'
 
     $smokeArgs = @()
     if ($SkipHealth) { $smokeArgs += '-SkipHealth' }

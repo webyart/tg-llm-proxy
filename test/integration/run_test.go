@@ -477,6 +477,7 @@ func TestOffsetSurvivesRestart(t *testing.T) {
 
 	tgAPI.PushText(71, chatID, userID, "/ask первый")
 	waitFor(t, "the first run answered", func() bool { return tgAPI.Calls("sendMessage") >= 1 })
+	waitFor(t, "the processed offset was persisted", func() bool { return storedOffset(t, firstDB) == 71 })
 	if storedOffset(t, firstDB) != 71 {
 		t.Errorf("bot_state last_update_id = %d, want 71 before the restart ", storedOffset(t, firstDB))
 	}

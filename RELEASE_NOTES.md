@@ -3,7 +3,7 @@
 ## Minor release
 
 - Добавлены Telegram voice OGG/Opus до 10 МиБ и 5 минут. Аудио передаётся в `POST /v1/audio/transcriptions` как multipart без записи на диск.
-- `STRATA_TRANSCRIPTION_MODEL` позволяет выбрать модель транскрипции; по умолчанию используется `STRATA_MODEL`.
+- `STRATA_TRANSCRIPTION_MODEL` позволяет выбрать модель транскрипции; по умолчанию используется `whisper-1`. Voice multipart явно содержит `audio/ogg`.
 - В SQLite сохраняется только транскрипция, которая затем проходит обычный model/streaming flow. До транскрипции recovery требует повторной отправки voice; после — безопасно использует сохранённый текст.
 - Добавлены model, store, bot и end-to-end integration проверки multipart, ошибок, лимитов и recovery.
 

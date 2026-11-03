@@ -30,7 +30,7 @@ func TestVoiceOverFakeTelegramAndStrata(t *testing.T) {
 	if tgAPI.Calls("getFile") != 1 || tgAPI.Calls("download") != 1 || strata.TranscriptionCalls() != 1 || strata.ChatCalls() != 1 {
 		t.Fatalf("getFile=%d download=%d transcribe=%d chat=%d", tgAPI.Calls("getFile"), tgAPI.Calls("download"), strata.TranscriptionCalls(), strata.ChatCalls())
 	}
-	if strata.LastTranscriptionModel() != "qwen-test" || strata.LastTranscriptionBytes() != len(audio) {
+	if strata.LastTranscriptionModel() != "whisper-1" || strata.LastTranscriptionBytes() != len(audio) {
 		t.Fatalf("transcription model=%q bytes=%d", strata.LastTranscriptionModel(), strata.LastTranscriptionBytes())
 	}
 	if !strings.Contains(strata.LastRequestBody(), "распознанная фраза") {

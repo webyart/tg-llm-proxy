@@ -193,7 +193,7 @@ Reverse proxy или туннель должен перенаправлять п
 
 Pipeline включает gofmt/vet, PowerShell parser, unit/store, fixture backup/restore/external-copy/rotate/prune/migration, loopback Telegram alerts, fake Telegram + fake STRATA, build, secret leak scan и Docker race. `-WithVolumeRestore` добавляет volume restore и container-monitor acceptance.
 
-Release CI — `.gitlab-ci.yml`: Linux host checks, race непосредственно в `golang:1.27-alpine` и `govulncheck`. Docker-in-Docker не требуется. `.github/workflows/verify.yml` сохранён как дополнительный workflow.
+Release CI — `.gitlab-ci.yml`: Linux host checks, race и `govulncheck`. Shared GitLab pipeline запускается только для `main` или вручную; `develop` и tags не расходуют shared minutes. Локальный `verify` остаётся обязательным перед push. Для опционального self-hosted CI без Docker socket и production secrets см. `docs/gitlab-runner-wsl.md`. GitHub Actions не требуется.
 
 ## SQLite maintenance
 

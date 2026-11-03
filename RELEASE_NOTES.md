@@ -1,3 +1,11 @@
+# tg-llm-proxy v1.4.2
+
+## Security patch
+
+- `.env.local`, `.env.production` и другие `.env.*` исключены из Git и Docker build context; `.env.example` остаётся tracked.
+- Secret leak scan проверяет `TELEGRAM_BOT_TOKEN`, `STRATA_API_KEY` и `WEBHOOK_SECRET_TOKEN` без печати значений.
+- Windows ACL проекта ограничены текущим владельцем, SYSTEM и Administrators; широкие inherited права на чтение/изменение секретов, backup и scheduler-скриптов удалены. Доступ владельца, Docker, Git и scheduled monitor проверены.
+
 # tg-llm-proxy v1.4.1
 
 ## Patch release

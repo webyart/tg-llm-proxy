@@ -309,6 +309,12 @@ docker compose up -d
 - macOS использует те же Unix-ветки, что и проверенный Linux; физический Mac acceptance не выполнялся.
 - Вложения, `/admin` и RAG относятся к следующим версиям.
 
+## Безопасность
+
+- `.env` и `.env.*` исключены из Git и Docker context; шаблон `.env.example` остаётся tracked. Не помещайте реальные секреты в другие файлы.
+- `smoke.ps1` проверяет Telegram token, STRATA key и webhook secret без вывода значений.
+- На production Windows ACL проекта должны разрешать запись только владельцу/service account и администраторам. Текущий хост ограничен владельцем, SYSTEM и Administrators; при переносе проекта повторите проверку ACL, особенно для scheduler-скриптов и backup.
+
 ## Документы
 
 - `.env.example` — все 29 настроек с комментариями.

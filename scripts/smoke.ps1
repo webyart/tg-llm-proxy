@@ -97,18 +97,22 @@ try {
     }
     Check 'GET /healthz ' $healthOk $healthNote $healthWarn $healthSkip
 
-    $token = $env:TELEGRAM_BOT_TOKEN
-    if (-not $token) { $token = ReadEnv 'TELEGRAM_BOT_TOKEN' }
-    if (-not $token) {
-        Check 'токен не утекает ' $false 'nothing to scan: TELEGRAM_BOT_TOKEN is unset in ENV and .env ' $false $true
+    $secretNames = @('TELEGRAM_BOT_TOKEN', 'STRATA_API_KEY', 'WEBHOOK_SECRET_TOKEN')
+    $sources = @(Get-ChildItem -LiteralPath $repoRoot -Recurse -File -Include *.go,*.md,*.yml,*.yaml,*.ps1,*.json,*.txt `
+        | Where-Object { $_.FullName -notmatch '[\\/]\.cache[\\/]' -and $_.FullName -notmatch '[\\/]bin[\\/]' -and $_.FullName -ne $envPath })
+    $checkedSecrets = 0
+    foreach ($name in $secretNames) {
+        $secret = [System.Environment]::GetEnvironmentVariable($name)
+        if (-not $secret) { $secret = ReadEnv $name }
+        if (-not $secret) { continue }
+        $checkedSecrets++
+        $leaks = @($sources | Where-Object { Select-String -Path $_.FullName -SimpleMatch -Pattern $secret -Quiet })
+        $leakNote = "scanned $($sources.Count) files; $name was not found"
+        if ($leaks.Count -gt 0) { $leakNote = "$name appears in $($leaks.Count) file(s): $($leaks.Name -join ', ')" }
+        Check "секрет $name не утекает" ($leaks.Count -eq 0) $leakNote $false
     }
-    else {
-        $sources = Get-ChildItem -LiteralPath $repoRoot -Recurse -File -Include *.go,*.md,*.yml,*.yaml,*.ps1,*.json,*.txt `
-            | Where-Object { $_.FullName -notmatch '[\\/]\.cache[\\/]' -and $_.FullName -notmatch '[\\/]bin[\\/]' -and $_.FullName -ne $envPath }
-        $leaks = @($sources | Where-Object { Select-String -Path $_.FullName -SimpleMatch -Pattern $token -Quiet })
-        $leakNote = "scanned $($sources.Count) files, no occurrence of the token value "
-        if ($leaks.Count -gt 0) { $leakNote = "the token value appears in $($leaks.Count) file(s): $($leaks.Name -join ', ') " }
-        Check 'токен не утекает ' ($leaks.Count -eq 0) $leakNote $false
+    if ($checkedSecrets -eq 0) {
+        Check 'секреты не утекают' $false 'nothing to scan: runtime secrets are unset in ENV and .env' $false $true
     }
 }
 finally {

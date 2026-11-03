@@ -1,3 +1,11 @@
+# tg-llm-proxy v1.5.0
+
+## Minor release
+
+- Добавлена `/admin`: агрегированные чаты, сообщения, события, ошибки, pending, размер SQLite, модель, uptime и последняя активность.
+- Доступ ограничен новым `TELEGRAM_ADMIN_USERS`, отдельным от обычного allowlist. Пустое значение запрещает доступ всем; тексты переписки не показываются.
+- Добавлены config, store, bot и integration проверки admin-доступа и 15-й кнопки меню.
+
 # tg-llm-proxy v1.4.6
 
 ## Reliability patch

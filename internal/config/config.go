@@ -37,6 +37,7 @@ var Env = []string{
 	"MAX_INPUT_CHARS",
 	"SYSTEM_PROMPT",
 	"TELEGRAM_ALLOWED_USERS",
+	"TELEGRAM_ADMIN_USERS",
 	"RATE_LIMIT_PER_MINUTE",
 	"MAX_CONCURRENT_MODEL_REQUESTS",
 	"PROXY_FREE_TEXT",
@@ -129,6 +130,7 @@ type Config struct {
 	MaxInputChars         int64
 	SystemPrompt          string
 	UserIDs               []int64
+	AdminIDs              []int64
 	DenyByDefault         bool
 	RateLimitPerMinute    int64
 	MaxConcurrentRequests int64
@@ -299,10 +301,16 @@ func RowIsSet(raw map[string]string, name string) bool {
 // A malformed entry is named with the ENV name it was read from, the good entries are still kept
 // not be counted twice by `Allows`.
 func UserIDs(raw map[string]string) ([]int64, string) {
+	return userIDs(raw, "TELEGRAM_ALLOWED_USERS")
+}
+
+func AdminUserIDs(raw map[string]string) ([]int64, string) {
+	return userIDs(raw, "TELEGRAM_ADMIN_USERS")
+}
+
+func userIDs(raw map[string]string, name string) ([]int64, string) {
 	var ids = []int64{}
 	var bad = []string{}
-
-	var name = "TELEGRAM_ALLOWED_USERS"
 	var parts = strings.Split(strings.TrimSpace(raw[name]), ",")
 	var i = 0
 	for i < len(parts) {
@@ -516,6 +524,9 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	cfg.UserIDs = ids
 	cfg.DenyByDefault = len(ids) == 0
 	problems = Push(problems, badIDs)
+	var adminIDs, badAdminIDs = AdminUserIDs(raw)
+	cfg.AdminIDs = adminIDs
+	problems = Push(problems, badAdminIDs)
 
 	var rate, badRate = Num(raw, "RATE_LIMIT_PER_MINUTE", DefaultRateLimit, 0, 1000)
 	cfg.RateLimitPerMinute = rate
@@ -562,6 +573,10 @@ func (c Config) Allows(userID int64) bool {
 		i++
 	}
 	return false
+}
+
+func (c Config) IsAdmin(userID int64) bool {
+	return HasUserID(c.AdminIDs, userID)
 }
 
 // token of BotFather lives only in the ENV, .env is listed in .gitignore).

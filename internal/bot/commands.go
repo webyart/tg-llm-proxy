@@ -29,6 +29,7 @@ const (
 	CommandHistory = "history"
 	CommandStats   = "stats"
 	CommandWhoAmI  = "whoami"
+	CommandAdmin   = "admin"
 )
 
 // answer to be exact («Модель не ответила за 60 с, попробуй ещё раз»).
@@ -64,6 +65,7 @@ func (d *Dispatcher) registry() []Command {
 		{Name: CommandHistory, Description: "последние N сообщений (по умолчанию 5)", Handler: d.history},
 		{Name: CommandStats, Description: "счётчики чата: сообщения, токены, ошибки", Handler: d.stats},
 		{Name: CommandWhoAmI, Description: "user_id и chat_id для TELEGRAM_ALLOWED_USERS", AlwaysAllowed: true, Handler: d.whoami},
+		{Name: CommandAdmin, Description: "агрегированные метрики для администратора", Handler: d.admin},
 	}
 }
 

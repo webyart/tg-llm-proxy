@@ -9,7 +9,7 @@ Telegram-бот-прокси между пользователями и лока
 
 - 15 команд: `/start`, `/help`, `/ping`, `/status`, `/ask`, `/reset`, `/skip`, `/unskip`, `/history`, `/model`, `/stream`, `/persona`, `/stats`, `/whoami`, `/admin`.
 - `/start` и `/help` открывают inline-меню с 15 кнопками команд; callback проходит через тот же Dispatcher.
-- Фото JPEG/PNG до 10 МиБ и текстовые документы UTF-8 до 64 КиБ с необязательной подписью; voice, видео и другие типы получают понятный отказ.
+- Фото JPEG/PNG до 10 МиБ, текстовые документы UTF-8 до 64 КиБ и voice OGG/Opus до 10 МиБ / 5 минут. Видео и другие типы получают понятный отказ.
 - История и независимый контекст каждого чата в SQLite/WAL.
 - Allowlist по Telegram user id, rate limiting, per-chat lock и ограничение параллельных запросов к модели.
 - Обработка timeout/5xx/пустых ответов, Telegram 429 и восстановление незавершённых вопросов после рестарта.
@@ -92,7 +92,7 @@ docker compose logs -f bot
 
 ## Конфигурация
 
-Полный список из 31 ENV-строки и их значения по умолчанию находится в `.env.example`. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
+Полный список из 32 ENV-строк и их значения по умолчанию находится в `.env.example`. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
 
 ### Основные параметры
 
@@ -101,6 +101,7 @@ docker compose logs -f bot
 | `TELEGRAM_BOT_TOKEN` | обязательный | Telegram token, без значения запуск запрещён |
 | `STRATA_BASE_URL` | `http://host.docker.internal:8000` | OpenAI-compatible base URL без обязательного `/v1` |
 | `STRATA_MODEL` | `qwen2.5-7b-instruct` | id модели из `GET /v1/models` |
+| `STRATA_TRANSCRIPTION_MODEL` | `STRATA_MODEL` | модель для `/audio/transcriptions` |
 | `STRATA_API_KEY` | пусто | ключ endpoint, если требуется |
 | `STRATA_TIMEOUT_SECONDS` | 60 | таймаут одной попытки модели |
 | `TG_REPLY_DEADLINE_SECONDS` | 90 | общий бюджет ответа; должен быть больше timeout |
@@ -117,7 +118,7 @@ docker compose logs -f bot
 | `HEALTH_PORT` | 8080 | loopback health endpoint |
 | `LOG_LEVEL` | `info` | `error`, `warning`, `info`, `debug` |
 
-`STRATA_BASE_URL` нормализуется к ровно одному `/v1`: запросы идут в `{base}/chat/completions` и `{base}/models`.
+`STRATA_BASE_URL` нормализуется к ровно одному `/v1`: запросы идут в `{base}/chat/completions`, `{base}/models` и `{base}/audio/transcriptions`. Voice хранится только как текст транскрипции; исходное аудио остаётся в памяти на время запроса.
 
 При `PARSE_MODE=MarkdownV2` сохраняются заголовки, жирный и курсивный текст, `code`, code fences и
 http/https-ссылки. Обычные специальные символы экранируются, а небезопасные схемы ссылок не пропускаются.
@@ -310,7 +311,7 @@ docker compose up -d
 - Startup recovery рассматривает только самый новый visible unanswered-вопрос чата и ограничен `RECOVERY_MAX_AGE_HOURS` (24 часа по умолчанию).
 - Host-side `/healthz` на Docker Desktop может давать WARN при healthy in-container healthcheck.
 - macOS использует те же Unix-ветки, что и проверенный Linux; физический Mac acceptance не выполнялся.
-- Содержимое вложений не сохраняется: незавершённый запрос после рестарта требует повторной отправки файла. Voice, видео и RAG пока не поддерживаются.
+- Содержимое фото и документов не сохраняется: незавершённый запрос после рестарта требует повторной отправки файла. Voice хранится как текст после транскрипции. Аудиофайлы, видео и RAG пока не поддерживаются.
 
 ## Безопасность
 
@@ -322,6 +323,6 @@ docker compose up -d
 
 ## Документы
 
-- `.env.example` — все настройки (31) с комментариями.
+- `.env.example` — все настройки (32) с комментариями.
 - `RELEASE_NOTES.md` — состав release candidate и результаты проверок.
 - `PLAN.md` — локальный подробный план и история изменений (gitignored).

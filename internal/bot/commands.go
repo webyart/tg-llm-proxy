@@ -3,6 +3,7 @@
 package bot
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -99,7 +100,7 @@ func (d *Dispatcher) helpLines() []string {
 		lines = append(lines, fmt.Sprintf("%s — %s", usage, cmd.Description))
 		i++
 	}
-	lines = append(lines, "Можно отправить фото JPEG/PNG или текстовый документ UTF-8 с подписью-вопросом.")
+	lines = append(lines, "Можно отправить фото JPEG/PNG, текстовый документ UTF-8 или голосовое сообщение до 5 минут.")
 	return lines
 }
 
@@ -354,6 +355,34 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 		downloaded = &file
 	}
 
+	if ev.Attachment != nil && ev.Attachment.Kind == AttachmentVoice {
+		if !bytes.HasPrefix(downloaded.Data, []byte("OggS")) {
+			return d.reply(ctx, ev.ChatID, attachmentUserError(ErrAttachmentType))
+		}
+		transcriber, ok := d.deps.Model.(model.Transcriber)
+		if !ok {
+			return d.reply(ctx, ev.ChatID, "Транскрипция голосовых сообщений не настроена в этом клиенте модели.")
+		}
+		transcript, transcribeErr := transcriber.Transcribe(replyCtx, model.TranscriptionRequest{
+			Model: d.deps.Cfg.TranscriptionModel, FileName: "voice.ogg", Data: downloaded.Data,
+		})
+		if transcribeErr != nil {
+			if errors.Is(transcribeErr, context.Canceled) {
+				return transcribeErr
+			}
+			noticeCtx, stopNotice := context.WithTimeout(context.WithoutCancel(ctx), auditBudget)
+			defer stopNotice()
+			d.deps.Logger.Error("voice transcription failed", "chat_id", ev.ChatID, "user_id", ev.UserID, "error", Sanitize(transcribeErr, d.deps.Token))
+			d.logEvent(noticeCtx, ev.UserID, store.EventModelError, "transcription:"+attachmentErrorKind(transcribeErr))
+			return d.reply(noticeCtx, ev.ChatID, "Не удалось распознать голосовое сообщение. Попробуй записать его короче или отправь текстом.")
+		}
+		text = voiceModelPrompt(text, transcript)
+		stored := "[Голосовое]\n" + text
+		if err := store.ReplacePendingUserContent(replyCtx, d.deps.DB, ev.ChatID, ev.TelegramMessageID, stored); err != nil {
+			return err
+		}
+	}
+
 	var messages, err = d.BuildMessages(replyCtx, ev.ChatID)
 	if err != nil {
 		return err
@@ -373,6 +402,8 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 			} else {
 				last.Content = documentModelPrompt(text, safeAttachmentName(ev.Attachment.FileName), string(downloaded.Data), int(d.deps.Cfg.MaxContextChars))
 			}
+		case AttachmentVoice:
+			last.Content = text
 		default:
 			err = ErrAttachmentType
 		}

@@ -18,6 +18,7 @@ var Env = []string{
 	"TELEGRAM_BOT_TOKEN",
 	"STRATA_BASE_URL",
 	"STRATA_MODEL",
+	"STRATA_TRANSCRIPTION_MODEL",
 	"STRATA_API_KEY",
 	"STRATA_TIMEOUT_SECONDS",
 	"TG_REPLY_DEADLINE_SECONDS",
@@ -111,6 +112,7 @@ type Config struct {
 	ChatURL              string
 	ModelsURL            string
 	StrataModel          string
+	TranscriptionModel   string
 	TimeoutSeconds       int64
 	ReplyDeadlineSeconds int64
 	RecoveryMaxAgeHours  int64
@@ -456,6 +458,10 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 		model = DefaultStrataModel
 	}
 	cfg.StrataModel = model
+	cfg.TranscriptionModel = strings.TrimSpace(raw["STRATA_TRANSCRIPTION_MODEL"])
+	if cfg.TranscriptionModel == "" {
+		cfg.TranscriptionModel = model
+	}
 
 	var timeout, badTimeout = Num(raw, "STRATA_TIMEOUT_SECONDS", DefaultTimeoutSeconds, 1, 3600)
 	cfg.TimeoutSeconds = timeout

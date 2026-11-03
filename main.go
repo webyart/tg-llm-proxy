@@ -34,6 +34,7 @@ func PrintConfig(cfg config.Config) {
 	fmt.Println("STRATA_API_KEY", "is set, length", len(cfg.StrataKey), "")
 	fmt.Println("STRATA_BASE_URL", cfg.StrataBase, "")
 	fmt.Println("STRATA_MODEL", cfg.StrataModel, "")
+	fmt.Println("STRATA_TRANSCRIPTION_MODEL", cfg.TranscriptionModel, "")
 	fmt.Println("STRATA_MODELS_URL", cfg.ModelsURL, "")
 	fmt.Println("STRATA_CHAT_COMPLETIONS_URL", cfg.ChatURL, "")
 	fmt.Println("STRATA_TIMEOUT_SECONDS", cfg.TimeoutSeconds, "")
@@ -171,12 +172,13 @@ func main() {
 	fmt.Println("health is listening on 127.0.0.1:", healthServer.Port(), health.Path, "")
 	var logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel(cfg.LogLevel)}))
 	var client, clientErr = model.New(model.Options{
-		ChatURL:       cfg.ChatURL,
-		ModelsURL:     cfg.ModelsURL,
-		APIKey:        cfg.StrataKey,
-		Model:         cfg.StrataModel,
-		Timeout:       time.Duration(cfg.TimeoutSeconds) * time.Second,
-		MaxConcurrent: int(cfg.MaxConcurrentRequests),
+		ChatURL:            cfg.ChatURL,
+		ModelsURL:          cfg.ModelsURL,
+		APIKey:             cfg.StrataKey,
+		Model:              cfg.StrataModel,
+		TranscriptionModel: cfg.TranscriptionModel,
+		Timeout:            time.Duration(cfg.TimeoutSeconds) * time.Second,
+		MaxConcurrent:      int(cfg.MaxConcurrentRequests),
 		// client is the cadence of the chat: a thinking model may refresh the placeholder no more often than
 		Stream: model.StreamSettings{
 			Idle:     time.Duration(cfg.StreamIdleSeconds) * time.Second,

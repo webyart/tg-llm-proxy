@@ -45,15 +45,19 @@ type StrataReply struct {
 
 // messages of one chat against it.
 type Strata struct {
-	Server    *httptest.Server
-	wantKey   string
-	replies   []StrataReply
-	mu        sync.Mutex
-	chatCalls int
-	getCalls  int
-	otherCall int // requests that hit neither /v1/chat/completions nor /v1/models
-	lastBody  string
-	lastAuth  string
+	Server             *httptest.Server
+	wantKey            string
+	replies            []StrataReply
+	mu                 sync.Mutex
+	chatCalls          int
+	getCalls           int
+	otherCall          int // requests that hit neither /v1/chat/completions nor /v1/models
+	lastBody           string
+	lastAuth           string
+	transcriptionText  string
+	transcriptionModel string
+	transcriptionBytes int
+	transcriptionCalls int
 }
 
 // STRATA_API_KEY may be empty); a non-empty key makes the fake answer 401 without the header, which
@@ -66,6 +70,7 @@ func NewStrata(t *testing.T, wantKey string, replies ...StrataReply) *Strata {
 	var s = &Strata{wantKey: wantKey, replies: replies}
 	var mux = http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", s.handleChat)
+	mux.HandleFunc("/v1/audio/transcriptions", s.handleTranscription)
 	mux.HandleFunc("/v1/models", s.handleModels)
 	// Everything else answers 404 — the measured behaviour of the real endpoint without the /v1
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

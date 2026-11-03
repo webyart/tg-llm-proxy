@@ -5,6 +5,20 @@ import (
 	"testing"
 )
 
+func TestTranscriptionModelDefaultsToChatModel(t *testing.T) {
+	cfg, problems := LoadFrom(map[string]string{"TELEGRAM_BOT_TOKEN": "123:fake", "STRATA_MODEL": "chat-model"})
+	if len(problems) != 0 || cfg.TranscriptionModel != "chat-model" {
+		t.Fatalf("transcription model=%q problems=%v", cfg.TranscriptionModel, problems)
+	}
+	cfg, problems = LoadFrom(map[string]string{"TELEGRAM_BOT_TOKEN": "123:fake", "STRATA_TRANSCRIPTION_MODEL": "voice-model"})
+	if len(problems) != 0 || cfg.TranscriptionModel != "voice-model" {
+		t.Fatalf("override=%q problems=%v", cfg.TranscriptionModel, problems)
+	}
+	if !HasRow("STRATA_TRANSCRIPTION_MODEL") {
+		t.Fatal("STRATA_TRANSCRIPTION_MODEL is missing from Env")
+	}
+}
+
 func TestRecoveryMaxAgeConfiguration(t *testing.T) {
 	cfg, problems := LoadFrom(map[string]string{"TELEGRAM_BOT_TOKEN": "123:fake"})
 	if len(problems) != 0 || cfg.RecoveryMaxAgeHours != DefaultRecoveryMaxAgeHours {

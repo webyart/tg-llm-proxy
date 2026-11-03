@@ -18,14 +18,18 @@ import (
 const (
 	AttachmentPhoto    = "photo"
 	AttachmentDocument = "document"
+	AttachmentVoice    = "voice"
 	PhotoMaxBytes      = int64(10 << 20)
 	DocumentMaxBytes   = int64(64 << 10)
+	VoiceMaxBytes      = int64(10 << 20)
+	VoiceMaxSeconds    = 300
 )
 
 var (
 	ErrAttachmentTooLarge    = errors.New("attachment is too large")
 	ErrAttachmentUnavailable = errors.New("attachment is unavailable")
 	ErrAttachmentType        = errors.New("attachment type is not supported")
+	ErrVoiceTooLong          = errors.New("voice message is too long")
 )
 
 type Attachment struct {
@@ -34,6 +38,7 @@ type Attachment struct {
 	FileName string
 	MimeType string
 	Size     int64
+	Duration int
 }
 
 type DownloadedAttachment struct {
@@ -57,6 +62,9 @@ func (d *telegramAttachmentDownloader) Download(ctx context.Context, attachment 
 	}
 	if attachment.Size > limit {
 		return DownloadedAttachment{}, ErrAttachmentTooLarge
+	}
+	if attachment.Kind == AttachmentVoice && attachment.Duration > VoiceMaxSeconds {
+		return DownloadedAttachment{}, ErrVoiceTooLong
 	}
 	file, err := d.bot.GetFile(ctx, &tgbot.GetFileParams{FileID: attachment.FileID})
 	if err != nil {
@@ -102,6 +110,8 @@ func attachmentLimit(kind string) int64 {
 		return PhotoMaxBytes
 	case AttachmentDocument:
 		return DocumentMaxBytes
+	case AttachmentVoice:
+		return VoiceMaxBytes
 	default:
 		return 0
 	}
@@ -112,10 +122,14 @@ func attachmentPrompt(ev Event) string {
 	if text != "" || ev.Attachment == nil {
 		return text
 	}
-	if ev.Attachment.Kind == AttachmentPhoto {
+	switch ev.Attachment.Kind {
+	case AttachmentPhoto:
 		return "Опиши изображение."
+	case AttachmentVoice:
+		return "Ответь на голосовое сообщение."
+	default:
+		return "Прочитай документ."
 	}
-	return "Прочитай документ."
 }
 
 func storedAttachmentQuestion(ev Event) string {
@@ -123,14 +137,18 @@ func storedAttachmentQuestion(ev Event) string {
 	if ev.Attachment == nil {
 		return text
 	}
-	if ev.Attachment.Kind == AttachmentPhoto {
+	switch ev.Attachment.Kind {
+	case AttachmentPhoto:
 		return "[Фото]\n" + text
+	case AttachmentVoice:
+		return "[Голосовое: ожидает транскрипции]\n" + text
+	default:
+		return "[Документ: " + safeAttachmentName(ev.Attachment.FileName) + "]\n" + text
 	}
-	return "[Документ: " + safeAttachmentName(ev.Attachment.FileName) + "]\n" + text
 }
 
 func isStoredAttachment(text string) bool {
-	return strings.HasPrefix(text, "[Фото]\n") || strings.HasPrefix(text, "[Документ: ")
+	return strings.HasPrefix(text, "[Фото]\n") || strings.HasPrefix(text, "[Документ: ") || strings.HasPrefix(text, "[Голосовое: ожидает транскрипции]\n")
 }
 
 func safeAttachmentName(name string) string {
@@ -203,10 +221,16 @@ func documentModelPrompt(caption string, name string, content string, maxRunes i
 	return text
 }
 
+func voiceModelPrompt(caption string, transcript string) string {
+	return caption + "\n\nТранскрипция голосового сообщения:\n" + strings.TrimSpace(transcript)
+}
+
 func attachmentErrorKind(err error) string {
 	switch {
 	case errors.Is(err, ErrAttachmentTooLarge):
 		return "too_large"
+	case errors.Is(err, ErrVoiceTooLong):
+		return "too_long"
 	case errors.Is(err, ErrAttachmentType):
 		return "unsupported_type"
 	case errors.Is(err, ErrAttachmentUnavailable):
@@ -219,9 +243,11 @@ func attachmentErrorKind(err error) string {
 func attachmentUserError(err error) string {
 	switch {
 	case errors.Is(err, ErrAttachmentTooLarge):
-		return "Вложение слишком большое. Лимит: 10 МиБ для фото и 64 КиБ для текстового документа."
+		return "Вложение слишком большое. Лимит: 10 МиБ для фото и voice, 64 КиБ для текстового документа."
+	case errors.Is(err, ErrVoiceTooLong):
+		return "Голосовое сообщение слишком длинное. Лимит — 5 минут."
 	case errors.Is(err, ErrAttachmentType):
-		return "Поддерживаются фото JPEG/PNG и небольшие текстовые документы UTF-8."
+		return "Поддерживаются фото JPEG/PNG, текстовые документы UTF-8 и голосовые сообщения OGG/Opus."
 	case errors.Is(err, ErrAttachmentUnavailable):
 		return "Не удалось получить вложение из Telegram. Отправь его повторно."
 	default:

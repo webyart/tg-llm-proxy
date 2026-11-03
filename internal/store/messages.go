@@ -110,6 +110,24 @@ func Append(ctx context.Context, db *sql.DB, m Message) (int64, error) {
 	return id, nil
 }
 
+func ReplacePendingUserContent(ctx context.Context, db *sql.DB, chatID int64, telegramMessageID int64, content string) error {
+	if strings.TrimSpace(content) == "" {
+		return errors.New("replacement content is empty")
+	}
+	res, err := db.ExecContext(ctx, `UPDATE messages SET content = ? WHERE chat_id = ? AND telegram_message_id = ? AND role = ?`, content, chatID, telegramMessageID, RoleUser)
+	if err != nil {
+		return err
+	}
+	count, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return fmt.Errorf("pending user message update affected %d rows, want 1", count)
+	}
+	return nil
+}
+
 // scanMessages — the one scan of the messages columns, shared by RecentByChat and HistoryOfChat
 // nullable columns become pointers, and the caller's newest-first order is reversed here into the
 // chronological order the model request needs.

@@ -231,10 +231,14 @@ func eventOf(upd *models.Update) (Event, bool) {
 		ev.Attachment = &Attachment{Kind: AttachmentDocument, FileID: message.Document.FileID, FileName: message.Document.FileName, MimeType: message.Document.MimeType, Size: message.Document.FileSize}
 		return ev, true
 	}
+	if message.Voice != nil {
+		ev.Attachment = &Attachment{Kind: AttachmentVoice, FileID: message.Voice.FileID, FileName: "voice.ogg", MimeType: "audio/ogg", Size: message.Voice.FileSize, Duration: message.Voice.Duration}
+		return ev, true
+	}
 	if strings.TrimSpace(text) != "" {
 		return ev, true
 	}
-	if message.Voice != nil || message.Audio != nil || message.Video != nil || message.VideoNote != nil || message.Animation != nil || message.Sticker != nil {
+	if message.Audio != nil || message.Video != nil || message.VideoNote != nil || message.Animation != nil || message.Sticker != nil {
 		ev.UnsupportedMedia = true
 		return ev, true
 	}

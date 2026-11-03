@@ -1,6 +1,6 @@
 #Requires -Version 7
 <#
-watch_container.ps1 — inspect the bot container, notify on failure/recovery, and suppress repeated alerts.
+watch_container.ps1 — inspect container health and repeated runtime errors, notify on failure/recovery, and suppress repeated alerts.
 
 The script never restarts the container. It skips checks while db_volume_maintenance.ps1 owns its work directory.
 State lives outside Git in data/monitoring/container-alert.json. A changed failure alerts immediately; an unchanged
@@ -89,6 +89,8 @@ if ($healthy) {
     else {
         Write-Output "watch_container: OK — state=$status"
     }
+    & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'watch_runtime.ps1') -RepeatAlertHours $RepeatAlertHours -NoNotify:$NoNotify
+    if ($LASTEXITCODE -ne 0) { exit 1 }
     Save-State $status ''
     exit 0
 }

@@ -177,7 +177,17 @@ func Retryable(err error) bool {
 // because a streamed event carries a `delta`, not a `message`.
 type chatMessage struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"`
+}
+
+type chatContentPart struct {
+	Type     string        `json:"type"`
+	Text     string        `json:"text,omitempty"`
+	ImageURL *chatImageURL `json:"image_url,omitempty"`
+}
+
+type chatImageURL struct {
+	URL string `json:"url"`
 }
 
 type chatRequest struct {
@@ -340,7 +350,14 @@ func (c *OpenAI) Models(ctx context.Context) ([]string, error) {
 func toWire(messages []Message) []chatMessage {
 	var out = make([]chatMessage, 0, len(messages))
 	for _, m := range messages {
-		out = append(out, chatMessage{Role: m.Role, Content: m.Content})
+		var content any = m.Content
+		if m.ImageURL != "" {
+			content = []chatContentPart{
+				{Type: "text", Text: m.Content},
+				{Type: "image_url", ImageURL: &chatImageURL{URL: m.ImageURL}},
+			}
+		}
+		out = append(out, chatMessage{Role: m.Role, Content: content})
 	}
 	return out
 }

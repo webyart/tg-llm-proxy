@@ -99,6 +99,7 @@ func (d *Dispatcher) helpLines() []string {
 		lines = append(lines, fmt.Sprintf("%s — %s", usage, cmd.Description))
 		i++
 	}
+	lines = append(lines, "Можно отправить фото JPEG/PNG или текстовый документ UTF-8 с подписью-вопросом.")
 	return lines
 }
 
@@ -308,7 +309,16 @@ func (d *Dispatcher) modelInfo(ctx context.Context, ev Event, arg string) error 
 
 // responsibility: exactly one assistant row, and only after the final successful Response.
 func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
+	if ev.UnsupportedMedia {
+		return d.reply(ctx, ev.ChatID, "Этот тип вложения пока не поддерживается. Отправь фото или небольшой текстовый документ.")
+	}
+	if ev.Recovery && isStoredAttachment(ev.Text) && ev.Attachment == nil {
+		return d.reply(ctx, ev.ChatID, "Вложение недоступно после перезапуска, поэтому отправь вложение повторно вместе с вопросом.")
+	}
 	var text = strings.TrimSpace(arg)
+	if ev.Attachment != nil {
+		text = attachmentPrompt(ev)
+	}
 	if text == "" {
 		return d.reply(ctx, ev.ChatID, msgAskNeedsText)
 	}
@@ -326,9 +336,49 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 	var replyCtx, cancel = context.WithTimeout(ctx, time.Duration(replyBudget)*time.Second)
 	defer cancel()
 
+	var downloaded *DownloadedAttachment
+	if ev.Attachment != nil {
+		if d.deps.Attachments == nil {
+			return d.reply(ctx, ev.ChatID, attachmentUserError(ErrAttachmentUnavailable))
+		}
+		file, downloadErr := d.deps.Attachments.Download(replyCtx, *ev.Attachment)
+		if downloadErr != nil {
+			if errors.Is(downloadErr, context.Canceled) {
+				return downloadErr
+			}
+			noticeCtx, stopNotice := context.WithTimeout(context.WithoutCancel(ctx), auditBudget)
+			defer stopNotice()
+			d.logEvent(noticeCtx, ev.UserID, store.EventModelError, "attachment:"+attachmentErrorKind(downloadErr))
+			return d.reply(noticeCtx, ev.ChatID, attachmentUserError(downloadErr))
+		}
+		downloaded = &file
+	}
+
 	var messages, err = d.BuildMessages(replyCtx, ev.ChatID)
 	if err != nil {
 		return err
+	}
+	if downloaded != nil {
+		if len(messages) == 0 || messages[len(messages)-1].Role != model.RoleUser {
+			return errors.New("the stored attachment question is not the newest model message")
+		}
+		last := &messages[len(messages)-1]
+		last.Content = text
+		switch ev.Attachment.Kind {
+		case AttachmentPhoto:
+			last.ImageURL, err = imageDataURI(*downloaded)
+		case AttachmentDocument:
+			if !documentIsText(ev.Attachment.FileName, ev.Attachment.MimeType, downloaded.Data) {
+				err = ErrAttachmentType
+			} else {
+				last.Content = documentModelPrompt(text, safeAttachmentName(ev.Attachment.FileName), string(downloaded.Data), int(d.deps.Cfg.MaxContextChars))
+			}
+		default:
+			err = ErrAttachmentType
+		}
+		if err != nil {
+			return d.reply(ctx, ev.ChatID, attachmentUserError(err))
+		}
 	}
 	var selectedModel, modelErr = d.modelName(replyCtx, ev.ChatID)
 	if modelErr != nil {

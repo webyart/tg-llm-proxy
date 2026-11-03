@@ -32,6 +32,9 @@ type Event struct {
 	UserID            int64
 	Username          string
 	Text              string
+	Attachment        *Attachment
+	UnsupportedMedia  bool
+	Recovery          bool
 	// "/ask" prefixes makes the model see the shell instead of the conversation. Dispatch fills it
 	// after Normalize and resolve, so the `stored` middleware does not need the argument of the
 	// handler.
@@ -62,14 +65,15 @@ type HandlerFunc func(ctx context.Context, ev Event, cmd Command) error
 type Middleware func(next HandlerFunc) HandlerFunc
 
 type Deps struct {
-	Cfg     config.Config
-	DB      *sql.DB
-	Model   model.Client
-	Replier Replier
-	Locks   *ratelimit.Locks
-	Limit   *ratelimit.Limiter
-	Logger  *slog.Logger
-	Offset  OffsetWriter
+	Cfg         config.Config
+	DB          *sql.DB
+	Model       model.Client
+	Replier     Replier
+	Attachments AttachmentDownloader
+	Locks       *ratelimit.Locks
+	Limit       *ratelimit.Limiter
+	Logger      *slog.Logger
+	Offset      OffsetWriter
 	// monotonic guard of persistOffset continues the previous run instead of starting at 0.
 	StartOffset int64
 	BotName     string
@@ -180,9 +184,16 @@ func (d *Dispatcher) chain(next HandlerFunc) HandlerFunc {
 func (d *Dispatcher) Dispatch(ctx context.Context, ev Event) error {
 	var name, arg, isCommand = Normalize(ev.Text, d.deps.BotName)
 	var cmd, commandArg = d.resolve(ev, name, arg, isCommand)
+	if ev.Attachment != nil || ev.UnsupportedMedia {
+		cmd = d.index[CommandAsk]
+		commandArg = strings.TrimSpace(ev.Text)
+	}
 	ev.Question = ""
 	if cmd.UsesModel {
 		ev.Question = strings.TrimSpace(commandArg)
+		if ev.Attachment != nil {
+			ev.Question = storedAttachmentQuestion(ev)
+		}
 	}
 
 	d.logEvent(ctx, ev.UserID, store.EventCommand, cmd.Name)

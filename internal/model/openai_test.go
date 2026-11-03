@@ -117,6 +117,41 @@ func decodeBody(t *testing.T, raw string) wireBody {
 	return body
 }
 
+func TestPhotoUsesMultimodalContentAndTextStaysString(t *testing.T) {
+	fake := testutil.NewStrata(t, "", testutil.StrataReply{Content: "ok"})
+	c := clientFor(t, fake, Options{})
+	req := oneRequest("обычный вопрос")
+	req.Messages = append(req.Messages, Message{Role: RoleUser, Content: "что на фото?", ImageURL: "data:image/jpeg;base64,amZw"})
+	if _, err := c.Complete(context.Background(), req); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	var body struct {
+		Messages []struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(fake.LastRequestBody()), &body); err != nil {
+		t.Fatalf("request JSON: %v", err)
+	}
+	var ordinary string
+	if err := json.Unmarshal(body.Messages[1].Content, &ordinary); err != nil || ordinary != "обычный вопрос" {
+		t.Fatalf("ordinary content = %s, err=%v", body.Messages[1].Content, err)
+	}
+	var parts []struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		ImageURL struct {
+			URL string `json:"url"`
+		} `json:"image_url"`
+	}
+	if err := json.Unmarshal(body.Messages[2].Content, &parts); err != nil {
+		t.Fatalf("multimodal content: %v", err)
+	}
+	if len(parts) != 2 || parts[0].Type != "text" || parts[0].Text != "что на фото?" || parts[1].Type != "image_url" || parts[1].ImageURL.URL != "data:image/jpeg;base64,amZw" {
+		t.Fatalf("multimodal parts = %+v", parts)
+	}
+}
+
 func TestEmptyAnswerIsAnError(t *testing.T) {
 	for name, reply := range map[string]testutil.StrataReply{
 		"no choices":    {EmptyChoices: true},

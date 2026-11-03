@@ -9,6 +9,7 @@ Telegram-бот-прокси между пользователями и лока
 
 - 15 команд: `/start`, `/help`, `/ping`, `/status`, `/ask`, `/reset`, `/skip`, `/unskip`, `/history`, `/model`, `/stream`, `/persona`, `/stats`, `/whoami`, `/admin`.
 - `/start` и `/help` открывают inline-меню с 15 кнопками команд; callback проходит через тот же Dispatcher.
+- Фото JPEG/PNG до 10 МиБ и текстовые документы UTF-8 до 64 КиБ с необязательной подписью; voice, видео и другие типы получают понятный отказ.
 - История и независимый контекст каждого чата в SQLite/WAL.
 - Allowlist по Telegram user id, rate limiting, per-chat lock и ограничение параллельных запросов к модели.
 - Обработка timeout/5xx/пустых ответов, Telegram 429 и восстановление незавершённых вопросов после рестарта.
@@ -308,7 +309,7 @@ docker compose up -d
 - Startup recovery не имеет age cap и рассматривает только самый новый visible unanswered-вопрос чата.
 - Host-side `/healthz` на Docker Desktop может давать WARN при healthy in-container healthcheck.
 - macOS использует те же Unix-ветки, что и проверенный Linux; физический Mac acceptance не выполнялся.
-- Вложения и RAG относятся к следующим версиям.
+- Содержимое вложений не сохраняется: незавершённый запрос после рестарта требует повторной отправки файла. Voice, видео и RAG пока не поддерживаются.
 
 ## Безопасность
 

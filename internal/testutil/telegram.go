@@ -56,6 +56,12 @@ type TelegramFailure struct {
 	RetryAfter  int // parameters.retry_after, only meaningful for 429
 }
 
+type FakeFile struct {
+	File        models.File
+	Data        []byte
+	ContentType string
+}
+
 // Telegram — the running fake. Every field is behind a mutex: the library polls and answers from
 type Telegram struct {
 	Server *httptest.Server
@@ -77,6 +83,7 @@ type Telegram struct {
 	calls       map[string]int
 	commands    []models.BotCommand
 	webhook     *WebhookRegistration
+	files       map[string]FakeFile
 	failures    []TelegramFailure
 	wrongTokens int
 	offsets     []string // the offset params the library sent, for the offset assertions of
@@ -96,6 +103,7 @@ func NewTelegram(t *testing.T, token string) *Telegram {
 		BotID:       777,
 		MaxBlock:    150 * time.Millisecond,
 		calls:       map[string]int{},
+		files:       map[string]FakeFile{},
 		sentIDs:     map[int]bool{},
 		wake:        make(chan struct{}, 1),
 		nextSendID:  1,
@@ -114,6 +122,40 @@ func (s *Telegram) Push(upd models.Update) {
 	s.pending = append(s.pending, upd)
 	s.mu.Unlock()
 	s.notify()
+}
+
+func (s *Telegram) AddFile(fileID string, filePath string, contentType string, data []byte) {
+	s.mu.Lock()
+	s.files[fileID] = FakeFile{
+		File:        models.File{FileID: fileID, FilePath: filePath, FileSize: int64(len(data))},
+		Data:        append([]byte(nil), data...),
+		ContentType: contentType,
+	}
+	s.mu.Unlock()
+}
+
+func (s *Telegram) PushPhoto(updateID, chatID, userID int64, fileID string, caption string) {
+	s.mu.Lock()
+	size := int(s.files[fileID].File.FileSize)
+	s.mu.Unlock()
+	s.Push(models.Update{ID: updateID, Message: &models.Message{
+		ID: int(updateID), Date: int(time.Now().Unix()), Caption: caption,
+		Chat:  models.Chat{ID: chatID, Type: models.ChatTypePrivate},
+		From:  &models.User{ID: userID, IsBot: false, FirstName: "Tester", Username: "tester"},
+		Photo: []models.PhotoSize{{FileID: fileID, Width: 2, Height: 2, FileSize: size}},
+	}})
+}
+
+func (s *Telegram) PushDocument(updateID, chatID, userID int64, fileID string, name string, mime string, caption string) {
+	s.mu.Lock()
+	size := s.files[fileID].File.FileSize
+	s.mu.Unlock()
+	s.Push(models.Update{ID: updateID, Message: &models.Message{
+		ID: int(updateID), Date: int(time.Now().Unix()), Caption: caption,
+		Chat:     models.Chat{ID: chatID, Type: models.ChatTypePrivate},
+		From:     &models.User{ID: userID, IsBot: false, FirstName: "Tester", Username: "tester"},
+		Document: &models.Document{FileID: fileID, FileName: name, MimeType: mime, FileSize: size},
+	}})
 }
 
 // offset assertions read better when one number identifies the whole update.
@@ -245,6 +287,10 @@ func (s *Telegram) notify() {
 // `{url}/bot{token}/{method}`, so the path is the method table and the multipart form is the params
 func (s *Telegram) handle(w http.ResponseWriter, r *http.Request) {
 	var path = strings.TrimPrefix(r.URL.Path, "/")
+	if strings.HasPrefix(path, "file/") {
+		s.handleFile(w, r, strings.TrimPrefix(path, "file/"))
+		return
+	}
 	var token, method, ok = splitBotPath(path)
 	if !ok {
 		http.Error(w, "the fake serves only {url}/bot{token}/{method} ", http.StatusNotFound)
@@ -277,6 +323,16 @@ func (s *Telegram) handle(w http.ResponseWriter, r *http.Request) {
 		writeOK(w, models.User{ID: s.BotID, IsBot: true, FirstName: "Fake", Username: s.BotUsername})
 	case "getUpdates":
 		s.handleGetUpdates(w, r)
+	case "getFile":
+		fileID := r.FormValue("file_id")
+		s.mu.Lock()
+		file, found := s.files[fileID]
+		s.mu.Unlock()
+		if !found {
+			writeError(w, http.StatusNotFound, "file not found", 0)
+			return
+		}
+		writeOK(w, file.File)
 	case "sendMessage":
 		s.handleSendMessage(w, r)
 	case "editMessageText":
@@ -290,6 +346,37 @@ func (s *Telegram) handle(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusNotFound, "the fake does not serve "+method+" — v1 of uses getMe, getUpdates, sendMessage, setMyCommands, and adds editMessageText", 0)
 	}
+}
+
+func (s *Telegram) handleFile(w http.ResponseWriter, r *http.Request, path string) {
+	token, filePath, ok := splitBotPath(path)
+	if !ok || token != s.Token {
+		s.mu.Lock()
+		s.wrongTokens++
+		s.mu.Unlock()
+		http.Error(w, "invalid file path", http.StatusNotFound)
+		return
+	}
+	s.mu.Lock()
+	s.calls["download"]++
+	var found FakeFile
+	known := false
+	for _, file := range s.files {
+		if file.File.FilePath == filePath {
+			found = file
+			known = true
+			break
+		}
+	}
+	s.mu.Unlock()
+	if !known {
+		http.Error(w, "file not found", http.StatusNotFound)
+		return
+	}
+	if found.ContentType != "" {
+		w.Header().Set("Content-Type", found.ContentType)
+	}
+	_, _ = w.Write(found.Data)
 }
 
 // takeFailure — consume the one-shot failure queued for this method ("" matches any method).

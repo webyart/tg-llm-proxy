@@ -65,6 +65,7 @@ func (d *Dispatcher) ResumeInterruptedQuestions(ctx context.Context) (answered i
 			UserID:            row.UserID,
 			Text:              row.Content,
 			Question:          row.Content,
+			Recovery:          true,
 		}
 		d.deps.Logger.Info("the stored question has no answer; startup is answering it",
 			"chat_id", ev.ChatID, "user_id", ev.UserID, "question_row", row.ID,
@@ -86,6 +87,14 @@ func (d *Dispatcher) ResumeInterruptedQuestions(ctx context.Context) (answered i
 			d.deps.Logger.Error("the stored question remains unanswered",
 				"chat_id", ev.ChatID, "question_row", row.ID,
 				"error", Sanitize(chainErr, d.deps.Token))
+			pending++
+			i++
+			continue
+		}
+		if isStoredAttachment(row.Content) {
+			if skipErr := store.SetResumeSkip(ctx, d.deps.DB, ev.ChatID, row.ID); skipErr != nil {
+				return answered, pending, skipErr
+			}
 			pending++
 			i++
 			continue

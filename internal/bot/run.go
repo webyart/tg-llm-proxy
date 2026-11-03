@@ -95,7 +95,7 @@ func (d *Dispatcher) NewTelegram(opts Options) (*tgbot.Bot, error) {
 		tgbot.WithHTTPClient(poll, client),
 		tgbot.WithCheckInitTimeout(InitTimeout),
 		tgbot.WithWorkers(workers),
-		// Accept text messages and menu callbacks; other update types stay out of the queue and the log.
+		// Accept messages and menu callbacks; eventOf handles text, attachments and unsupported media.
 		tgbot.WithAllowedUpdates(tgbot.AllowedUpdates{"message", "callback_query"}),
 		tgbot.WithDefaultHandler(d.telegramHandler),
 		// `https://api.telegram.org/bot<TOKEN>/…`, so every text goes through Sanitize first. No
@@ -124,6 +124,7 @@ func (d *Dispatcher) NewTelegram(opts Options) (*tgbot.Bot, error) {
 	}
 	var replier = &telegramReplier{d: d, bot: tg, cfg: d.deps.Cfg, users: map[int64]int64{}, logger: d.deps.Logger}
 	d.deps.Replier = replier
+	d.deps.Attachments = &telegramAttachmentDownloader{bot: tg, client: client}
 	tg.RegisterHandlerMatchFunc(d.matchUpdate, d.telegramHandler)
 
 	if !opts.SkipGetMe {
@@ -142,16 +143,12 @@ func (d *Dispatcher) NewTelegram(opts Options) (*tgbot.Bot, error) {
 	return tg, nil
 }
 
-// there is no models.MessageTypeText in v1.27.0, Message.Type is MaybeInaccessibleMessageType, so the
-// text itself is the only reliable signal).
 func (d *Dispatcher) matchUpdate(upd *models.Update) bool {
-	if upd == nil || upd.Message == nil {
-		return false // edited_message, channel_post, callback_query: drops them, the dispatcher never sees them
-	}
-	return strings.TrimSpace(upd.Message.Text) != ""
+	_, ok := eventOf(upd)
+	return ok
 }
 
-// text messages and WithDefaultHandler for everything else.
+// eventOf accepts text, captions, supported attachments and explicit unsupported-media notices.
 func (d *Dispatcher) telegramHandler(ctx context.Context, tg *tgbot.Bot, upd *models.Update) {
 	// at all», and until today the process answered it only by silence. One debug line per update, with the
 	// start logging the conversations of the users).
@@ -160,7 +157,7 @@ func (d *Dispatcher) telegramHandler(ctx context.Context, tg *tgbot.Bot, upd *mo
 	if upd != nil {
 		updateID = upd.ID
 		if upd.Message != nil {
-			textLen = len([]rune(upd.Message.Text))
+			textLen = len([]rune(upd.Message.Text + upd.Message.Caption))
 		}
 	}
 	// Dispatch, so everything in this function that runs BEFORE Dispatch is unprotected — and by then the
@@ -189,7 +186,7 @@ func (d *Dispatcher) telegramHandler(ctx context.Context, tg *tgbot.Bot, upd *mo
 		if upd != nil && upd.Message != nil {
 			chatID = upd.Message.Chat.ID
 		}
-		d.deps.Logger.Info("the update carries no text, skipped", "update_id", updateID, "chat_id", chatID)
+		d.deps.Logger.Info("the update has no supported content, skipped", "update_id", updateID, "chat_id", chatID)
 		return
 	}
 	d.noteChatUser(ev.ChatID, ev.UserID) // the flood audit of attributes events to a user
@@ -203,23 +200,45 @@ func eventOf(upd *models.Update) (Event, bool) {
 	if upd == nil || upd.Message == nil {
 		return Event{}, false
 	}
-	var text = strings.TrimSpace(upd.Message.Text)
+	message := upd.Message
+	text := message.Text
 	if text == "" {
-		return Event{}, false
+		text = message.Caption
 	}
 	var ev = Event{
 		UpdateID:          upd.ID,
-		TelegramMessageID: int64(upd.Message.ID),
-		ChatID:            upd.Message.Chat.ID,
-		ChatType:          string(upd.Message.Chat.Type),
-		ChatTitle:         chatTitle(upd.Message.Chat),
-		Text:              upd.Message.Text,
+		TelegramMessageID: int64(message.ID),
+		ChatID:            message.Chat.ID,
+		ChatType:          string(message.Chat.Type),
+		ChatTitle:         chatTitle(message.Chat),
+		Text:              text,
 	}
-	if upd.Message.From != nil {
-		ev.UserID = upd.Message.From.ID
-		ev.Username = upd.Message.From.Username
+	if message.From != nil {
+		ev.UserID = message.From.ID
+		ev.Username = message.From.Username
 	}
-	return ev, true
+	if len(message.Photo) > 0 {
+		photo := message.Photo[0]
+		for _, candidate := range message.Photo[1:] {
+			if candidate.Width*candidate.Height > photo.Width*photo.Height {
+				photo = candidate
+			}
+		}
+		ev.Attachment = &Attachment{Kind: AttachmentPhoto, FileID: photo.FileID, Size: int64(photo.FileSize)}
+		return ev, true
+	}
+	if message.Document != nil {
+		ev.Attachment = &Attachment{Kind: AttachmentDocument, FileID: message.Document.FileID, FileName: message.Document.FileName, MimeType: message.Document.MimeType, Size: message.Document.FileSize}
+		return ev, true
+	}
+	if strings.TrimSpace(text) != "" {
+		return ev, true
+	}
+	if message.Voice != nil || message.Audio != nil || message.Video != nil || message.VideoNote != nil || message.Animation != nil || message.Sticker != nil {
+		ev.UnsupportedMedia = true
+		return ev, true
+	}
+	return Event{}, false
 }
 
 // the two names of a private chat Telegram does not title itself.

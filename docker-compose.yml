@@ -13,6 +13,9 @@ services:
       args:
         BUILD_COMMIT: ${BUILD_COMMIT:-dev}
     image: tg-llm-proxy-bot:latest
+    depends_on:
+      whisper:
+        condition: service_healthy
     # §8.1: the §7 table comes from .env, compose pins the container path of the database.
     env_file:
       - path: .env
@@ -32,6 +35,8 @@ services:
       # resolves while parsing this file and never passes into the container (the process still sees exactly
       # the 29 names of §7, §16 change 29).
       STRATA_BASE_URL: ${STRATA_BASE_URL_CONTAINER:-http://host.docker.internal:8080/v1}
+      TRANSCRIPTION_BASE_URL: ${TRANSCRIPTION_BASE_URL_CONTAINER:-http://whisper:8000}
+      STRATA_TRANSCRIPTION_MODEL: ${STRATA_TRANSCRIPTION_MODEL_CONTAINER:-Systran/faster-whisper-small}
       # §7: HEALTH_PORT comes from the same interpolation as the published port above. env_file alone would
       # let a shell override (HEALTH_PORT=18080 …) move only the host side of the mapping, while the process
       # inside kept listening on the .env value — `environment` wins over `env_file` in compose, so the two
@@ -66,6 +71,36 @@ services:
       - host.docker.internal:host-gateway
     # The image already carries HEALTHCHECK (§8.1); compose surfaces its state in `docker ps`.
 
+  whisper:
+    image: ghcr.io/speaches-ai/speaches:latest-cpu
+    environment:
+      ENABLE_UI: "false"
+      LOG_LEVEL: info
+      PRELOAD_MODELS: '["Systran/faster-whisper-small"]'
+      STT_MODEL_TTL: "-1"
+      WHISPER__COMPUTE_TYPE: int8
+    volumes:
+      - whisper-models:/home/ubuntu/.cache/huggingface/hub
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 10m
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "5"
+
   test:
     profiles: ["test"]
     build:
@@ -80,3 +115,4 @@ services:
 
 volumes:
   bot-data:
+  whisper-models:

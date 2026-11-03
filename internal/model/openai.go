@@ -30,33 +30,37 @@ const (
 
 // the model, the budget, the retry shape and the GPU concurrency gate.
 type Options struct {
-	ChatURL            string
-	ModelsURL          string
-	APIKey             string
-	Model              string
-	TranscriptionModel string
-	Timeout            time.Duration
-	Attempts           int
-	Backoff            time.Duration
-	MaxConcurrent      int
-	HTTPClient         *http.Client
+	ChatURL             string
+	ModelsURL           string
+	APIKey              string
+	Model               string
+	TranscriptionModel  string
+	TranscriptionURL    string
+	TranscriptionNoAuth bool
+	Timeout             time.Duration
+	Attempts            int
+	Backoff             time.Duration
+	MaxConcurrent       int
+	HTTPClient          *http.Client
 	// STREAM_IDLE_TIMEOUT_SECONDS, STREAM_TOTAL_DEADLINE_SECONDS and the progress cadence. A zero value means
 	// the defaults of stream.go — a client built by a test streams with those defaults and no test has to
 	Stream StreamSettings
 }
 
 type OpenAI struct {
-	chatURL            string
-	modelsURL          string
-	apiKey             string
-	model              string
-	transcriptionModel string
-	timeout            time.Duration
-	attempts           int
-	backoff            time.Duration
-	client             *http.Client
-	sem                chan struct{}
-	stream             StreamSettings
+	chatURL             string
+	modelsURL           string
+	apiKey              string
+	model               string
+	transcriptionModel  string
+	transcriptionURL    string
+	transcriptionNoAuth bool
+	timeout             time.Duration
+	attempts            int
+	backoff             time.Duration
+	client              *http.Client
+	sem                 chan struct{}
+	stream              StreamSettings
 }
 
 // problem and is reported instead of producing a client that would fail on the first /ask.
@@ -85,17 +89,19 @@ func New(o Options) (*OpenAI, error) {
 		o.HTTPClient = http.DefaultClient
 	}
 	return &OpenAI{
-		chatURL:            strings.TrimSpace(o.ChatURL),
-		modelsURL:          strings.TrimSpace(o.ModelsURL),
-		apiKey:             strings.TrimSpace(o.APIKey),
-		model:              strings.TrimSpace(o.Model),
-		transcriptionModel: strings.TrimSpace(o.TranscriptionModel),
-		timeout:            o.Timeout,
-		attempts:           o.Attempts,
-		backoff:            o.Backoff,
-		client:             o.HTTPClient,
-		sem:                make(chan struct{}, o.MaxConcurrent),
-		stream:             withStreamDefaults(o.Stream),
+		chatURL:             strings.TrimSpace(o.ChatURL),
+		modelsURL:           strings.TrimSpace(o.ModelsURL),
+		apiKey:              strings.TrimSpace(o.APIKey),
+		model:               strings.TrimSpace(o.Model),
+		transcriptionModel:  strings.TrimSpace(o.TranscriptionModel),
+		transcriptionURL:    strings.TrimSpace(o.TranscriptionURL),
+		transcriptionNoAuth: o.TranscriptionNoAuth,
+		timeout:             o.Timeout,
+		attempts:            o.Attempts,
+		backoff:             o.Backoff,
+		client:              o.HTTPClient,
+		sem:                 make(chan struct{}, o.MaxConcurrent),
+		stream:              withStreamDefaults(o.Stream),
 	}, nil
 }
 

@@ -20,7 +20,6 @@ Exit: 0 — the endpoint answered 2xx on both probes and the chat answer was not
 param(
     [string]$Base,
     [string]$Model,
-    [string]$Key,
     [int]$TimeoutSec = 8,
     [switch]$SkipChat
 )
@@ -80,7 +79,6 @@ $healthPick = Pick 'HEALTH_PORT'
 # A parameter of the command line replaces the picked value and its source, so the printed origin stays
 if ($Base) { $basePick = [pscustomobject]@{ Name = 'STRATA_BASE_URL'; Value = $Base; Source = '-Base of the command line' } }
 if ($Model) { $modelPick = [pscustomobject]@{ Name = 'STRATA_MODEL'; Value = $Model; Source = '-Model of the command line' } }
-if ($Key) { $keyPick = [pscustomobject]@{ Name = 'STRATA_API_KEY'; Value = $Key; Source = '-Key of the command line' } }
 
 if (-not $Base) { $Base = $basePick.Value }
 if (-not $Base) { $Base = 'http://host.docker.internal:8000'; $basePick.Source = 'the default' }   #

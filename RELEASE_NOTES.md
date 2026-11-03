@@ -1,3 +1,12 @@
+# tg-llm-proxy v1.4.3
+
+## Security patch
+
+- Runtime Docker контейнер использует read-only root filesystem, `cap_drop: ALL`, `no-new-privileges` и временный `/tmp`; SQLite остаётся на записываемом named volume.
+- `strata-check.ps1` больше не принимает `-Key`: секрет читается только из ENV/`.env` и не остаётся в аргументах процесса/history.
+- `STRATA_BASE_URL` запрещает userinfo и требует HTTPS для удалённых hosts; localhost и внутренние Docker hosts могут использовать HTTP.
+- Startup логирует только длину `SYSTEM_PROMPT`, не его содержимое. Добавлены config security tests.
+
 # tg-llm-proxy v1.4.2
 
 ## Security patch

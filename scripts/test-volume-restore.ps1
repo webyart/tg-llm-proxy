@@ -73,7 +73,7 @@ try {
     $composeResourcesMayExist = $true
     Invoke-Docker @('compose', '--project-name', $project, 'create', 'bot')
     Invoke-Docker @('compose', '--project-name', $project, 'cp', $restored, 'bot:/data/bot.db')
-    Invoke-Docker @('compose', '--project-name', $project, 'run', '--rm', '--no-deps', '--user', 'root', '--entrypoint', 'chown', 'bot', '65534:65534', '/data/bot.db')
+    Invoke-Docker @('compose', '--project-name', $project, 'run', '--rm', '--no-deps', '--cap-add', 'CHOWN', '--user', 'root', '--entrypoint', 'chown', 'bot', '65534:65534', '/data/bot.db')
     Invoke-Docker @('compose', '--project-name', $project, 'run', '--rm', '--no-deps', '--entrypoint', 'sh', 'bot', '-c', 'test -r /data/bot.db && test -w /data/bot.db')
     Invoke-Docker @('compose', '--project-name', $project, 'cp', 'bot:/data/bot.db', $roundTrip)
 

@@ -37,6 +37,8 @@ services:
       STRATA_BASE_URL: ${STRATA_BASE_URL_CONTAINER:-http://host.docker.internal:8080/v1}
       TRANSCRIPTION_BASE_URL: ${TRANSCRIPTION_BASE_URL_CONTAINER:-http://whisper:8000}
       STRATA_TRANSCRIPTION_MODEL: ${STRATA_TRANSCRIPTION_MODEL_CONTAINER:-Systran/faster-whisper-small}
+      NO_PROXY: 127.0.0.1,localhost,host.docker.internal,whisper
+      no_proxy: 127.0.0.1,localhost,host.docker.internal,whisper
       # §7: HEALTH_PORT comes from the same interpolation as the published port above. env_file alone would
       # let a shell override (HEALTH_PORT=18080 …) move only the host side of the mapping, while the process
       # inside kept listening on the .env value — `environment` wins over `env_file` in compose, so the two

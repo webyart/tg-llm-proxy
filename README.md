@@ -131,10 +131,10 @@ TLS handshake timeout Telegram transport — 30 секунд вместо ста
 ```env
 HTTPS_PROXY=http://host.docker.internal:10808
 HTTP_PROXY=http://host.docker.internal:10808
-NO_PROXY=127.0.0.1,localhost,host.docker.internal
+NO_PROXY=127.0.0.1,localhost,host.docker.internal,whisper
 https_proxy=http://host.docker.internal:10808
 http_proxy=http://host.docker.internal:10808
-no_proxy=127.0.0.1,localhost,host.docker.internal
+no_proxy=127.0.0.1,localhost,host.docker.internal,whisper
 ```
 
 Compose подхватывает этот optional файл при каждом запуске, включая scheduled maintenance; он gitignored и не попадает в Docker context. `host.docker.internal` заменяет loopback proxy хоста. `NO_PROXY` обязателен для локальной STRATA, чтобы её трафик и API key не отправлялись через proxy. Docker HEALTHCHECK дополнительно использует `wget --proxy off`, поэтому loopback probe не зависит от proxy. Для host-запуска вне Docker используйте `run.ps1 -UseSystemProxy`. Постоянные timeout означают неисправность сети/VPN, а не ошибку бота.

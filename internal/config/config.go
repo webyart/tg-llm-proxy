@@ -19,6 +19,7 @@ var Env = []string{
 	"STRATA_BASE_URL",
 	"STRATA_MODEL",
 	"STRATA_TRANSCRIPTION_MODEL",
+	"TRANSCRIPTION_BASE_URL",
 	"STRATA_API_KEY",
 	"STRATA_TIMEOUT_SECONDS",
 	"TG_REPLY_DEADLINE_SECONDS",
@@ -71,7 +72,7 @@ const DefaultBaseURL = "http://host.docker.internal:8000"
 const V1Path = "/v1"
 const DefaultDBPath = "./data/bot.db"
 const DefaultSystemPrompt = "You are a helpful assistant."
-const DefaultTranscriptionModel = "whisper-1"
+const DefaultTranscriptionModel = "Systran/faster-whisper-small"
 const DefaultTimeoutSeconds = int64(60)
 const DefaultDeadlineSeconds = int64(90)
 const DefaultRecoveryMaxAgeHours = int64(24)
@@ -114,6 +115,8 @@ type Config struct {
 	ModelsURL            string
 	StrataModel          string
 	TranscriptionModel   string
+	TranscriptionBase    string
+	TranscriptionURL     string
 	TimeoutSeconds       int64
 	ReplyDeadlineSeconds int64
 	RecoveryMaxAgeHours  int64
@@ -453,6 +456,15 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	cfg.ChatURL = JoinURL(base, "/chat/completions")
 	cfg.ModelsURL = JoinURL(base, "/models")
 	problems = Push(problems, validateStrataBase(base))
+	transcriptionBase := strings.TrimSpace(raw["TRANSCRIPTION_BASE_URL"])
+	if transcriptionBase == "" {
+		transcriptionBase = base
+	}
+	cfg.TranscriptionBase = NormalizeBase(transcriptionBase)
+	cfg.TranscriptionURL = JoinURL(transcriptionBase, "/audio/transcriptions")
+	if problem := validateStrataBase(transcriptionBase); problem != "" {
+		problems = Push(problems, strings.Replace(problem, "STRATA_BASE_URL", "TRANSCRIPTION_BASE_URL", 1))
+	}
 
 	var model = strings.TrimSpace(raw["STRATA_MODEL"])
 	if model == "" {

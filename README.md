@@ -92,7 +92,7 @@ docker compose logs -f bot
 
 ## Конфигурация
 
-Полный список из 32 ENV-строк и их значения по умолчанию находится в `.env.example`. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
+Полный список из 33 ENV-строк и их значения по умолчанию находится в `.env.example`. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
 
 ### Основные параметры
 
@@ -101,7 +101,8 @@ docker compose logs -f bot
 | `TELEGRAM_BOT_TOKEN` | обязательный | Telegram token, без значения запуск запрещён |
 | `STRATA_BASE_URL` | `http://host.docker.internal:8000` | OpenAI-compatible base URL без обязательного `/v1` |
 | `STRATA_MODEL` | `qwen2.5-7b-instruct` | id модели из `GET /v1/models` |
-| `STRATA_TRANSCRIPTION_MODEL` | `whisper-1` | модель для `/audio/transcriptions` |
+| `STRATA_TRANSCRIPTION_MODEL` | `Systran/faster-whisper-small` | модель для `/audio/transcriptions` |
+| `TRANSCRIPTION_BASE_URL` | `STRATA_BASE_URL`; в compose — Whisper | отдельный transcription endpoint |
 | `STRATA_API_KEY` | пусто | ключ endpoint, если требуется |
 | `STRATA_TIMEOUT_SECONDS` | 60 | таймаут одной попытки модели |
 | `TG_REPLY_DEADLINE_SECONDS` | 90 | общий бюджет ответа; должен быть больше timeout |
@@ -118,7 +119,7 @@ docker compose logs -f bot
 | `HEALTH_PORT` | 8080 | loopback health endpoint |
 | `LOG_LEVEL` | `info` | `error`, `warning`, `info`, `debug` |
 
-`STRATA_BASE_URL` нормализуется к ровно одному `/v1`: запросы идут в `{base}/chat/completions`, `{base}/models` и `{base}/audio/transcriptions`. Voice хранится только как текст транскрипции; исходное аудио остаётся в памяти на время запроса.
+`STRATA_BASE_URL` нормализуется к ровно одному `/v1`: chat и models используют этот base. `TRANSCRIPTION_BASE_URL` независимо ведёт в `/audio/transcriptions`; compose запускает Speaches Whisper без публичного порта и заранее загружает multilingual small-модель. Voice хранится только как текст транскрипции; исходное аудио остаётся в памяти на время запроса.
 
 При `PARSE_MODE=MarkdownV2` сохраняются заголовки, жирный и курсивный текст, `code`, code fences и
 http/https-ссылки. Обычные специальные символы экранируются, а небезопасные схемы ссылок не пропускаются.
@@ -323,6 +324,6 @@ docker compose up -d
 
 ## Документы
 
-- `.env.example` — все настройки (32) с комментариями.
+- `.env.example` — все настройки (33) с комментариями.
 - `RELEASE_NOTES.md` — состав release candidate и результаты проверок.
 - `PLAN.md` — локальный подробный план и история изменений (gitignored).

@@ -45,6 +45,23 @@ func TestTranscribeSendsMultipartAudio(t *testing.T) {
 	}
 }
 
+func TestTranscribeIncludesProviderErrorMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"unsupported audio model"}}`))
+	}))
+	defer server.Close()
+	client, err := New(Options{ChatURL: server.URL + "/v1/chat/completions", Attempts: 1, Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = client.Transcribe(context.Background(), TranscriptionRequest{Data: []byte("OggS")})
+	if err == nil || !strings.Contains(err.Error(), "unsupported audio model") {
+		t.Fatalf("err=%v, want provider detail", err)
+	}
+}
+
 func TestTranscribeRejectsEmptyAnswer(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

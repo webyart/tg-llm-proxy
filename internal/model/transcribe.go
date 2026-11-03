@@ -92,14 +92,17 @@ func (c *OpenAI) transcribeAttempt(ctx context.Context, req TranscriptionRequest
 	if err := writer.Close(); err != nil {
 		return "", err
 	}
-	url := strings.Replace(c.chatURL, "/chat/completions", "/audio/transcriptions", 1)
+	url := c.transcriptionURL
+	if url == "" {
+		url = strings.Replace(c.chatURL, "/chat/completions", "/audio/transcriptions", 1)
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body.Bytes()))
 	if err != nil {
 		return "", err
 	}
 	httpReq.Header.Set("Content-Type", writer.FormDataContentType())
 	httpReq.Header.Set("Accept", "application/json")
-	if c.apiKey != "" {
+	if c.apiKey != "" && !c.transcriptionNoAuth {
 		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 	resp, err := c.client.Do(httpReq)
@@ -112,7 +115,23 @@ func (c *OpenAI) transcribeAttempt(ctx context.Context, req TranscriptionRequest
 		return "", err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", &APIError{Status: resp.StatusCode, Body: Flatten(string(payload), BodyLimit)}
+		apiErr := &APIError{Status: resp.StatusCode, Body: Flatten(string(payload), BodyLimit)}
+		var providerErr struct {
+			Message string `json:"message"`
+			Error   struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(payload, &providerErr) == nil {
+			detail := strings.TrimSpace(providerErr.Message)
+			if detail == "" {
+				detail = strings.TrimSpace(providerErr.Error.Message)
+			}
+			if detail != "" {
+				return "", fmt.Errorf("%w: %s", apiErr, Flatten(detail, BodyLimit))
+			}
+		}
+		return "", apiErr
 	}
 	var decoded struct {
 		Text string `json:"text"`

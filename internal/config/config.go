@@ -5,6 +5,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -160,6 +162,34 @@ func NormalizeBase(base string) string {
 // ModelsURL = Join(base, "/models") over NormalizeBase, so a base written with or
 func JoinURL(base string, path string) string {
 	return NormalizeBase(base) + path
+}
+
+func validateStrataBase(base string) string {
+	parsed, err := url.Parse(NormalizeBase(base))
+	if err != nil || parsed.Host == "" {
+		return "ENV STRATA_BASE_URL must be a valid absolute HTTP(S) URL"
+	}
+	if parsed.User != nil {
+		return "ENV STRATA_BASE_URL must not contain userinfo or credentials"
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "ENV STRATA_BASE_URL must use http or https"
+	}
+	if parsed.Scheme == "http" && !localStrataHost(parsed.Hostname()) {
+		return "ENV STRATA_BASE_URL must use HTTPS for a non-local endpoint"
+	}
+	return ""
+}
+
+func localStrataHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	if host == "localhost" || host == "host.docker.internal" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return !strings.Contains(host, ".")
 }
 
 // set, a clear problem when the value is not an integer or falls outside the
@@ -408,6 +438,7 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	cfg.StrataBase = NormalizeBase(base)
 	cfg.ChatURL = JoinURL(base, "/chat/completions")
 	cfg.ModelsURL = JoinURL(base, "/models")
+	problems = Push(problems, validateStrataBase(base))
 
 	var model = strings.TrimSpace(raw["STRATA_MODEL"])
 	if model == "" {

@@ -282,7 +282,7 @@ Windows Task Scheduler запускает задачи от текущего п�
 docker compose stop bot
 docker compose cp bot:/data/bot.db .\zzscratch\pre-restore.db
 docker compose cp .\zzscratch\production-restore.db bot:/data/bot.db
-docker compose run --rm --no-deps --user root --entrypoint chown bot 65534:65534 /data/bot.db
+docker compose run --rm --no-deps --cap-add CHOWN --user root --entrypoint chown bot 65534:65534 /data/bot.db
 docker compose run --rm --no-deps --entrypoint sh bot -c 'test -r /data/bot.db && test -w /data/bot.db'
 docker compose cp bot:/data/bot.db .\zzscratch\post-restore.db
 .\scripts\db_inspect.ps1 -Path .\zzscratch\post-restore.db -Counts
@@ -294,7 +294,7 @@ Rollback при проблемах:
 ```powershell
 docker compose stop bot
 docker compose cp .\zzscratch\pre-restore.db bot:/data/bot.db
-docker compose run --rm --no-deps --user root --entrypoint chown bot 65534:65534 /data/bot.db
+docker compose run --rm --no-deps --cap-add CHOWN --user root --entrypoint chown bot 65534:65534 /data/bot.db
 docker compose up -d
 ```
 
@@ -314,6 +314,8 @@ docker compose up -d
 - `.env` и `.env.*` исключены из Git и Docker context; шаблон `.env.example` остаётся tracked. Не помещайте реальные секреты в другие файлы.
 - `smoke.ps1` проверяет Telegram token, STRATA key и webhook secret без вывода значений.
 - На production Windows ACL проекта должны разрешать запись только владельцу/service account и администраторам. Текущий хост ограничен владельцем, SYSTEM и Administrators; при переносе проекта повторите проверку ACL, особенно для scheduler-скриптов и backup.
+- Runtime контейнер имеет read-only rootfs, no capabilities и `no-new-privileges`; `/data` остаётся записываемым volume.
+- `strata-check.ps1` не принимает секреты аргументом. Для удалённой STRATA требуется HTTPS; URL с userinfo отклоняются. Startup не печатает содержимое `SYSTEM_PROMPT`.
 
 ## Документы
 

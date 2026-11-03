@@ -52,7 +52,7 @@ func PrintConfig(cfg config.Config) {
 	fmt.Println("CONTEXT_MESSAGES", cfg.ContextMessages, "")
 	fmt.Println("MAX_CONTEXT_CHARS", cfg.MaxContextChars, "")
 	fmt.Println("MAX_INPUT_CHARS", cfg.MaxInputChars, "")
-	fmt.Println("SYSTEM_PROMPT", cfg.SystemPrompt, "")
+	fmt.Println("SYSTEM_PROMPT is set, length", len(cfg.SystemPrompt), "")
 	fmt.Println("RATE_LIMIT_PER_MINUTE", cfg.RateLimitPerMinute, "")
 	fmt.Println("MAX_CONCURRENT_MODEL_REQUESTS", cfg.MaxConcurrentRequests, "")
 	fmt.Println("PROXY_FREE_TEXT", cfg.FreeText, "")

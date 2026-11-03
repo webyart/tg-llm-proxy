@@ -1,5 +1,7 @@
 # Ignore — §10 Day 1: не подcommitи local artifacts (token, SQLite DB, Go cache)
 .env
+.env.*
+!.env.example
 data/
 *.db
 *.db-wal

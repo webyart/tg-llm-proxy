@@ -1,6 +1,8 @@
 # .dockerignore — §10 Day 1: bin/, data/, *.db (+ gitignored: .env, .cache) не included in build context
 .git/
 .env
+.env.*
+!.env.example
 .cache/
 bin/
 data/

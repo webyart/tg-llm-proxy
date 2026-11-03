@@ -1,3 +1,12 @@
+# tg-llm-proxy v1.4.5
+
+## CI quota patch
+
+- GitLab shared CI запускается только для `main` и ручного pipeline через UI; push в `develop` и tags больше не расходуют shared compute minutes.
+- Jobs помечены `interruptible`; для автоматической отмены устаревших pipeline включите Auto-cancel redundant pipelines в настройках GitLab.
+- CI jobs умеют использовать предустановленные PowerShell/GCC на self-hosted Linux/WSL вместо повторной установки пакетов.
+- Добавлен `docs/gitlab-runner-wsl.md`: shell executor без Docker socket и доступа к production secrets; регистрация runner остаётся ручной.
+
 # tg-llm-proxy v1.4.4
 
 ## Security patch

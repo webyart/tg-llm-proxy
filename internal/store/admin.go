@@ -17,6 +17,7 @@ type AdminSummary struct {
 	RAGUses        int64
 	CalculatorUses int64
 	URLReaderUses  int64
+	WebSearchUses  int64
 	RAGDocuments   int64
 	LastActive     string
 }
@@ -36,6 +37,7 @@ func AdminStats(ctx context.Context, db *sql.DB) (AdminSummary, error) {
 		{&stats.RAGUses, `SELECT COUNT(*) FROM events WHERE kind = 'usage' AND detail = 'rag'`},
 		{&stats.CalculatorUses, `SELECT COUNT(*) FROM events WHERE kind = 'usage' AND detail = 'calculator'`},
 		{&stats.URLReaderUses, `SELECT COUNT(*) FROM events WHERE kind = 'usage' AND detail = 'read_url'`},
+		{&stats.WebSearchUses, `SELECT COUNT(*) FROM events WHERE kind = 'usage' AND detail = 'web_search'`},
 		{&stats.RAGDocuments, `SELECT COUNT(*) FROM rag_documents`},
 	}
 	for _, query := range queries {

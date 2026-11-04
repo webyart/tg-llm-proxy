@@ -1,3 +1,14 @@
+# tg-llm-proxy v1.17.0
+
+## Web search and RAG ranking release candidate
+
+- Добавлен opt-in tool `web_search` через self-hosted SearxNG. По умолчанию `WEB_SEARCH_ENABLED=false`; для работы также нужен `TOOLS_ENABLED=true` и `WEB_SEARCH_BASE_URL` собственного экземпляра.
+- Запрос ограничен `WEB_SEARCH_TIMEOUT_SECONDS=10` (1..30), ответом до 1 МиБ и `WEB_SEARCH_MAX_RESULTS=5` (1..10). Модель получает только `title`, `url` и `snippet`; ссылки выдачи не загружаются. Redirects отклоняются, credentials/query/fragment в адресе provider запрещены, тексты запросов и ответов не логируются.
+- `compose.websearch.yaml` запускает закреплённый по tag+digest SearxNG с read-only rootfs, dropped capabilities, `no-new-privileges`, loopback-only портом и JSON API. Провайдер и `livecheck` проверены на реальном поисковом запросе; живой acceptance внутри Telegram ещё не выполнялся.
+- `/admin` показывает отдельный `web_search calls`; usage events по-прежнему содержат только имя инструмента.
+- RAG retrieval использует IDF-weighted BM25-lite с нормализацией длины, бонусами за coverage, фразу и имя документа. Редкие термины и короткие точные фрагменты получают приоритет; ranking детерминирован, поддерживает Unicode без embeddings, миграций и новых зависимостей.
+- Добавлены config/tool/store/admin и ranking regression-тесты. Semantic retrieval не добавлен: STRATA по-прежнему отвечает 404 на `/v1/embeddings`.
+
 # tg-llm-proxy v1.16.0
 
 ## URL reader release candidate

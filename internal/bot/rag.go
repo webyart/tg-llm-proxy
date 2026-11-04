@@ -77,7 +77,7 @@ func (d *Dispatcher) addDocument(ctx context.Context, ev Event) error {
 	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Документ %s сохранён с id=%d, частей: %d. Он будет использоваться при следующих вопросах.", name, id, chunks))
 }
 
-func (d *Dispatcher) addRAGContext(ctx context.Context, chatID int64, query string, messages []model.Message) ([]model.Message, error) {
+func (d *Dispatcher) addRAGContext(ctx context.Context, chatID int64, userID int64, query string, messages []model.Message) ([]model.Message, error) {
 	chunks, err := store.SearchRAGChunks(ctx, d.deps.DB, chatID, query, RAGResultLimit, RAGMaxRunes)
 	if err != nil || len(chunks) == 0 {
 		return messages, err
@@ -94,5 +94,6 @@ func (d *Dispatcher) addRAGContext(ctx context.Context, chatID int64, query stri
 	messages = append(messages, model.Message{})
 	copy(messages[insertAt+1:], messages[insertAt:])
 	messages[insertAt] = model.Message{Role: model.RoleSystem, Content: text.String()}
+	d.logEvent(ctx, userID, store.EventUsage, "rag")
 	return messages, nil
 }

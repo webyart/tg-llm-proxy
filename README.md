@@ -193,7 +193,7 @@ Reverse proxy или туннель должен перенаправлять п
 | `/persona` | inline-меню и текущая роль; `assistant`, `coder`, `writer`, `translator`, `custom <текст>`, `reset` |
 | `/stats` | сообщения, токены и ошибки текущего чата |
 | `/whoami` | `user_id`, `chat_id` и состояние allowlist |
-| `/admin` | агрегированные метрики; только для `TELEGRAM_ADMIN_USERS` |
+| `/admin` | агрегированные метрики, включая RAG/calculator usage; только для `TELEGRAM_ADMIN_USERS` |
 
 ## Проверка проекта
 
@@ -281,7 +281,7 @@ Maintenance чисто останавливает бота, копирует `/d
 .\scripts\notify-telegram.ps1 -Message 'tg-llm-proxy: test'
 ```
 
-Монитор проверяет bot и Whisper, называет сервис в failure state, отправляет алерт при сбое и восстановлении, повторяет неизменный failure не чаще одного раза в 6 часов и не перезапускает контейнер автоматически. Во время штатного clean-stop backup проверка пропускается. Дополнительно `watch_runtime.ps1` анализирует последние 10 минут логов: три ошибки Telegram или STRATA вызывают алерт, повтор подавляется на 6 часов. Состояния хранятся в `data/monitoring/container-alert.json` и `runtime-alert.json`. Уведомления используют существующие token/allowlist, не принимают token аргументом и не печатают его.
+Монитор проверяет bot и Whisper, называет сервис в failure state, отправляет алерт при сбое и восстановлении, повторяет неизменный failure не чаще одного раза в 6 часов и не перезапускает контейнер автоматически. Во время штатного clean-stop backup проверка пропускается. Дополнительно `watch_runtime.ps1` анализирует последние 10 минут логов: три ошибки Telegram, STRATA или Whisper/transcription вызывают алерт, повтор подавляется на 6 часов. Состояния хранятся в `data/monitoring/container-alert.json` и `runtime-alert.json`. Уведомления используют существующие token/allowlist, не принимают token аргументом и не печатают его.
 
 Speaches CPU/CUDA images закреплены по digest. Для NVIDIA GPU после настройки Docker GPU support используйте:
 

@@ -193,7 +193,7 @@ Reverse proxy или туннель должен перенаправлять п
 | `/persona` | inline-меню и текущая роль; `assistant`, `coder`, `writer`, `translator`, `custom <текст>`, `reset` |
 | `/stats` | сообщения, токены и ошибки текущего чата |
 | `/whoami` | `user_id`, `chat_id` и состояние allowlist |
-| `/admin` | агрегированные метрики, включая RAG/calculator usage; только для `TELEGRAM_ADMIN_USERS` |
+| `/admin` | агрегаты, RAG/calculator usage, активные model calls и busy chats; только для `TELEGRAM_ADMIN_USERS` |
 
 ## Проверка проекта
 

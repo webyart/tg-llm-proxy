@@ -1,3 +1,10 @@
+# tg-llm-proxy v1.13.0
+
+## Extended admin release
+
+- `/admin` дополнительно показывает активные model calls и число чатов, удерживающих per-chat lock. Используются atomic counter и существующий ratelimit.Locks, без текстов чатов.
+- Счётчик освобождается после каждого вызова, включая tool rounds и ошибки; BusyChats проверен отдельным concurrency-тестом.
+
 # tg-llm-proxy v1.12.1
 
 ## Reliability and observability patch

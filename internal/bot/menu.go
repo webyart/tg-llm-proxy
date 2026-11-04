@@ -21,6 +21,9 @@ func (d *Dispatcher) menuMarkup() models.InlineKeyboardMarkup {
 		{"Persona", CommandPersona},
 		{"Статус", CommandStatus},
 		{"История", CommandHistory},
+		{"Экспорт", CommandExport},
+		{"Поиск", CommandSearch},
+		{"Удаление", CommandDelete},
 		{"Сброс", CommandReset},
 		{"Пропуск", CommandSkip},
 		{"Возобновить", CommandUnskip},
@@ -58,6 +61,9 @@ func (d *Dispatcher) callbackText(data string) (string, bool) {
 			return "/" + name, true
 		}
 		return "", false
+	}
+	if data == "delete:confirm" || data == "delete:cancel" {
+		return "/delete " + strings.TrimPrefix(data, "delete:"), true
 	}
 	if strings.HasPrefix(data, "persona:") {
 		action := strings.TrimPrefix(data, "persona:")

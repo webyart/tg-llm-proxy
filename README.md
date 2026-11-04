@@ -7,8 +7,8 @@ Telegram-бот-прокси между пользователями и лока
 
 ## Возможности
 
-- 15 команд: `/start`, `/help`, `/ping`, `/status`, `/ask`, `/reset`, `/skip`, `/unskip`, `/history`, `/model`, `/stream`, `/persona`, `/stats`, `/whoami`, `/admin`.
-- `/start` и `/help` открывают inline-меню с 15 кнопками команд; callback проходит через тот же Dispatcher.
+- 18 команд: `/start`, `/help`, `/ping`, `/status`, `/ask`, `/reset`, `/skip`, `/unskip`, `/history`, `/export`, `/search`, `/delete`, `/model`, `/stream`, `/persona`, `/stats`, `/whoami`, `/admin`.
+- `/start` и `/help` открывают inline-меню с 18 кнопками команд; callback проходит через тот же Dispatcher.
 - Альбомы до 10 фото JPEG/PNG, текстовые документы UTF-8 до 64 КиБ, voice, аудиофайлы и video notes через Whisper. Лимиты настраиваются `MEDIA_MAX_MB` и `SPEECH_MAX_SECONDS`.
 - История и независимый контекст каждого чата в SQLite/WAL.
 - Allowlist по Telegram user id, rate limiting, per-chat lock и ограничение параллельных запросов к модели.
@@ -180,6 +180,9 @@ Reverse proxy или туннель должен перенаправлять п
 | `/skip` | запретить recovery текущего unanswered-вопроса |
 | `/unskip` | снять suppression без немедленного вызова модели |
 | `/history [N]` | последние N сообщений, по умолчанию 5 |
+| `/export [md\|json]` | экспорт истории Telegram-документом |
+| `/search <текст>` | поиск по истории без вызова модели |
+| `/delete` | удаление истории после Confirm/Cancel; настройки сохраняются |
 | `/model [check]` | модель, endpoint и проверка доступности |
 | `/model select <id>` | выбрать модель текущего чата из `GET /models` |
 | `/model reset` | вернуть модель по умолчанию `STRATA_MODEL` |

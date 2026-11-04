@@ -1,3 +1,12 @@
+# tg-llm-proxy v1.9.0
+
+## History release
+
+- `/export [md|json]` выгружает до 10000 сообщений как Telegram document из памяти, с лимитом 5 МиБ и без записи на диск.
+- `/search <текст>` выполняет Unicode case-insensitive поиск по последним 10000 сообщениям и возвращает до 20 совпадений.
+- `/delete` показывает отдельное Confirm/Cancel меню. Только подтверждение удаляет историю текущего чата; model/persona/streaming настройки и другие чаты сохраняются.
+- Команды проходят allowlist/lock и не вызывают модель. Добавлены store, bot и end-to-end integration проверки.
+
 # tg-llm-proxy v1.8.0
 
 ## Media release

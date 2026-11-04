@@ -32,6 +32,9 @@ const (
 	CommandStats   = "stats"
 	CommandWhoAmI  = "whoami"
 	CommandAdmin   = "admin"
+	CommandExport  = "export"
+	CommandSearch  = "search"
+	CommandDelete  = "delete"
 )
 
 // answer to be exact («Модель не ответила за 60 с, попробуй ещё раз»).
@@ -65,6 +68,9 @@ func (d *Dispatcher) registry() []Command {
 		{Name: CommandSkip, Description: "не восстанавливать текущий unanswered-вопрос при старте", Handler: d.skip},
 		{Name: CommandUnskip, Description: "снова разрешить recovery ранее пропущенного вопроса", Handler: d.unskip},
 		{Name: CommandHistory, Description: "последние N сообщений (по умолчанию 5)", Handler: d.history},
+		{Name: CommandExport, Description: "экспорт истории: md или json", Handler: d.exportHistory},
+		{Name: CommandSearch, Description: "поиск по истории: /search <текст>", NeedsArgs: true, Handler: d.searchHistory},
+		{Name: CommandDelete, Description: "удаление истории с подтверждением", Handler: d.deleteHistory},
 		{Name: CommandStats, Description: "счётчики чата: сообщения, токены, ошибки", Handler: d.stats},
 		{Name: CommandWhoAmI, Description: "user_id и chat_id для TELEGRAM_ALLOWED_USERS", AlwaysAllowed: true, Handler: d.whoami},
 		{Name: CommandAdmin, Description: "агрегированные метрики для администратора", Handler: d.admin},

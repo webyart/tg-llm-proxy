@@ -284,7 +284,7 @@ func TestAskOverFakeTelegram(t *testing.T) {
 		Workers:     2, // WithWorkers, parallelism of one chat
 	}, storedOffset(t, db))
 
-	waitFor(t, "setMyCommands reached the fake Telegram", func() bool { return len(tgAPI.Commands()) == 15 })
+	waitFor(t, "setMyCommands reached the fake Telegram", func() bool { return len(tgAPI.Commands()) == 18 })
 	var menu = tgAPI.Commands()
 	var i = 0
 	var sawAsk = false
@@ -425,7 +425,7 @@ func TestDeniedUser(t *testing.T) {
 	var run = startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{
 		ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second,
 	}, 0)
-	waitFor(t, "the menu of is published", func() bool { return len(tgAPI.Commands()) == 15 })
+	waitFor(t, "the menu of is published", func() bool { return len(tgAPI.Commands()) == 18 })
 
 	tgAPI.PushText(61, chatID, outsider, "/whoami")
 	waitFor(t, "/whoami answered the stranger", func() bool { return tgAPI.Calls("sendMessage") >= 1 })
@@ -473,7 +473,7 @@ func TestOffsetSurvivesRestart(t *testing.T) {
 	var first = startBot(t, ctx, cfg, firstDB, newClient(t, cfg, strata), tgAPI, bot.Options{
 		ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second,
 	}, storedOffset(t, firstDB))
-	waitFor(t, "the first run published the menu", func() bool { return len(tgAPI.Commands()) == 15 })
+	waitFor(t, "the first run published the menu", func() bool { return len(tgAPI.Commands()) == 18 })
 
 	tgAPI.PushText(71, chatID, userID, "/ask первый")
 	waitFor(t, "the first run answered", func() bool { return tgAPI.Calls("sendMessage") >= 1 })
@@ -547,7 +547,7 @@ func TestLongAnswerIsEscapedThenChunked(t *testing.T) {
 	var run = startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{
 		ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second,
 	}, 0)
-	waitFor(t, "the menu of is published", func() bool { return len(tgAPI.Commands()) == 15 })
+	waitFor(t, "the menu of is published", func() bool { return len(tgAPI.Commands()) == 18 })
 
 	tgAPI.PushText(81, chatID, userID, "/ask длинный ответ")
 	waitFor(t, "the long answer left the bot in pieces", func() bool { return tgAPI.Calls("sendMessage") >= 2 })
@@ -642,7 +642,7 @@ func TestTelegram429SleepsInItsChat(t *testing.T) {
 	var run = startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{
 		ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second,
 	}, 0)
-	waitFor(t, "the menu of is published", func() bool { return len(tgAPI.Commands()) == 15 })
+	waitFor(t, "the menu of is published", func() bool { return len(tgAPI.Commands()) == 18 })
 
 	tgAPI.FailNext("sendMessage", 429, "Too Many Requests: retry after 1", 1)
 	var began = time.Now()
@@ -684,7 +684,7 @@ func TestTelegramErrorIsSanitized(t *testing.T) {
 	var run = startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{
 		ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second,
 	}, 0)
-	waitFor(t, "the menu of is published", func() bool { return len(tgAPI.Commands()) == 15 })
+	waitFor(t, "the menu of is published", func() bool { return len(tgAPI.Commands()) == 18 })
 
 	tgAPI.FailNext("sendMessage", 403, "Forbidden: bot was blocked by the user", 0)
 	tgAPI.PushText(101, chatID, userID, "/ask после блокировки")
@@ -722,7 +722,7 @@ func TestBotNameSuffixNeedsGetMe(t *testing.T) {
 	var run = startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{
 		ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second,
 	}, 0)
-	waitFor(t, "the menu of is published", func() bool { return len(tgAPI.Commands()) == 15 })
+	waitFor(t, "the menu of is published", func() bool { return len(tgAPI.Commands()) == 18 })
 
 	// п.2 still lowercases the name.
 	tgAPI.PushText(111, chatID, userID, "/Ping@FakeBot")
@@ -767,7 +767,7 @@ func TestRedeliveredUpdateIsAnsweredOnce(t *testing.T) {
 	var first = startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{
 		ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second, Workers: 2,
 	}, storedOffset(t, db))
-	waitFor(t, "the first run published the menu", func() bool { return len(tgAPI.Commands()) == 15 })
+	waitFor(t, "the first run published the menu", func() bool { return len(tgAPI.Commands()) == 18 })
 
 	tgAPI.PushText(91, chatID, userID, "/ask один")
 	waitFor(t, "the question was answered", func() bool { return tgAPI.Calls("sendMessage") >= 1 })
@@ -833,7 +833,7 @@ func TestStreamedAnswerEditsOneMessage(t *testing.T) {
 	var run = startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{
 		ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second, Workers: 2,
 	}, storedOffset(t, db))
-	waitFor(t, "the menu of", func() bool { return len(tgAPI.Commands()) == 15 })
+	waitFor(t, "the menu of", func() bool { return len(tgAPI.Commands()) == 18 })
 
 	tgAPI.PushText(140, chatID, userID, "/ask один")
 	// The last rewrite is what the user keeps on screen, so that is the moment the test waits for — the
@@ -1088,7 +1088,7 @@ func TestParseErrorFallsBackToPlainMessage(t *testing.T) {
 	cfg := integrationEnv(t, path, strata.BaseURL(), map[string]string{"PARSE_MODE": "MarkdownV2"})
 	db := openStore(t, path)
 	run := startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second}, 0)
-	waitFor(t, "menu published", func() bool { return len(tgAPI.Commands()) == 15 })
+	waitFor(t, "menu published", func() bool { return len(tgAPI.Commands()) == 18 })
 
 	tgAPI.FailNext("sendMessage", 400, "Bad Request: can't parse entities: Character '.' is reserved", 0)
 	tgAPI.PushText(190, chatID, userID, "/ask проверка пунктуации")
@@ -1122,7 +1122,7 @@ func TestStreamFinalEditParseErrorFallsBackOnSameMessage(t *testing.T) {
 	})
 	db := openStore(t, path)
 	run := startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second}, 0)
-	waitFor(t, "menu published", func() bool { return len(tgAPI.Commands()) == 15 })
+	waitFor(t, "menu published", func() bool { return len(tgAPI.Commands()) == 18 })
 
 	tgAPI.FailNext("editMessageText", 400, "Bad Request: can't parse entities: Character '.' is reserved", 0)
 	tgAPI.PushText(191, chatID, userID, "/ask длинный ответ")

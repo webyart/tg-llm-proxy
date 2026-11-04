@@ -1,3 +1,11 @@
+# tg-llm-proxy v1.12.0
+
+## Operations release
+
+- `watch_container.ps1` проверяет bot и Whisper, с attribution `whisper-<state>` и без автоматического restart. Изолированный acceptance покрывает bot failure/suppression/recovery и Whisper failure без реальных уведомлений.
+- Speaches CPU и CUDA images закреплены по digest. Production по-прежнему использует CPU.
+- `compose.cuda.yaml` добавляет optional NVIDIA GPU mode: `docker compose -f docker-compose.yml -f compose.cuda.yaml up -d`. Физический GPU acceptance не заявлен.
+
 # tg-llm-proxy v1.11.0
 
 ## Safe tools release

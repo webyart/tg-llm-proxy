@@ -29,7 +29,12 @@ try {
     $recovery = & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'watch_container.ps1') -StatePath $state -NoNotify
     if ($LASTEXITCODE -ne 0) { throw 'healthy production container must produce monitor exit 0' }
     if (($recovery | Out-String) -notmatch 'recovered state=healthy') { throw 'failure-to-healthy transition was not recognized' }
-    Write-Output 'test-container-monitor: GREEN — failure exit, repeat suppression, and recovery verified; no notifications sent'
+
+    $whisperState = Join-Path $work 'whisper-state.json'
+    $whisperFailure = & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'watch_container.ps1') -WhisperContainerId $name -StatePath $whisperState -NoNotify
+    if ($LASTEXITCODE -ne 1) { throw 'created Whisper fixture must produce monitor exit 1' }
+    if (($whisperFailure | Out-String) -notmatch 'state=whisper-created') { throw 'Whisper failure was not attributed to its service' }
+    Write-Output 'test-container-monitor: GREEN — bot and Whisper failure/suppression/recovery verified; no notifications sent'
 }
 catch {
     $failure = $_

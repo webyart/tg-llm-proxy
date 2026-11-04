@@ -78,6 +78,7 @@ type Telegram struct {
 	pending     []models.Update
 	delivered   []models.Update // confirmed by an offset — Replay puts them back
 	sent        []SentMessage
+	documents   []SentDocument
 	edits       []SentEdit   // the rewrites of
 	sentIDs     map[int]bool // the ids this fake handed out: an edit of an id it never gave is a wiring bug
 	calls       map[string]int
@@ -335,6 +336,8 @@ func (s *Telegram) handle(w http.ResponseWriter, r *http.Request) {
 		writeOK(w, file.File)
 	case "sendMessage":
 		s.handleSendMessage(w, r)
+	case "sendDocument":
+		s.handleSendDocument(w, r)
 	case "editMessageText":
 		s.handleEditMessageText(w, r)
 	case "setMyCommands":

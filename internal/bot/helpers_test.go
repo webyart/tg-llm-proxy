@@ -22,10 +22,11 @@ type sentMessage struct {
 }
 
 type fakeReplier struct {
-	mu    sync.Mutex
-	sent  []sentMessage
-	menus []tgmodels.InlineKeyboardMarkup
-	err   error
+	mu        sync.Mutex
+	sent      []sentMessage
+	menus     []tgmodels.InlineKeyboardMarkup
+	documents []Document
+	err       error
 }
 
 func (f *fakeReplier) SendMenu(ctx context.Context, chatID int64, text string, markup tgmodels.InlineKeyboardMarkup) error {
@@ -42,6 +43,13 @@ func (f *fakeReplier) Send(ctx context.Context, chatID int64, text string) error
 		return f.err
 	}
 	f.sent = append(f.sent, sentMessage{chatID: chatID, text: text})
+	return nil
+}
+
+func (f *fakeReplier) SendDocument(ctx context.Context, chatID int64, document Document) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.documents = append(f.documents, document)
 	return nil
 }
 

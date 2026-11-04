@@ -15,6 +15,7 @@ param(
     [ValidateRange(1, 168)]
     [int]$RepeatAlertHours = 6,
     [string]$LogPath,
+    [string]$WhisperLogPath,
     [string]$StatePath,
     [switch]$NoNotify
 )
@@ -42,6 +43,7 @@ function Send-Alert([string]$Text) {
     return $LASTEXITCODE -eq 0
 }
 
+$whisperText = ''
 if ($LogPath) {
     if (-not (Test-Path -LiteralPath $LogPath -PathType Leaf)) {
         Write-Output "watch_runtime: log fixture does not exist: $LogPath"
@@ -57,18 +59,35 @@ else {
             Write-Output 'watch_runtime: docker logs failed'
             exit 1
         }
+        $whisperText = docker compose logs --since "${WindowMinutes}m" whisper 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) {
+            Write-Output 'watch_runtime: Whisper docker logs failed'
+            exit 1
+        }
     }
     finally {
         Pop-Location
     }
 }
+if ($WhisperLogPath) {
+    if (-not (Test-Path -LiteralPath $WhisperLogPath -PathType Leaf)) {
+        Write-Output "watch_runtime: Whisper log fixture does not exist: $WhisperLogPath"
+        exit 1
+    }
+    $whisperText = Get-Content -LiteralPath $WhisperLogPath -Raw
+}
+if ($null -eq $text) { $text = '' }
+if ($null -eq $whisperText) { $whisperText = '' }
 
 $telegramCount = @([regex]::Matches($text, 'the telegram library failed')).Count
 $modelCount = @([regex]::Matches($text, 'the model did not answer')).Count
+$transcriptionCount = @([regex]::Matches($text, '(?:speech|voice) transcription failed')).Count
+$whisperCount = @([regex]::Matches($whisperText, ' - "[A-Z]+ [^"]+" 5\d\d')).Count + @([regex]::Matches($whisperText, '"level":"ERROR"|level=ERROR')).Count
 $now = [DateTime]::UtcNow
 $state = [ordered]@{
     telegram_alerted_at = if ($previous -and $previous.telegram_alerted_at) { [string]$previous.telegram_alerted_at } else { '' }
     model_alerted_at = if ($previous -and $previous.model_alerted_at) { [string]$previous.model_alerted_at } else { '' }
+    whisper_alerted_at = if ($previous -and $previous.whisper_alerted_at) { [string]$previous.whisper_alerted_at } else { '' }
 }
 
 function Save-State {
@@ -79,7 +98,8 @@ function Save-State {
 
 foreach ($category in @(
     @{ Name = 'telegram'; Count = $telegramCount; Message = "tg-llm-proxy repeated Telegram errors: $telegramCount in the last $WindowMinutes minutes" },
-    @{ Name = 'model'; Count = $modelCount; Message = "tg-llm-proxy repeated STRATA errors: $modelCount in the last $WindowMinutes minutes" }
+    @{ Name = 'model'; Count = $modelCount; Message = "tg-llm-proxy repeated STRATA errors: $modelCount in the last $WindowMinutes minutes" },
+    @{ Name = 'whisper'; Count = $transcriptionCount + $whisperCount; Message = "tg-llm-proxy repeated Whisper/transcription errors: $($transcriptionCount + $whisperCount) in the last $WindowMinutes minutes" }
 )) {
     if ($category.Count -lt $Threshold) { continue }
     $key = "$($category.Name)_alerted_at"
@@ -96,5 +116,5 @@ foreach ($category in @(
     Write-Output "watch_runtime: $($category.Name) alert sent ($($category.Count) errors)"
 }
 Save-State
-Write-Output "watch_runtime: OK — telegram_errors=$telegramCount model_errors=$modelCount threshold=$Threshold window=${WindowMinutes}m"
+Write-Output "watch_runtime: OK — telegram_errors=$telegramCount model_errors=$modelCount transcription_errors=$transcriptionCount whisper_errors=$whisperCount threshold=$Threshold window=${WindowMinutes}m"
 exit 0

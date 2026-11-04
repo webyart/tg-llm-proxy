@@ -41,6 +41,10 @@ func TestDocumentCanBeAddedRetrievedAndDeleted(t *testing.T) {
 	if !foundContext {
 		t.Fatalf("RAG context missing: %+v", req.Messages)
 	}
+	uses, err := store.CountEvents(context.Background(), db, store.EventUsage)
+	if err != nil || uses != 1 {
+		t.Fatalf("RAG usage events=%d err=%v", uses, err)
+	}
 	if err := dispatch(t, d, testEvent(210, 11, 1602, "/docs delete 1")); err != nil {
 		t.Fatalf("delete: %v", err)
 	}

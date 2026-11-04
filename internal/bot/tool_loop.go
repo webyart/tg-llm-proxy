@@ -5,11 +5,12 @@ import (
 	"errors"
 
 	"bot/internal/model"
+	"bot/internal/store"
 )
 
 const calculatorRoundLimit = 2
 
-func (d *Dispatcher) completeWithTools(ctx context.Context, req model.Request, streamer model.Streamer, session *streamSession) (model.Response, error) {
+func (d *Dispatcher) completeWithTools(ctx context.Context, userID int64, req model.Request, streamer model.Streamer, session *streamSession) (model.Response, error) {
 	req.Tools = calculatorTools(d.deps.Cfg.ToolsEnabled)
 	for round := 0; round < calculatorRoundLimit; round++ {
 		var resp model.Response
@@ -36,6 +37,7 @@ func (d *Dispatcher) completeWithTools(ctx context.Context, req model.Request, s
 				return model.Response{}, err
 			}
 			messages = append(messages, model.Message{Role: model.RoleTool, ToolCallID: call.ID, ToolName: call.Name, Content: result})
+			d.logEvent(ctx, userID, store.EventUsage, "calculator")
 		}
 		req.Messages = messages
 	}

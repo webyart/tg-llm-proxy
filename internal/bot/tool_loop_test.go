@@ -48,6 +48,10 @@ func TestCalculatorToolLoopStoresOnlyFinalAnswer(t *testing.T) {
 	if err != nil || len(rows) != 2 || rows[1].Content != "Результат: 8" {
 		t.Fatalf("stored rows=%+v err=%v", rows, err)
 	}
+	uses, err := store.CountEvents(context.Background(), db, store.EventUsage)
+	if err != nil || uses != 1 {
+		t.Fatalf("calculator usage events=%d err=%v", uses, err)
+	}
 }
 
 func TestCalculatorValidation(t *testing.T) {

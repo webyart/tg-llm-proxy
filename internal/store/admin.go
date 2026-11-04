@@ -7,14 +7,17 @@ import (
 )
 
 type AdminSummary struct {
-	Chats       int64
-	Messages    int64
-	Events      int64
-	Commands    int64
-	ModelErrors int64
-	Timeouts    int64
-	Pending     int
-	LastActive  string
+	Chats          int64
+	Messages       int64
+	Events         int64
+	Commands       int64
+	ModelErrors    int64
+	Timeouts       int64
+	Pending        int
+	RAGUses        int64
+	CalculatorUses int64
+	RAGDocuments   int64
+	LastActive     string
 }
 
 func AdminStats(ctx context.Context, db *sql.DB) (AdminSummary, error) {
@@ -29,6 +32,9 @@ func AdminStats(ctx context.Context, db *sql.DB) (AdminSummary, error) {
 		{&stats.Commands, `SELECT COUNT(*) FROM events WHERE kind = 'command'`},
 		{&stats.ModelErrors, `SELECT COUNT(*) FROM events WHERE kind = 'model_error'`},
 		{&stats.Timeouts, `SELECT COUNT(*) FROM events WHERE kind = 'timeout'`},
+		{&stats.RAGUses, `SELECT COUNT(*) FROM events WHERE kind = 'usage' AND detail = 'rag'`},
+		{&stats.CalculatorUses, `SELECT COUNT(*) FROM events WHERE kind = 'usage' AND detail = 'calculator'`},
+		{&stats.RAGDocuments, `SELECT COUNT(*) FROM rag_documents`},
 	}
 	for _, query := range queries {
 		if err := db.QueryRowContext(ctx, query.sql).Scan(query.target); err != nil {

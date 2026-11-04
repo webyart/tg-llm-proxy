@@ -1,3 +1,11 @@
+# tg-llm-proxy v1.12.1
+
+## Reliability and observability patch
+
+- `watch_runtime.ps1` учитывает bot transcription failures и Whisper HTTP 5xx/ERROR с отдельным threshold/suppression. Добавлен scratch acceptance для Whisper alerts и пустых логов.
+- `/admin` показывает RAG retrieval, calculator calls и текущее число RAG-документов. Usage events содержат только `rag`/`calculator`, без запросов или содержимого документов.
+- Store/bot/monitor tests обновлены; длинные streamed ответы и calculator проверяются на production перед тегом.
+
 # tg-llm-proxy v1.12.0
 
 ## Operations release

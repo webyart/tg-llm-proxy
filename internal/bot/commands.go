@@ -548,7 +548,7 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 	if err != nil {
 		return err
 	}
-	messages, err = d.addRAGContext(replyCtx, ev.ChatID, text, messages)
+	messages, err = d.addRAGContext(replyCtx, ev.ChatID, ev.UserID, text, messages)
 	if err != nil {
 		return err
 	}
@@ -603,7 +603,7 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 	if canStream {
 		session = d.newStreamSession(replyCtx, ev.ChatID, sender)
 	}
-	resp, modelErr = d.completeWithTools(replyCtx, model.Request{Model: selectedModel, Messages: messages}, streamer, session)
+	resp, modelErr = d.completeWithTools(replyCtx, ev.UserID, model.Request{Model: selectedModel, Messages: messages}, streamer, session)
 	if modelErr != nil {
 		if errors.Is(modelErr, context.Canceled) {
 			return modelErr // the process is stopping : nothing to promise the user

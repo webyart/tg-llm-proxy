@@ -338,7 +338,11 @@ docker compose up -d
 
 ## Эксплуатационные ограничения
 
-- Production использует long polling; живой HTTPS webhook acceptance не выполнен.
+- Production использует long polling; живой HTTPS webhook acceptance не выполнен, для него нужен внешний HTTPS-хост или туннель с тем же path.
+- GitHub Actions на этом аккаунте не запускается: job не стартует с формулировкой «your account is locked due to a billing issue». Основной
+  CI выполняется локально через `scripts/verify.ps1`, что и подтверждает каждую версию перед публикацией; workflow в `.github/workflows` остаётся
+  запасным и начнёт работать сразу после разблокировки аккаунта.
+- Репозиторий опубликован в GitHub (`origin`) и GitLab (`gitlab`), ветки `main` и `develop` синхронны.
 - Стриминг реализован и проверен вживую, но остаётся opt-in. Точный 120-секундный 429 и реальный idle-stall покрыты только тестами.
 - Startup recovery рассматривает только самый новый visible unanswered-вопрос чата и ограничен `RECOVERY_MAX_AGE_HOURS` (24 часа по умолчанию).
 - Host-side `/healthz` на Docker Desktop может давать WARN при healthy in-container healthcheck.

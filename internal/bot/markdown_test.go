@@ -44,3 +44,19 @@ func TestMarkdownV2EscapesInsideFormatting(t *testing.T) {
 		t.Fatalf("an internal placeholder leaked into the answer: %q", got)
 	}
 }
+
+func TestMarkdownV2EscapesUnderscoresInsideIdentifiers(t *testing.T) {
+	raw := "TELEGRAM_ALLOWED_USERS; read_url calls: 0; web_search calls: 0"
+	want := `TELEGRAM\_ALLOWED\_USERS; read\_url calls: 0; web\_search calls: 0`
+	if got := Escape(raw, ParseMarkdownV2); got != want {
+		t.Fatalf("identifiers must stay literal:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestMarkdownV2PreservesItalicAfterIdentifier(t *testing.T) {
+	got := Escape("read_url и _курсив_", ParseMarkdownV2)
+	want := `read\_url и _курсив_`
+	if got != want {
+		t.Fatalf("italic after an identifier must be preserved: got %q, want %q", got, want)
+	}
+}

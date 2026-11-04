@@ -1,3 +1,11 @@
+# tg-llm-proxy v1.17.3
+
+## Tool round completion patch
+
+- После двух tool rounds бот больше не завершается ошибкой `model exceeded the tool round limit`: выполняется один финальный model request с пустым списком tools, чтобы модель собрала ответ из уже полученных результатов.
+- Regression-тест проверяет два tool round, третий запрос без tools и доставку финального ответа вместо model error.
+- На скриншоте `Timed out` относится к 90-секундному ожиданию фонового `verify` в интерфейсе, а не к тестам или боту: сам pipeline позже завершился GREEN.
+
 # tg-llm-proxy v1.17.2
 
 ## Streaming tools patch

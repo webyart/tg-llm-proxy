@@ -199,6 +199,10 @@ func (d *Dispatcher) dispatchEvent(ctx context.Context, ev Event, acknowledge bo
 	if ev.Attachment != nil || ev.UnsupportedMedia {
 		cmd = d.index[CommandAsk]
 		commandArg = strings.TrimSpace(ev.Text)
+		if ev.Attachment != nil && ev.Attachment.Kind == AttachmentDocument && isCommand && name == CommandDocs && strings.HasPrefix(arg, "add") {
+			cmd = d.index[CommandDocs]
+			commandArg = arg
+		}
 	}
 	ev.Question = ""
 	if cmd.UsesModel {

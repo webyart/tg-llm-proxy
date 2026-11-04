@@ -7,13 +7,13 @@ Telegram-бот-прокси между пользователями и лока
 
 ## Возможности
 
-- 18 команд: `/start`, `/help`, `/ping`, `/status`, `/ask`, `/reset`, `/skip`, `/unskip`, `/history`, `/export`, `/search`, `/delete`, `/model`, `/stream`, `/persona`, `/stats`, `/whoami`, `/admin`.
-- `/start` и `/help` открывают inline-меню с 18 кнопками команд; callback проходит через тот же Dispatcher.
+- 19 команд: `/start`, `/help`, `/ping`, `/status`, `/ask`, `/reset`, `/skip`, `/unskip`, `/history`, `/docs`, `/export`, `/search`, `/delete`, `/model`, `/stream`, `/persona`, `/stats`, `/whoami`, `/admin`.
+- `/start` и `/help` открывают inline-меню с 19 кнопками команд; callback проходит через тот же Dispatcher.
 - Альбомы до 10 фото JPEG/PNG, текстовые документы UTF-8 до 64 КиБ, voice, аудиофайлы и video notes через Whisper. Лимиты настраиваются `MEDIA_MAX_MB` и `SPEECH_MAX_SECONDS`.
 - История и независимый контекст каждого чата в SQLite/WAL.
 - Allowlist по Telegram user id, rate limiting, per-chat lock и ограничение параллельных запросов к модели.
 - Обработка timeout/5xx/пустых ответов, Telegram 429 и восстановление незавершённых вопросов после рестарта.
-- Версионированные миграции через `schema_migrations` (текущая схема — версия 4).
+- Версионированные миграции через `schema_migrations` (текущая схема — версия 5).
 - Backup/restore, ротация копий и age-based retention с dry-run по умолчанию.
 - Безопасное восстановление Docker named volume.
 - Docker multi-stage build, non-root runtime, healthcheck, build commit и ротация логов 10 MB × 5.
@@ -180,6 +180,7 @@ Reverse proxy или туннель должен перенаправлять п
 | `/skip` | запретить recovery текущего unanswered-вопроса |
 | `/unskip` | снять suppression без немедленного вызова модели |
 | `/history [N]` | последние N сообщений, по умолчанию 5 |
+| `/docs` | локальная RAG-база; файл с `/docs add`, delete и clear |
 | `/export [md\|json]` | экспорт истории Telegram-документом |
 | `/search <текст>` | поиск по истории без вызова модели |
 | `/delete` | удаление истории после Confirm/Cancel; настройки сохраняются |
@@ -317,7 +318,7 @@ docker compose up -d
 - Startup recovery рассматривает только самый новый visible unanswered-вопрос чата и ограничен `RECOVERY_MAX_AGE_HOURS` (24 часа по умолчанию).
 - Host-side `/healthz` на Docker Desktop может давать WARN при healthy in-container healthcheck.
 - macOS использует те же Unix-ветки, что и проверенный Linux; физический Mac acceptance не выполнялся.
-- Содержимое фото и документов не сохраняется: незавершённый запрос после рестарта требует повторной отправки файла. Voice хранится как текст после транскрипции. Аудиофайлы, видео и RAG пока не поддерживаются.
+- Содержимое одноразовых фото и документов не сохраняется. `/docs add` явно сохраняет текст для RAG; retrieval lexical, без embeddings. Voice хранится как текст после транскрипции.
 
 ## Безопасность
 

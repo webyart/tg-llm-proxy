@@ -93,7 +93,7 @@ docker compose logs -f bot
 
 ## Конфигурация
 
-Полный список из 36 ENV-строк и их значения по умолчанию находится в `.env.example`. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
+Полный список из 39 ENV-строк и их значения по умолчанию находится в `.env.example`. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
 
 ### Основные параметры
 
@@ -115,6 +115,9 @@ docker compose logs -f bot
 | `CONTEXT_MESSAGES` | 20 | размер окна истории |
 | `MAX_CONTEXT_CHARS` | 8000 | бюджет текста истории |
 | `MAX_INPUT_CHARS` | 4000 | ограничение входного текста |
+| `RAG_MAX_DOCUMENTS` | 20 | документов на чат; замена по имени не увеличивает usage |
+| `RAG_RESULT_LIMIT` | 3 | максимум фрагментов в model request |
+| `RAG_MAX_CONTEXT_CHARS` | 2000 | общий бюджет RAG-фрагментов |
 | `RATE_LIMIT_PER_MINUTE` | 20 | лимит запросов пользователя к модели |
 | `MAX_CONCURRENT_MODEL_REQUESTS` | 2 | параллельные вызовы модели |
 | `TOOLS_ENABLED` | true | безопасный calculator через function calling |
@@ -340,6 +343,6 @@ docker compose up -d
 
 ## Документы
 
-- `.env.example` — все настройки (36) с комментариями.
+- `.env.example` — все настройки (39) с комментариями.
 - `RELEASE_NOTES.md` — состав release candidate и результаты проверок.
 - `PLAN.md` — локальный подробный план и история изменений (gitignored).

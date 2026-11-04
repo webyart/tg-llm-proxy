@@ -544,11 +544,12 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 	}
 
 	documentTruncated := false
+	var ragSources []string
 	var messages, err = d.BuildMessages(replyCtx, ev.ChatID)
 	if err != nil {
 		return err
 	}
-	messages, err = d.addRAGContext(replyCtx, ev.ChatID, ev.UserID, text, messages)
+	messages, ragSources, err = d.addRAGContext(replyCtx, ev.ChatID, ev.UserID, text, messages)
 	if err != nil {
 		return err
 	}
@@ -698,6 +699,9 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 	)
 
 	var full = resp.Content + "\n\n" + latencyLine(resp, selectedModel)
+	if len(ragSources) > 0 {
+		full += "\n\nИсточники: " + strings.Join(ragSources, ", ")
+	}
 	if documentTruncated {
 		full = "Внимание: документ был обрезан по MAX_CONTEXT_CHARS перед отправкой модели.\n\n" + full
 	}

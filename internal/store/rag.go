@@ -17,7 +17,7 @@ const (
 	RAGChunkOverlap  = 100
 )
 
-var ErrRAGDocumentLimit = errors.New("the chat already has 20 RAG documents")
+var ErrRAGDocumentLimit = errors.New("the chat reached its RAG document limit")
 
 type RAGDocument struct {
 	ID        int64
@@ -36,6 +36,13 @@ type RAGChunk struct {
 }
 
 func PutRAGDocument(ctx context.Context, db *sql.DB, chatID int64, userID int64, name string, content string) (int64, int, error) {
+	return PutRAGDocumentWithLimit(ctx, db, chatID, userID, name, content, RAGDocumentLimit)
+}
+
+func PutRAGDocumentWithLimit(ctx context.Context, db *sql.DB, chatID int64, userID int64, name string, content string, maxDocuments int) (int64, int, error) {
+	if maxDocuments <= 0 {
+		return 0, 0, errors.New("RAG document limit must be positive")
+	}
 	name = strings.TrimSpace(name)
 	if name == "" || !utf8.ValidString(content) || strings.TrimSpace(content) == "" || strings.ContainsRune(content, 0) {
 		return 0, 0, errors.New("RAG document needs a name and valid non-empty UTF-8 text")
@@ -59,7 +66,7 @@ func PutRAGDocument(ctx context.Context, db *sql.DB, chatID int64, userID int64,
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM rag_documents WHERE chat_id = ?`, chatID).Scan(&count); err != nil {
 			return 0, 0, err
 		}
-		if count >= RAGDocumentLimit {
+		if count >= maxDocuments {
 			return 0, 0, ErrRAGDocumentLimit
 		}
 	}
@@ -165,12 +172,19 @@ func SearchRAGChunks(ctx context.Context, db *sql.DB, chatID int64, query string
 			return nil, err
 		}
 		text := strings.ToLower(row.Content)
+		name := strings.ToLower(row.Name)
 		score := 0
 		for _, term := range terms {
-			score += strings.Count(text, term)
+			occurrences := strings.Count(text, term)
+			if occurrences > 0 {
+				score += 10 + min(occurrences, 3)
+			}
+			if strings.Contains(name, term) {
+				score += 4
+			}
 		}
 		if len([]rune(phrase)) >= 2 && strings.Contains(text, phrase) {
-			score += 5
+			score += 25
 		}
 		if score > 0 {
 			row.Score = score

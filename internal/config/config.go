@@ -40,6 +40,9 @@ var Env = []string{
 	"CONTEXT_MESSAGES",
 	"MAX_CONTEXT_CHARS",
 	"MAX_INPUT_CHARS",
+	"RAG_MAX_DOCUMENTS",
+	"RAG_RESULT_LIMIT",
+	"RAG_MAX_CONTEXT_CHARS",
 	"SYSTEM_PROMPT",
 	"TELEGRAM_ALLOWED_USERS",
 	"TELEGRAM_ADMIN_USERS",
@@ -85,6 +88,9 @@ const DefaultRecoveryMaxAgeHours = int64(24)
 const DefaultContextMessages = int64(20)
 const DefaultMaxContextChars = int64(8000)
 const DefaultMaxInputChars = int64(4000)
+const DefaultRAGMaxDocuments = int64(20)
+const DefaultRAGResultLimit = int64(3)
+const DefaultRAGMaxContextChars = int64(2000)
 const DefaultRateLimit = int64(20)
 const DefaultConcurrent = int64(2)
 const DefaultMaxChunk = int64(3500)
@@ -145,6 +151,9 @@ type Config struct {
 	ContextMessages       int64
 	MaxContextChars       int64
 	MaxInputChars         int64
+	RAGMaxDocuments       int64
+	RAGResultLimit        int64
+	RAGMaxContextChars    int64
 	SystemPrompt          string
 	UserIDs               []int64
 	AdminIDs              []int64
@@ -556,6 +565,15 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	var input, badInput = Num(raw, "MAX_INPUT_CHARS", DefaultMaxInputChars, 64, 262144)
 	cfg.MaxInputChars = input
 	problems = Push(problems, badInput)
+	ragDocuments, badRAGDocuments := Num(raw, "RAG_MAX_DOCUMENTS", DefaultRAGMaxDocuments, 1, 100)
+	cfg.RAGMaxDocuments = ragDocuments
+	problems = Push(problems, badRAGDocuments)
+	ragResults, badRAGResults := Num(raw, "RAG_RESULT_LIMIT", DefaultRAGResultLimit, 1, 10)
+	cfg.RAGResultLimit = ragResults
+	problems = Push(problems, badRAGResults)
+	ragContext, badRAGContext := Num(raw, "RAG_MAX_CONTEXT_CHARS", DefaultRAGMaxContextChars, 256, 20000)
+	cfg.RAGMaxContextChars = ragContext
+	problems = Push(problems, badRAGContext)
 
 	var prompt = strings.TrimSpace(raw["SYSTEM_PROMPT"])
 	if prompt == "" {

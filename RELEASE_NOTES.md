@@ -1,3 +1,12 @@
+# tg-llm-proxy v1.14.0
+
+## RAG tuning release
+
+- `RAG_MAX_DOCUMENTS=20`, `RAG_RESULT_LIMIT=3`, `RAG_MAX_CONTEXT_CHARS=2000` настраивают размер базы и retrieval.
+- Ranking учитывает coverage терминов, ограниченную frequency, exact phrase и имя источника. Замена документа разрешена даже при достигнутом лимите.
+- Ответ с RAG получает отдельный краткий `Источники:` список без дублей. Semantic retrieval не добавлен: embeddings endpoint недоступен.
+- Добавлены config/store/bot regression-тесты; миграций нет.
+
 # tg-llm-proxy v1.13.0
 
 ## Extended admin release

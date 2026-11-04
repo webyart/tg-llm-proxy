@@ -171,3 +171,53 @@ func TestRAGRankingHandlesCyrillicQueries(t *testing.T) {
 		t.Fatalf("single cyrillic term search=%+v err=%v", single, err)
 	}
 }
+
+func TestRAGRankingIncludesNameOnlyMatch(t *testing.T) {
+	ctx := context.Background()
+	db, err := OpenMemory(ctx, "rag_name_only_"+t.Name())
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	defer db.Close()
+	if _, _, err := PutRAGDocument(ctx, db, 106, 11, "needle-reference.txt", "entirely unrelated body"); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	chunks, err := SearchRAGChunks(ctx, db, 106, "needle", 4, 2000)
+	if err != nil || len(chunks) != 1 || chunks[0].Name != "needle-reference.txt" || chunks[0].Score <= 0 {
+		t.Fatalf("name-only search=%+v err=%v", chunks, err)
+	}
+}
+
+func TestRAGSearchDropsNonmatchingCandidates(t *testing.T) {
+	ctx := context.Background()
+	db, err := OpenMemory(ctx, "rag_candidates_"+t.Name())
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	defer db.Close()
+	docs := []string{
+		"content.txt", "needle in content",
+		"irrelevant.txt", "unrelated body",
+		"needle-notes.txt", "another unrelated body",
+	}
+	for i := 0; i < len(docs); i += 2 {
+		if _, _, err := PutRAGDocument(ctx, db, 107, 11, docs[i], docs[i+1]); err != nil {
+			t.Fatalf("Put %s: %v", docs[i], err)
+		}
+	}
+	corpus, err := readRAGSearchCorpus(ctx, db, 107, lexicalTerms("needle"))
+	if err != nil {
+		t.Fatalf("readRAGSearchCorpus: %v", err)
+	}
+	if corpus.chunkCount != 3 || corpus.totalTokens != 8 || corpus.documents["needle"] != 1 {
+		t.Fatalf("corpus statistics=%+v", corpus)
+	}
+	if len(corpus.candidates) != 2 {
+		t.Fatalf("retained candidates=%+v", corpus.candidates)
+	}
+	for _, candidate := range corpus.candidates {
+		if candidate.Name == "irrelevant.txt" {
+			t.Fatalf("nonmatching chunk was retained: %+v", candidate)
+		}
+	}
+}

@@ -616,7 +616,7 @@ func TestStreamViewsFitOneMessage(t *testing.T) {
 	}
 }
 
-func TestStreamRotatesToNextMessageBeforeCompletion(t *testing.T) {
+func TestStreamRotatesToNextMessageOnCadenceTick(t *testing.T) {
 	cfg := streamConfig(t, map[string]string{"MAX_MESSAGE_CHUNK": "64", "PARSE_MODE": "MarkdownV2"})
 	r := &streamReplier{}
 	d := newTestDispatcher(t, cfg, nil, r, testStore(t))
@@ -624,6 +624,12 @@ func TestStreamRotatesToNextMessageBeforeCompletion(t *testing.T) {
 	s.answer.WriteString(strings.Repeat("слово ", 30))
 
 	s.refresh()
+	posted := r.postCount()
+	s.refresh()
+	if r.postCount() != posted {
+		t.Fatalf("overflow rotated before the next cadence tick: %d messages, want %d", r.postCount(), posted)
+	}
+	s.lastEdit = time.Now().Add(-s.interval - time.Millisecond)
 	s.refresh()
 	if r.postCount() < 2 {
 		t.Fatalf("overflow created %d messages before completion, want at least 2", r.postCount())
@@ -636,5 +642,15 @@ func TestStreamRotatesToNextMessageBeforeCompletion(t *testing.T) {
 	}
 	if r.editCount() < 2 {
 		t.Fatalf("finalization edited only %d messages, want all existing parts", r.editCount())
+	}
+	want := d.chunksOf(s.answer.String())
+	edits := r.editTexts()
+	if len(edits) < len(want) {
+		t.Fatalf("finalization produced %d edits for %d chunks", len(edits), len(want))
+	}
+	for i, chunk := range want {
+		if got := edits[len(edits)-len(want)+i]; got != chunk {
+			t.Errorf("final chunk %d = %q, want %q", i, got, chunk)
+		}
 	}
 }

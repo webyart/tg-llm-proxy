@@ -169,96 +169,123 @@ func ClearRAGDocuments(ctx context.Context, db *sql.DB, chatID int64) (int64, er
 	return count, err
 }
 
+type ragScoredChunk struct {
+	RAGChunk
+	id        int
+	tokens    int
+	occurred  map[string]int
+	lowerName string
+	lowerText string
+	nameHits  int
+	rankScore float64
+}
+
+type ragSearchCorpus struct {
+	candidates  []ragScoredChunk
+	documents   map[string]int
+	chunkCount  int
+	totalTokens int
+}
+
+func readRAGSearchCorpus(ctx context.Context, db *sql.DB, chatID int64, terms []string) (ragSearchCorpus, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT c.id, c.document_id, d.name, c.content FROM rag_chunks c
+		JOIN rag_documents d ON d.id = c.document_id WHERE c.chat_id = ? ORDER BY c.id DESC LIMIT 10000`, chatID)
+	if err != nil {
+		return ragSearchCorpus{}, err
+	}
+	defer rows.Close()
+	corpus := ragSearchCorpus{documents: map[string]int{}}
+	for rows.Next() {
+		var row ragScoredChunk
+		if err := rows.Scan(&row.id, &row.DocumentID, &row.Name, &row.Content); err != nil {
+			return ragSearchCorpus{}, err
+		}
+		row.lowerText = strings.ToLower(row.Content)
+		row.lowerName = strings.ToLower(row.Name)
+		for _, term := range terms {
+			occurrences := strings.Count(row.lowerText, term)
+			if occurrences > 0 {
+				if row.occurred == nil {
+					row.occurred = map[string]int{}
+				}
+				row.occurred[term] = occurrences
+				corpus.documents[term]++
+			}
+			if strings.Contains(row.lowerName, term) {
+				row.nameHits++
+			}
+		}
+		corpus.chunkCount++
+		row.tokens = lexicalTokenCount(row.Content)
+		corpus.totalTokens += row.tokens
+		if len(row.occurred) > 0 || row.nameHits > 0 {
+			corpus.candidates = append(corpus.candidates, row)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return ragSearchCorpus{}, err
+	}
+	return corpus, nil
+}
+
+func lexicalTokenCount(text string) int {
+	count := 0
+	inToken := false
+	for _, r := range text {
+		isToken := unicode.IsLetter(r) || unicode.IsNumber(r)
+		if isToken && !inToken {
+			count++
+		}
+		inToken = isToken
+	}
+	return count
+}
+
 // SearchRAGChunks ranks the chunks of one chat with BM25-lite scoring computed in Go: the chat has
 // no FTS index (modernc.org/sqlite builds without FTS5), so the corpus is read, counted and scored
 // here. Every query term contributes idf × a saturating term-frequency factor, where the denominator
 // carries the chunk length, so a chunk gains from the terms it covers rather than from the amount of
-// text it holds. The document-frequency pass needs the whole corpus, which is why candidates are kept
-// and scored after the rows are read.
+// text it holds. The document-frequency and average-length pass needs the whole corpus, but only
+// content or name matches remain candidates for scoring.
 func SearchRAGChunks(ctx context.Context, db *sql.DB, chatID int64, query string, limit int, maxRunes int) ([]RAGChunk, error) {
 	terms := lexicalTerms(query)
 	if len(terms) == 0 || limit <= 0 || maxRunes <= 0 {
 		return []RAGChunk{}, nil
 	}
-	rows, err := db.QueryContext(ctx, `
-		SELECT c.id, c.document_id, d.name, c.content FROM rag_chunks c
-		JOIN rag_documents d ON d.id = c.document_id WHERE c.chat_id = ? ORDER BY c.id DESC LIMIT 10000`, chatID)
+	corpus, err := readRAGSearchCorpus(ctx, db, chatID, terms)
 	if err != nil {
 		return nil, err
 	}
-	type scoredChunk struct {
-		RAGChunk
-		id        int
-		tokens    int
-		occurred  map[string]int
-		rankScore float64
-	}
-	scored := []scoredChunk{}
-	documents := map[string]int{}
-	chunkCount := 0
-	totalTokens := 0
-	for rows.Next() {
-		var row scoredChunk
-		if err := rows.Scan(&row.id, &row.DocumentID, &row.Name, &row.Content); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		text := strings.ToLower(row.Content)
-		for _, term := range terms {
-			occurrences := strings.Count(text, term)
-			if occurrences == 0 {
-				continue
-			}
-			if row.occurred == nil {
-				row.occurred = map[string]int{}
-			}
-			row.occurred[term] = occurrences
-			documents[term]++
-		}
-		chunkCount++
-		row.tokens = len(lexicalTokens(row.Content))
-		totalTokens += row.tokens
-		scored = append(scored, row)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, err
-	}
-	rows.Close()
-	if chunkCount == 0 {
+	if corpus.chunkCount == 0 {
 		return []RAGChunk{}, nil
 	}
-	averageTokens := float64(totalTokens) / float64(chunkCount)
+	averageTokens := float64(corpus.totalTokens) / float64(corpus.chunkCount)
 	if averageTokens < 1 {
 		averageTokens = 1
 	}
 	phrase := strings.ToLower(strings.TrimSpace(query))
 	phraseLong := len([]rune(phrase)) >= 2
+	scored := corpus.candidates
 	matched := scored[:0]
 	for index := range scored {
 		row := &scored[index]
-		name := strings.ToLower(row.Name)
-		text := strings.ToLower(row.Content)
 		lengthNormalizer := ragK1 * ((1 - ragB) + ragB*float64(row.tokens)/averageTokens)
 		// The terms slice, not the occurred map, fixes the summation order, so equal chunks get
 		// bit-identical scores and the id tie-break decides instead of float noise.
 		core := 0.0
-		nameHits := 0
 		for _, term := range terms {
-			if strings.Contains(name, term) {
-				nameHits++
-			}
 			frequency := float64(row.occurred[term])
 			if frequency == 0 {
 				continue
 			}
-			idf := 1 + math.Log(float64(chunkCount)/float64(documents[term]))
+			idf := 1 + math.Log(float64(corpus.chunkCount)/float64(corpus.documents[term]))
 			core += idf * frequency * (ragK1 + 1) / (frequency + lengthNormalizer)
 		}
 		score := core * ragScoreScale * ragLengthPrior(row.tokens, averageTokens)
 		score += ragDistinctTermBonus * float64(len(row.occurred))
-		score += ragNameTermBonus * float64(nameHits)
-		if phraseLong && strings.Contains(text, phrase) {
+		score += ragNameTermBonus * float64(row.nameHits)
+		if phraseLong && strings.Contains(row.lowerText, phrase) {
 			score += ragPhraseBonus
 		}
 		if score <= 0 {

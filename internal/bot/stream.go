@@ -193,11 +193,11 @@ func (s *streamSession) progress(info model.StreamInfo) {
 		s.post()
 		return
 	}
-	s.rotate()
 	if !s.due() {
 		s.skipped++
 		return
 	}
+	s.rotate()
 	var elapsed = time.Since(s.start).Round(time.Second)
 	if s.answer.Len() == 0 {
 		s.edit(s.ctx, fmt.Sprintf(msgStreamThinking, info.ReasoningRunes, elapsed), false)
@@ -216,11 +216,11 @@ func (s *streamSession) refresh() {
 		s.post()
 		return
 	}
-	s.rotate()
 	if !s.due() {
 		s.skipped++
 		return
 	}
+	s.rotate()
 	s.edit(s.ctx, s.partialView(), false)
 }
 

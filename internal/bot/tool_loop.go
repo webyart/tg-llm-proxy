@@ -53,5 +53,6 @@ func (d *Dispatcher) completeWithTools(ctx context.Context, userID int64, req mo
 		}
 		req.Messages = messages
 	}
-	return model.Response{}, errors.New("model exceeded the tool round limit")
+	req.Tools = nil
+	return d.callModel(ctx, req, streamer, session)
 }

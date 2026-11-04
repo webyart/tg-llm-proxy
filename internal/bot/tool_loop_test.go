@@ -211,19 +211,20 @@ func TestToolLoopLimits(t *testing.T) {
 		}
 	})
 
-	t.Run("rounds", func(t *testing.T) {
+	t.Run("final answer after the round limit", func(t *testing.T) {
 		call := model.ToolCall{Name: "calculator", Arguments: `{"expression":"1+1"}`}
 		m := &scriptedToolModel{responses: []model.Response{
 			{ToolCalls: []model.ToolCall{call}},
 			{ToolCalls: []model.ToolCall{call}},
+			{Content: "Итог: 2"},
 		}}
 		d := newTestDispatcher(t, testConfig(t, nil), m, nil, nil)
-		_, err := d.completeWithTools(context.Background(), 11, model.Request{}, nil, nil)
-		if err == nil || err.Error() != "model exceeded the tool round limit" {
-			t.Fatalf("completeWithTools error=%v", err)
+		resp, err := d.completeWithTools(context.Background(), 11, model.Request{}, nil, nil)
+		if err != nil || resp.Content != "Итог: 2" {
+			t.Fatalf("completeWithTools response=%+v error=%v", resp, err)
 		}
-		if len(m.requests) != 2 {
-			t.Fatalf("model requests=%d", len(m.requests))
+		if len(m.requests) != 3 || len(m.requests[2].Tools) != 0 {
+			t.Fatalf("final request must disable tools, requests=%+v", m.requests)
 		}
 	})
 }

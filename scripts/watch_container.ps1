@@ -1,6 +1,6 @@
 #Requires -Version 7
 <#
-watch_container.ps1 — inspect container health and repeated runtime errors, notify on failure/recovery, and suppress repeated alerts.
+watch_container.ps1 — inspect bot and Whisper health and repeated runtime errors, notify on failure/recovery, and suppress repeated alerts.
 
 The script never restarts the container. It skips checks while db_volume_maintenance.ps1 owns its work directory.
 State lives outside Git in data/monitoring/container-alert.json. A changed failure alerts immediately; an unchanged
@@ -17,6 +17,7 @@ Exit: 0 — healthy or maintenance is in progress; 1 — unhealthy, Docker unava
 [CmdletBinding()]
 param(
     [string]$ContainerId,
+    [string]$WhisperContainerId,
     [string]$StatePath,
     [ValidateRange(1, 168)]
     [int]$RepeatAlertHours = 6,
@@ -67,6 +68,19 @@ else {
         if ($cid -and -not $status) {
             $status = (docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' $cid 2>&1 | Out-String).Trim()
             if ($LASTEXITCODE -ne 0) { $status = 'container-inspect-failed' }
+        }
+        if (-not $ContainerId -and $status -in @('healthy', 'running')) {
+            $whisperId = $WhisperContainerId
+            if (-not $whisperId) {
+                $whisperId = (docker compose ps -q whisper 2>&1 | Out-String).Trim()
+                if ($LASTEXITCODE -ne 0) { $status = 'whisper-compose-unavailable' }
+                elseif (-not $whisperId) { $status = 'whisper-missing' }
+            }
+            if ($whisperId -and $status -in @('healthy', 'running')) {
+                $whisperStatus = (docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' $whisperId 2>&1 | Out-String).Trim()
+                if ($LASTEXITCODE -ne 0) { $status = 'whisper-inspect-failed' }
+                elseif ($whisperStatus -notin @('healthy', 'running')) { $status = "whisper-$whisperStatus" }
+            }
         }
     }
     finally {

@@ -390,7 +390,6 @@ func (s *streamSession) brokenView(reason string) string {
 	return strings.TrimRight(string(runes), " \t\n\r") + notice
 }
 
-// handler names the budget AND the number of symbols that did arrive.
 func (s *streamSession) sawText() bool { return s.answer.Len() > 0 }
 
 func (s *streamSession) stats() (edits int, skipped int, failures int) {

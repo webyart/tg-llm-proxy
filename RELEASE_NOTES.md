@@ -1,3 +1,11 @@
+# tg-llm-proxy v1.17.2
+
+## Streaming tools patch
+
+- Модель может отправить текст-преамбулу перед `tool_calls` в streaming mode: это больше не приводит к `tool call followed streamed answer text`. Tool round выполняется, промежуточный текст остаётся в streamed-сообщении до финального ответа.
+- Двухраундовый regression-тест подтверждает выполнение calculator после streamed-преамбулы, сохранение assistant/tool messages для второго model request и ровно один usage event.
+- Живой acceptance выявил ошибку на включённых `read_url` и `web_search`; их повторная проверка в Telegram ещё предстоит.
+
 # tg-llm-proxy v1.17.1
 
 ## Markdown formatting patch

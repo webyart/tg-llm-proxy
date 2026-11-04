@@ -132,26 +132,44 @@ func TestURLReaderToolLoopDispatch(t *testing.T) {
 	}
 }
 
-func TestToolCallAfterStreamedTextAbortsBeforeExecution(t *testing.T) {
+type scriptedStreamToolModel struct {
+	scriptedToolModel
+}
+
+func (m *scriptedStreamToolModel) Stream(ctx context.Context, req model.Request, handler model.StreamHandler) (model.Response, error) {
+	resp, err := m.Complete(ctx, req)
+	if err == nil && resp.Content != "" {
+		if deltaErr := handler.Delta(resp.Content); deltaErr != nil {
+			return resp, deltaErr
+		}
+	}
+	return resp, err
+}
+
+func TestToolCallAfterStreamedTextExecutesAndReturnsFinalAnswer(t *testing.T) {
 	cfg := testConfig(t, map[string]string{
 		"STREAMING_ENABLED":      "true",
 		"TELEGRAM_ALLOWED_USERS": "11",
 		"TOOLS_ENABLED":          "true",
 	})
-	m := &fakeStreamModel{
-		response: model.Response{ToolCalls: []model.ToolCall{{ID: "call-1", Name: "calculator", Arguments: `{"expression":"1+1"}`}}},
-		steps:    []streamStep{{content: "ответ уже пошёл"}},
-	}
+	m := &scriptedStreamToolModel{scriptedToolModel: scriptedToolModel{responses: []model.Response{
+		{Content: "Выполняю запрос.", ToolCalls: []model.ToolCall{{ID: "call-1", Name: "calculator", Arguments: `{"expression":"1+1"}`}}, Attempts: 1},
+		{Content: "Результат: 2", Attempts: 1},
+	}}}
 	db := testStore(t)
 	d := newTestDispatcher(t, cfg, m, &fakeReplier{}, db)
 	session := d.newStreamSession(context.Background(), 203, &streamReplier{})
-	_, err := d.completeWithTools(context.Background(), 11, model.Request{Messages: []model.Message{{Role: model.RoleUser, Content: "сочти"}}}, m, session)
-	if err == nil || err.Error() != "tool call followed streamed answer text" {
-		t.Fatalf("completeWithTools error=%v", err)
+	resp, err := d.completeWithTools(context.Background(), 11, model.Request{Messages: []model.Message{{Role: model.RoleUser, Content: "сочти"}}}, m, session)
+	if err != nil || resp.Content != "Результат: 2" || len(m.requests) != 2 {
+		t.Fatalf("completeWithTools response=%+v requests=%d err=%v", resp, len(m.requests), err)
+	}
+	assistant := m.requests[1].Messages[len(m.requests[1].Messages)-2]
+	if assistant.Role != model.RoleAssistant || assistant.Content != "Выполняю запрос." || len(assistant.ToolCalls) != 1 {
+		t.Fatalf("assistant tool message=%+v", assistant)
 	}
 	uses, countErr := store.CountEvents(context.Background(), db, store.EventUsage)
-	if countErr != nil || uses != 0 {
-		t.Fatalf("a rejected tool round must log no usage, events=%d err=%v", uses, countErr)
+	if countErr != nil || uses != 1 {
+		t.Fatalf("tool usage events=%d err=%v", uses, countErr)
 	}
 }
 

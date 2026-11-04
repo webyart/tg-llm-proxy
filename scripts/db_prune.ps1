@@ -22,6 +22,8 @@ param(
     [int]$EventsDays = 90,
     [ValidateRange(0, 100000)]
     [int]$MessagesDays = 0,
+    [ValidateRange(0, 100000)]
+    [int]$RAGDays = 0,
     [string]$Backup,
     [switch]$Apply,
     [switch]$Rebuild
@@ -89,7 +91,7 @@ try {
         }
     }
 
-    $toolArgs = @('-source', $Source, '-backup', $Backup, '-events-days', $EventsDays, '-messages-days', $MessagesDays)
+    $toolArgs = @('-source', $Source, '-backup', $Backup, '-events-days', $EventsDays, '-messages-days', $MessagesDays, '-rag-days', $RAGDays)
     if ($Apply) { $toolArgs += '-apply' }
     & $exe @toolArgs
     $code = $LASTEXITCODE

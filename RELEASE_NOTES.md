@@ -1,3 +1,11 @@
+# tg-llm-proxy v1.15.0
+
+## Data management release
+
+- `/docs export` выгружает документы и chunks текущего чата как JSON Telegram document из памяти, с лимитом 5 МиБ.
+- `db_prune.ps1 -RAGDays N` добавляет age-based RAG retention; `0` по умолчанию отключает удаление. `-Apply` по-прежнему требует новый проверенный backup и выполняет cascade cleanup chunks.
+- Добавлены store/bot/integration и CLI проверки; dry-run не удаляет данные.
+
 # tg-llm-proxy v1.14.0
 
 ## RAG tuning release

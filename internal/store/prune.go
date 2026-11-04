@@ -12,17 +12,19 @@ import (
 type PruneOptions struct {
 	EventsBefore   time.Time
 	MessagesBefore time.Time
+	RAGBefore      time.Time
 }
 
 // PruneReport counts candidate rows for a dry-run or rows deleted by Prune.
 type PruneReport struct {
-	Events   int64
-	Messages int64
+	Events       int64
+	Messages     int64
+	RAGDocuments int64
 }
 
 func (options PruneOptions) validate() error {
-	if options.EventsBefore.IsZero() && options.MessagesBefore.IsZero() {
-		return fmt.Errorf("store.Prune needs an events cutoff, a messages cutoff, or both")
+	if options.EventsBefore.IsZero() && options.MessagesBefore.IsZero() && options.RAGBefore.IsZero() {
+		return fmt.Errorf("store.Prune needs an events, messages, or RAG cutoff")
 	}
 	return nil
 }
@@ -56,6 +58,11 @@ func pruneCounts(ctx context.Context, db pruneQuerier, options PruneOptions) (Pr
 			return PruneReport{}, fmt.Errorf("store.Prune messages count: %w", err)
 		}
 	}
+	if !options.RAGBefore.IsZero() {
+		if err = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM rag_documents WHERE created_at < ?`, pruneTimestamp(options.RAGBefore)).Scan(&report.RAGDocuments); err != nil {
+			return PruneReport{}, fmt.Errorf("store.Prune RAG count: %w", err)
+		}
+	}
 	return report, nil
 }
 
@@ -81,6 +88,11 @@ func Prune(ctx context.Context, db *sql.DB, options PruneOptions) (PruneReport, 
 	if !options.MessagesBefore.IsZero() {
 		if _, err = tx.ExecContext(ctx, `DELETE FROM messages WHERE created_at < ?`, pruneTimestamp(options.MessagesBefore)); err != nil {
 			return PruneReport{}, fmt.Errorf("store.Prune delete messages: %w", err)
+		}
+	}
+	if !options.RAGBefore.IsZero() {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM rag_documents WHERE created_at < ?`, pruneTimestamp(options.RAGBefore)); err != nil {
+			return PruneReport{}, fmt.Errorf("store.Prune delete RAG documents: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {

@@ -34,7 +34,12 @@ func TestRAGDocumentEndToEnd(t *testing.T) {
 	if !strings.Contains(body, "Релевантные фрагменты") || !strings.Contains(body, "aurora.txt") || !strings.Contains(body, "Проект Aurora") {
 		t.Fatalf("RAG request=%s", body)
 	}
-	tgAPI.PushText(603, chatID, userID, "/docs delete 1")
+	tgAPI.PushText(604, chatID, userID, "/docs export")
+	waitFor(t, "RAG export", func() bool { return len(tgAPI.Documents()) == 1 })
+	if !strings.Contains(string(tgAPI.Documents()[0].Data), "Проект Aurora") {
+		t.Fatal("RAG export lost document content")
+	}
+	tgAPI.PushText(605, chatID, userID, "/docs delete 1")
 	waitFor(t, "RAG delete", func() bool { return strings.Contains(tgAPI.Joined(), "Документ id=1 удалён") })
 	docs, err := store.ListRAGDocuments(context.Background(), db, chatID)
 	if err != nil || len(docs) != 0 || strata.ChatCalls() != 1 {

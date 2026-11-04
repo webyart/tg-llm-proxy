@@ -50,6 +50,7 @@ var Env = []string{
 	"MAX_CONCURRENT_MODEL_REQUESTS",
 	"PROXY_FREE_TEXT",
 	"TOOLS_ENABLED",
+	"URL_READER_ENABLED",
 	"MAX_MESSAGE_CHUNK",
 	"PARSE_MODE",
 	"HEALTH_PORT",
@@ -162,6 +163,7 @@ type Config struct {
 	MaxConcurrentRequests int64
 	FreeText              bool
 	ToolsEnabled          bool
+	URLReaderEnabled      bool
 	MaxMessageChunk       int64
 	ParseMode             string
 	HealthPort            int64
@@ -604,6 +606,9 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	tools, badTools := Flag(raw, "TOOLS_ENABLED", DefaultToolsEnabled)
 	cfg.ToolsEnabled = tools
 	problems = Push(problems, badTools)
+	urlReader, badURLReader := Flag(raw, "URL_READER_ENABLED", false)
+	cfg.URLReaderEnabled = urlReader
+	problems = Push(problems, badURLReader)
 
 	var chunk, badChunk = Num(raw, "MAX_MESSAGE_CHUNK", DefaultMaxChunk, 64, ChunkMax)
 	cfg.MaxMessageChunk = chunk

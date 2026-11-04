@@ -44,6 +44,7 @@ func PrintConfig(cfg config.Config) {
 	fmt.Println("MEDIA_MAX_MB", cfg.MediaMaxBytes/(1<<20), "")
 	fmt.Println("SPEECH_MAX_SECONDS", cfg.SpeechMaxSeconds, "")
 	fmt.Println("TOOLS_ENABLED", cfg.ToolsEnabled, "")
+	fmt.Println("URL_READER_ENABLED", cfg.URLReaderEnabled, "")
 	fmt.Println("RAG_MAX_DOCUMENTS", cfg.RAGMaxDocuments, "")
 	fmt.Println("RAG_RESULT_LIMIT", cfg.RAGResultLimit, "")
 	fmt.Println("RAG_MAX_CONTEXT_CHARS", cfg.RAGMaxContextChars, "")

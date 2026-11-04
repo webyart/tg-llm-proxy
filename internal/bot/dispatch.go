@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"bot/internal/config"
@@ -86,14 +87,15 @@ type Deps struct {
 }
 
 type Dispatcher struct {
-	deps        Deps
-	commands    []Command
-	index       map[string]Command
-	created     time.Time
-	startOffset int64
-	offsetMu    sync.Mutex
-	albumMu     sync.Mutex
-	albums      map[albumKey]*albumBatch
+	deps                Deps
+	commands            []Command
+	index               map[string]Command
+	created             time.Time
+	startOffset         int64
+	offsetMu            sync.Mutex
+	albumMu             sync.Mutex
+	albums              map[albumKey]*albumBatch
+	activeModelRequests atomic.Int64
 }
 
 // logger. A missing model client or replier is a wiring mistake and stays visible as one.

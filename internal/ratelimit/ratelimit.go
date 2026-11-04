@@ -120,6 +120,22 @@ func (l *Locks) WithChat(ctx context.Context, chatID int64, fn func() error) err
 }
 
 // Held — reports whether some goroutine currently owns the chat lock (the concurrency test of
+func (l *Locks) BusyChats() int {
+	l.mu.Lock()
+	chats := make([]int64, 0, len(l.chats))
+	for chatID := range l.chats {
+		chats = append(chats, chatID)
+	}
+	l.mu.Unlock()
+	busy := 0
+	for _, chatID := range chats {
+		if l.Held(chatID) {
+			busy++
+		}
+	}
+	return busy
+}
+
 func (l *Locks) Held(chatID int64) bool {
 	var ch = l.forChat(chatID)
 	select {

@@ -30,6 +30,7 @@ func (d *Dispatcher) admin(ctx context.Context, ev Event, arg string) error {
 		fmt.Sprintf("Событий: %d (команд %d, model_error %d, timeout %d)", stats.Events, stats.Commands, stats.ModelErrors, stats.Timeouts),
 		fmt.Sprintf("Вопросов без ответа: %d", stats.Pending),
 		fmt.Sprintf("RAG retrieval: %d; calculator calls: %d; документов в RAG: %d", stats.RAGUses, stats.CalculatorUses, stats.RAGDocuments),
+		fmt.Sprintf("Активных model calls: %d; чатов с lock: %d", d.activeModelRequests.Load(), d.deps.Locks.BusyChats()),
 		fmt.Sprintf("Размер SQLite: %.1f KiB", float64(info.Size())/1024),
 		"Модель по умолчанию: " + d.deps.Cfg.StrataModel,
 		"Uptime: " + timeSince(d.created),

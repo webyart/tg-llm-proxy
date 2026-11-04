@@ -10,16 +10,19 @@ import (
 
 const calculatorRoundLimit = 2
 
+func (d *Dispatcher) callModel(ctx context.Context, req model.Request, streamer model.Streamer, session *streamSession) (model.Response, error) {
+	d.activeModelRequests.Add(1)
+	defer d.activeModelRequests.Add(-1)
+	if session != nil {
+		return streamer.Stream(ctx, req, session.handler())
+	}
+	return d.deps.Model.Complete(ctx, req)
+}
+
 func (d *Dispatcher) completeWithTools(ctx context.Context, userID int64, req model.Request, streamer model.Streamer, session *streamSession) (model.Response, error) {
 	req.Tools = calculatorTools(d.deps.Cfg.ToolsEnabled)
 	for round := 0; round < calculatorRoundLimit; round++ {
-		var resp model.Response
-		var err error
-		if session != nil {
-			resp, err = streamer.Stream(ctx, req, session.handler())
-		} else {
-			resp, err = d.deps.Model.Complete(ctx, req)
-		}
+		resp, err := d.callModel(ctx, req, streamer, session)
 		if err != nil || len(resp.ToolCalls) == 0 {
 			return resp, err
 		}

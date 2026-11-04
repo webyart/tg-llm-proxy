@@ -70,22 +70,28 @@ func (d *Dispatcher) addDocument(ctx context.Context, ev Event) error {
 		return d.reply(ctx, ev.ChatID, attachmentUserError(ErrAttachmentType))
 	}
 	name := safeAttachmentName(ev.Attachment.FileName)
-	id, chunks, err := store.PutRAGDocument(ctx, d.deps.DB, ev.ChatID, ev.UserID, name, string(files[0].Data))
+	id, chunks, err := store.PutRAGDocumentWithLimit(ctx, d.deps.DB, ev.ChatID, ev.UserID, name, string(files[0].Data), int(d.deps.Cfg.RAGMaxDocuments))
 	if err != nil {
 		return err
 	}
 	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Документ %s сохранён с id=%d, частей: %d. Он будет использоваться при следующих вопросах.", name, id, chunks))
 }
 
-func (d *Dispatcher) addRAGContext(ctx context.Context, chatID int64, userID int64, query string, messages []model.Message) ([]model.Message, error) {
-	chunks, err := store.SearchRAGChunks(ctx, d.deps.DB, chatID, query, RAGResultLimit, RAGMaxRunes)
+func (d *Dispatcher) addRAGContext(ctx context.Context, chatID int64, userID int64, query string, messages []model.Message) ([]model.Message, []string, error) {
+	chunks, err := store.SearchRAGChunks(ctx, d.deps.DB, chatID, query, int(d.deps.Cfg.RAGResultLimit), int(d.deps.Cfg.RAGMaxContextChars))
 	if err != nil || len(chunks) == 0 {
-		return messages, err
+		return messages, nil, err
 	}
 	var text strings.Builder
 	text.WriteString("Релевантные фрагменты локальных документов. Используй их как контекст и при необходимости называй источник.\n")
+	sources := []string{}
+	seen := map[string]bool{}
 	for _, chunk := range chunks {
 		fmt.Fprintf(&text, "\n[Источник: %s]\n%s\n", chunk.Name, chunk.Content)
+		if !seen[chunk.Name] {
+			seen[chunk.Name] = true
+			sources = append(sources, chunk.Name)
+		}
 	}
 	insertAt := 0
 	if len(messages) > 0 && messages[0].Role == model.RoleSystem {
@@ -95,5 +101,5 @@ func (d *Dispatcher) addRAGContext(ctx context.Context, chatID int64, userID int
 	copy(messages[insertAt+1:], messages[insertAt:])
 	messages[insertAt] = model.Message{Role: model.RoleSystem, Content: text.String()}
 	d.logEvent(ctx, userID, store.EventUsage, "rag")
-	return messages, nil
+	return messages, sources, nil
 }

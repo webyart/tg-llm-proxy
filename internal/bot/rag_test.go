@@ -41,6 +41,9 @@ func TestDocumentCanBeAddedRetrievedAndDeleted(t *testing.T) {
 	if !foundContext {
 		t.Fatalf("RAG context missing: %+v", req.Messages)
 	}
+	if !strings.Contains(r.joined(), "Источники: aurora.txt") {
+		t.Fatalf("RAG sources missing from reply: %q", r.joined())
+	}
 	uses, err := store.CountEvents(context.Background(), db, store.EventUsage)
 	if err != nil || uses != 1 {
 		t.Fatalf("RAG usage events=%d err=%v", uses, err)

@@ -185,7 +185,7 @@ Reverse proxy или туннель должен перенаправлять п
 | `/skip` | запретить recovery текущего unanswered-вопроса |
 | `/unskip` | снять suppression без немедленного вызова модели |
 | `/history [N]` | последние N сообщений, по умолчанию 5 |
-| `/docs` | локальная RAG-база; файл с `/docs add`, delete и clear |
+| `/docs` | RAG-база; `/docs add`, `export`, `delete <id>` и `clear` |
 | `/export [md\|json]` | экспорт истории Telegram-документом |
 | `/search <текст>` | поиск по истории без вызова модели |
 | `/delete` | удаление истории после Confirm/Cancel; настройки сохраняются |
@@ -250,9 +250,10 @@ Backup использует `VACUUM INTO` и не останавливает wri
 .\scripts\db_prune.ps1 -EventsDays 90 -Apply
 .\scripts\db_prune.ps1 -EventsDays 0 -MessagesDays 365
 .\scripts\db_prune.ps1 -EventsDays 0 -MessagesDays 365 -Apply
+.\scripts\db_prune.ps1 -EventsDays 0 -RAGDays 180 -Apply
 ```
 
-По умолчанию выбираются только события старше 90 дней; удаление сообщений отключено. Каждый `-Apply` сначала создаёт и проверяет новый backup, а после удаления повторяет `integrity_check`.
+По умолчанию выбираются только события старше 90 дней; удаление сообщений и RAG-документов отключено. Каждый `-Apply` сначала создаёт и проверяет новый backup, а после удаления повторяет `integrity_check`.
 
 ### Backup production Docker volume и расписание
 

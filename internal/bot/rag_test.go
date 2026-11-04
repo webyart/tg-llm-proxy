@@ -28,6 +28,12 @@ func TestDocumentCanBeAddedRetrievedAndDeleted(t *testing.T) {
 	if err != nil || len(docs) != 1 {
 		t.Fatalf("docs=%+v err=%v", docs, err)
 	}
+	if err := dispatch(t, d, testEvent(210, 11, 1604, "/docs export")); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	if len(r.documents) != 1 || !strings.Contains(string(r.documents[0].Data), "Проект Aurora") {
+		t.Fatalf("RAG export=%+v", r.documents)
+	}
 	if err := dispatch(t, d, testEvent(210, 11, 1601, "Что известно про Aurora?")); err != nil {
 		t.Fatalf("ask: %v", err)
 	}

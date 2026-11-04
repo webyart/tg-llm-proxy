@@ -23,6 +23,7 @@ func main() {
 	var backup = flag.String("backup", "", "new pre-prune backup path (required with -apply)")
 	var eventsDays = flag.Int("events-days", 90, "delete events older than this many days; 0 disables event pruning")
 	var messagesDays = flag.Int("messages-days", 0, "delete messages older than this many days; 0 disables message pruning")
+	var ragDays = flag.Int("rag-days", 0, "delete RAG documents older than this many days; 0 disables RAG pruning")
 	var apply = flag.Bool("apply", false, "delete candidates after a verified backup; default is dry-run")
 	var timeout = flag.Duration("timeout", 120*time.Second, "how long backup, pruning, and verification may take")
 	flag.Parse()
@@ -31,17 +32,17 @@ func main() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	if err := run(ctx, *source, *backup, *eventsDays, *messagesDays, *apply, os.Stdout); err != nil {
+	if err := run(ctx, *source, *backup, *eventsDays, *messagesDays, *ragDays, *apply, os.Stdout); err != nil {
 		die("%s", err)
 	}
 }
 
-func run(ctx context.Context, source string, backup string, eventsDays int, messagesDays int, apply bool, output io.Writer) error {
-	if eventsDays < 0 || messagesDays < 0 {
-		return fmt.Errorf("retention days cannot be negative: events=%d messages=%d", eventsDays, messagesDays)
+func run(ctx context.Context, source string, backup string, eventsDays int, messagesDays int, ragDays int, apply bool, output io.Writer) error {
+	if eventsDays < 0 || messagesDays < 0 || ragDays < 0 {
+		return fmt.Errorf("retention days cannot be negative: events=%d messages=%d rag=%d", eventsDays, messagesDays, ragDays)
 	}
-	if eventsDays == 0 && messagesDays == 0 {
-		return fmt.Errorf("both retention classes are disabled; nothing would be pruned")
+	if eventsDays == 0 && messagesDays == 0 && ragDays == 0 {
+		return fmt.Errorf("all retention classes are disabled; nothing would be pruned")
 	}
 	if apply && backup == "" {
 		return fmt.Errorf("-backup is required with -apply")
@@ -63,6 +64,9 @@ func run(ctx context.Context, source string, backup string, eventsDays int, mess
 	if messagesDays > 0 {
 		options.MessagesBefore = time.Now().AddDate(0, 0, -messagesDays)
 	}
+	if ragDays > 0 {
+		options.RAGBefore = time.Now().AddDate(0, 0, -ragDays)
+	}
 
 	if !apply {
 		db, err := store.OpenReadOnly(ctx, source)
@@ -74,7 +78,7 @@ func run(ctx context.Context, source string, backup string, eventsDays int, mess
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(output, "prune: mode=dry-run events_candidates=%d messages_candidates=%d; no backup or deletion performed\n", report.Events, report.Messages)
+		fmt.Fprintf(output, "prune: mode=dry-run events_candidates=%d messages_candidates=%d rag_candidates=%d; no backup or deletion performed\n", report.Events, report.Messages, report.RAGDocuments)
 		return nil
 	}
 
@@ -94,6 +98,6 @@ func run(ctx context.Context, source string, backup string, eventsDays int, mess
 	if verdict != "ok" {
 		return fmt.Errorf("post-prune integrity_check answered %q; pre-prune backup is %s", verdict, backup)
 	}
-	fmt.Fprintf(output, "prune: mode=apply backup=%s events_deleted=%d messages_deleted=%d integrity=ok\n", backup, report.Events, report.Messages)
+	fmt.Fprintf(output, "prune: mode=apply backup=%s events_deleted=%d messages_deleted=%d rag_deleted=%d integrity=ok\n", backup, report.Events, report.Messages, report.RAGDocuments)
 	return nil
 }

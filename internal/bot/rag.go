@@ -2,6 +2,8 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -33,6 +35,9 @@ func (d *Dispatcher) documents(ctx context.Context, ev Event, arg string) error 
 			lines = append(lines, fmt.Sprintf("%d. %s — %d байт, %d частей; /docs delete %d", row.ID, row.Name, row.SizeBytes, row.Chunks, row.ID))
 		}
 		return d.reply(ctx, ev.ChatID, strings.Join(lines, "\n"))
+	}
+	if action == "export" {
+		return d.exportDocuments(ctx, ev)
 	}
 	if strings.HasPrefix(action, "delete ") {
 		id, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(action, "delete ")), 10, 64)
@@ -75,6 +80,28 @@ func (d *Dispatcher) addDocument(ctx context.Context, ev Event) error {
 		return err
 	}
 	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Документ %s сохранён с id=%d, частей: %d. Он будет использоваться при следующих вопросах.", name, id, chunks))
+}
+
+func (d *Dispatcher) exportDocuments(ctx context.Context, ev Event) error {
+	documents, err := store.ExportRAGDocuments(ctx, d.deps.DB, ev.ChatID, ExportMaxBytes)
+	if err != nil {
+		return err
+	}
+	if len(documents) == 0 {
+		return d.reply(ctx, ev.ChatID, "Локальная база документов пуста.")
+	}
+	data, err := json.MarshalIndent(map[string]any{"chat_id": ev.ChatID, "documents": documents}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if len(data) > ExportMaxBytes {
+		return d.reply(ctx, ev.ChatID, "Экспорт RAG-базы превышает 5 МиБ.")
+	}
+	sender, ok := d.deps.Replier.(DocumentSender)
+	if !ok {
+		return errors.New("telegram document sender is unavailable")
+	}
+	return sender.SendDocument(ctx, ev.ChatID, Document{Name: fmt.Sprintf("rag-%d.json", ev.ChatID), Data: data, MIME: "application/json"})
 }
 
 func (d *Dispatcher) addRAGContext(ctx context.Context, chatID int64, userID int64, query string, messages []model.Message) ([]model.Message, []string, error) {

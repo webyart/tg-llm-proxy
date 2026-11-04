@@ -58,6 +58,7 @@ try {
         $exeStamp = (Get-Item -LiteralPath $exe).LastWriteTimeUtc
         $sources = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'cmd\dbrestore') -File -Filter *.go)
         $sources += Get-ChildItem -LiteralPath (Join-Path $repoRoot 'internal\store') -File -Filter *.go
+        $sources += Get-ChildItem -LiteralPath (Join-Path $repoRoot 'internal\store\migrations') -File -Filter *.sql
         foreach ($src in $sources) {
             if ($src.LastWriteTimeUtc -gt $exeStamp) { $needsBuild = $true; break }
         }

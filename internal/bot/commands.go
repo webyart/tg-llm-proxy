@@ -35,6 +35,7 @@ const (
 	CommandExport  = "export"
 	CommandSearch  = "search"
 	CommandDelete  = "delete"
+	CommandDocs    = "docs"
 )
 
 // answer to be exact («Модель не ответила за 60 с, попробуй ещё раз»).
@@ -68,6 +69,7 @@ func (d *Dispatcher) registry() []Command {
 		{Name: CommandSkip, Description: "не восстанавливать текущий unanswered-вопрос при старте", Handler: d.skip},
 		{Name: CommandUnskip, Description: "снова разрешить recovery ранее пропущенного вопроса", Handler: d.unskip},
 		{Name: CommandHistory, Description: "последние N сообщений (по умолчанию 5)", Handler: d.history},
+		{Name: CommandDocs, Description: "локальная RAG-база документов чата", Handler: d.documents},
 		{Name: CommandExport, Description: "экспорт истории: md или json", Handler: d.exportHistory},
 		{Name: CommandSearch, Description: "поиск по истории: /search <текст>", NeedsArgs: true, Handler: d.searchHistory},
 		{Name: CommandDelete, Description: "удаление истории с подтверждением", Handler: d.deleteHistory},
@@ -543,6 +545,10 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 
 	documentTruncated := false
 	var messages, err = d.BuildMessages(replyCtx, ev.ChatID)
+	if err != nil {
+		return err
+	}
+	messages, err = d.addRAGContext(replyCtx, ev.ChatID, text, messages)
 	if err != nil {
 		return err
 	}

@@ -1,3 +1,12 @@
+# tg-llm-proxy v1.10.0
+
+## Local RAG release
+
+- Миграция 5 добавляет `rag_documents` и `rag_chunks`. До 20 текстовых документов на чат, замена по имени, list/delete/clear и cascade.
+- Отправка файла с подписью `/docs add` сохраняет текст локально. `/docs`, `/docs delete <id>`, `/docs clear [confirm]` управляют базой.
+- Вопросы автоматически получают до 3 релевантных фрагментов (2000 runes) с именами источников. Используется локальный Unicode lexical retrieval без embeddings и внешних зависимостей.
+- Добавлены store, bot и end-to-end integration проверки. Production migration требует предварительного проверенного backup.
+
 # tg-llm-proxy v1.9.0
 
 ## History release

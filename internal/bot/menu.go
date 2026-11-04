@@ -23,6 +23,7 @@ func (d *Dispatcher) menuMarkup() models.InlineKeyboardMarkup {
 		{"История", CommandHistory},
 		{"Экспорт", CommandExport},
 		{"Поиск", CommandSearch},
+		{"Документы", CommandDocs},
 		{"Удаление", CommandDelete},
 		{"Сброс", CommandReset},
 		{"Пропуск", CommandSkip},

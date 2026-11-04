@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"bot/internal/store"
 )
 
 func TestAdminShowsActiveModelCallsAndBusyChats(t *testing.T) {
@@ -43,4 +45,26 @@ func TestAdminShowsActiveModelCallsAndBusyChats(t *testing.T) {
 	close(release)
 	<-done
 	d.activeModelRequests.Add(-2)
+}
+
+func TestAdminCountsEachToolSeparately(t *testing.T) {
+	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "TELEGRAM_ADMIN_USERS": "11"})
+	cfg.DBPath = filepath.Join(t.TempDir(), "bot.db")
+	if err := os.WriteFile(cfg.DBPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("stat fixture: %v", err)
+	}
+	db := testStore(t)
+	for _, detail := range []string{"rag", "calculator", "read_url", "read_url"} {
+		if err := store.LogEvent(context.Background(), db, 11, store.EventUsage, detail); err != nil {
+			t.Fatalf("log %s: %v", detail, err)
+		}
+	}
+	r := &fakeReplier{}
+	d := newTestDispatcher(t, cfg, nil, r, db)
+	if err := dispatch(t, d, testEvent(202, 11, 1802, "/admin")); err != nil {
+		t.Fatalf("admin: %v", err)
+	}
+	if !strings.Contains(r.joined(), "RAG retrieval: 1; calculator calls: 1; read_url calls: 2;") {
+		t.Fatalf("admin response=%q", r.joined())
+	}
 }

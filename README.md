@@ -136,7 +136,16 @@ http/https-ссылки. Обычные специальные символы э
 
 `read_url` позволяет модели прочитать текстовое содержимое страницы. Для включения задайте `URL_READER_ENABLED=true` при `TOOLS_ENABLED=true` и перезапустите бота; по умолчанию tool выключен. Поддерживаются только HTTPS URL без userinfo, длиной до 2048 символов. Запрос ограничен примерно 15 секундами, телом до 1 МиБ и результатом до 8000 runes; разрешены `text/*`, JSON, XML и HTML.
 
-Не более 5 redirects, каждый адрес проверяется повторно. SSRF-защита запрещает localhost, private, loopback, link-local, multicast, unspecified, reserved, documentation, CGNAT, benchmark и другие не-global-unicast IP. Каждое соединение самостоятельно выполняет DNS resolve и проверку, затем подключается непосредственно к проверенному IP без proxy, чтобы исключить DNS rebinding. URL и содержимое не логируются. Opt-in deployment и живой acceptance ещё не выполнены.
+Не более 5 redirects, каждый адрес проверяется повторно. SSRF-защита запрещает localhost, private, loopback, link-local, multicast, unspecified, reserved, documentation, CGNAT, benchmark и другие не-global-unicast IP. Каждое соединение самостоятельно выполняет DNS resolve и проверку, затем подключается непосредственно к проверенному IP без proxy, чтобы исключить DNS rebinding. URL и содержимое не логируются.
+
+Поведение на реальной сети проверяется отдельной opt-in проверкой под build tag `livecheck` — она не входит в стандартный pipeline:
+
+```powershell
+go test -count=1 -tags=livecheck -run TestLiveURLReaderRealNetwork ./internal/bot
+```
+
+Она читает реальный публичный HTTPS-сайт и подтверждает, что metadata-endpoint `169.254.169.254`, `http://` и `localhost`
+отклоняются. Живой acceptance внутри Telegram при включённом `URL_READER_ENABLED=true` не выполнялся.
 
 ### Сеть Telegram
 
@@ -203,7 +212,7 @@ Reverse proxy или туннель должен перенаправлять п
 | `/persona` | inline-меню и текущая роль; `assistant`, `coder`, `writer`, `translator`, `custom <текст>`, `reset` |
 | `/stats` | сообщения, токены и ошибки текущего чата |
 | `/whoami` | `user_id`, `chat_id` и состояние allowlist |
-| `/admin` | агрегаты, RAG/calculator usage, активные model calls и busy chats; только для `TELEGRAM_ADMIN_USERS` |
+| `/admin` | агрегаты, usage RAG/calculator/read_url, активные model calls и busy chats; только для `TELEGRAM_ADMIN_USERS` |
 
 ## Проверка проекта
 

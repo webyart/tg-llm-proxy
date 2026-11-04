@@ -149,7 +149,7 @@ go test -count=1 -tags=livecheck -run TestLiveURLReaderRealNetwork ./internal/bo
 ```
 
 Она читает реальный публичный HTTPS-сайт и подтверждает, что metadata-endpoint `169.254.169.254`, `http://` и `localhost`
-отклоняются. Живой acceptance внутри Telegram с `URL_READER_ENABLED=true` выполнен на v1.17.3: страница прочитана, финальный streamed-ответ доставлен после tool rounds.
+отклоняются. Живой acceptance внутри Telegram с `URL_READER_ENABLED=true` выполнен на v1.17.3 и повторно подтверждён на v1.18.1: страница прочитана, финальный streamed-ответ доставлен после tool rounds.
 
 ### Веб-поиск (opt-in)
 
@@ -168,7 +168,7 @@ WEB_SEARCH_BASE_URL=http://searxng:8080
 
 Бот вызывает только `<base>/search?q=…&format=json` и передаёт модели `title`/`url`/`snippet`; ссылки выдачи не загружаются, поэтому результат поиска не становится шагом для SSRF-перехода. SearxNG опубликован на `127.0.0.1:8083`, внутри compose-сети доступен по имени `searxng`, образ закреплён тегом и digest. JSON API включает settings из override-файла: у образа по умолчанию `format=json` отвечает 403, и ни один `SEARXNG_*` этот ключ не переопределяет. `secret_key` SearxNG генерируется в контейнере при старте и не попадает ни в `.env`, ни в репозиторий.
 
-Override проверен локально: контейнер стартует healthy, `format=json` отвечает выдачей, и opt-in проверка под build tag `livecheck` (`TestLiveWebSearchRealProvider`) выполнила реальный запрос через этот sidecar. Живой acceptance внутри Telegram с `WEB_SEARCH_ENABLED=true` выполнен на v1.17.3: поисковый tool вызван, финальный streamed-ответ доставлен после tool rounds.
+Override проверен локально: контейнер стартует healthy, `format=json` отвечает выдачей, и opt-in проверка под build tag `livecheck` (`TestLiveWebSearchRealProvider`) выполнила реальный запрос через этот sidecar. Живой acceptance внутри Telegram с `WEB_SEARCH_ENABLED=true` выполнен на v1.17.3 и повторно подтверждён на v1.18.1: поисковый tool вызван, финальный streamed-ответ доставлен после tool rounds.
 
 ### Сеть Telegram
 

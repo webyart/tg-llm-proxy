@@ -132,6 +132,29 @@ func TestURLReaderToolLoopDispatch(t *testing.T) {
 	}
 }
 
+func TestToolCallAfterStreamedTextAbortsBeforeExecution(t *testing.T) {
+	cfg := testConfig(t, map[string]string{
+		"STREAMING_ENABLED":      "true",
+		"TELEGRAM_ALLOWED_USERS": "11",
+		"TOOLS_ENABLED":          "true",
+	})
+	m := &fakeStreamModel{
+		response: model.Response{ToolCalls: []model.ToolCall{{ID: "call-1", Name: "calculator", Arguments: `{"expression":"1+1"}`}}},
+		steps:    []streamStep{{content: "ответ уже пошёл"}},
+	}
+	db := testStore(t)
+	d := newTestDispatcher(t, cfg, m, &fakeReplier{}, db)
+	session := d.newStreamSession(context.Background(), 203, &streamReplier{})
+	_, err := d.completeWithTools(context.Background(), 11, model.Request{Messages: []model.Message{{Role: model.RoleUser, Content: "сочти"}}}, m, session)
+	if err == nil || err.Error() != "tool call followed streamed answer text" {
+		t.Fatalf("completeWithTools error=%v", err)
+	}
+	uses, countErr := store.CountEvents(context.Background(), db, store.EventUsage)
+	if countErr != nil || uses != 0 {
+		t.Fatalf("a rejected tool round must log no usage, events=%d err=%v", uses, countErr)
+	}
+}
+
 func TestToolLoopCallErrors(t *testing.T) {
 	for _, tc := range []struct {
 		name string

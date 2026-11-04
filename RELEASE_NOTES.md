@@ -5,7 +5,10 @@
 - Добавлен opt-in tool `read_url` для чтения текстового содержимого HTTPS-страниц моделью. `URL_READER_ENABLED=false` по умолчанию; shell, файлы и произвольный код не предоставляются.
 - URL ограничен 2048 символами и запрещает userinfo. Timeout — около 15 секунд, не более 5 redirects с повторной проверкой, тело — до 1 МиБ; разрешены `text/*`, JSON, XML и HTML, результат — до 8000 runes.
 - SSRF-защита отклоняет localhost, private, loopback, link-local, multicast, unspecified, reserved, documentation, CGNAT, benchmark и другие не-global-unicast IP. Каждый `DialContext` самостоятельно выполняет resolve+validate и соединяется напрямую с проверенным IP; proxy отключён.
-- URL и содержимое ответов не логируются. Opt-in deployment и живой acceptance ещё не выполнены.
+- `/admin` показывает счётчик `read_url calls` рядом с RAG и calculator usage; usage events по-прежнему содержат только имя инструмента.
+- URL и содержимое ответов не логируются. Поведение на реальной сети подтверждено opt-in проверкой под build tag `livecheck`
+  (`internal/bot/url_reader_live_test.go`): публичный HTTPS-сайт прочитан, `169.254.169.254`, `http://` и `localhost` отклонены.
+  Живой acceptance внутри Telegram при `URL_READER_ENABLED=true` ещё не выполнялся.
 - Проверка на физическом NVIDIA GPU выполнена на RTX 5060 Ti (driver 610.88, Docker `nvidia` runtime): CUDA-образ закреплён по digest,
   `WHISPER__INFERENCE_DEVICE=cuda` подтверждён внутри приложения, `PRELOAD_MODELS` загружает модель из существующего volume,
   транскрипция 6-секундного WAV возвращает текст. Прогретый прогон 0,65 с против 2,06 с на CPU; первый прогон после старта контейнера

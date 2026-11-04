@@ -1,16 +1,18 @@
 # syntax=docker/dockerfile:1
-# Dockerfile — §8.1 «Сборка образа»: three stages, §10 День 5.
+# Dockerfile: shared module preparation plus builder, run and test targets.
 #
 # The run stage is `alpine` + `ca-certificates`, NOT `scratch`: without a CA store Go cannot verify
 # TLS to api.telegram.org, and the bot would fail its Telegram requests silently (§8.1).
 # The test stage is the only place `-race` exists on this host: there is no C compiler on Windows
 # (§3.1), so CGO_ENABLED=1 lives here, in `apk add gcc musl-dev`.
 
-FROM golang:1.27-alpine AS builder
+FROM golang:1.27-alpine AS base
 WORKDIR /src
 # go.mod/go.sum first: the module cache layer survives source edits and rebuilds skip the download.
 COPY go.mod go.sum ./
 RUN go mod download
+
+FROM base AS builder
 COPY . .
 # §8.1: a static binary, no cgo, so the run stage needs nothing but the CA store.
 ENV CGO_ENABLED=0 GOOS=linux
@@ -37,12 +39,9 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --start-interval=1s \
   CMD wget --proxy off -qO- "http://127.0.0.1:${HEALTH_PORT:-8080}/healthz" || exit 1
 ENTRYPOINT ["/bot"]
 
-FROM golang:1.27-alpine AS test
+FROM base AS test
 # The §3.1 resolution: -race needs cgo, cgo needs a toolchain, the toolchain is inside the image.
 RUN apk add --no-cache gcc musl-dev
-WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
 COPY . .
 # §9 scripts/lint + scripts/test-race in one image: gofmt must list nothing, vet must be clean, then
 # the race detector over every package. gofmt -l exits 0 even when it lists files, hence the -s test.

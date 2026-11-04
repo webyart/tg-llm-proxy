@@ -1,3 +1,13 @@
+# tg-llm-proxy v1.18.0
+
+## Performance and build reuse
+
+- Streaming больше не форматирует и не разбивает весь накопленный ответ на каждый token/progress event: полная обработка выполняется только на cadence tick. Rolling multi-message delivery, первая публикация, финальный Markdown и error paths сохранены.
+- Benchmark `BenchmarkStreamRefreshNotDue`: с ≈4,23–6,85 мс и ≈5,13 МиБ на событие до ≈4,1 нс и 0 B; это изолированный non-due path, не сетевой benchmark.
+- RAG по-прежнему сканирует corpus для IDF и средней длины, но сохраняет только content/name matches, кэширует lowercase-поля и считает tokens без промежуточных slices. Порядок, веса BM25-lite и truncation не изменены.
+- Benchmark на 10000 chunks (9999 irrelevant): ≈81,5 → 33,1 мс (−59%), allocated bytes ≈69,0 → 14,7 МиБ (−79%). Это allocated bytes, а не отдельный heap high-water metric.
+- Dockerfile имеет общий module-cache stage для builder/test; source copies не сбрасывают кэш установки GCC. `docker-build.ps1` обновляет bot и test одним Compose/BuildKit запросом. Все race/integration проверки сохранены; hosted CI не расширялся.
+
 # tg-llm-proxy v1.17.3
 
 ## Tool round completion patch

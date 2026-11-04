@@ -1,3 +1,11 @@
+# tg-llm-proxy v1.18.1
+
+## Markdown nesting and native tools patch
+
+- Вложенные inline-code внутри bold/italic восстанавливаются от внешнего токена к внутреннему: служебные `@@TGMD…@@` больше не попадают в Telegram. Добавлен regression-тест для двух вложенных конструкций.
+- При доступных tools model request получает отдельное system-правило: только нативное OpenAI `tool_calls`, без текстового/XML `<tool_call>`, `<function=...>` или `<parameter=...>`, и только имена из переданных schemas. Правило добавляется один раз на пользовательский запрос и не сохраняется в истории.
+- Парсер текстовых pseudo-tool calls намеренно не добавляется: исполняются только структурированные вызовы протокола. Живой acceptance этой модели после исправления ещё предстоит.
+
 # tg-llm-proxy v1.18.0
 
 ## Performance and build reuse

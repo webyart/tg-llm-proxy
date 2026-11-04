@@ -34,8 +34,8 @@ func (tokens *markdownTokens) put(value string) string {
 }
 
 func (tokens *markdownTokens) restore(text string) string {
-	for index, value := range tokens.values {
-		text = strings.Replace(text, fmt.Sprintf("@@TGMD%d@@", index), value, 1)
+	for index := len(tokens.values) - 1; index >= 0; index-- {
+		text = strings.Replace(text, fmt.Sprintf("@@TGMD%d@@", index), tokens.values[index], 1)
 	}
 	return text
 }

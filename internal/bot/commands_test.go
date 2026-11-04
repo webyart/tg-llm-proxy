@@ -365,12 +365,12 @@ func TestResetHidesTheContextButKeepsHistory(t *testing.T) {
 		t.Fatalf("/ask after /reset: %v", err)
 	}
 	var req = m.lastRequest()
-	if len(req.Messages) != 2 {
-		t.Fatalf("after /reset the context must be the system prompt plus the new question , got %d messages: %+v",
+	if len(req.Messages) != 3 {
+		t.Fatalf("after /reset the context must contain the tool instruction, system prompt and new question, got %d messages: %+v",
 			len(req.Messages), req.Messages)
 	}
-	if req.Messages[0].Role != "system" || req.Messages[1].Content != "новый вопрос" {
-		t.Fatalf(" the last message of the context is the new user text, got %+v", req.Messages)
+	if req.Messages[0].Content != nativeToolInstruction || req.Messages[1].Role != "system" || req.Messages[2].Content != "новый вопрос" {
+		t.Fatalf("the last message of the context is the new user text, got %+v", req.Messages)
 	}
 
 	var rows, err = store.HistoryOfChat(ctx, db, 100, 50)

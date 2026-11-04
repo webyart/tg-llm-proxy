@@ -77,8 +77,8 @@ func TestAskWritesExactlyOneUserRowAndOneAssistantRow(t *testing.T) {
 		t.Fatalf(" wants the answer plus the ⏱ latency footer, got %q", answer)
 	}
 	var req = m.lastRequest()
-	if len(req.Messages) != 2 || req.Messages[0].Role != model.RoleSystem || req.Messages[1].Role != model.RoleUser {
-		t.Fatalf("the glued context of must be [system, user], got %+v", req.Messages)
+	if len(req.Messages) != 3 || req.Messages[0].Content != nativeToolInstruction || req.Messages[1].Role != model.RoleSystem || req.Messages[2].Role != model.RoleUser {
+		t.Fatalf("the glued context must be [tool instruction, system, user], got %+v", req.Messages)
 	}
 }
 

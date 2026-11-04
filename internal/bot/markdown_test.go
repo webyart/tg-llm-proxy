@@ -60,3 +60,11 @@ func TestMarkdownV2PreservesItalicAfterIdentifier(t *testing.T) {
 		t.Fatalf("italic after an identifier must be preserved: got %q, want %q", got, want)
 	}
 }
+
+func TestMarkdownV2RestoresNestedInlineCode(t *testing.T) {
+	raw := "**Процесс `crashpad_handler.exe` не запущен** и _код `ERROR_ACCESS_DENIED`_"
+	want := "*Процесс `crashpad_handler.exe` не запущен* и _код `ERROR_ACCESS_DENIED`_"
+	if got := Escape(raw, ParseMarkdownV2); got != want {
+		t.Fatalf("nested formatting:\n got %q\nwant %q", got, want)
+	}
+}

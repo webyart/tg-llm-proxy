@@ -55,6 +55,19 @@ func TestCalculatorToolLoopStoresOnlyFinalAnswer(t *testing.T) {
 	}
 }
 
+func TestToolLoopRequiresNativeToolCalls(t *testing.T) {
+	cfg := testConfig(t, map[string]string{"TOOLS_ENABLED": "true"})
+	m := &scriptedToolModel{responses: []model.Response{{Content: "ok"}}}
+	d := newTestDispatcher(t, cfg, m, nil, nil)
+	if _, err := d.completeWithTools(context.Background(), 11, model.Request{Messages: []model.Message{{Role: model.RoleUser, Content: "question"}}}, nil, nil); err != nil {
+		t.Fatalf("completeWithTools: %v", err)
+	}
+	messages := m.requests[0].Messages
+	if len(messages) != 2 || messages[0].Role != model.RoleSystem || messages[0].Content != nativeToolInstruction || messages[1].Content != "question" {
+		t.Fatalf("native tool instruction messages=%+v", messages)
+	}
+}
+
 func TestURLReaderDisabledByDefault(t *testing.T) {
 	cfg := testConfig(t, nil)
 	m := &scriptedToolModel{responses: []model.Response{{Content: "ok"}}}

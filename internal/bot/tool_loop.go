@@ -8,7 +8,10 @@ import (
 	"bot/internal/store"
 )
 
-const toolRoundLimit = 2
+const (
+	toolRoundLimit        = 2
+	nativeToolInstruction = "When using a tool, call it only through the native OpenAI tool_calls field. Never write tool calls as text or XML, including <tool_call>, <function=...> and <parameter=...>. Use only exact names from the supplied tool schemas."
+)
 
 func (d *Dispatcher) callModel(ctx context.Context, req model.Request, streamer model.Streamer, session *streamSession) (model.Response, error) {
 	d.activeModelRequests.Add(1)
@@ -22,6 +25,9 @@ func (d *Dispatcher) callModel(ctx context.Context, req model.Request, streamer 
 func (d *Dispatcher) completeWithTools(ctx context.Context, userID int64, req model.Request, streamer model.Streamer, session *streamSession) (model.Response, error) {
 	req.Tools = append(calculatorTools(d.deps.Cfg.ToolsEnabled), urlReaderTools(d.deps.Cfg.URLReaderEnabled)...)
 	req.Tools = append(req.Tools, webSearchTools(d.deps.Cfg.WebSearchEnabled)...)
+	if len(req.Tools) > 0 {
+		req.Messages = append([]model.Message{{Role: model.RoleSystem, Content: nativeToolInstruction}}, req.Messages...)
+	}
 	for round := 0; round < toolRoundLimit; round++ {
 		resp, err := d.callModel(ctx, req, streamer, session)
 		if err != nil || len(resp.ToolCalls) == 0 {

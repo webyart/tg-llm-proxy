@@ -4,6 +4,7 @@
 
 - После двух tool rounds бот больше не завершается ошибкой `model exceeded the tool round limit`: выполняется один финальный model request с пустым списком tools, чтобы модель собрала ответ из уже полученных результатов.
 - Regression-тест проверяет два tool round, третий запрос без tools и доставку финального ответа вместо model error.
+- Живой Telegram acceptance подтверждён: `read_url` и `web_search` выполнены, финальный ответ после tool rounds доставлен.
 - На скриншоте `Timed out` относится к 90-секундному ожиданию фонового `verify` в интерфейсе, а не к тестам или боту: сам pipeline позже завершился GREEN.
 
 # tg-llm-proxy v1.17.2
@@ -12,7 +13,7 @@
 
 - Модель может отправить текст-преамбулу перед `tool_calls` в streaming mode: это больше не приводит к `tool call followed streamed answer text`. Tool round выполняется, промежуточный текст остаётся в streamed-сообщении до финального ответа.
 - Двухраундовый regression-тест подтверждает выполнение calculator после streamed-преамбулы, сохранение assistant/tool messages для второго model request и ровно один usage event.
-- Живой acceptance выявил ошибку на включённых `read_url` и `web_search`; их повторная проверка в Telegram ещё предстоит.
+- Живой acceptance выявил ошибку на включённых `read_url` и `web_search`; полный сценарий подтверждён после исправления финального tool-round запроса в v1.17.3.
 
 # tg-llm-proxy v1.17.1
 

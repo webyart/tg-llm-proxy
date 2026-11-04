@@ -118,6 +118,7 @@ func (c *OpenAI) transcribeAttempt(ctx context.Context, req TranscriptionRequest
 		apiErr := &APIError{Status: resp.StatusCode, Body: Flatten(string(payload), BodyLimit)}
 		var providerErr struct {
 			Message string `json:"message"`
+			Detail  string `json:"detail"`
 			Error   struct {
 				Message string `json:"message"`
 			} `json:"error"`
@@ -126,6 +127,9 @@ func (c *OpenAI) transcribeAttempt(ctx context.Context, req TranscriptionRequest
 			detail := strings.TrimSpace(providerErr.Message)
 			if detail == "" {
 				detail = strings.TrimSpace(providerErr.Error.Message)
+			}
+			if detail == "" {
+				detail = strings.TrimSpace(providerErr.Detail)
 			}
 			if detail != "" {
 				return "", fmt.Errorf("%w: %s", apiErr, Flatten(detail, BodyLimit))

@@ -49,7 +49,7 @@ func TestTranscribeIncludesProviderErrorMessage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":{"message":"unsupported audio model"}}`))
+		_, _ = w.Write([]byte(`{"detail":"unsupported audio model"}`))
 	}))
 	defer server.Close()
 	client, err := New(Options{ChatURL: server.URL + "/v1/chat/completions", Attempts: 1, Timeout: time.Second})

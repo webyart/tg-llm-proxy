@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -100,7 +101,7 @@ func (d *Dispatcher) helpLines() []string {
 		lines = append(lines, fmt.Sprintf("%s — %s", usage, cmd.Description))
 		i++
 	}
-	lines = append(lines, "Можно отправить фото JPEG/PNG, текстовый документ UTF-8 или голосовое сообщение до 5 минут.")
+	lines = append(lines, "Можно отправить альбом фото, текстовый документ, голосовое, аудио или видеосообщение.")
 	return lines
 }
 
@@ -308,10 +309,167 @@ func (d *Dispatcher) modelInfo(ctx context.Context, ev Event, arg string) error 
 	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Модель: %s%s\nEndpoint: %s \n/model check — проверка доступности; /model select <id>, /model reset.", selected, note, endpoint))
 }
 
+func (d *Dispatcher) downloadEventAttachments(ctx context.Context, ev Event) ([]DownloadedAttachment, error) {
+	if ev.Attachment == nil {
+		return nil, nil
+	}
+	if d.deps.Attachments == nil {
+		return nil, ErrAttachmentUnavailable
+	}
+	attachments := []Attachment{*ev.Attachment}
+	attachments = append(attachments, ev.AdditionalAttachments...)
+	if len(ev.AdditionalAttachments) > 0 && ev.Attachment.Kind != AttachmentPhoto {
+		return nil, ErrAttachmentType
+	}
+	limit := d.deps.Cfg.MediaMaxBytes
+	if limit <= 0 {
+		limit = 10 << 20
+	}
+	files := make([]DownloadedAttachment, 0, len(attachments))
+	var total int64
+	for i, attachment := range attachments {
+		if i > 0 && attachment.Kind != AttachmentPhoto {
+			return nil, ErrAttachmentType
+		}
+		if attachment.Size > limit || attachment.Size > limit-total {
+			return nil, ErrAttachmentTooLarge
+		}
+		file, err := d.deps.Attachments.Download(ctx, attachment)
+		if err != nil {
+			return nil, err
+		}
+		size := int64(len(file.Data))
+		if size > limit || size > limit-total {
+			return nil, ErrAttachmentTooLarge
+		}
+		total += size
+		files = append(files, file)
+	}
+	return files, nil
+}
+
+func speechFormat(attachment Attachment) string {
+	mime := strings.ToLower(strings.TrimSpace(strings.Split(attachment.MimeType, ";")[0]))
+	switch mime {
+	case "audio/ogg", "application/ogg", "audio/opus":
+		return "ogg"
+	case "audio/mpeg", "audio/mp3", "audio/mpga":
+		return "mp3"
+	case "audio/wav", "audio/x-wav", "audio/wave":
+		return "wav"
+	case "audio/mp4", "video/mp4", "audio/x-m4a", "audio/m4a", "video/quicktime":
+		return "mp4"
+	case "audio/webm", "video/webm":
+		return "webm"
+	case "audio/flac", "audio/x-flac":
+		return "flac"
+	case "audio/aac":
+		return "aac"
+	}
+	if mime != "" && mime != "application/octet-stream" {
+		return "unsupported"
+	}
+	switch strings.ToLower(path.Ext(attachment.FileName)) {
+	case ".ogg", ".oga", ".opus":
+		return "ogg"
+	case ".mp3", ".mpeg", ".mpga":
+		return "mp3"
+	case ".wav":
+		return "wav"
+	case ".m4a", ".mp4", ".mov":
+		return "mp4"
+	case ".webm":
+		return "webm"
+	case ".flac":
+		return "flac"
+	case ".aac":
+		return "aac"
+	}
+	switch attachment.Kind {
+	case AttachmentVoice:
+		return "ogg"
+	case "video_note", "video-note":
+		return "mp4"
+	default:
+		return ""
+	}
+}
+
+func detectSpeechFormat(data []byte) string {
+	for _, format := range []string{"ogg", "wav", "mp4", "webm", "flac", "aac", "mp3"} {
+		if speechSignatureMatches(format, data) {
+			return format
+		}
+	}
+	return ""
+}
+
+func speechSignatureMatches(format string, data []byte) bool {
+	switch format {
+	case "ogg":
+		return bytes.HasPrefix(data, []byte("OggS"))
+	case "mp3":
+		return bytes.HasPrefix(data, []byte("ID3")) || len(data) >= 2 && data[0] == 0xff && data[1]&0xe0 == 0xe0
+	case "wav":
+		return len(data) >= 12 && bytes.HasPrefix(data, []byte("RIFF")) && string(data[8:12]) == "WAVE"
+	case "mp4":
+		return len(data) >= 12 && string(data[4:8]) == "ftyp"
+	case "webm":
+		return bytes.HasPrefix(data, []byte{0x1a, 0x45, 0xdf, 0xa3})
+	case "flac":
+		return bytes.HasPrefix(data, []byte("fLaC"))
+	case "aac":
+		return len(data) >= 2 && data[0] == 0xff && data[1]&0xf6 == 0xf0
+	default:
+		return false
+	}
+}
+
+func validSpeechAttachment(attachment Attachment, data []byte) bool {
+	format := speechFormat(attachment)
+	if format == "unsupported" {
+		return false
+	}
+	if format == "" {
+		format = detectSpeechFormat(data)
+	}
+	return speechSignatureMatches(format, data)
+}
+
+func speechRequestMetadata(attachment Attachment, file DownloadedAttachment) (string, string) {
+	format := speechFormat(attachment)
+	if format == "" || format == "unsupported" {
+		format = detectSpeechFormat(file.Data)
+	}
+	name := strings.TrimSpace(attachment.FileName)
+	if name == "" {
+		extension := map[string]string{"ogg": ".ogg", "mp3": ".mp3", "wav": ".wav", "mp4": ".mp4", "webm": ".webm", "flac": ".flac", "aac": ".aac"}[format]
+		switch attachment.Kind {
+		case AttachmentVoice:
+			name = "voice" + extension
+		case "video_note", "video-note":
+			name = "video-note" + extension
+		default:
+			name = "audio" + extension
+		}
+	}
+	mime := strings.TrimSpace(attachment.MimeType)
+	if mime == "" || mime == "application/octet-stream" {
+		mime = strings.TrimSpace(file.MIME)
+	}
+	if mime == "" {
+		mime = map[string]string{"ogg": "audio/ogg", "mp3": "audio/mpeg", "wav": "audio/wav", "mp4": "audio/mp4", "webm": "audio/webm", "flac": "audio/flac", "aac": "audio/aac"}[format]
+		if attachment.Kind == "video_note" || attachment.Kind == "video-note" {
+			mime = "video/mp4"
+		}
+	}
+	return safeAttachmentName(name), mime
+}
+
 // responsibility: exactly one assistant row, and only after the final successful Response.
 func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 	if ev.UnsupportedMedia {
-		return d.reply(ctx, ev.ChatID, "Этот тип вложения пока не поддерживается. Отправь фото или небольшой текстовый документ.")
+		return d.reply(ctx, ev.ChatID, "Этот тип вложения пока не поддерживается. Отправь фото, текстовый документ, голосовое, аудио или видеосообщение.")
 	}
 	if ev.Recovery && isStoredAttachment(ev.Text) && ev.Attachment == nil {
 		return d.reply(ctx, ev.ChatID, "Вложение недоступно после перезапуска, поэтому отправь вложение повторно вместе с вопросом.")
@@ -337,34 +495,28 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 	var replyCtx, cancel = context.WithTimeout(ctx, time.Duration(replyBudget)*time.Second)
 	defer cancel()
 
-	var downloaded *DownloadedAttachment
-	if ev.Attachment != nil {
-		if d.deps.Attachments == nil {
-			return d.reply(ctx, ev.ChatID, attachmentUserError(ErrAttachmentUnavailable))
+	downloaded, downloadErr := d.downloadEventAttachments(replyCtx, ev)
+	if downloadErr != nil {
+		if errors.Is(downloadErr, context.Canceled) {
+			return downloadErr
 		}
-		file, downloadErr := d.deps.Attachments.Download(replyCtx, *ev.Attachment)
-		if downloadErr != nil {
-			if errors.Is(downloadErr, context.Canceled) {
-				return downloadErr
-			}
-			noticeCtx, stopNotice := context.WithTimeout(context.WithoutCancel(ctx), auditBudget)
-			defer stopNotice()
-			d.logEvent(noticeCtx, ev.UserID, store.EventModelError, "attachment:"+attachmentErrorKind(downloadErr))
-			return d.reply(noticeCtx, ev.ChatID, attachmentUserError(downloadErr))
-		}
-		downloaded = &file
+		noticeCtx, stopNotice := context.WithTimeout(context.WithoutCancel(ctx), auditBudget)
+		defer stopNotice()
+		d.logEvent(noticeCtx, ev.UserID, store.EventModelError, "attachment:"+attachmentErrorKind(downloadErr))
+		return d.reply(noticeCtx, ev.ChatID, attachmentUserError(downloadErr))
 	}
 
-	if ev.Attachment != nil && ev.Attachment.Kind == AttachmentVoice {
-		if !bytes.HasPrefix(downloaded.Data, []byte("OggS")) {
+	if isSpeechAttachment(ev.Attachment) {
+		if !validSpeechAttachment(*ev.Attachment, downloaded[0].Data) {
 			return d.reply(ctx, ev.ChatID, attachmentUserError(ErrAttachmentType))
 		}
 		transcriber, ok := d.deps.Model.(model.Transcriber)
 		if !ok {
 			return d.reply(ctx, ev.ChatID, "Транскрипция голосовых сообщений не настроена в этом клиенте модели.")
 		}
+		name, mime := speechRequestMetadata(*ev.Attachment, downloaded[0])
 		transcript, transcribeErr := transcriber.Transcribe(replyCtx, model.TranscriptionRequest{
-			Model: d.deps.Cfg.TranscriptionModel, FileName: "voice.ogg", Data: downloaded.Data,
+			Model: d.deps.Cfg.TranscriptionModel, FileName: name, MIME: mime, Data: downloaded[0].Data,
 		})
 		if transcribeErr != nil {
 			if errors.Is(transcribeErr, context.Canceled) {
@@ -372,22 +524,23 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 			}
 			noticeCtx, stopNotice := context.WithTimeout(context.WithoutCancel(ctx), auditBudget)
 			defer stopNotice()
-			d.deps.Logger.Error("voice transcription failed", "chat_id", ev.ChatID, "user_id", ev.UserID, "error", Sanitize(transcribeErr, d.deps.Token))
+			d.deps.Logger.Error("speech transcription failed", "chat_id", ev.ChatID, "user_id", ev.UserID, "error", Sanitize(transcribeErr, d.deps.Token))
 			d.logEvent(noticeCtx, ev.UserID, store.EventModelError, "transcription:"+attachmentErrorKind(transcribeErr))
 			return d.reply(noticeCtx, ev.ChatID, "Не удалось распознать голосовое сообщение. Попробуй записать его короче или отправь текстом.")
 		}
 		text = voiceModelPrompt(text, transcript)
-		stored := "[Голосовое]\n" + text
+		stored := speechStoredMarker(ev.Attachment.Kind) + "\n" + text
 		if err := store.ReplacePendingUserContent(replyCtx, d.deps.DB, ev.ChatID, ev.TelegramMessageID, stored); err != nil {
 			return err
 		}
 	}
 
+	documentTruncated := false
 	var messages, err = d.BuildMessages(replyCtx, ev.ChatID)
 	if err != nil {
 		return err
 	}
-	if downloaded != nil {
+	if len(downloaded) > 0 {
 		if len(messages) == 0 || messages[len(messages)-1].Role != model.RoleUser {
 			return errors.New("the stored attachment question is not the newest model message")
 		}
@@ -395,17 +548,32 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 		last.Content = text
 		switch ev.Attachment.Kind {
 		case AttachmentPhoto:
-			last.ImageURL, err = imageDataURI(*downloaded)
+			last.ImageURLs = make([]string, 0, len(downloaded))
+			for _, file := range downloaded {
+				var imageURL string
+				imageURL, err = imageDataURI(file)
+				if err != nil {
+					break
+				}
+				last.ImageURLs = append(last.ImageURLs, imageURL)
+			}
+			if err == nil {
+				last.ImageURL = last.ImageURLs[0]
+			}
 		case AttachmentDocument:
-			if !documentIsText(ev.Attachment.FileName, ev.Attachment.MimeType, downloaded.Data) {
+			if !documentIsText(ev.Attachment.FileName, ev.Attachment.MimeType, downloaded[0].Data) {
 				err = ErrAttachmentType
 			} else {
-				last.Content = documentModelPrompt(text, safeAttachmentName(ev.Attachment.FileName), string(downloaded.Data), int(d.deps.Cfg.MaxContextChars))
+				name := safeAttachmentName(ev.Attachment.FileName)
+				documentTruncated = Runes(text+"\n\nДокумент "+name+":\n"+string(downloaded[0].Data)) > int(d.deps.Cfg.MaxContextChars)
+				last.Content = documentModelPrompt(text, name, string(downloaded[0].Data), int(d.deps.Cfg.MaxContextChars))
 			}
-		case AttachmentVoice:
-			last.Content = text
 		default:
-			err = ErrAttachmentType
+			if isSpeechAttachment(ev.Attachment) {
+				last.Content = text
+			} else {
+				err = ErrAttachmentType
+			}
 		}
 		if err != nil {
 			return d.reply(ctx, ev.ChatID, attachmentUserError(err))
@@ -520,6 +688,9 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 	)
 
 	var full = resp.Content + "\n\n" + latencyLine(resp, selectedModel)
+	if documentTruncated {
+		full = "Внимание: документ был обрезан по MAX_CONTEXT_CHARS перед отправкой модели.\n\n" + full
+	}
 	if session == nil {
 		return d.Send(replyCtx, ev.ChatID, full)
 	}

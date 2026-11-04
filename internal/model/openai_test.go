@@ -152,6 +152,31 @@ func TestPhotoUsesMultimodalContentAndTextStaysString(t *testing.T) {
 	}
 }
 
+func TestToWireSendsAllImages(t *testing.T) {
+	wire := toWire([]Message{
+		{Role: RoleUser, Content: "обычный текст"},
+		{Role: RoleUser, Content: "альбом", ImageURL: "legacy", ImageURLs: []string{"first", "", "second"}},
+	})
+	ordinary, ok := wire[0].Content.(string)
+	if !ok || ordinary != "обычный текст" {
+		t.Fatalf("ordinary content = %#v, want a string", wire[0].Content)
+	}
+	parts, ok := wire[1].Content.([]chatContentPart)
+	if !ok {
+		t.Fatalf("album content has type %T, want content parts", wire[1].Content)
+	}
+	if len(parts) != 4 || parts[0].Type != "text" || parts[0].Text != "альбом" {
+		t.Fatalf("album parts = %+v", parts)
+	}
+	wantURLs := []string{"legacy", "first", "second"}
+	for i, want := range wantURLs {
+		part := parts[i+1]
+		if part.Type != "image_url" || part.ImageURL == nil || part.ImageURL.URL != want {
+			t.Errorf("image part %d = %+v, want URL %q", i, part, want)
+		}
+	}
+}
+
 func TestEmptyAnswerIsAnError(t *testing.T) {
 	for name, reply := range map[string]testutil.StrataReply{
 		"no choices":    {EmptyChoices: true},

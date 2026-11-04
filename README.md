@@ -9,7 +9,7 @@ Telegram-бот-прокси между пользователями и лока
 
 - 15 команд: `/start`, `/help`, `/ping`, `/status`, `/ask`, `/reset`, `/skip`, `/unskip`, `/history`, `/model`, `/stream`, `/persona`, `/stats`, `/whoami`, `/admin`.
 - `/start` и `/help` открывают inline-меню с 15 кнопками команд; callback проходит через тот же Dispatcher.
-- Фото JPEG/PNG до 10 МиБ, текстовые документы UTF-8 до 64 КиБ и voice OGG/Opus до 10 МиБ / 5 минут. Видео и другие типы получают понятный отказ.
+- Альбомы до 10 фото JPEG/PNG, текстовые документы UTF-8 до 64 КиБ, voice, аудиофайлы и video notes через Whisper. Лимиты настраиваются `MEDIA_MAX_MB` и `SPEECH_MAX_SECONDS`.
 - История и независимый контекст каждого чата в SQLite/WAL.
 - Allowlist по Telegram user id, rate limiting, per-chat lock и ограничение параллельных запросов к модели.
 - Обработка timeout/5xx/пустых ответов, Telegram 429 и восстановление незавершённых вопросов после рестарта.
@@ -92,7 +92,7 @@ docker compose logs -f bot
 
 ## Конфигурация
 
-Полный список из 33 ENV-строк и их значения по умолчанию находится в `.env.example`. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
+Полный список из 35 ENV-строк и их значения по умолчанию находится в `.env.example`. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
 
 ### Основные параметры
 
@@ -107,6 +107,8 @@ docker compose logs -f bot
 | `STRATA_TIMEOUT_SECONDS` | 60 | таймаут одной попытки модели |
 | `TG_REPLY_DEADLINE_SECONDS` | 90 | общий бюджет ответа; должен быть больше timeout |
 | `RECOVERY_MAX_AGE_HOURS` | 24 | максимальный возраст unanswered-вопроса для автоматического recovery; `0` отключает лимит |
+| `MEDIA_MAX_MB` | 10 | лимит каждого media-файла и альбома целиком |
+| `SPEECH_MAX_SECONDS` | 300 | лимит voice/audio/video note |
 | `DB_PATH` | `./data/bot.db` | host SQLite; в compose — `/data/bot.db` |
 | `TELEGRAM_ALLOWED_USERS` | пусто = deny by default | список user id через запятую |
 | `CONTEXT_MESSAGES` | 20 | размер окна истории |
@@ -324,6 +326,6 @@ docker compose up -d
 
 ## Документы
 
-- `.env.example` — все настройки (33) с комментариями.
+- `.env.example` — все настройки (35) с комментариями.
 - `RELEASE_NOTES.md` — состав release candidate и результаты проверок.
 - `PLAN.md` — локальный подробный план и история изменений (gitignored).

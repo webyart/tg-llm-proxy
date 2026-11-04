@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"strings"
@@ -18,6 +19,7 @@ var ErrEmptyTranscription = errors.New("the transcription endpoint returned empt
 type TranscriptionRequest struct {
 	Model    string
 	FileName string
+	MIME     string
 	Data     []byte
 }
 
@@ -79,9 +81,28 @@ func (c *OpenAI) transcribeAttempt(ctx context.Context, req TranscriptionRequest
 	if err := writer.WriteField("model", modelName); err != nil {
 		return "", err
 	}
+	fileName := strings.TrimSpace(req.FileName)
+	if fileName == "" {
+		fileName = "voice.ogg"
+	}
+	contentDisposition := mime.FormatMediaType("form-data", map[string]string{
+		"name":     "file",
+		"filename": fileName,
+	})
+	if contentDisposition == "" {
+		return "", errors.New("invalid transcription file name")
+	}
+	contentType := strings.TrimSpace(req.MIME)
+	if contentType == "" {
+		contentType = "audio/ogg"
+	}
+	contentType = mime.FormatMediaType(contentType, nil)
+	if contentType == "" {
+		return "", errors.New("invalid transcription MIME type")
+	}
 	part, err := writer.CreatePart(map[string][]string{
-		"Content-Disposition": {`form-data; name="file"; filename="voice.ogg"`},
-		"Content-Type":        {"audio/ogg"},
+		"Content-Disposition": {contentDisposition},
+		"Content-Type":        {contentType},
 	})
 	if err != nil {
 		return "", err

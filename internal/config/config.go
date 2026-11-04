@@ -20,6 +20,8 @@ var Env = []string{
 	"STRATA_MODEL",
 	"STRATA_TRANSCRIPTION_MODEL",
 	"TRANSCRIPTION_BASE_URL",
+	"MEDIA_MAX_MB",
+	"SPEECH_MAX_SECONDS",
 	"STRATA_API_KEY",
 	"STRATA_TIMEOUT_SECONDS",
 	"TG_REPLY_DEADLINE_SECONDS",
@@ -73,6 +75,8 @@ const V1Path = "/v1"
 const DefaultDBPath = "./data/bot.db"
 const DefaultSystemPrompt = "You are a helpful assistant."
 const DefaultTranscriptionModel = "Systran/faster-whisper-small"
+const DefaultMediaMaxMB = int64(10)
+const DefaultSpeechMaxSeconds = int64(300)
 const DefaultTimeoutSeconds = int64(60)
 const DefaultDeadlineSeconds = int64(90)
 const DefaultRecoveryMaxAgeHours = int64(24)
@@ -117,6 +121,8 @@ type Config struct {
 	TranscriptionModel   string
 	TranscriptionBase    string
 	TranscriptionURL     string
+	MediaMaxBytes        int64
+	SpeechMaxSeconds     int64
 	TimeoutSeconds       int64
 	ReplyDeadlineSeconds int64
 	RecoveryMaxAgeHours  int64
@@ -475,6 +481,14 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	if cfg.TranscriptionModel == "" {
 		cfg.TranscriptionModel = DefaultTranscriptionModel
 	}
+
+	mediaMaxMB, badMediaMaxMB := Num(raw, "MEDIA_MAX_MB", DefaultMediaMaxMB, 1, 100)
+	cfg.MediaMaxBytes = mediaMaxMB * 1024 * 1024
+	problems = Push(problems, badMediaMaxMB)
+
+	speechMaxSeconds, badSpeechMaxSeconds := Num(raw, "SPEECH_MAX_SECONDS", DefaultSpeechMaxSeconds, 1, 3600)
+	cfg.SpeechMaxSeconds = speechMaxSeconds
+	problems = Push(problems, badSpeechMaxSeconds)
 
 	var timeout, badTimeout = Num(raw, "STRATA_TIMEOUT_SECONDS", DefaultTimeoutSeconds, 1, 3600)
 	cfg.TimeoutSeconds = timeout

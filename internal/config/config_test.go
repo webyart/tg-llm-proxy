@@ -92,8 +92,61 @@ func TestLoadFromDefaults(t *testing.T) {
 		t.Errorf("timeouts = %d/%d, want %d/%d", cfg.TimeoutSeconds, cfg.ReplyDeadlineSeconds,
 			DefaultTimeoutSeconds, DefaultDeadlineSeconds)
 	}
+	if cfg.MediaMaxBytes != DefaultMediaMaxMB*1024*1024 {
+		t.Errorf("MediaMaxBytes = %d, want %d", cfg.MediaMaxBytes, DefaultMediaMaxMB*1024*1024)
+	}
+	if cfg.SpeechMaxSeconds != DefaultSpeechMaxSeconds {
+		t.Errorf("SpeechMaxSeconds = %d, want %d", cfg.SpeechMaxSeconds, DefaultSpeechMaxSeconds)
+	}
 	if !cfg.DenyByDefault {
 		t.Error("an empty TELEGRAM_ALLOWED_USERS must leave the bot closed ")
+	}
+}
+
+func TestLoadFromMediaLimits(t *testing.T) {
+	cfg, problems := LoadFrom(map[string]string{
+		"TELEGRAM_BOT_TOKEN": "1:secret",
+		"MEDIA_MAX_MB":       "25",
+		"SPEECH_MAX_SECONDS": "600",
+	})
+	if len(problems) != 0 {
+		t.Fatalf("problems = %v, want none", problems)
+	}
+	if cfg.MediaMaxBytes != 25*1024*1024 {
+		t.Errorf("MediaMaxBytes = %d, want %d", cfg.MediaMaxBytes, 25*1024*1024)
+	}
+	if cfg.SpeechMaxSeconds != 600 {
+		t.Errorf("SpeechMaxSeconds = %d, want 600", cfg.SpeechMaxSeconds)
+	}
+
+	tests := []struct {
+		name  string
+		env   string
+		value string
+	}{
+		{"media below minimum", "MEDIA_MAX_MB", "0"},
+		{"media above maximum", "MEDIA_MAX_MB", "101"},
+		{"media not an integer", "MEDIA_MAX_MB", "bad"},
+		{"speech below minimum", "SPEECH_MAX_SECONDS", "0"},
+		{"speech above maximum", "SPEECH_MAX_SECONDS", "3601"},
+		{"speech not an integer", "SPEECH_MAX_SECONDS", "bad"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, problems := LoadFrom(map[string]string{
+				"TELEGRAM_BOT_TOKEN": "1:secret",
+				test.env:             test.value,
+			})
+			if len(problems) != 1 || !strings.Contains(problems[0], test.env) {
+				t.Errorf("problems = %v, want one naming %s", problems, test.env)
+			}
+			if cfg.MediaMaxBytes != DefaultMediaMaxMB*1024*1024 {
+				t.Errorf("MediaMaxBytes = %d, want default %d", cfg.MediaMaxBytes, DefaultMediaMaxMB*1024*1024)
+			}
+			if cfg.SpeechMaxSeconds != DefaultSpeechMaxSeconds {
+				t.Errorf("SpeechMaxSeconds = %d, want default %d", cfg.SpeechMaxSeconds, DefaultSpeechMaxSeconds)
+			}
+		})
 	}
 }
 
@@ -238,8 +291,8 @@ func TestOldNameOfTheRowIsRefusedByName(t *testing.T) {
 }
 
 func TestEnvIsTheRowsOfTheTable(t *testing.T) {
-	if len(Env) != 33 {
-		t.Errorf("Env holds %d names, want 33 including the transcription endpoint", len(Env))
+	if len(Env) != 35 {
+		t.Errorf("Env holds %d names, want 35 including the media limits", len(Env))
 	}
 	var seen = map[string]bool{}
 	var i = 0
@@ -254,9 +307,9 @@ func TestEnvIsTheRowsOfTheTable(t *testing.T) {
 		t.Error("TELEGRAM_ALLOWED_USERS is not in Env, so the allowlist of has no row ")
 	}
 	// name must not refuse them.
-	for _, name := range []string{"STREAMING_ENABLED", "STREAM_EDIT_INTERVAL_MS", "STREAM_IDLE_TIMEOUT_SECONDS", "STREAM_TOTAL_DEADLINE_SECONDS"} {
+	for _, name := range []string{"STREAMING_ENABLED", "STREAM_EDIT_INTERVAL_MS", "STREAM_IDLE_TIMEOUT_SECONDS", "STREAM_TOTAL_DEADLINE_SECONDS", "MEDIA_MAX_MB", "SPEECH_MAX_SECONDS"} {
 		if !seen[name] || !HasRow(name) {
-			t.Errorf("%s is not a row of, so the budgets of cannot be configured ", name)
+			t.Errorf("%s is not a row of Env", name)
 		}
 	}
 	if len(RenamedOrder) != 1 || RenamedRows[RenamedOrder[0]] != "TELEGRAM_ALLOWED_USERS" {

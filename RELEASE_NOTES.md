@@ -1,3 +1,12 @@
+# tg-llm-proxy v1.8.0
+
+## Media release
+
+- Альбомы до 10 фото собираются за 400 мс в один model request и один ответ; все offsets и persistent dedup сохраняются. Multimodal JSON поддерживает несколько `image_url` без дублирования первого фото.
+- Аудиофайлы и video notes проходят через Whisper вместе с voice. Filename/MIME корректно передаются в multipart, формат проверяется по сигнатуре.
+- `MEDIA_MAX_MB=10` ограничивает каждый media-файл и альбом целиком; `SPEECH_MAX_SECONDS=300` ограничивает voice/audio/video notes.
+- Усечение документа по `MAX_CONTEXT_CHARS` явно отображается пользователю. Добавлены unit, integration и race-проверки.
+
 # tg-llm-proxy v1.7.0
 
 ## Minor release

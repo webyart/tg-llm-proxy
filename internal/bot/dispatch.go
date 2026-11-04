@@ -24,17 +24,19 @@ import (
 
 // model call).
 type Event struct {
-	UpdateID          int64
-	TelegramMessageID int64
-	ChatID            int64
-	ChatType          string
-	ChatTitle         string
-	UserID            int64
-	Username          string
-	Text              string
-	Attachment        *Attachment
-	UnsupportedMedia  bool
-	Recovery          bool
+	UpdateID              int64
+	TelegramMessageID     int64
+	ChatID                int64
+	ChatType              string
+	ChatTitle             string
+	UserID                int64
+	Username              string
+	Text                  string
+	Attachment            *Attachment
+	AdditionalAttachments []Attachment
+	MediaGroupID          string
+	UnsupportedMedia      bool
+	Recovery              bool
 	// "/ask" prefixes makes the model see the shell instead of the conversation. Dispatch fills it
 	// after Normalize and resolve, so the `stored` middleware does not need the argument of the
 	// handler.
@@ -90,6 +92,8 @@ type Dispatcher struct {
 	created     time.Time
 	startOffset int64
 	offsetMu    sync.Mutex
+	albumMu     sync.Mutex
+	albums      map[albumKey]*albumBatch
 }
 
 // logger. A missing model client or replier is a wiring mistake and stays visible as one.
@@ -103,7 +107,7 @@ func New(deps Deps) *Dispatcher {
 	if deps.Logger == nil {
 		deps.Logger = slog.Default()
 	}
-	var d = &Dispatcher{deps: deps, index: map[string]Command{}, created: time.Now(), startOffset: deps.StartOffset}
+	var d = &Dispatcher{deps: deps, index: map[string]Command{}, created: time.Now(), startOffset: deps.StartOffset, albums: map[albumKey]*albumBatch{}}
 	d.commands = d.registry()
 	var i = 0
 	for i < len(d.commands) {
@@ -182,6 +186,14 @@ func (d *Dispatcher) chain(next HandlerFunc) HandlerFunc {
 }
 
 func (d *Dispatcher) Dispatch(ctx context.Context, ev Event) error {
+	if isPhotoAlbum(ev) {
+		d.collectAlbum(ctx, ev)
+		return nil
+	}
+	return d.dispatchEvent(ctx, ev, true)
+}
+
+func (d *Dispatcher) dispatchEvent(ctx context.Context, ev Event, acknowledge bool) error {
 	var name, arg, isCommand = Normalize(ev.Text, d.deps.BotName)
 	var cmd, commandArg = d.resolve(ev, name, arg, isCommand)
 	if ev.Attachment != nil || ev.UnsupportedMedia {
@@ -202,7 +214,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, ev Event) error {
 		return cmd.Handler(ctx, ev, commandArg)
 	})(ctx, ev, cmd)
 
-	d.persistOffset(ctx, ev.UpdateID)
+	if acknowledge {
+		d.persistOffset(ctx, ev.UpdateID)
+	}
 
 	if err != nil {
 		d.deps.Logger.Error("dispatch failed", "chat_id", ev.ChatID, "command", cmd.Name,

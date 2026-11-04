@@ -360,11 +360,22 @@ func toWire(messages []Message) []chatMessage {
 	var out = make([]chatMessage, 0, len(messages))
 	for _, m := range messages {
 		var content any = m.Content
-		if m.ImageURL != "" {
-			content = []chatContentPart{
-				{Type: "text", Text: m.Content},
-				{Type: "image_url", ImageURL: &chatImageURL{URL: m.ImageURL}},
+		imageURLs := make([]string, 0, len(m.ImageURLs)+1)
+		if m.ImageURL != "" && (len(m.ImageURLs) == 0 || m.ImageURLs[0] != m.ImageURL) {
+			imageURLs = append(imageURLs, m.ImageURL)
+		}
+		for _, imageURL := range m.ImageURLs {
+			if imageURL != "" {
+				imageURLs = append(imageURLs, imageURL)
 			}
+		}
+		if len(imageURLs) > 0 {
+			parts := make([]chatContentPart, 0, len(imageURLs)+1)
+			parts = append(parts, chatContentPart{Type: "text", Text: m.Content})
+			for _, imageURL := range imageURLs {
+				parts = append(parts, chatContentPart{Type: "image_url", ImageURL: &chatImageURL{URL: imageURL}})
+			}
+			content = parts
 		}
 		out = append(out, chatMessage{Role: m.Role, Content: content})
 	}

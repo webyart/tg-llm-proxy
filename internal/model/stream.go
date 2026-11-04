@@ -19,6 +19,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -157,6 +158,12 @@ func (c *OpenAI) Stream(ctx context.Context, req Request, h StreamHandler) (Resp
 
 // `message` of the plain path; `reasoning_content` is the field this endpoint fills while it thinks, and
 // `stream_options.include_usage`, so this client does not send that field).
+type chatStreamToolCall struct {
+	Index    int              `json:"index"`
+	ID       string           `json:"id"`
+	Function chatToolFunction `json:"function"`
+}
+
 type chatChunk struct {
 	Model string `json:"model"`
 	Usage *struct {
@@ -166,9 +173,10 @@ type chatChunk struct {
 	Choices []struct {
 		Index int `json:"index"`
 		Delta struct {
-			Role             string  `json:"role"`
-			Content          *string `json:"content"`
-			ReasoningContent *string `json:"reasoning_content"`
+			Role             string               `json:"role"`
+			Content          *string              `json:"content"`
+			ReasoningContent *string              `json:"reasoning_content"`
+			ToolCalls        []chatStreamToolCall `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
@@ -184,7 +192,7 @@ func (c *OpenAI) streamAttempt(ctx context.Context, req Request, attempt int, h 
 		return Response{}, false, fmt.Errorf("the model of (STRATA_MODEL) is not set, attempt %d", attempt)
 	}
 
-	var body, err = json.Marshal(chatRequest{Model: model, Messages: toWire(req.Messages), Stream: true})
+	var body, err = json.Marshal(chatRequest{Model: model, Messages: toWire(req.Messages), Stream: true, Tools: toWireTools(req.Tools)})
 	if err != nil {
 		return Response{}, false, err
 	}
@@ -254,6 +262,7 @@ func (c *OpenAI) streamAttempt(ctx context.Context, req Request, attempt int, h 
 		delivered bool
 		reasoning int
 		finish    string
+		toolCalls = map[int]*ToolCall{}
 	)
 	var lastProgress time.Time
 	var progress = func() {
@@ -307,10 +316,23 @@ func (c *OpenAI) streamAttempt(ctx context.Context, req Request, attempt int, h 
 			if choice.FinishReason != nil && *choice.FinishReason != "" {
 				finish = *choice.FinishReason // `length` here means the model ran out of context
 			}
+			for _, call := range choice.Delta.ToolCalls {
+				current := toolCalls[call.Index]
+				if current == nil {
+					current = &ToolCall{}
+					toolCalls[call.Index] = current
+				}
+				if call.ID != "" {
+					current.ID = call.ID
+				}
+				if call.Function.Name != "" {
+					current.Name = call.Function.Name
+				}
+				current.Arguments += call.Function.Arguments
+			}
 			if choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != "" {
 				reasoning += len([]rune(*choice.Delta.ReasoningContent))
 				progress() // the placeholder of UX: the model thinks, the answer has not started
-				continue
 			}
 			if choice.Delta.Content == nil || *choice.Delta.Content == "" {
 				continue
@@ -331,6 +353,16 @@ func (c *OpenAI) streamAttempt(ctx context.Context, req Request, attempt int, h 
 	}
 	var scanErr = scanner.Err()
 	response.Content, response.ReasoningRunes, response.FinishReason = answer.String(), reasoning, finish
+	if len(toolCalls) > 0 {
+		indexes := make([]int, 0, len(toolCalls))
+		for index := range toolCalls {
+			indexes = append(indexes, index)
+		}
+		sort.Ints(indexes)
+		for _, index := range indexes {
+			response.ToolCalls = append(response.ToolCalls, *toolCalls[index])
+		}
+	}
 
 	select {
 	case <-stalled:
@@ -349,7 +381,7 @@ func (c *OpenAI) streamAttempt(ctx context.Context, req Request, attempt int, h 
 		}
 		return response, false, &url.Error{Op: "stream", URL: c.chatURL, Err: scanErr}
 	}
-	if strings.TrimSpace(answer.String()) == "" {
+	if strings.TrimSpace(answer.String()) == "" && len(response.ToolCalls) == 0 {
 		return response, delivered, ErrEmptyAnswer
 	}
 	return response, delivered, nil

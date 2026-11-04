@@ -602,10 +602,8 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 	var resp model.Response
 	if canStream {
 		session = d.newStreamSession(replyCtx, ev.ChatID, sender)
-		resp, modelErr = streamer.Stream(replyCtx, model.Request{Model: selectedModel, Messages: messages}, session.handler())
-	} else {
-		resp, modelErr = d.deps.Model.Complete(replyCtx, model.Request{Model: selectedModel, Messages: messages})
 	}
+	resp, modelErr = d.completeWithTools(replyCtx, model.Request{Model: selectedModel, Messages: messages}, streamer, session)
 	if modelErr != nil {
 		if errors.Is(modelErr, context.Canceled) {
 			return modelErr // the process is stopping : nothing to promise the user

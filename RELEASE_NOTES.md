@@ -1,3 +1,12 @@
+# tg-llm-proxy v1.11.0
+
+## Safe tools release
+
+- Добавлен OpenAI function calling с одним безопасным `calculator`: +, -, *, /, %, скобки и числа; никаких shell, файлов или сети.
+- Tool loop ограничен двумя rounds и двумя calls в round, выражение — 200 символов. Работает в обычном и streaming paths, включая fragmented tool_calls.
+- `TOOLS_ENABLED=true` управляет функцией. В SQLite сохраняются только пользовательский вопрос и финальный ответ, без промежуточных tool messages.
+- Добавлены model/bot и end-to-end integration проверки.
+
 # tg-llm-proxy v1.10.0
 
 ## Local RAG release

@@ -291,8 +291,8 @@ func TestOldNameOfTheRowIsRefusedByName(t *testing.T) {
 }
 
 func TestEnvIsTheRowsOfTheTable(t *testing.T) {
-	if len(Env) != 35 {
-		t.Errorf("Env holds %d names, want 35 including the media limits", len(Env))
+	if len(Env) != 36 {
+		t.Errorf("Env holds %d names, want 36 including tools", len(Env))
 	}
 	var seen = map[string]bool{}
 	var i = 0

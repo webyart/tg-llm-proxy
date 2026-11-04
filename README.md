@@ -11,6 +11,7 @@ Telegram-бот-прокси между пользователями и лока
 - `/start` и `/help` открывают inline-меню с 19 кнопками команд; callback проходит через тот же Dispatcher.
 - Альбомы до 10 фото JPEG/PNG, текстовые документы UTF-8 до 64 КиБ, voice, аудиофайлы и video notes через Whisper. Лимиты настраиваются `MEDIA_MAX_MB` и `SPEECH_MAX_SECONDS`.
 - История и независимый контекст каждого чата в SQLite/WAL.
+- Безопасный OpenAI function calling: только локальный calculator, без shell/файлов/сети; поддерживаются обычные и streaming ответы.
 - Allowlist по Telegram user id, rate limiting, per-chat lock и ограничение параллельных запросов к модели.
 - Обработка timeout/5xx/пустых ответов, Telegram 429 и восстановление незавершённых вопросов после рестарта.
 - Версионированные миграции через `schema_migrations` (текущая схема — версия 5).
@@ -92,7 +93,7 @@ docker compose logs -f bot
 
 ## Конфигурация
 
-Полный список из 35 ENV-строк и их значения по умолчанию находится в `.env.example`. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
+Полный список из 36 ENV-строк и их значения по умолчанию находится в `.env.example`. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
 
 ### Основные параметры
 
@@ -116,6 +117,7 @@ docker compose logs -f bot
 | `MAX_INPUT_CHARS` | 4000 | ограничение входного текста |
 | `RATE_LIMIT_PER_MINUTE` | 20 | лимит запросов пользователя к модели |
 | `MAX_CONCURRENT_MODEL_REQUESTS` | 2 | параллельные вызовы модели |
+| `TOOLS_ENABLED` | true | безопасный calculator через function calling |
 | `MAX_MESSAGE_CHUNK` | 3500 | размер части ответа; максимум 4096 |
 | `PARSE_MODE` | `MarkdownV2` | `MarkdownV2`, `HTML` или `plain` |
 | `HEALTH_PORT` | 8080 | loopback health endpoint |
@@ -330,6 +332,6 @@ docker compose up -d
 
 ## Документы
 
-- `.env.example` — все настройки (35) с комментариями.
+- `.env.example` — все настройки (36) с комментариями.
 - `RELEASE_NOTES.md` — состав release candidate и результаты проверок.
 - `PLAN.md` — локальный подробный план и история изменений (gitignored).

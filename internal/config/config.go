@@ -46,6 +46,7 @@ var Env = []string{
 	"RATE_LIMIT_PER_MINUTE",
 	"MAX_CONCURRENT_MODEL_REQUESTS",
 	"PROXY_FREE_TEXT",
+	"TOOLS_ENABLED",
 	"MAX_MESSAGE_CHUNK",
 	"PARSE_MODE",
 	"HEALTH_PORT",
@@ -77,6 +78,7 @@ const DefaultSystemPrompt = "You are a helpful assistant."
 const DefaultTranscriptionModel = "Systran/faster-whisper-small"
 const DefaultMediaMaxMB = int64(10)
 const DefaultSpeechMaxSeconds = int64(300)
+const DefaultToolsEnabled = true
 const DefaultTimeoutSeconds = int64(60)
 const DefaultDeadlineSeconds = int64(90)
 const DefaultRecoveryMaxAgeHours = int64(24)
@@ -150,6 +152,7 @@ type Config struct {
 	RateLimitPerMinute    int64
 	MaxConcurrentRequests int64
 	FreeText              bool
+	ToolsEnabled          bool
 	MaxMessageChunk       int64
 	ParseMode             string
 	HealthPort            int64
@@ -580,6 +583,9 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	var free, badFree = Flag(raw, "PROXY_FREE_TEXT", true)
 	cfg.FreeText = free
 	problems = Push(problems, badFree)
+	tools, badTools := Flag(raw, "TOOLS_ENABLED", DefaultToolsEnabled)
+	cfg.ToolsEnabled = tools
+	problems = Push(problems, badTools)
 
 	var chunk, badChunk = Num(raw, "MAX_MESSAGE_CHUNK", DefaultMaxChunk, 64, ChunkMax)
 	cfg.MaxMessageChunk = chunk

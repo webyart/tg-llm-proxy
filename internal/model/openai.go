@@ -185,8 +185,11 @@ func Retryable(err error) bool {
 
 // because a streamed event carries a `delta`, not a `message`.
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content any    `json:"content"`
+	Role       string         `json:"role"`
+	Content    any            `json:"content"`
+	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+	ToolName   string         `json:"name,omitempty"`
 }
 
 type chatContentPart struct {
@@ -199,16 +202,36 @@ type chatImageURL struct {
 	URL string `json:"url"`
 }
 
+type chatToolFunction struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters"`
+	Arguments   string         `json:"arguments,omitempty"`
+}
+
+type chatToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function chatToolFunction `json:"function"`
+}
+
+type chatToolDefinition struct {
+	Type     string           `json:"type"`
+	Function chatToolFunction `json:"function"`
+}
+
 type chatRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	Stream   bool          `json:"stream"`
+	Model    string               `json:"model"`
+	Messages []chatMessage        `json:"messages"`
+	Stream   bool                 `json:"stream"`
+	Tools    []chatToolDefinition `json:"tools,omitempty"`
 }
 
 type chatChoice struct {
 	Message struct {
-		Role    string  `json:"role"`
-		Content *string `json:"content"` // a pointer: some providers answer null here
+		Role      string         `json:"role"`
+		Content   *string        `json:"content"` // a pointer: some providers answer null here
+		ToolCalls []chatToolCall `json:"tool_calls"`
 	} `json:"message"`
 	Index        int    `json:"index"`
 	FinishReason string `json:"finish_reason"`
@@ -245,7 +268,7 @@ func (c *OpenAI) attempt(ctx context.Context, req Request, attempt int) (Respons
 		return Response{}, fmt.Errorf("the model of (STRATA_MODEL) is not set, attempt %d", attempt)
 	}
 
-	var body, err = json.Marshal(chatRequest{Model: model, Messages: toWire(req.Messages), Stream: false})
+	var body, err = json.Marshal(chatRequest{Model: model, Messages: toWire(req.Messages), Stream: false, Tools: toWireTools(req.Tools)})
 	if err != nil {
 		return Response{}, err
 	}
@@ -299,11 +322,12 @@ func Decode(status int, payload []byte, model string, attempt int) (Response, er
 	if parsed.Choices[0].Message.Content != nil {
 		content = *parsed.Choices[0].Message.Content
 	}
-	if strings.TrimSpace(content) == "" {
-		return Response{}, ErrEmptyAnswer // an empty answer is an error, never a stored row
+	toolCalls := fromWireToolCalls(parsed.Choices[0].Message.ToolCalls)
+	if strings.TrimSpace(content) == "" && len(toolCalls) == 0 {
+		return Response{}, ErrEmptyAnswer // an empty answer without tool calls is an error, never a stored row
 	}
 
-	var out = Response{Content: content, Model: parsed.Model, Attempts: attempt}
+	var out = Response{Content: content, Model: parsed.Model, Attempts: attempt, ToolCalls: toolCalls}
 	if out.Model == "" {
 		out.Model = model
 	}
@@ -377,7 +401,40 @@ func toWire(messages []Message) []chatMessage {
 			}
 			content = parts
 		}
-		out = append(out, chatMessage{Role: m.Role, Content: content})
+		out = append(out, chatMessage{Role: m.Role, Content: content, ToolCalls: toWireToolCalls(m.ToolCalls), ToolCallID: m.ToolCallID, ToolName: m.ToolName})
+	}
+	return out
+}
+
+func toWireToolCalls(calls []ToolCall) []chatToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]chatToolCall, 0, len(calls))
+	for _, call := range calls {
+		out = append(out, chatToolCall{ID: call.ID, Type: "function", Function: chatToolFunction{Name: call.Name, Arguments: call.Arguments}})
+	}
+	return out
+}
+
+func toWireTools(tools []ToolDefinition) []chatToolDefinition {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]chatToolDefinition, 0, len(tools))
+	for _, tool := range tools {
+		out = append(out, chatToolDefinition{Type: "function", Function: chatToolFunction{Name: tool.Name, Description: tool.Description, Parameters: tool.Parameters}})
+	}
+	return out
+}
+
+func fromWireToolCalls(calls []chatToolCall) []ToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]ToolCall, 0, len(calls))
+	for _, call := range calls {
+		out = append(out, ToolCall{ID: call.ID, Name: call.Function.Name, Arguments: call.Function.Arguments})
 	}
 	return out
 }

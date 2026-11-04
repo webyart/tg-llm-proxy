@@ -16,13 +16,15 @@ import (
 )
 
 const (
-	AttachmentPhoto    = "photo"
-	AttachmentDocument = "document"
-	AttachmentVoice    = "voice"
-	PhotoMaxBytes      = int64(10 << 20)
-	DocumentMaxBytes   = int64(64 << 10)
-	VoiceMaxBytes      = int64(10 << 20)
-	VoiceMaxSeconds    = 300
+	AttachmentPhoto     = "photo"
+	AttachmentDocument  = "document"
+	AttachmentVoice     = "voice"
+	AttachmentAudio     = "audio"
+	AttachmentVideoNote = "video_note"
+	PhotoMaxBytes       = int64(10 << 20)
+	DocumentMaxBytes    = int64(64 << 10)
+	VoiceMaxBytes       = int64(10 << 20)
+	VoiceMaxSeconds     = 300
 )
 
 var (
@@ -51,8 +53,10 @@ type AttachmentDownloader interface {
 }
 
 type telegramAttachmentDownloader struct {
-	bot    *tgbot.Bot
-	client *http.Client
+	bot              *tgbot.Bot
+	client           *http.Client
+	mediaMaxBytes    int64
+	speechMaxSeconds int
 }
 
 func (d *telegramAttachmentDownloader) Download(ctx context.Context, attachment Attachment) (DownloadedAttachment, error) {
@@ -60,10 +64,17 @@ func (d *telegramAttachmentDownloader) Download(ctx context.Context, attachment 
 	if limit == 0 {
 		return DownloadedAttachment{}, ErrAttachmentType
 	}
+	if (attachment.Kind == AttachmentPhoto || isSpeechAttachment(&attachment)) && d.mediaMaxBytes > 0 {
+		limit = d.mediaMaxBytes
+	}
 	if attachment.Size > limit {
 		return DownloadedAttachment{}, ErrAttachmentTooLarge
 	}
-	if attachment.Kind == AttachmentVoice && attachment.Duration > VoiceMaxSeconds {
+	speechMaxSeconds := d.speechMaxSeconds
+	if speechMaxSeconds <= 0 {
+		speechMaxSeconds = VoiceMaxSeconds
+	}
+	if isSpeechAttachment(&attachment) && attachment.Duration > speechMaxSeconds {
 		return DownloadedAttachment{}, ErrVoiceTooLong
 	}
 	file, err := d.bot.GetFile(ctx, &tgbot.GetFileParams{FileID: attachment.FileID})
@@ -110,10 +121,22 @@ func attachmentLimit(kind string) int64 {
 		return PhotoMaxBytes
 	case AttachmentDocument:
 		return DocumentMaxBytes
-	case AttachmentVoice:
+	case AttachmentVoice, AttachmentAudio, AttachmentVideoNote:
 		return VoiceMaxBytes
 	default:
 		return 0
+	}
+}
+
+func isSpeechAttachment(attachment *Attachment) bool {
+	if attachment == nil {
+		return false
+	}
+	switch attachment.Kind {
+	case AttachmentVoice, AttachmentAudio, AttachmentVideoNote:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -127,6 +150,10 @@ func attachmentPrompt(ev Event) string {
 		return "Опиши изображение."
 	case AttachmentVoice:
 		return "Ответь на голосовое сообщение."
+	case AttachmentAudio:
+		return "Ответь на аудиосообщение."
+	case AttachmentVideoNote:
+		return "Ответь на видеосообщение."
 	default:
 		return "Прочитай документ."
 	}
@@ -142,13 +169,32 @@ func storedAttachmentQuestion(ev Event) string {
 		return "[Фото]\n" + text
 	case AttachmentVoice:
 		return "[Голосовое: ожидает транскрипции]\n" + text
+	case AttachmentAudio:
+		return "[Аудио: ожидает транскрипции]\n" + text
+	case AttachmentVideoNote:
+		return "[Видеосообщение: ожидает транскрипции]\n" + text
 	default:
 		return "[Документ: " + safeAttachmentName(ev.Attachment.FileName) + "]\n" + text
 	}
 }
 
+func speechStoredMarker(kind string) string {
+	switch kind {
+	case AttachmentAudio:
+		return "[Аудио]"
+	case AttachmentVideoNote:
+		return "[Видеосообщение]"
+	default:
+		return "[Голосовое]"
+	}
+}
+
 func isStoredAttachment(text string) bool {
-	return strings.HasPrefix(text, "[Фото]\n") || strings.HasPrefix(text, "[Документ: ") || strings.HasPrefix(text, "[Голосовое: ожидает транскрипции]\n")
+	return strings.HasPrefix(text, "[Фото]\n") ||
+		strings.HasPrefix(text, "[Документ: ") ||
+		strings.HasPrefix(text, "[Голосовое: ожидает транскрипции]\n") ||
+		strings.HasPrefix(text, "[Аудио: ожидает транскрипции]\n") ||
+		strings.HasPrefix(text, "[Видеосообщение: ожидает транскрипции]\n")
 }
 
 func safeAttachmentName(name string) string {
@@ -222,7 +268,7 @@ func documentModelPrompt(caption string, name string, content string, maxRunes i
 }
 
 func voiceModelPrompt(caption string, transcript string) string {
-	return caption + "\n\nТранскрипция голосового сообщения:\n" + strings.TrimSpace(transcript)
+	return caption + "\n\nТранскрипция аудио/видеосообщения:\n" + strings.TrimSpace(transcript)
 }
 
 func attachmentErrorKind(err error) string {
@@ -243,11 +289,11 @@ func attachmentErrorKind(err error) string {
 func attachmentUserError(err error) string {
 	switch {
 	case errors.Is(err, ErrAttachmentTooLarge):
-		return "Вложение слишком большое. Лимит: 10 МиБ для фото и voice, 64 КиБ для текстового документа."
+		return "Вложение слишком большое. Лимит для фото и аудио/видео задаёт MEDIA_MAX_MB, для текстового документа — 64 КиБ."
 	case errors.Is(err, ErrVoiceTooLong):
-		return "Голосовое сообщение слишком длинное. Лимит — 5 минут."
+		return "Аудио или видеосообщение слишком длинное. Лимит задаёт SPEECH_MAX_SECONDS (по умолчанию — 5 минут)."
 	case errors.Is(err, ErrAttachmentType):
-		return "Поддерживаются фото JPEG/PNG, текстовые документы UTF-8 и голосовые сообщения OGG/Opus."
+		return "Поддерживаются фото JPEG/PNG, текстовые документы UTF-8, голосовые и аудиосообщения, а также видеосообщения."
 	case errors.Is(err, ErrAttachmentUnavailable):
 		return "Не удалось получить вложение из Telegram. Отправь его повторно."
 	default:

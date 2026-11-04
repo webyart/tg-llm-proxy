@@ -45,19 +45,21 @@ type StrataReply struct {
 
 // messages of one chat against it.
 type Strata struct {
-	Server             *httptest.Server
-	wantKey            string
-	replies            []StrataReply
-	mu                 sync.Mutex
-	chatCalls          int
-	getCalls           int
-	otherCall          int // requests that hit neither /v1/chat/completions nor /v1/models
-	lastBody           string
-	lastAuth           string
-	transcriptionText  string
-	transcriptionModel string
-	transcriptionBytes int
-	transcriptionCalls int
+	Server                   *httptest.Server
+	wantKey                  string
+	replies                  []StrataReply
+	mu                       sync.Mutex
+	chatCalls                int
+	getCalls                 int
+	otherCall                int // requests that hit neither /v1/chat/completions nor /v1/models
+	lastBody                 string
+	lastAuth                 string
+	transcriptionText        string
+	transcriptionModel       string
+	transcriptionFilename    string
+	transcriptionContentType string
+	transcriptionBytes       int
+	transcriptionCalls       int
 }
 
 // STRATA_API_KEY may be empty); a non-empty key makes the fake answer 401 without the header, which

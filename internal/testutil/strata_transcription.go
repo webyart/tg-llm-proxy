@@ -30,6 +30,18 @@ func (s *Strata) LastTranscriptionBytes() int {
 	return s.transcriptionBytes
 }
 
+func (s *Strata) LastTranscriptionFilename() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.transcriptionFilename
+}
+
+func (s *Strata) LastTranscriptionContentType() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.transcriptionContentType
+}
+
 func (s *Strata) handleTranscription(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -39,7 +51,7 @@ func (s *Strata) handleTranscription(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "multipart required", http.StatusBadRequest)
 		return
 	}
-	file, _, err := r.FormFile("file")
+	file, header, err := r.FormFile("file")
 	if err != nil {
 		http.Error(w, "file required", http.StatusBadRequest)
 		return
@@ -53,6 +65,8 @@ func (s *Strata) handleTranscription(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.transcriptionCalls++
 	s.transcriptionModel = r.FormValue("model")
+	s.transcriptionFilename = header.Filename
+	s.transcriptionContentType = header.Header.Get("Content-Type")
 	s.transcriptionBytes = len(data)
 	s.lastAuth = r.Header.Get("Authorization")
 	text := s.transcriptionText

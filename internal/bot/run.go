@@ -124,7 +124,15 @@ func (d *Dispatcher) NewTelegram(opts Options) (*tgbot.Bot, error) {
 	}
 	var replier = &telegramReplier{d: d, bot: tg, cfg: d.deps.Cfg, users: map[int64]int64{}, logger: d.deps.Logger}
 	d.deps.Replier = replier
-	d.deps.Attachments = &telegramAttachmentDownloader{bot: tg, client: client}
+	mediaMaxBytes := d.deps.Cfg.MediaMaxBytes
+	if mediaMaxBytes <= 0 {
+		mediaMaxBytes = PhotoMaxBytes
+	}
+	speechMaxSeconds := int(d.deps.Cfg.SpeechMaxSeconds)
+	if speechMaxSeconds <= 0 {
+		speechMaxSeconds = VoiceMaxSeconds
+	}
+	d.deps.Attachments = &telegramAttachmentDownloader{bot: tg, client: client, mediaMaxBytes: mediaMaxBytes, speechMaxSeconds: speechMaxSeconds}
 	tg.RegisterHandlerMatchFunc(d.matchUpdate, d.telegramHandler)
 
 	if !opts.SkipGetMe {
@@ -212,6 +220,7 @@ func eventOf(upd *models.Update) (Event, bool) {
 		ChatType:          string(message.Chat.Type),
 		ChatTitle:         chatTitle(message.Chat),
 		Text:              text,
+		MediaGroupID:      message.MediaGroupID,
 	}
 	if message.From != nil {
 		ev.UserID = message.From.ID
@@ -235,10 +244,22 @@ func eventOf(upd *models.Update) (Event, bool) {
 		ev.Attachment = &Attachment{Kind: AttachmentVoice, FileID: message.Voice.FileID, FileName: "voice.ogg", MimeType: "audio/ogg", Size: message.Voice.FileSize, Duration: message.Voice.Duration}
 		return ev, true
 	}
+	if message.Audio != nil {
+		fileName := strings.TrimSpace(message.Audio.FileName)
+		if fileName == "" {
+			fileName = "audio.bin"
+		}
+		ev.Attachment = &Attachment{Kind: AttachmentAudio, FileID: message.Audio.FileID, FileName: fileName, MimeType: message.Audio.MimeType, Size: message.Audio.FileSize, Duration: message.Audio.Duration}
+		return ev, true
+	}
+	if message.VideoNote != nil {
+		ev.Attachment = &Attachment{Kind: AttachmentVideoNote, FileID: message.VideoNote.FileID, FileName: "video-note.mp4", MimeType: "video/mp4", Size: int64(message.VideoNote.FileSize), Duration: message.VideoNote.Duration}
+		return ev, true
+	}
 	if strings.TrimSpace(text) != "" {
 		return ev, true
 	}
-	if message.Audio != nil || message.Video != nil || message.VideoNote != nil || message.Animation != nil || message.Sticker != nil {
+	if message.Video != nil || message.Animation != nil || message.Sticker != nil {
 		ev.UnsupportedMedia = true
 		return ev, true
 	}

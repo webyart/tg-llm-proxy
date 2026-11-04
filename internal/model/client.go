@@ -20,9 +20,10 @@ const (
 
 // CONTEXT_MESSAGES rows, bounded by MAX_CONTEXT_CHARS).
 type Message struct {
-	Role     string
-	Content  string
-	ImageURL string
+	Role      string
+	Content   string
+	ImageURL  string
+	ImageURLs []string
 }
 
 type Request struct {

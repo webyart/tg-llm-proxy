@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	tgbot "github.com/go-telegram/bot"
 )
@@ -89,9 +91,43 @@ func formatInlineMarkdown(text string, tokens *markdownTokens) string {
 		match := italicAsterisk.FindStringSubmatch(value)
 		return tokens.put("*" + tgbot.EscapeMarkdown(match[1]) + "*")
 	})
-	text = italicUnderscore.ReplaceAllStringFunc(text, func(value string) string {
-		match := italicUnderscore.FindStringSubmatch(value)
-		return tokens.put("_" + tgbot.EscapeMarkdown(match[1]) + "_")
-	})
+	text = formatItalicUnderscores(text, tokens)
 	return tgbot.EscapeMarkdown(text)
+}
+
+func formatItalicUnderscores(text string, tokens *markdownTokens) string {
+	var out strings.Builder
+	for len(text) > 0 {
+		match := italicUnderscore.FindStringSubmatchIndex(text)
+		if match == nil {
+			out.WriteString(text)
+			break
+		}
+		start, end := match[0], match[1]
+		if markdownWordBefore(text, start) || markdownWordAfter(text, end) {
+			out.WriteString(text[:start+1])
+			text = text[start+1:]
+			continue
+		}
+		out.WriteString(text[:start])
+		out.WriteString(tokens.put("_" + tgbot.EscapeMarkdown(text[match[2]:match[3]]) + "_"))
+		text = text[end:]
+	}
+	return out.String()
+}
+
+func markdownWordBefore(text string, index int) bool {
+	if index == 0 {
+		return false
+	}
+	symbol, _ := utf8.DecodeLastRuneInString(text[:index])
+	return unicode.IsLetter(symbol) || unicode.IsNumber(symbol)
+}
+
+func markdownWordAfter(text string, index int) bool {
+	if index == len(text) {
+		return false
+	}
+	symbol, _ := utf8.DecodeRuneInString(text[index:])
+	return unicode.IsLetter(symbol) || unicode.IsNumber(symbol)
 }

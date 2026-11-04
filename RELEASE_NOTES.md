@@ -1,3 +1,11 @@
+# tg-llm-proxy v1.17.1
+
+## Markdown formatting patch
+
+- Подчёркивания внутри идентификаторов (`TELEGRAM_ALLOWED_USERS`, `read_url`, `web_search` и других `snake_case`) больше не интерпретируются как курсив и не исчезают из сообщений Telegram.
+- Настоящий `_курсив_`, в том числе рядом с идентификаторами, сохраняется. Добавлены regression-тесты.
+- Живой acceptance подтвердил RAG-ответ с источником `debug.log` и длинный стриминг: 3774 output tokens за 1 м 28 с, доставка несколькими сообщениями без итогового пакетного спама.
+
 # tg-llm-proxy v1.17.0
 
 ## Web search and RAG ranking release candidate

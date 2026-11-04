@@ -51,6 +51,10 @@ var Env = []string{
 	"PROXY_FREE_TEXT",
 	"TOOLS_ENABLED",
 	"URL_READER_ENABLED",
+	"WEB_SEARCH_ENABLED",
+	"WEB_SEARCH_BASE_URL",
+	"WEB_SEARCH_TIMEOUT_SECONDS",
+	"WEB_SEARCH_MAX_RESULTS",
 	"MAX_MESSAGE_CHUNK",
 	"PARSE_MODE",
 	"HEALTH_PORT",
@@ -138,36 +142,40 @@ type Config struct {
 	// rewritten as the model writes; StreamEditIntervalMS is the cadence of those rewrites; StreamIdleSeconds
 	// is the pause between two SSE events past which the stream is considered dead; StreamTotalSeconds is the
 	// ceiling of one streamed answer. The semantics of TimeoutSeconds and ReplyDeadlineSeconds do NOT change
-	Streaming             bool
-	StreamEditIntervalMS  int64
-	StreamIdleSeconds     int64
-	StreamTotalSeconds    int64
-	WebhookEnabled        bool
-	WebhookPublicURL      string
-	WebhookSecretToken    string
-	WebhookHost           string
-	WebhookPort           int64
-	WebhookPath           string
-	DBPath                string
-	ContextMessages       int64
-	MaxContextChars       int64
-	MaxInputChars         int64
-	RAGMaxDocuments       int64
-	RAGResultLimit        int64
-	RAGMaxContextChars    int64
-	SystemPrompt          string
-	UserIDs               []int64
-	AdminIDs              []int64
-	DenyByDefault         bool
-	RateLimitPerMinute    int64
-	MaxConcurrentRequests int64
-	FreeText              bool
-	ToolsEnabled          bool
-	URLReaderEnabled      bool
-	MaxMessageChunk       int64
-	ParseMode             string
-	HealthPort            int64
-	LogLevel              string
+	Streaming               bool
+	StreamEditIntervalMS    int64
+	StreamIdleSeconds       int64
+	StreamTotalSeconds      int64
+	WebhookEnabled          bool
+	WebhookPublicURL        string
+	WebhookSecretToken      string
+	WebhookHost             string
+	WebhookPort             int64
+	WebhookPath             string
+	DBPath                  string
+	ContextMessages         int64
+	MaxContextChars         int64
+	MaxInputChars           int64
+	RAGMaxDocuments         int64
+	RAGResultLimit          int64
+	RAGMaxContextChars      int64
+	SystemPrompt            string
+	UserIDs                 []int64
+	AdminIDs                []int64
+	DenyByDefault           bool
+	RateLimitPerMinute      int64
+	MaxConcurrentRequests   int64
+	FreeText                bool
+	ToolsEnabled            bool
+	URLReaderEnabled        bool
+	WebSearchEnabled        bool
+	WebSearchBaseURL        string
+	WebSearchTimeoutSeconds int64
+	WebSearchMaxResults     int64
+	MaxMessageChunk         int64
+	ParseMode               string
+	HealthPort              int64
+	LogLevel                string
 }
 
 // wrote is normalized so the endpoint it points at is reached EXACTLY ONCE through
@@ -609,6 +617,10 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	urlReader, badURLReader := Flag(raw, "URL_READER_ENABLED", false)
 	cfg.URLReaderEnabled = urlReader
 	problems = Push(problems, badURLReader)
+	webSearch, badWebSearch := Flag(raw, "WEB_SEARCH_ENABLED", false)
+	cfg.WebSearchEnabled = webSearch
+	problems = Push(problems, badWebSearch)
+	problems = append(problems, loadWebSearch(raw, &cfg)...)
 
 	var chunk, badChunk = Num(raw, "MAX_MESSAGE_CHUNK", DefaultMaxChunk, 64, ChunkMax)
 	cfg.MaxMessageChunk = chunk

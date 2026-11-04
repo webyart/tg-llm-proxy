@@ -11,7 +11,7 @@ Telegram-бот-прокси между пользователями и лока
 - `/start` и `/help` открывают inline-меню с 19 кнопками команд; callback проходит через тот же Dispatcher.
 - Альбомы до 10 фото JPEG/PNG, текстовые документы UTF-8 до 64 КиБ, voice, аудиофайлы и video notes через Whisper. Лимиты настраиваются `MEDIA_MAX_MB` и `SPEECH_MAX_SECONDS`.
 - История и независимый контекст каждого чата в SQLite/WAL.
-- Безопасный OpenAI function calling: локальный calculator и opt-in `read_url` для чтения HTTPS-страниц; без shell, файлов и произвольного кода. Поддерживаются обычные и streaming ответы.
+- Безопасный OpenAI function calling: локальный calculator, opt-in `read_url` для чтения HTTPS-страниц и opt-in `web_search` через self-hosted SearxNG; без shell, файлов и произвольного кода. Поддерживаются обычные и streaming ответы.
 - Allowlist по Telegram user id, rate limiting, per-chat lock и ограничение параллельных запросов к модели.
 - Обработка timeout/5xx/пустых ответов, Telegram 429 и восстановление незавершённых вопросов после рестарта.
 - Версионированные миграции через `schema_migrations` (текущая схема — версия 5).
@@ -93,7 +93,7 @@ docker compose logs -f bot
 
 ## Конфигурация
 
-Полный список из 40 ENV-строк и их значения по умолчанию находится в `.env.example`. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
+Полный список из 44 ENV-строк и их значения по умолчанию находится в `.env.example`. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
 
 ### Основные параметры
 
@@ -122,6 +122,10 @@ docker compose logs -f bot
 | `MAX_CONCURRENT_MODEL_REQUESTS` | 2 | параллельные вызовы модели |
 | `TOOLS_ENABLED` | true | безопасный calculator через function calling |
 | `URL_READER_ENABLED` | false | opt-in `read_url` для чтения текстовых HTTPS-страниц |
+| `WEB_SEARCH_ENABLED` | false | opt-in `web_search` через self-hosted SearxNG |
+| `WEB_SEARCH_BASE_URL` | пусто | адрес SearxNG; обязателен при `WEB_SEARCH_ENABLED=true` |
+| `WEB_SEARCH_TIMEOUT_SECONDS` | 10 | таймаут запроса к SearxNG; 1..30 |
+| `WEB_SEARCH_MAX_RESULTS` | 5 | число результатов; 1..10 |
 | `MAX_MESSAGE_CHUNK` | 3500 | размер части ответа; максимум 4096 |
 | `PARSE_MODE` | `MarkdownV2` | `MarkdownV2`, `HTML` или `plain` |
 | `HEALTH_PORT` | 8080 | loopback health endpoint |
@@ -146,6 +150,25 @@ go test -count=1 -tags=livecheck -run TestLiveURLReaderRealNetwork ./internal/bo
 
 Она читает реальный публичный HTTPS-сайт и подтверждает, что metadata-endpoint `169.254.169.254`, `http://` и `localhost`
 отклоняются. Живой acceptance внутри Telegram при включённом `URL_READER_ENABLED=true` не выполнялся.
+
+### Веб-поиск (opt-in)
+
+`web_search` даёт модели выдачу self-hosted SearxNG. Tool предлагается модели только при `WEB_SEARCH_ENABLED=true` **и** `TOOLS_ENABLED=true`; по умолчанию выключен. `WEB_SEARCH_BASE_URL` при включённом флаге обязателен: http или https, без userinfo, query и fragment. `WEB_SEARCH_TIMEOUT_SECONDS` (10, 1..30) ограничивает один запрос к SearxNG, `WEB_SEARCH_MAX_RESULTS` (5, 1..10) — число результатов.
+
+Sidecar поднимается отдельным opt-in override-файлом, в `.env` — те же две строки, что включают tool:
+
+```powershell
+docker compose -f docker-compose.yml -f compose.websearch.yaml up -d
+```
+
+```env
+WEB_SEARCH_ENABLED=true
+WEB_SEARCH_BASE_URL=http://searxng:8080
+```
+
+Бот вызывает только `<base>/search?q=…&format=json` и передаёт модели `title`/`url`/`snippet`; ссылки выдачи не загружаются, поэтому результат поиска не становится шагом для SSRF-перехода. SearxNG опубликован на `127.0.0.1:8083`, внутри compose-сети доступен по имени `searxng`, образ закреплён тегом и digest. JSON API включает settings из override-файла: у образа по умолчанию `format=json` отвечает 403, и ни один `SEARXNG_*` этот ключ не переопределяет. `secret_key` SearxNG генерируется в контейнере при старте и не попадает ни в `.env`, ни в репозиторий.
+
+Override проверен локально: контейнер стартует healthy, `format=json` отвечает выдачей, и opt-in проверка под build tag `livecheck` (`TestLiveWebSearchRealProvider`) выполнила реальный запрос через этот sidecar. Живой acceptance внутри Telegram при `WEB_SEARCH_ENABLED=true` не выполнялся.
 
 ### Сеть Telegram
 
@@ -368,6 +391,6 @@ docker compose up -d
 
 ## Документы
 
-- `.env.example` — все настройки (40) с комментариями.
+- `.env.example` — все настройки (44) с комментариями.
 - `RELEASE_NOTES.md` — состав release candidate и результаты проверок.
 - `PLAN.md` — локальный подробный план и история изменений (gitignored).

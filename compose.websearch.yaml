@@ -1,0 +1,71 @@
+# Opt-in SearxNG sidecar for `web_search`:
+#   docker compose -f docker-compose.yml -f compose.websearch.yaml up -d
+# Required .env values:
+#   WEB_SEARCH_ENABLED=true
+#   WEB_SEARCH_BASE_URL=http://searxng:8080
+# Use the same pair of compose files for down/restart to avoid an orphan sidecar.
+# The bot has no depends_on here: an unavailable optional provider must not block polling.
+# The entrypoint enables JSON responses and generates an ephemeral secret_key on tmpfs;
+# SearxNG rejects its stock placeholder and disables format=json by default.
+# The tool bypasses HTTP proxy settings when calling this internal provider.
+services:
+  searxng:
+    # Pinned to an explicit release (tag + digest of the same multi-arch manifest), never `latest`.
+    image: docker.io/searxng/searxng:2026.11.2-cccbc9e15@sha256:892ed5710603e38f9dc201e6a0b2f3f14dbdb8108edcadac30e55b165c979fb7
+    user: "977:977"
+    environment:
+      # The limiter needs a Valkey server; the only client here is the bot inside the compose network
+      # and 127.0.0.1-only, so bot detection is what would put the JSON API behind a Valkey dependency.
+      SEARXNG_LIMITER: "false"
+      SEARXNG_PUBLIC_INSTANCE: "false"
+      # The image proxy rewrites result thumbnails; the bot never renders results, it forwards text.
+      SEARXNG_IMAGE_PROXY: "false"
+    entrypoint:
+      - sh
+      - -ec
+      - |
+        secret="$(head -c 24 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9')"
+        cat > /etc/searxng/settings.yml <<EOF
+        use_default_settings: true
+        server:
+          limiter: false
+          image_proxy: false
+          secret_key: "$$secret"
+        search:
+          formats:
+            - html
+            - json
+        EOF
+        exec /usr/local/searxng/entrypoint.sh
+    # Loopback 8083 is only for manual checks; the bot uses the compose network on port 8080.
+    ports:
+      - "127.0.0.1:8083:8080"
+    volumes:
+      - searxng-data:/var/cache/searxng
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+      # /etc/searxng is a VOLUME of the image; a read-only rootfs leaves it writable only through
+      # tmpfs, and settings.yml must stay writable for the shim of this file.
+      - /etc/searxng:uid=977,gid=977,mode=0755
+    restart: unless-stopped
+    healthcheck:
+      # The image ships GNU wget, whose `--proxy off` is a busybox option, so this probe carries no
+      # proxy flag at all: it only ever dials the container's own loopback.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  searxng-data:

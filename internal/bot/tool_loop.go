@@ -21,6 +21,7 @@ func (d *Dispatcher) callModel(ctx context.Context, req model.Request, streamer 
 
 func (d *Dispatcher) completeWithTools(ctx context.Context, userID int64, req model.Request, streamer model.Streamer, session *streamSession) (model.Response, error) {
 	req.Tools = append(calculatorTools(d.deps.Cfg.ToolsEnabled), urlReaderTools(d.deps.Cfg.URLReaderEnabled)...)
+	req.Tools = append(req.Tools, webSearchTools(d.deps.Cfg.WebSearchEnabled)...)
 	for round := 0; round < toolRoundLimit; round++ {
 		resp, err := d.callModel(ctx, req, streamer, session)
 		if err != nil || len(resp.ToolCalls) == 0 {
@@ -42,6 +43,8 @@ func (d *Dispatcher) completeWithTools(ctx context.Context, userID int64, req mo
 				result, err = executeCalculator(call)
 			case "read_url":
 				result, err = executeURLReader(ctx, call)
+			case "web_search":
+				result, err = executeWebSearch(ctx, d.deps.Cfg, call)
 			default:
 				return model.Response{}, errors.New("unknown tool")
 			}

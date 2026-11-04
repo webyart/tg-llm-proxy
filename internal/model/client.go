@@ -16,19 +16,36 @@ const (
 	RoleSystem    = "system"
 	RoleUser      = "user"
 	RoleAssistant = "assistant"
+	RoleTool      = "tool"
 )
 
 // CONTEXT_MESSAGES rows, bounded by MAX_CONTEXT_CHARS).
+type ToolDefinition struct {
+	Name        string
+	Description string
+	Parameters  map[string]any
+}
+
+type ToolCall struct {
+	ID        string
+	Name      string
+	Arguments string
+}
+
 type Message struct {
-	Role      string
-	Content   string
-	ImageURL  string
-	ImageURLs []string
+	Role       string
+	Content    string
+	ImageURL   string
+	ImageURLs  []string
+	ToolCalls  []ToolCall
+	ToolCallID string
+	ToolName   string
 }
 
 type Request struct {
 	Model    string
 	Messages []Message
+	Tools    []ToolDefinition
 }
 
 // Latency covers the WHOLE call including the retries, because messages.latency_ms and the
@@ -42,6 +59,7 @@ type Response struct {
 	// «ответ обрывается») would otherwise be visible only as a suspiciously short answer.
 	ReasoningRunes int
 	FinishReason   string
+	ToolCalls      []ToolCall
 }
 
 // first delivered token) into places that have no tokens to deliver. The ask handler asks for this interface

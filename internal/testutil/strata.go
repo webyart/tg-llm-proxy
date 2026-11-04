@@ -18,16 +18,19 @@ import (
 
 // StrataReply — one scripted answer. Replies are consumed in order; once the script is exhausted the
 type StrataReply struct {
-	Status       int           // 0 means 200
-	Content      string        // choices[0].message.content of the OpenAI shape
-	NoContent    bool          // answer with a null content, which real providers do send
-	EmptyChoices bool          // answer 200 with choices: []
-	TokensIn     int64         // usage.prompt_tokens
-	TokensOut    int64         // usage.completion_tokens
-	NoUsage      bool          // omit the usage object
-	Model        string        // the model name to echo
-	Delay        time.Duration // hold the response open — the "timeout" case of
-	Models       []string      // the list for GET /v1/models
+	Status        int           // 0 means 200
+	Content       string        // choices[0].message.content of the OpenAI shape
+	NoContent     bool          // answer with a null content, which real providers do send
+	EmptyChoices  bool          // answer 200 with choices: []
+	TokensIn      int64         // usage.prompt_tokens
+	TokensOut     int64         // usage.completion_tokens
+	NoUsage       bool          // omit the usage object
+	Model         string        // the model name to echo
+	Delay         time.Duration // hold the response open — the "timeout" case of
+	Models        []string      // the list for GET /v1/models
+	ToolCallID    string
+	ToolName      string
+	ToolArguments string
 
 	// (`"stream": true` in the body), which is how one fake serves both paths of the client. The shapes below
 	// `data: [DONE]` at the end, and `usage` inside the stream without `stream_options`.
@@ -188,11 +191,17 @@ func (s *Strata) handleChat(w http.ResponseWriter, r *http.Request) {
 	} else {
 		message["content"] = answer.Content
 	}
+	finish := "stop"
+	if answer.ToolName != "" {
+		message["content"] = nil
+		message["tool_calls"] = []any{map[string]any{"id": answer.ToolCallID, "type": "function", "function": map[string]any{"name": answer.ToolName, "arguments": answer.ToolArguments}}}
+		finish = "tool_calls"
+	}
 	var payload = map[string]any{
 		"id":      "fake-chat-1",
 		"object":  "chat.completion",
 		"model":   model,
-		"choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": "stop"}},
+		"choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": finish}},
 	}
 	if answer.EmptyChoices {
 		payload["choices"] = []any{} // «пустой ответ»

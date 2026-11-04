@@ -43,6 +43,7 @@ func PrintConfig(cfg config.Config) {
 	fmt.Println("RECOVERY_MAX_AGE_HOURS", cfg.RecoveryMaxAgeHours, "")
 	fmt.Println("MEDIA_MAX_MB", cfg.MediaMaxBytes/(1<<20), "")
 	fmt.Println("SPEECH_MAX_SECONDS", cfg.SpeechMaxSeconds, "")
+	fmt.Println("TOOLS_ENABLED", cfg.ToolsEnabled, "")
 	fmt.Println("STREAMING_ENABLED", cfg.Streaming, "")
 	fmt.Println("STREAM_EDIT_INTERVAL_MS", cfg.StreamEditIntervalMS, "")
 	fmt.Println("STREAM_IDLE_TIMEOUT_SECONDS", cfg.StreamIdleSeconds, "")

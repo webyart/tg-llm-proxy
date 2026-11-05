@@ -654,3 +654,88 @@ func TestStreamRotatesToNextMessageOnCadenceTick(t *testing.T) {
 		}
 	}
 }
+
+func TestStreamBotStopsBeforeAnswerBuilderExceedsLimit(t *testing.T) {
+	cfg := streamConfig(t, map[string]string{"MAX_MESSAGE_CHUNK": "64", "PARSE_MODE": "plain"})
+	r := &streamReplier{}
+	d := newTestDispatcher(t, cfg, nil, r, testStore(t))
+	s := d.newStreamSession(context.Background(), 106, r)
+	s.interval = time.Hour
+	h := s.handler()
+
+	var err error
+	for i := 0; i < model.StreamAnswerLimit+1; i++ {
+		if err = h.Delta("界"); err != nil {
+			break
+		}
+	}
+	if !errors.Is(err, model.ErrStreamLimit) {
+		t.Fatalf("delta %d err = %v, want ErrStreamLimit", model.StreamAnswerLimit+1, err)
+	}
+	if s.answerRunes != model.StreamAnswerLimit || Runes(s.answer.String()) != model.StreamAnswerLimit {
+		t.Fatalf("bot retained %d runes (%d tracked), want exactly %d", Runes(s.answer.String()), s.answerRunes, model.StreamAnswerLimit)
+	}
+	if r.postCount() != 1 || r.editCount() != 0 {
+		t.Fatalf("overflow caused unexpected Telegram work: posts=%d edits=%d", r.postCount(), r.editCount())
+	}
+	broken := s.brokenView(err.Error())
+	if !strings.Contains(broken, "прервано") || Runes(broken) > int(cfg.MaxMessageChunk) {
+		t.Fatalf("bounded error did not use the broken-stream view: %q", broken)
+	}
+}
+
+func TestStreamLongMarkdownDueTickAndFinalDelivery(t *testing.T) {
+	cfg := streamConfig(t, map[string]string{"MAX_MESSAGE_CHUNK": "128", "PARSE_MODE": "MarkdownV2"})
+	r := &streamReplier{}
+	d := newTestDispatcher(t, cfg, nil, r, testStore(t))
+	s := d.newStreamSession(context.Background(), 106, r)
+	s.interval = time.Hour
+	long := strings.Repeat("**жирный** и `код` со [ссылкой](https://example.com). ", 50)
+
+	if err := s.handler().Delta(long); err != nil {
+		t.Fatalf("first long-Markdown delta: %v", err)
+	}
+	s.lastEdit = time.Now().Add(-s.interval - time.Millisecond)
+	if err := s.refresh(); err != nil {
+		t.Fatalf("due long-Markdown refresh: %v", err)
+	}
+	want := d.chunksOf(long)
+	if r.postCount() != len(want) {
+		t.Fatalf("due tick posted %d messages, want one per %d chunks", r.postCount(), len(want))
+	}
+	if err := s.deliver(context.Background(), d, long); err != nil {
+		t.Fatalf("final long-Markdown delivery: %v", err)
+	}
+	edits := r.editTexts()
+	if len(edits) < len(want) {
+		t.Fatalf("finalization produced %d edits for %d chunks", len(edits), len(want))
+	}
+	for i, chunk := range want {
+		if got := edits[len(edits)-len(want)+i]; got != chunk {
+			t.Errorf("final Markdown chunk %d differs: got %q want %q", i, got, chunk)
+		}
+	}
+	for _, text := range append(r.postTexts(), edits...) {
+		if Runes(text) > int(cfg.MaxMessageChunk) {
+			t.Fatalf("streamed Markdown message has %d runes, limit %d", Runes(text), cfg.MaxMessageChunk)
+		}
+	}
+}
+
+func TestStreamChunkLimitRejectsBeforeTelegram(t *testing.T) {
+	r := &streamReplier{}
+	d := &Dispatcher{deps: Deps{Cfg: config.Config{
+		ParseMode:       ParsePlain,
+		MaxMessageChunk: 1,
+	}, Replier: r}}
+	s := d.newStreamSession(context.Background(), 106, r)
+	full := strings.Repeat("x", maxStreamChunks+1)
+
+	err := s.deliver(context.Background(), d, full)
+	if !errors.Is(err, model.ErrStreamLimit) || !strings.Contains(err.Error(), "chunks") {
+		t.Fatalf("err = %v, want a bounded Telegram-chunk error", err)
+	}
+	if r.count() != 0 || r.postCount() != 0 || r.editCount() != 0 {
+		t.Fatalf("chunk overflow reached Telegram: sends=%d posts=%d edits=%d", r.count(), r.postCount(), r.editCount())
+	}
+}

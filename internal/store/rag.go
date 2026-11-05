@@ -16,6 +16,8 @@ const (
 	RAGDocumentLimit = 20
 	RAGChunkRunes    = 1000
 	RAGChunkOverlap  = 100
+	RAGQueryMaxRunes = 4000
+	RAGQueryMaxTerms = 32
 )
 
 // BM25-lite weights of SearchRAGChunks. ragB is 1 so chunk length is normalised in full: a chunk
@@ -249,6 +251,7 @@ func lexicalTokenCount(text string) int {
 // text it holds. The document-frequency and average-length pass needs the whole corpus, but only
 // content or name matches remain candidates for scoring.
 func SearchRAGChunks(ctx context.Context, db *sql.DB, chatID int64, query string, limit int, maxRunes int) ([]RAGChunk, error) {
+	query = ragQueryPrefix(query)
 	terms := lexicalTerms(query)
 	if len(terms) == 0 || limit <= 0 || maxRunes <= 0 {
 		return []RAGChunk{}, nil
@@ -329,13 +332,30 @@ func lexicalTokens(text string) []string {
 	return strings.FieldsFunc(strings.ToLower(text), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) })
 }
 
+func ragQueryPrefix(query string) string {
+	if len(query) <= RAGQueryMaxRunes {
+		return query
+	}
+	runes := 0
+	for index := range query {
+		if runes == RAGQueryMaxRunes {
+			return query[:index]
+		}
+		runes++
+	}
+	return query
+}
+
 func lexicalTerms(query string) []string {
 	seen := map[string]bool{}
 	terms := []string{}
-	for _, term := range lexicalTokens(query) {
+	for _, term := range lexicalTokens(ragQueryPrefix(query)) {
 		if len([]rune(term)) >= 2 && !seen[term] {
 			seen[term] = true
 			terms = append(terms, term)
+			if len(terms) == RAGQueryMaxTerms {
+				break
+			}
 		}
 	}
 	return terms

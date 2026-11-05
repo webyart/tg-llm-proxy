@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	albumDebounce  = 400 * time.Millisecond
-	albumMaxPhotos = 10
+	albumDebounce    = 400 * time.Millisecond
+	albumMaxPhotos   = 10
+	maxPendingAlbums = updateQueueCapacity
 )
 
 type albumKey struct {
@@ -33,6 +34,11 @@ func (d *Dispatcher) collectAlbum(ctx context.Context, ev Event) {
 	d.albumMu.Lock()
 	batch := d.albums[key]
 	if batch == nil {
+		if len(d.albums) >= maxPendingAlbums {
+			d.albumMu.Unlock()
+			_ = d.dispatchOverloaded(ctx, ev)
+			return
+		}
 		if d.deps.DB != nil {
 			_, processed, err := store.GetState(ctx, d.deps.DB, albumStateKey(key))
 			if err != nil {
@@ -42,6 +48,7 @@ func (d *Dispatcher) collectAlbum(ctx context.Context, ev Event) {
 			}
 			if processed {
 				d.albumMu.Unlock()
+				d.persistOffset(ctx, ev.UpdateID)
 				return
 			}
 		}
@@ -65,7 +72,7 @@ func (d *Dispatcher) collectAlbum(ctx context.Context, ev Event) {
 			batch.timer.Stop()
 		}
 		d.albumMu.Unlock()
-		go d.flushCollectedAlbum(ctx, batch.events)
+		d.flushCollectedAlbum(ctx, batch.events)
 		return
 	}
 	if batch.timer == nil {
@@ -101,7 +108,7 @@ func (d *Dispatcher) flushCollectedAlbum(ctx context.Context, events []Event) {
 			ev.AdditionalAttachments = append(ev.AdditionalAttachments, *collected.Attachment)
 		}
 	}
-	if err := d.dispatchEvent(ctx, ev, false); err == nil && d.deps.DB != nil {
+	if err := d.runBounded(ctx, ev, false); err == nil && d.deps.DB != nil {
 		if err := store.SetState(ctx, d.deps.DB, albumStateKey(albumKey{chatID: ev.ChatID, mediaGroupID: ev.MediaGroupID}), "done"); err != nil {
 			d.deps.Logger.Error("album dedup state was not stored", "chat_id", ev.ChatID, "error", Sanitize(err, d.deps.Token))
 		}

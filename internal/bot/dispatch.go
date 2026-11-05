@@ -86,6 +86,19 @@ type Deps struct {
 	Token string
 }
 
+const (
+	updateQueueCapacity  = 32
+	perChatQueueCapacity = 4
+	updateQueueTimeout   = 2 * time.Second
+	deniedReplyWindow    = 30 * time.Second
+	bootstrapReplyWindow = 5 * time.Second
+	overloadReplyWindow  = 2 * time.Second
+	coalescerMaxKeys     = 4096
+	msgOverloaded        = "Бот перегружен: очередь заполнена. Попробуй ещё раз через несколько секунд."
+)
+
+type chatLockHeldContextKey struct{}
+
 type Dispatcher struct {
 	deps                Deps
 	commands            []Command
@@ -95,7 +108,16 @@ type Dispatcher struct {
 	offsetMu            sync.Mutex
 	albumMu             sync.Mutex
 	albums              map[albumKey]*albumBatch
+	admission           chan struct{}
+	execution           chan struct{}
+	deniedReplies       *ratelimit.Coalescer
+	bootstrapReplies    *ratelimit.Coalescer
+	overloadReplies     *ratelimit.Coalescer
+	modelWork           *ratelimit.Limiter
+	networkWork         *ratelimit.Limiter
+	outboundTools       chan struct{}
 	activeModelRequests atomic.Int64
+	activeHandlers      atomic.Int64
 }
 
 // logger. A missing model client or replier is a wiring mistake and stays visible as one.
@@ -109,7 +131,17 @@ func New(deps Deps) *Dispatcher {
 	if deps.Logger == nil {
 		deps.Logger = slog.Default()
 	}
-	var d = &Dispatcher{deps: deps, index: map[string]Command{}, created: time.Now(), startOffset: deps.StartOffset, albums: map[albumKey]*albumBatch{}}
+	var d = &Dispatcher{
+		deps: deps, index: map[string]Command{}, created: time.Now(), startOffset: deps.StartOffset,
+		albums:           map[albumKey]*albumBatch{},
+		deniedReplies:    ratelimit.NewCoalescer(deniedReplyWindow, coalescerMaxKeys),
+		bootstrapReplies: ratelimit.NewCoalescer(bootstrapReplyWindow, coalescerMaxKeys),
+		overloadReplies:  ratelimit.NewCoalescer(overloadReplyWindow, coalescerMaxKeys),
+		modelWork:        ratelimit.New(int(deps.Cfg.RateLimitPerMinute) * modelWorkPerQuestion),
+		networkWork:      ratelimit.New(networkWorkPerMinute),
+		outboundTools:    make(chan struct{}, globalOutboundToolLimit),
+	}
+	d.configureAdmission(int(deps.Cfg.MaxConcurrentRequests))
 	d.commands = d.registry()
 	var i = 0
 	for i < len(d.commands) {
@@ -117,6 +149,14 @@ func New(deps Deps) *Dispatcher {
 		i++
 	}
 	return d
+}
+
+func (d *Dispatcher) configureAdmission(workers int) {
+	if workers <= 0 {
+		workers = 1
+	}
+	d.execution = make(chan struct{}, workers)
+	d.admission = make(chan struct{}, workers+updateQueueCapacity)
 }
 
 // "setMyCommands при старте"). Commands with AlwaysAllowed are listed last so a closed bot still
@@ -187,15 +227,7 @@ func (d *Dispatcher) chain(next HandlerFunc) HandlerFunc {
 	return wrapped
 }
 
-func (d *Dispatcher) Dispatch(ctx context.Context, ev Event) error {
-	if isPhotoAlbum(ev) {
-		d.collectAlbum(ctx, ev)
-		return nil
-	}
-	return d.dispatchEvent(ctx, ev, true)
-}
-
-func (d *Dispatcher) dispatchEvent(ctx context.Context, ev Event, acknowledge bool) error {
+func (d *Dispatcher) commandFor(ev Event) (Command, string) {
 	var name, arg, isCommand = Normalize(ev.Text, d.deps.BotName)
 	var cmd, commandArg = d.resolve(ev, name, arg, isCommand)
 	if ev.Attachment != nil || ev.UnsupportedMedia {
@@ -206,6 +238,80 @@ func (d *Dispatcher) dispatchEvent(ctx context.Context, ev Event, acknowledge bo
 			commandArg = arg
 		}
 	}
+	return cmd, commandArg
+}
+
+func (d *Dispatcher) Dispatch(ctx context.Context, ev Event) error {
+	cmd, _ := d.commandFor(ev)
+	if !cmd.AlwaysAllowed && !d.deps.Cfg.Allows(ev.UserID) {
+		return d.dispatchDenied(ctx, ev, cmd)
+	}
+	if cmd.AlwaysAllowed && !d.bootstrapReplies.Allow(ratelimit.CoalesceKey{UserID: ev.UserID, ChatID: ev.ChatID, Action: cmd.Name}) {
+		d.persistOffset(ctx, ev.UpdateID)
+		return nil
+	}
+	if isPhotoAlbum(ev) {
+		d.collectAlbum(ctx, ev)
+		return nil
+	}
+	return d.runBounded(ctx, ev, true)
+}
+
+func (d *Dispatcher) dispatchDenied(ctx context.Context, ev Event, cmd Command) error {
+	var err error
+	if d.deniedReplies.Allow(ratelimit.CoalesceKey{UserID: ev.UserID, ChatID: ev.ChatID}) {
+		d.logEvent(ctx, ev.UserID, store.EventDenied, cmd.Name)
+		if d.deps.Cfg.DenyByDefault {
+			err = d.reply(ctx, ev.ChatID, refuseClosed(ev.UserID))
+		} else {
+			err = d.reply(ctx, ev.ChatID, refuseNotListed(ev.UserID))
+		}
+	}
+	d.persistOffset(ctx, ev.UpdateID)
+	return err
+}
+
+func (d *Dispatcher) runBounded(ctx context.Context, ev Event, acknowledge bool) error {
+	select {
+	case d.admission <- struct{}{}:
+		defer func() { <-d.admission }()
+	default:
+		return d.dispatchOverloaded(ctx, ev)
+	}
+	queueCtx, cancel := context.WithTimeout(ctx, updateQueueTimeout)
+	defer cancel()
+	err := d.deps.Locks.WithChatBounded(queueCtx, ev.ChatID, perChatQueueCapacity, func() error {
+		select {
+		case d.execution <- struct{}{}:
+			defer func() { <-d.execution }()
+		case <-queueCtx.Done():
+			return queueCtx.Err()
+		}
+		d.activeHandlers.Add(1)
+		defer d.activeHandlers.Add(-1)
+		return d.dispatchEvent(context.WithValue(ctx, chatLockHeldContextKey{}, true), ev, acknowledge)
+	})
+	if ctx.Err() != nil {
+		return err
+	}
+	if err == ratelimit.ErrChatQueueFull || err == context.DeadlineExceeded {
+		return d.dispatchOverloaded(ctx, ev)
+	}
+	return err
+}
+
+func (d *Dispatcher) dispatchOverloaded(ctx context.Context, ev Event) error {
+	var err error
+	if d.overloadReplies.Allow(ratelimit.CoalesceKey{ChatID: ev.ChatID}) {
+		d.deps.Logger.Warn("the update queue is full", "chat_id", ev.ChatID, "update_id", ev.UpdateID)
+		err = d.reply(ctx, ev.ChatID, msgOverloaded)
+	}
+	d.persistOffset(ctx, ev.UpdateID)
+	return err
+}
+
+func (d *Dispatcher) dispatchEvent(ctx context.Context, ev Event, acknowledge bool) error {
+	cmd, commandArg := d.commandFor(ev)
 	ev.Question = ""
 	if cmd.UsesModel {
 		ev.Question = strings.TrimSpace(commandArg)

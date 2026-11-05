@@ -3,12 +3,12 @@
 //	answer "allowed" without touching its map — otherwise a configured-off limit would still
 //	allocate state per user.
 //	TG_REPLY_DEADLINE_SECONDS, and a lock that ignores ctx would keep a goroutine parked after
-//	size 1 selected together with ctx.Done(), which also means nothing is ever sent into the
-//	channel when ctx wins — no lost slot, no permanently locked chat.
+//	the reply budget expired. Chat waiters are explicitly queued, cancellable, and removed when idle.
 package ratelimit
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 )
@@ -84,52 +84,95 @@ func (l *Limiter) live(hits []time.Time, moment time.Time) []time.Time {
 	return hits[i:]
 }
 
-// and reused, so the answers of one chat never interleave while different chats run in parallel
+var ErrChatQueueFull = errors.New("ratelimit: per-chat queue is full")
+
+type chatWaiter struct {
+	ready chan struct{}
+}
+
+type chatLock struct {
+	held    bool
+	waiters []*chatWaiter
+}
+
 type Locks struct {
 	mu    sync.Mutex
-	chats map[int64]chan struct{}
+	chats map[int64]*chatLock
 }
 
 // NewLocks — an empty set of per-chat locks.
 func NewLocks() *Locks {
-	return &Locks{chats: map[int64]chan struct{}{}}
+	return &Locks{chats: map[int64]*chatLock{}}
 }
 
-// forChat — the lock channel of one chat, created on the first use.
-func (l *Locks) forChat(chatID int64) chan struct{} {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	var ch, ok = l.chats[chatID]
-	if !ok {
-		ch = make(chan struct{}, 1)
-		l.chats[chatID] = ch
-	}
-	return ch
-}
-
-// WithChat — runs fn while the chat is held. ctx cancels the WAIT, never an acquired run: the
 func (l *Locks) WithChat(ctx context.Context, chatID int64, fn func() error) error {
-	var ch = l.forChat(chatID)
+	return l.WithChatBounded(ctx, chatID, 0, fn)
+}
+
+// WithChatBounded rejects a new waiter once maxWaiting waiters are already queued.
+// A zero maxWaiting retains the unbounded waiting behavior used by legacy internal callers.
+func (l *Locks) WithChatBounded(ctx context.Context, chatID int64, maxWaiting int, fn func() error) error {
+	l.mu.Lock()
+	chat := l.chats[chatID]
+	if chat == nil {
+		chat = &chatLock{}
+		l.chats[chatID] = chat
+	}
+	if !chat.held {
+		chat.held = true
+		l.mu.Unlock()
+		defer l.release(chatID)
+		return fn()
+	}
+	if maxWaiting > 0 && len(chat.waiters) >= maxWaiting {
+		l.mu.Unlock()
+		return ErrChatQueueFull
+	}
+	waiter := &chatWaiter{ready: make(chan struct{})}
+	chat.waiters = append(chat.waiters, waiter)
+	l.mu.Unlock()
+
 	select {
-	case ch <- struct{}{}:
-		defer func() { <-ch }()
+	case <-waiter.ready:
+		defer l.release(chatID)
+		return fn()
 	case <-ctx.Done():
+		l.mu.Lock()
+		chat = l.chats[chatID]
+		for i, queued := range chat.waiters {
+			if queued != waiter {
+				continue
+			}
+			chat.waiters = append(chat.waiters[:i], chat.waiters[i+1:]...)
+			l.mu.Unlock()
+			return ctx.Err()
+		}
+		l.mu.Unlock()
+		l.release(chatID)
 		return ctx.Err()
 	}
-	return fn()
+}
+
+func (l *Locks) release(chatID int64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	chat := l.chats[chatID]
+	if len(chat.waiters) == 0 {
+		delete(l.chats, chatID)
+		return
+	}
+	waiter := chat.waiters[0]
+	chat.waiters = chat.waiters[1:]
+	close(waiter.ready)
 }
 
 // Held — reports whether some goroutine currently owns the chat lock (the concurrency test of
 func (l *Locks) BusyChats() int {
 	l.mu.Lock()
-	chats := make([]int64, 0, len(l.chats))
-	for chatID := range l.chats {
-		chats = append(chats, chatID)
-	}
-	l.mu.Unlock()
+	defer l.mu.Unlock()
 	busy := 0
-	for _, chatID := range chats {
-		if l.Held(chatID) {
+	for _, chat := range l.chats {
+		if chat.held {
 			busy++
 		}
 	}
@@ -137,12 +180,18 @@ func (l *Locks) BusyChats() int {
 }
 
 func (l *Locks) Held(chatID int64) bool {
-	var ch = l.forChat(chatID)
-	select {
-	case ch <- struct{}{}:
-		<-ch
-		return false
-	default:
-		return true
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	chat := l.chats[chatID]
+	return chat != nil && chat.held
+}
+
+func (l *Locks) Waiting(chatID int64) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	chat := l.chats[chatID]
+	if chat == nil {
+		return 0
 	}
+	return len(chat.waiters)
 }

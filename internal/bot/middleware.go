@@ -110,6 +110,9 @@ func (d *Dispatcher) limited(next HandlerFunc) HandlerFunc {
 // cancellable (ratelimit.WithChat), so an expired reply budget frees the queue instead of parking
 func (d *Dispatcher) locked(next HandlerFunc) HandlerFunc {
 	return func(ctx context.Context, ev Event, cmd Command) error {
+		if ctx.Value(chatLockHeldContextKey{}) != nil {
+			return next(ctx, ev, cmd)
+		}
 		return d.deps.Locks.WithChat(ctx, ev.ChatID, func() error {
 			return next(ctx, ev, cmd)
 		})

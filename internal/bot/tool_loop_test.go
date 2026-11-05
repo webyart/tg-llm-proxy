@@ -7,10 +7,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"bot/internal/model"
+	"bot/internal/ratelimit"
 	"bot/internal/store"
 )
 
@@ -269,8 +272,8 @@ func TestToolLoopRejectsDisabledAndUnsolicitedCalls(t *testing.T) {
 			if countErr != nil || uses != 0 {
 				t.Fatalf("usage events=%d err=%v", uses, countErr)
 			}
-			if dials.Load() != 0 || requests.Load() != 0 {
-				t.Fatalf("tool side effects: dials=%d requests=%d", dials.Load(), requests.Load())
+			if dials.Load() != 0 || requests.Load() != 0 || d.networkWork.Count(11) != 0 || len(d.outboundTools) != 0 {
+				t.Fatalf("tool side effects: dials=%d requests=%d network work=%d in flight=%d", dials.Load(), requests.Load(), d.networkWork.Count(11), len(d.outboundTools))
 			}
 		})
 	}
@@ -377,4 +380,258 @@ func TestCalculatorValidation(t *testing.T) {
 func strconvQuote(value string) string {
 	replacer := strings.NewReplacer("\\", "\\\\", "\"", "\\\"")
 	return "\"" + replacer.Replace(value) + "\""
+}
+
+func TestModelWorkBudgetIncludesToolRoundsAndFinalSynthesis(t *testing.T) {
+	call := model.ToolCall{ID: "budget-call", Name: "calculator", Arguments: `{"expression":"1+1"}`}
+	responses := make([]model.Response, 0, 60)
+	for i := 0; i < 20; i++ {
+		responses = append(responses,
+			model.Response{ToolCalls: []model.ToolCall{call}},
+			model.Response{ToolCalls: []model.ToolCall{call}},
+			model.Response{Content: "done"},
+		)
+	}
+	m := &scriptedToolModel{responses: responses}
+	d := newTestDispatcher(t, testConfig(t, nil), m, nil, nil)
+	now := time.Unix(1700000000, 0)
+	d.modelWork.WithClock(func() time.Time { return now })
+	if got := d.modelWork.PerMinute(); got != 60 {
+		t.Fatalf("default model work limit=%d, want 60", got)
+	}
+	for i := 0; i < 20; i++ {
+		resp, err := d.completeWithTools(context.Background(), 11, model.Request{}, nil, nil)
+		if err != nil || resp.Content != "done" {
+			t.Fatalf("question %d response=%+v err=%v", i, resp, err)
+		}
+	}
+	if len(m.requests) != 60 || d.modelWork.Count(11) != 60 {
+		t.Fatalf("model requests=%d budget count=%d, want 60", len(m.requests), d.modelWork.Count(11))
+	}
+	resp, err := d.completeWithTools(context.Background(), 11, model.Request{}, nil, nil)
+	if err != nil || resp.Content != modelWorkBudgetErrorText {
+		t.Fatalf("over-budget response=%+v err=%v", resp, err)
+	}
+	if len(m.requests) != 60 {
+		t.Fatalf("over-budget question reached the model: requests=%d", len(m.requests))
+	}
+	if _, err := d.completeWithTools(context.Background(), 12, model.Request{}, nil, nil); err != nil {
+		t.Fatalf("independent user: %v", err)
+	}
+	if len(m.requests) != 61 || d.modelWork.Count(12) != 1 || d.modelWork.Count(11) != 60 {
+		t.Fatalf("per-user counters leaked: requests=%d user11=%d user12=%d", len(m.requests), d.modelWork.Count(11), d.modelWork.Count(12))
+	}
+	now = now.Add(ratelimit.Window)
+	if _, err := d.completeWithTools(context.Background(), 11, model.Request{}, nil, nil); err != nil {
+		t.Fatalf("after budget window: %v", err)
+	}
+	if len(m.requests) != 62 || d.modelWork.Count(11) != 1 {
+		t.Fatalf("budget did not reset: requests=%d count=%d", len(m.requests), d.modelWork.Count(11))
+	}
+}
+
+func TestNetworkToolWorkBudgetReturnsJSONForSynthesis(t *testing.T) {
+	var providerCalls atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	t.Cleanup(target.Close)
+	cfg := testConfig(t, map[string]string{
+		"WEB_SEARCH_ENABLED":  "true",
+		"WEB_SEARCH_BASE_URL": target.URL,
+	})
+	calls := []model.ToolCall{
+		{ID: "search-1", Name: "web_search", Arguments: `{"query":"one"}`},
+		{ID: "search-2", Name: "web_search", Arguments: `{"query":"two"}`},
+	}
+	responses := make([]model.Response, 0, 9)
+	for i := 0; i < 3; i++ {
+		responses = append(responses,
+			model.Response{ToolCalls: calls},
+			model.Response{ToolCalls: calls},
+			model.Response{Content: "synthesized"},
+		)
+	}
+	m := &scriptedToolModel{responses: responses}
+	db := testStore(t)
+	d := newTestDispatcher(t, cfg, m, nil, db)
+	for i := 0; i < 3; i++ {
+		resp, err := d.completeWithTools(context.Background(), 11, model.Request{}, nil, nil)
+		if err != nil || resp.Content != "synthesized" {
+			t.Fatalf("question %d response=%+v err=%v", i, resp, err)
+		}
+	}
+	if providerCalls.Load() != 8 || d.networkWork.Count(11) != 8 {
+		t.Fatalf("provider calls=%d network count=%d, want 8", providerCalls.Load(), d.networkWork.Count(11))
+	}
+	budgetErrors := 0
+	for _, message := range m.requests[8].Messages {
+		if message.Role == model.RoleTool && message.Content == networkWorkBudgetErrorJSON {
+			budgetErrors++
+			if !json.Valid([]byte(message.Content)) {
+				t.Fatalf("invalid budget error JSON: %q", message.Content)
+			}
+		}
+	}
+	if budgetErrors != 4 {
+		t.Fatalf("final synthesis received %d budget errors, want 4", budgetErrors)
+	}
+	uses, err := store.CountEvents(context.Background(), db, store.EventUsage)
+	if err != nil || uses != 8 {
+		t.Fatalf("actual network usage events=%d err=%v, want 8", uses, err)
+	}
+	result, executed, err := d.executeNetworkTool(context.Background(), 12, calls[0])
+	if err != nil || !executed || !strings.Contains(result, `"results"`) {
+		t.Fatalf("independent user result=%q executed=%v err=%v", result, executed, err)
+	}
+	if providerCalls.Load() != 9 || d.networkWork.Count(11) != 8 || d.networkWork.Count(12) != 1 {
+		t.Fatalf("network counters leaked: calls=%d user11=%d user12=%d", providerCalls.Load(), d.networkWork.Count(11), d.networkWork.Count(12))
+	}
+}
+
+func TestCalculatorDoesNotConsumeNetworkWork(t *testing.T) {
+	call := model.ToolCall{ID: "local", Name: "calculator", Arguments: `{"expression":"2+2"}`}
+	m := &scriptedToolModel{responses: []model.Response{
+		{ToolCalls: []model.ToolCall{call}},
+		{Content: "4"},
+	}}
+	d := newTestDispatcher(t, testConfig(t, nil), m, nil, nil)
+	resp, err := d.completeWithTools(context.Background(), 11, model.Request{}, nil, nil)
+	if err != nil || resp.Content != "4" {
+		t.Fatalf("calculator response=%+v err=%v", resp, err)
+	}
+	if d.networkWork.Count(11) != 0 || len(d.outboundTools) != 0 {
+		t.Fatalf("calculator consumed network work: count=%d in flight=%d", d.networkWork.Count(11), len(d.outboundTools))
+	}
+}
+
+type roundAwareToolModel struct {
+	mu          sync.Mutex
+	requests    []model.Request
+	call        model.ToolCall
+	synthesized chan struct{}
+}
+
+func (m *roundAwareToolModel) Complete(ctx context.Context, req model.Request) (model.Response, error) {
+	m.mu.Lock()
+	m.requests = append(m.requests, req)
+	m.mu.Unlock()
+	for _, message := range req.Messages {
+		if message.Role == model.RoleTool {
+			if m.synthesized != nil {
+				m.synthesized <- struct{}{}
+			}
+			return model.Response{Content: "synthesized"}, nil
+		}
+	}
+	return model.Response{ToolCalls: []model.ToolCall{m.call}}, nil
+}
+
+func (m *roundAwareToolModel) Models(ctx context.Context) ([]string, error) { return nil, nil }
+
+func (m *roundAwareToolModel) snapshot() []model.Request {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]model.Request(nil), m.requests...)
+}
+
+func TestNetworkToolGlobalConcurrencyLimit(t *testing.T) {
+	const callers = 12
+	var active, maxActive, providerCalls atomic.Int64
+	started := make(chan struct{}, callers)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseAll()
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls.Add(1)
+		current := active.Add(1)
+		defer active.Add(-1)
+		for {
+			previous := maxActive.Load()
+			if current <= previous || maxActive.CompareAndSwap(previous, current) {
+				break
+			}
+		}
+		started <- struct{}{}
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	t.Cleanup(target.Close)
+	cfg := testConfig(t, map[string]string{
+		"WEB_SEARCH_ENABLED":  "true",
+		"WEB_SEARCH_BASE_URL": target.URL,
+	})
+	m := &roundAwareToolModel{
+		call:        model.ToolCall{ID: "concurrent-search", Name: "web_search", Arguments: `{"query":"test"}`},
+		synthesized: make(chan struct{}, callers),
+	}
+	d := newTestDispatcher(t, cfg, m, nil, nil)
+	begin := make(chan struct{})
+	errs := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		go func(userID int64) {
+			<-begin
+			_, err := d.completeWithTools(context.Background(), userID, model.Request{}, nil, nil)
+			errs <- err
+		}(int64(100 + i))
+	}
+	close(begin)
+	timeout := time.NewTimer(10 * time.Second)
+	defer timeout.Stop()
+	for i := 0; i < globalOutboundToolLimit; i++ {
+		select {
+		case <-started:
+		case <-timeout.C:
+			t.Fatalf("only %d outbound calls started", i)
+		}
+	}
+	for i := 0; i < callers-globalOutboundToolLimit; i++ {
+		select {
+		case <-m.synthesized:
+		case <-timeout.C:
+			t.Fatalf("only %d busy callers reached synthesis", i)
+		}
+	}
+	if got := providerCalls.Load(); got != globalOutboundToolLimit {
+		t.Fatalf("provider calls while first batch is blocked=%d, want 4", got)
+	}
+	releaseAll()
+	for i := 0; i < callers; i++ {
+		select {
+		case err := <-errs:
+			if err != nil {
+				t.Fatalf("concurrent completeWithTools: %v", err)
+			}
+		case <-timeout.C:
+			t.Fatal("concurrent callers did not finish")
+		}
+	}
+	if providerCalls.Load() != globalOutboundToolLimit || maxActive.Load() != globalOutboundToolLimit {
+		t.Fatalf("provider calls=%d max active=%d, want 4", providerCalls.Load(), maxActive.Load())
+	}
+	busyErrors := 0
+	for _, req := range m.snapshot() {
+		for _, message := range req.Messages {
+			if message.Role == model.RoleTool && message.Content == outboundToolBusyErrorJSON {
+				busyErrors++
+				if !json.Valid([]byte(message.Content)) {
+					t.Fatalf("invalid busy error JSON: %q", message.Content)
+				}
+			}
+		}
+	}
+	if busyErrors != callers-globalOutboundToolLimit {
+		t.Fatalf("busy JSON results=%d, want %d", busyErrors, callers-globalOutboundToolLimit)
+	}
+	networkWork := 0
+	for i := 0; i < callers; i++ {
+		networkWork += d.networkWork.Count(int64(100 + i))
+	}
+	if networkWork != globalOutboundToolLimit || len(d.outboundTools) != 0 {
+		t.Fatalf("network work=%d outbound slots held=%d, want 4 and 0", networkWork, len(d.outboundTools))
+	}
 }

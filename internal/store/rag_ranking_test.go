@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -219,5 +220,75 @@ func TestRAGSearchDropsNonmatchingCandidates(t *testing.T) {
 		if candidate.Name == "irrelevant.txt" {
 			t.Fatalf("nonmatching chunk was retained: %+v", candidate)
 		}
+	}
+}
+
+func TestRAGQueryCapsUnicodeRunesBeforeRetrieval(t *testing.T) {
+	ctx := context.Background()
+	db, err := OpenMemory(ctx, "rag_query_runes_"+t.Name())
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	defer db.Close()
+	for _, row := range []struct {
+		name    string
+		content string
+	}{
+		{name: "within.txt", content: "needle inside the bounded query"},
+		{name: "beyond.txt", content: "overflow outside the bounded query"},
+	} {
+		if _, _, err := PutRAGDocument(ctx, db, 108, 11, row.name, row.content); err != nil {
+			t.Fatalf("Put %s: %v", row.name, err)
+		}
+	}
+	prefix := "needle " + strings.Repeat("界", RAGQueryMaxRunes-len([]rune("needle ")))
+	query := prefix + " overflow"
+	if got := ragQueryPrefix(query); got != prefix || len([]rune(got)) != RAGQueryMaxRunes {
+		t.Fatalf("bounded query has %d runes", len([]rune(got)))
+	}
+	chunks, err := SearchRAGChunks(ctx, db, 108, query, 5, 2000)
+	if err != nil || len(chunks) != 1 || chunks[0].Name != "within.txt" {
+		t.Fatalf("overflow text affected retrieval: %+v err=%v", chunks, err)
+	}
+}
+
+func TestRAGQueryKeepsFirst32DistinctLexicalTerms(t *testing.T) {
+	allTerms := make([]string, 40)
+	queryParts := []string{"term00", "term00"}
+	for index := range allTerms {
+		allTerms[index] = fmt.Sprintf("term%02d", index)
+		queryParts = append(queryParts, allTerms[index])
+	}
+	query := strings.Join(queryParts, " ")
+	terms := lexicalTerms(query)
+	if len(terms) != RAGQueryMaxTerms {
+		t.Fatalf("lexical terms=%d, want %d", len(terms), RAGQueryMaxTerms)
+	}
+	for index := range terms {
+		if terms[index] != allTerms[index] {
+			t.Fatalf("term %d=%q, want %q", index, terms[index], allTerms[index])
+		}
+	}
+
+	ctx := context.Background()
+	db, err := OpenMemory(ctx, "rag_query_terms_"+t.Name())
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	defer db.Close()
+	for _, row := range []struct {
+		name    string
+		content string
+	}{
+		{name: "included.txt", content: "term31"},
+		{name: "excluded.txt", content: "term32"},
+	} {
+		if _, _, err := PutRAGDocument(ctx, db, 109, 11, row.name, row.content); err != nil {
+			t.Fatalf("Put %s: %v", row.name, err)
+		}
+	}
+	chunks, err := SearchRAGChunks(ctx, db, 109, query, 5, 2000)
+	if err != nil || len(chunks) != 1 || chunks[0].Name != "included.txt" {
+		t.Fatalf("terms beyond the cap affected retrieval: %+v err=%v", chunks, err)
 	}
 }

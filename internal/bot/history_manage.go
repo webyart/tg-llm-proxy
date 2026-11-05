@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -49,6 +50,45 @@ type historyExport struct {
 	Messages   []exportMessage     `json:"messages"`
 }
 
+type historyExportMetadata struct {
+	ChatID     int64               `json:"chat_id"`
+	ExportedAt string              `json:"exported_at"`
+	Truncated  bool                `json:"truncated"`
+	Warning    string              `json:"warning,omitempty"`
+	Window     historyExportWindow `json:"window"`
+}
+
+var errHistoryExportTooLarge = errors.New("history export exceeds byte limit")
+
+type historyExportBuffer struct {
+	bytes.Buffer
+}
+
+func (b *historyExportBuffer) reserve(next int) {
+	if b.Cap() == 0 {
+		b.Buffer.Grow(64 * 1024)
+	}
+	if next > b.Cap()-b.Len() {
+		b.Buffer.Grow(ExportMaxBytes - b.Len())
+	}
+}
+
+func (b *historyExportBuffer) Write(p []byte) (int, error) {
+	if len(p) > ExportMaxBytes-b.Len() {
+		return 0, errHistoryExportTooLarge
+	}
+	b.reserve(len(p))
+	return b.Buffer.Write(p)
+}
+
+func (b *historyExportBuffer) WriteString(text string) (int, error) {
+	if len(text) > ExportMaxBytes-b.Len() {
+		return 0, errHistoryExportTooLarge
+	}
+	b.reserve(len(text))
+	return b.Buffer.WriteString(text)
+}
+
 type deleteConfirmation struct {
 	ChatID    int64
 	UserID    int64
@@ -88,18 +128,107 @@ func historyWindow(ctx context.Context, d *Dispatcher, chatID int64) ([]store.Me
 	return rows, truncated, nil
 }
 
-func exportWindow(rows []store.Message) historyExportWindow {
-	window := historyExportWindow{Limit: ExportRowLimit, Count: len(rows)}
-	if len(rows) == 0 {
-		return window
+func exportWindow(rows store.MessageExportWindow) historyExportWindow {
+	return historyExportWindow{
+		Limit:           ExportRowLimit,
+		Count:           rows.Count,
+		OldestID:        rows.OldestID,
+		NewestID:        rows.NewestID,
+		OldestCreatedAt: rows.OldestCreatedAt,
+		NewestCreatedAt: rows.NewestCreatedAt,
 	}
-	oldest := rows[0]
-	newest := rows[len(rows)-1]
-	window.NewestID = newest.ID
-	window.NewestCreatedAt = newest.CreatedAt
-	window.OldestID = oldest.ID
-	window.OldestCreatedAt = oldest.CreatedAt
-	return window
+}
+
+type historyExportSerializer struct {
+	format       string
+	chatID       int64
+	output       historyExportBuffer
+	messageCount int
+}
+
+func (s *historyExportSerializer) start(rows store.MessageExportWindow, truncated bool) error {
+	if rows.Count == 0 {
+		return nil
+	}
+	window := exportWindow(rows)
+	warning := exportWarning(rows.Count, truncated)
+	if s.format == "json" {
+		metadata, err := json.MarshalIndent(historyExportMetadata{
+			ChatID:     s.chatID,
+			ExportedAt: time.Now().UTC().Format(time.RFC3339),
+			Truncated:  truncated,
+			Warning:    warning,
+			Window:     window,
+		}, "", "  ")
+		if err != nil {
+			return err
+		}
+		if _, err := s.output.Write(metadata[:len(metadata)-1]); err != nil {
+			return err
+		}
+		return s.writeString(",\n  \"messages\": [\n")
+	}
+	if _, err := fmt.Fprintf(&s.output, "# История чата %d\n\n", s.chatID); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(&s.output, "Область экспорта: последние %d сообщений; включено: %d.\n", ExportRowLimit, rows.Count); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(&s.output, "Диапазон: ID %d–%d; время %s — %s.\n\n", window.OldestID, window.NewestID, window.OldestCreatedAt, window.NewestCreatedAt); err != nil {
+		return err
+	}
+	if warning != "" {
+		if _, err := fmt.Fprintf(&s.output, "> Внимание: %s\n\n", warning); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *historyExportSerializer) add(row store.Message) error {
+	if s.format != "json" {
+		if _, err := fmt.Fprintf(&s.output, "## %s · %s\n\n", row.Role, row.CreatedAt); err != nil {
+			return err
+		}
+		if err := s.writeString(row.Content); err != nil {
+			return err
+		}
+		return s.writeString("\n\n")
+	}
+	if row.ContentLength > int64(ExportMaxBytes-s.output.Len()) || len(row.Content) > ExportMaxBytes-s.output.Len() {
+		return errHistoryExportTooLarge
+	}
+	if s.messageCount > 0 {
+		if err := s.writeString(",\n"); err != nil {
+			return err
+		}
+	}
+	encoded, err := json.MarshalIndent(exportMessage{Role: row.Role, Content: row.Content, CreatedAt: row.CreatedAt, Model: row.Model, TokensIn: row.TokensIn, TokensOut: row.TokensOut}, "    ", "  ")
+	if err != nil {
+		return err
+	}
+	if err := s.writeString("    "); err != nil {
+		return err
+	}
+	if _, err := s.output.Write(encoded); err != nil {
+		return err
+	}
+	s.messageCount++
+	return nil
+}
+
+func (s *historyExportSerializer) finish() ([]byte, error) {
+	if s.format == "json" {
+		if err := s.writeString("\n  ]\n}"); err != nil {
+			return nil, err
+		}
+	}
+	return s.output.Bytes(), nil
+}
+
+func (s *historyExportSerializer) writeString(text string) error {
+	_, err := s.output.WriteString(text)
+	return err
 }
 
 func exportWarning(rowCount int, truncated bool) string {
@@ -120,47 +249,20 @@ func (d *Dispatcher) exportHistory(ctx context.Context, ev Event, arg string) er
 	if format != "md" && format != "json" {
 		return d.reply(ctx, ev.ChatID, "Используй /export md или /export json.")
 	}
-	rows, truncated, err := historyWindow(ctx, d, ev.ChatID)
-	if err != nil {
-		return err
-	}
-	if len(rows) == 0 {
-		return d.reply(ctx, ev.ChatID, msgHistoryEmpty)
-	}
-	warning := exportWarning(len(rows), truncated)
-	window := exportWindow(rows)
+	serializer := historyExportSerializer{format: format, chatID: ev.ChatID}
+	window, _, err := store.StreamExportMessagesBounded(ctx, d.deps.DB, ev.ChatID, ExportRowLimit, ExportMaxBytes, serializer.start, serializer.add)
 	var data []byte
-	if format == "json" {
-		payload := historyExport{
-			ChatID:     ev.ChatID,
-			ExportedAt: time.Now().UTC().Format(time.RFC3339),
-			Truncated:  truncated,
-			Warning:    warning,
-			Window:     window,
-			Messages:   make([]exportMessage, 0, len(rows)),
-		}
-		for _, row := range rows {
-			payload.Messages = append(payload.Messages, exportMessage{Role: row.Role, Content: row.Content, CreatedAt: row.CreatedAt, Model: row.Model, TokensIn: row.TokensIn, TokensOut: row.TokensOut})
-		}
-		data, err = json.MarshalIndent(payload, "", "  ")
-	} else {
-		var text strings.Builder
-		fmt.Fprintf(&text, "# История чата %d\n\n", ev.ChatID)
-		fmt.Fprintf(&text, "Область экспорта: последние %d сообщений; включено: %d.\n", ExportRowLimit, len(rows))
-		fmt.Fprintf(&text, "Диапазон: ID %d–%d; время %s — %s.\n\n", window.OldestID, window.NewestID, window.OldestCreatedAt, window.NewestCreatedAt)
-		if warning != "" {
-			fmt.Fprintf(&text, "> Внимание: %s\n\n", warning)
-		}
-		for _, row := range rows {
-			fmt.Fprintf(&text, "## %s · %s\n\n%s\n\n", row.Role, row.CreatedAt, row.Content)
-		}
-		data = []byte(text.String())
+	if err == nil && window.Count > 0 {
+		data, err = serializer.finish()
+	}
+	if errors.Is(err, errHistoryExportTooLarge) || errors.Is(err, store.ErrExportContentTooLarge) {
+		return d.reply(ctx, ev.ChatID, "Экспорт превышает 5 МиБ. Удали старую историю или используй более поздний чат.")
 	}
 	if err != nil {
 		return err
 	}
-	if len(data) > ExportMaxBytes {
-		return d.reply(ctx, ev.ChatID, "Экспорт превышает 5 МиБ. Удали старую историю или используй более поздний чат.")
+	if window.Count == 0 {
+		return d.reply(ctx, ev.ChatID, msgHistoryEmpty)
 	}
 	sender, ok := d.deps.Replier.(DocumentSender)
 	if !ok {

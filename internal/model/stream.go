@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // The defaults of the streaming budgets, used when Options.Stream leaves a field zero. The bounds the loader
@@ -31,7 +32,10 @@ const (
 	DefaultStreamProgress = time.Second
 	// StreamLineLimit — one SSE line. An OpenAI-compatible chunk is a few hundred bytes; a megabyte is the
 	// room of a provider that puts a whole answer into one line, and more than that is not an answer.
-	StreamLineLimit = 1 << 20
+	StreamLineLimit         = 1 << 20
+	StreamAnswerLimit       = 100_000
+	StreamToolArgumentLimit = 16_384
+	StreamToolCallLimit     = 8
 )
 
 // by two different numbers in the two places an operator compares»).
@@ -39,6 +43,8 @@ var ErrStreamStalled = fmt.Errorf("%w: the stream went silent longer than STREAM
 
 // ErrStreamTooLong — the answer is still arriving but already costs more than STREAM_TOTAL_DEADLINE_SECONDS
 var ErrStreamTooLong = fmt.Errorf("%w: the streamed answer outlived STREAM_TOTAL_DEADLINE_SECONDS ", context.DeadlineExceeded)
+
+var ErrStreamLimit = errors.New("the stream exceeded a resource limit")
 
 const StreamNotice = "the stream was given up by its budget of (STREAM_IDLE_TIMEOUT_SECONDS / STREAM_TOTAL_DEADLINE_SECONDS)"
 
@@ -164,6 +170,12 @@ type chatStreamToolCall struct {
 	Function chatToolFunction `json:"function"`
 }
 
+type collectedStreamToolCall struct {
+	call          ToolCall
+	arguments     strings.Builder
+	argumentRunes int
+}
+
 type chatChunk struct {
 	Model string `json:"model"`
 	Usage *struct {
@@ -257,12 +269,14 @@ func (c *OpenAI) streamAttempt(ctx context.Context, req Request, attempt int, h 
 	}
 
 	var (
-		answer    strings.Builder
-		response  = Response{Model: model}
-		delivered bool
-		reasoning int
-		finish    string
-		toolCalls = map[int]*ToolCall{}
+		answer      strings.Builder
+		answerRunes int
+		response    = Response{Model: model}
+		delivered   bool
+		reasoning   int
+		finish      string
+		toolCalls   = map[int]*collectedStreamToolCall{}
+		limitErr    error
 	)
 	var lastProgress time.Time
 	var progress = func() {
@@ -276,12 +290,13 @@ func (c *OpenAI) streamAttempt(ctx context.Context, req Request, attempt int, h 
 		h.Progress(StreamInfo{
 			Model:          response.Model,
 			ReasoningRunes: reasoning,
-			ContentRunes:   len([]rune(answer.String())),
+			ContentRunes:   answerRunes,
 		})
 	}
 
 	var scanner = bufio.NewScanner(res.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), StreamLineLimit)
+scan:
 	for scanner.Scan() {
 		beat <- struct{}{} // the watchdog: something arrived, the stall clock restarts
 		var line = strings.TrimRight(scanner.Text(), "\r")
@@ -317,28 +332,48 @@ func (c *OpenAI) streamAttempt(ctx context.Context, req Request, attempt int, h 
 				finish = *choice.FinishReason // `length` here means the model ran out of context
 			}
 			for _, call := range choice.Delta.ToolCalls {
+				if call.Index < 0 || call.Index >= StreamToolCallLimit {
+					limitErr = fmt.Errorf("%w: tool call index %d is outside 0..%d", ErrStreamLimit, call.Index, StreamToolCallLimit-1)
+					break scan
+				}
 				current := toolCalls[call.Index]
+				argumentRunes := utf8.RuneCountInString(call.Function.Arguments)
+				usedRunes := 0
+				if current != nil {
+					usedRunes = current.argumentRunes
+				}
+				if argumentRunes > StreamToolArgumentLimit-usedRunes {
+					limitErr = fmt.Errorf("%w: tool call %d arguments exceed %d runes", ErrStreamLimit, call.Index, StreamToolArgumentLimit)
+					break scan
+				}
 				if current == nil {
-					current = &ToolCall{}
+					current = &collectedStreamToolCall{}
 					toolCalls[call.Index] = current
 				}
 				if call.ID != "" {
-					current.ID = call.ID
+					current.call.ID = call.ID
 				}
 				if call.Function.Name != "" {
-					current.Name = call.Function.Name
+					current.call.Name = call.Function.Name
 				}
-				current.Arguments += call.Function.Arguments
+				current.arguments.WriteString(call.Function.Arguments)
+				current.argumentRunes += argumentRunes
 			}
 			if choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != "" {
-				reasoning += len([]rune(*choice.Delta.ReasoningContent))
+				reasoning += utf8.RuneCountInString(*choice.Delta.ReasoningContent)
 				progress() // the placeholder of UX: the model thinks, the answer has not started
 			}
 			if choice.Delta.Content == nil || *choice.Delta.Content == "" {
 				continue
 			}
 			var delta = *choice.Delta.Content
+			deltaRunes := utf8.RuneCountInString(delta)
+			if deltaRunes > StreamAnswerLimit-answerRunes {
+				limitErr = fmt.Errorf("%w: answer content exceeds %d runes", ErrStreamLimit, StreamAnswerLimit)
+				break scan
+			}
 			answer.WriteString(delta)
+			answerRunes += deltaRunes
 			delivered = true
 			if h.Delta != nil {
 				if err := h.Delta(delta); err != nil {
@@ -359,9 +394,15 @@ func (c *OpenAI) streamAttempt(ctx context.Context, req Request, attempt int, h 
 			indexes = append(indexes, index)
 		}
 		sort.Ints(indexes)
+		response.ToolCalls = make([]ToolCall, 0, len(indexes))
 		for _, index := range indexes {
-			response.ToolCalls = append(response.ToolCalls, *toolCalls[index])
+			collected := toolCalls[index]
+			collected.call.Arguments = collected.arguments.String()
+			response.ToolCalls = append(response.ToolCalls, collected.call)
 		}
+	}
+	if limitErr != nil {
+		return response, delivered, limitErr
 	}
 
 	select {

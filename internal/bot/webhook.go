@@ -3,6 +3,7 @@ package bot
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,8 +17,11 @@ import (
 )
 
 const (
-	webhookBodyLimit   = 1 << 20
-	webhookStopTimeout = 2 * time.Second
+	webhookBodyLimit    = 1 << 20
+	webhookHeaderLimit  = 16 << 10
+	webhookMaxInFlight  = 16
+	webhookStopTimeout  = 2 * time.Second
+	webhookSecretHeader = "X-Telegram-Bot-Api-Secret-Token"
 )
 
 // WebhookServer owns the local HTTP listener. It is bound before SetWebhook is called, so Telegram is never
@@ -29,12 +33,19 @@ type WebhookServer struct {
 	path     string
 }
 
-func NewWebhookServer(tg *tgbot.Bot, address string, path string) (*WebhookServer, error) {
+func NewWebhookServer(tg *tgbot.Bot, address string, path string, secretToken ...string) (*WebhookServer, error) {
 	if tg == nil {
 		return nil, errors.New("webhook needs the Telegram bot")
 	}
 	if !strings.HasPrefix(path, "/") {
 		return nil, fmt.Errorf("webhook path %q must be absolute", path)
+	}
+	if len(secretToken) > 1 {
+		return nil, errors.New("webhook accepts at most one secret token")
+	}
+	secret := ""
+	if len(secretToken) == 1 {
+		secret = secretToken[0]
 	}
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
@@ -42,11 +53,23 @@ func NewWebhookServer(tg *tgbot.Bot, address string, path string) (*WebhookServe
 	}
 
 	libraryHandler := tg.WebhookHandler()
+	inFlight := make(chan struct{}, webhookMaxInFlight)
 	mux := http.NewServeMux()
 	mux.HandleFunc(path, func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if secret != "" && subtle.ConstantTimeCompare([]byte(req.Header.Get(webhookSecretHeader)), []byte(secret)) != 1 {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		select {
+		case inFlight <- struct{}{}:
+			defer func() { <-inFlight }()
+		default:
+			http.Error(w, "webhook server is overloaded", http.StatusServiceUnavailable)
 			return
 		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, webhookBodyLimit))
@@ -64,6 +87,7 @@ func NewWebhookServer(tg *tgbot.Bot, address string, path string) (*WebhookServe
 	})
 	srv := &http.Server{
 		Handler:           mux,
+		MaxHeaderBytes:    webhookHeaderLimit,
 		ReadHeaderTimeout: 2 * time.Second,
 		ReadTimeout:       5 * time.Second,
 		WriteTimeout:      5 * time.Second,

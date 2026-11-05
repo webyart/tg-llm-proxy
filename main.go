@@ -235,7 +235,7 @@ func main() {
 	var webhookServer *bot.WebhookServer
 	if cfg.WebhookEnabled {
 		var err error
-		webhookServer, err = bot.NewWebhookServer(tg, cfg.WebhookAddress(), cfg.WebhookPath)
+		webhookServer, err = bot.NewWebhookServer(tg, cfg.WebhookAddress(), cfg.WebhookPath, cfg.WebhookSecretToken)
 		if err != nil {
 			fmt.Println("webhook listener:", err, "(the local address must be free before setWebhook, exit code 1)")
 			db.Close()

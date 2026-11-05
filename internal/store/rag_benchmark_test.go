@@ -54,3 +54,42 @@ func BenchmarkSearchRAGChunksManyIrrelevant(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkSearchRAGChunksManyTermTranscript(b *testing.B) {
+	ctx := context.Background()
+	db, err := OpenMemory(ctx, "rag_benchmark_many_term_transcript")
+	if err != nil {
+		b.Fatalf("OpenMemory: %v", err)
+	}
+	defer db.Close()
+	for _, row := range []struct {
+		name    string
+		content string
+	}{
+		{name: "included.txt", content: "term0000 in the selected transcript"},
+		{name: "excluded.txt", content: "term2047 beyond the query cap"},
+	} {
+		if _, _, err := PutRAGDocument(ctx, db, 901, 11, row.name, row.content); err != nil {
+			b.Fatalf("PutRAGDocument: %v", err)
+		}
+	}
+	var query strings.Builder
+	for index := 0; index < 2048; index++ {
+		fmt.Fprintf(&query, "term%04d transcript filler ", index)
+	}
+	if len([]rune(query.String())) <= RAGQueryMaxRunes {
+		b.Fatal("benchmark query does not exercise the rune cap")
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		chunks, err := SearchRAGChunks(ctx, db, 901, query.String(), 5, 2000)
+		if err != nil {
+			b.Fatalf("SearchRAGChunks: %v", err)
+		}
+		if len(chunks) != 1 || chunks[0].Name != "included.txt" {
+			b.Fatalf("unexpected result: %+v", chunks)
+		}
+	}
+}

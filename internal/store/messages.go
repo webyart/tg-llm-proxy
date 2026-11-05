@@ -50,6 +50,7 @@ type Message struct {
 	UserID            int64
 	Role              string
 	Content           string
+	ContentLength     int64
 	TokensIn          *int64
 	TokensOut         *int64
 	Model             string

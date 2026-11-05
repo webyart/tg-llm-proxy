@@ -261,13 +261,19 @@ func (d *Dispatcher) modelName(ctx context.Context, chatID int64) (string, error
 func (d *Dispatcher) modelInfo(ctx context.Context, ev Event, arg string) error {
 	var endpoint = d.deps.Cfg.StrataBase
 	var action = strings.TrimSpace(arg)
-	if action == "reset" {
+	var control = action
+	var requested = ""
+	if fields := strings.Fields(action); len(fields) > 0 {
+		control = fields[0]
+		requested = strings.TrimSpace(action[len(control):])
+	}
+	if strings.EqualFold(control, "reset") && requested == "" {
 		if err := store.ClearChatModel(ctx, d.deps.DB, ev.ChatID); err != nil {
 			return err
 		}
 		return d.reply(ctx, ev.ChatID, "Для этого чата восстановлена модель по умолчанию: "+d.deps.Cfg.StrataModel)
 	}
-	if strings.EqualFold(action, "check") || strings.HasPrefix(action, "select") {
+	if strings.EqualFold(control, "check") && requested == "" || strings.EqualFold(control, "select") {
 		var names, err = d.deps.Model.Models(ctx)
 		if err != nil {
 			d.logEvent(ctx, ev.UserID, store.EventModelError, "models:"+Sanitize(err, d.deps.Token))
@@ -276,10 +282,9 @@ func (d *Dispatcher) modelInfo(ctx context.Context, ev Event, arg string) error 
 		if len(names) == 0 {
 			return d.reply(ctx, ev.ChatID, fmt.Sprintf("STRATA отвечает, но список моделей пуст. Endpoint: %s", endpoint))
 		}
-		if action == "check" {
+		if strings.EqualFold(control, "check") {
 			return d.reply(ctx, ev.ChatID, fmt.Sprintf("Endpoint: %s\nМодели (%d): %s", endpoint, len(names), strings.Join(names, ", ")))
 		}
-		var requested = strings.TrimSpace(strings.TrimPrefix(action, "select"))
 		if requested == "" {
 			var current, currentErr = d.modelName(ctx, ev.ChatID)
 			if currentErr != nil {

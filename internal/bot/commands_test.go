@@ -292,6 +292,50 @@ func TestModelCommand(t *testing.T) {
 	}
 }
 
+func TestModelControlTokensAreCaseInsensitiveAndExact(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	var m = &fakeModel{models: []string{"Qwen-Alt"}}
+	var r = &fakeReplier{}
+	var db = testStore(t)
+	var d = newTestDispatcher(t, cfg, m, r, db)
+
+	if err := dispatch(t, d, testEvent(100, 11, 322, "/model CHECK")); err != nil {
+		t.Fatalf("/model CHECK: %v", err)
+	}
+	if got := r.texts()[len(r.texts())-1]; !strings.Contains(got, "Модели (1): Qwen-Alt") {
+		t.Fatalf("/model CHECK must run the check, got %q", got)
+	}
+	if err := dispatch(t, d, testEvent(100, 11, 323, "/model SELECT Qwen-Alt")); err != nil {
+		t.Fatalf("/model SELECT: %v", err)
+	}
+	selected, found, err := store.ChatModel(context.Background(), db, 100)
+	if err != nil || !found || selected != "Qwen-Alt" {
+		t.Fatalf("mixed-case select must preserve the model id: selected=%q found=%v err=%v", selected, found, err)
+	}
+	if err := dispatch(t, d, testEvent(100, 11, 324, "/model ReSeT")); err != nil {
+		t.Fatalf("/model ReSeT: %v", err)
+	}
+	if _, found, err := store.ChatModel(context.Background(), db, 100); err != nil || found {
+		t.Fatalf("mixed-case reset must clear the override, found=%v err=%v", found, err)
+	}
+	if err := dispatch(t, d, testEvent(100, 11, 325, "/model select")); err != nil {
+		t.Fatalf("/model select: %v", err)
+	}
+	if got := r.texts()[len(r.texts())-1]; !strings.Contains(got, "Текущая модель чата") || !strings.Contains(got, "Qwen-Alt") {
+		t.Fatalf("bare select must keep listing the available models, got %q", got)
+	}
+
+	for i, command := range []string{"/model selected", "/model selection Qwen-Alt", "/model checkup", "/model resettable"} {
+		if err := dispatch(t, d, testEvent(100, 11, int64(326+i), command)); err != nil {
+			t.Fatalf("%s: %v", command, err)
+		}
+		got := r.texts()[len(r.texts())-1]
+		if !strings.Contains(got, "Модель: ") || strings.Contains(got, "Qwen-Alt") {
+			t.Fatalf("%s must not be treated as a model control, got %q", command, got)
+		}
+	}
+}
+
 func TestModelSelectScopesAndResets(t *testing.T) {
 	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
 	var m = &fakeModel{models: []string{"qwen-test", "qwen-alt"}, response: model.Response{Content: "ответ"}}

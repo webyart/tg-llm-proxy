@@ -80,3 +80,28 @@ func TestCallbackEventUsesOnlyRegisteredCommands(t *testing.T) {
 		t.Fatal("arbitrary callback data must be rejected")
 	}
 }
+
+func TestDeleteCallbackKeepsBindingMetadataOutOfTextConfirmation(t *testing.T) {
+	d := newTestDispatcher(t, testConfig(t, nil), nil, &fakeReplier{}, testStore(t))
+	update := &models.Update{
+		ID: 190,
+		CallbackQuery: &models.CallbackQuery{
+			ID:   "delete-callback",
+			Data: "delete:confirm:0123456789abcdef0123456789abcdef",
+			From: models.User{ID: 11},
+			Message: models.MaybeInaccessibleMessage{Message: &models.Message{
+				ID:   900,
+				Chat: models.Chat{ID: 100, Type: models.ChatTypePrivate},
+			}},
+		},
+	}
+	ev, ok := d.callbackEventOf(update)
+	if !ok || ev.Text != "/delete callback confirm:0123456789abcdef0123456789abcdef" || ev.ChatID != 100 || ev.UserID != 11 || ev.TelegramMessageID != 900 {
+		t.Fatalf("delete callback = %+v ok=%v", ev, ok)
+	}
+	update.CallbackQuery.Data = "delete:confirm"
+	ev, ok = d.callbackEventOf(update)
+	if !ok || ev.Text == "/delete confirm" || ev.Text != "/delete callback confirm:" {
+		t.Fatalf("legacy callback must not become a text confirmation: %+v ok=%v", ev, ok)
+	}
+}

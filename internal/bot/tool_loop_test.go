@@ -3,7 +3,11 @@ package bot
 import (
 	"context"
 	"encoding/json"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"bot/internal/model"
@@ -183,6 +187,117 @@ func TestToolCallAfterStreamedTextExecutesAndReturnsFinalAnswer(t *testing.T) {
 	uses, countErr := store.CountEvents(context.Background(), db, store.EventUsage)
 	if countErr != nil || uses != 1 {
 		t.Fatalf("tool usage events=%d err=%v", uses, countErr)
+	}
+}
+
+type countingAcceptListener struct {
+	net.Listener
+	dials *atomic.Int64
+}
+
+func (l *countingAcceptListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err == nil {
+		l.dials.Add(1)
+	}
+	return conn, err
+}
+
+func TestToolLoopRejectsDisabledAndUnsolicitedCalls(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		tool    string
+		args    string
+		raw     map[string]string
+		network string
+		wantErr string
+	}{
+		{name: "calculator globally disabled", tool: "calculator", args: `{"expression":"2+2"}`, raw: map[string]string{"TOOLS_ENABLED": "false"}, wantErr: "tool disabled"},
+		{name: "read_url feature disabled", tool: "read_url", args: `{"url":"https://example.com"}`, network: "read_url", wantErr: "tool disabled"},
+		{name: "read_url globally disabled", tool: "read_url", args: `{"url":"https://example.com"}`, raw: map[string]string{"TOOLS_ENABLED": "false", "URL_READER_ENABLED": "true"}, network: "read_url", wantErr: "tool disabled"},
+		{name: "web_search feature disabled", tool: "web_search", args: `{"query":"test"}`, network: "web_search", wantErr: "tool disabled"},
+		{name: "web_search globally disabled", tool: "web_search", args: `{"query":"test"}`, raw: map[string]string{"TOOLS_ENABLED": "false"}, network: "web_search", wantErr: "tool disabled"},
+		{name: "unsolicited unknown tool", tool: "shell", args: `{}`, raw: map[string]string{"URL_READER_ENABLED": "true", "WEB_SEARCH_ENABLED": "true", "WEB_SEARCH_BASE_URL": "https://searx.internal.example"}, wantErr: "unknown tool"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := make(map[string]string, len(tc.raw)+2)
+			for key, value := range tc.raw {
+				raw[key] = value
+			}
+			args := tc.args
+			var dials, requests atomic.Int64
+			if tc.network != "" {
+				target := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requests.Add(1)
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"results":[]}`))
+				}))
+				target.Listener = &countingAcceptListener{Listener: target.Listener, dials: &dials}
+				if tc.network == "read_url" {
+					target.StartTLS()
+					args = `{"url":"` + target.URL + `"}`
+				} else {
+					target.Start()
+					raw["WEB_SEARCH_BASE_URL"] = target.URL
+				}
+				t.Cleanup(target.Close)
+			}
+			call := model.ToolCall{ID: "forbidden-call", Name: tc.tool, Arguments: args}
+			m := &scriptedToolModel{responses: []model.Response{{ToolCalls: []model.ToolCall{call}}}}
+			db := testStore(t)
+			cfg := testConfig(t, raw)
+			if tc.tool == "web_search" && !cfg.ToolsEnabled {
+				cfg.WebSearchEnabled = true
+			}
+			d := newTestDispatcher(t, cfg, m, nil, db)
+			_, err := d.completeWithTools(context.Background(), 11, model.Request{}, nil, nil)
+			if err == nil || err.Error() != tc.wantErr {
+				t.Fatalf("completeWithTools error=%v want=%q", err, tc.wantErr)
+			}
+			if len(m.requests) != 1 {
+				t.Fatalf("model requests=%d, want only the initial request", len(m.requests))
+			}
+			for _, tool := range m.requests[0].Tools {
+				if tool.Name == tc.tool {
+					t.Fatalf("disabled tool was offered: %+v", m.requests[0].Tools)
+				}
+			}
+			if len(m.requests[0].Tools) == 0 && len(m.requests[0].Messages) != 0 {
+				t.Fatalf("no-tools request contains native tool instruction: %+v", m.requests[0].Messages)
+			}
+			uses, countErr := store.CountEvents(context.Background(), db, store.EventUsage)
+			if countErr != nil || uses != 0 {
+				t.Fatalf("usage events=%d err=%v", uses, countErr)
+			}
+			if dials.Load() != 0 || requests.Load() != 0 {
+				t.Fatalf("tool side effects: dials=%d requests=%d", dials.Load(), requests.Load())
+			}
+		})
+	}
+}
+
+func TestToolLoopAuthorizationPreflightsWholeRound(t *testing.T) {
+	var requests atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	t.Cleanup(target.Close)
+	cfg := testConfig(t, map[string]string{"WEB_SEARCH_BASE_URL": target.URL})
+	m := &scriptedToolModel{responses: []model.Response{{ToolCalls: []model.ToolCall{
+		{ID: "allowed", Name: "calculator", Arguments: `{"expression":"2+2"}`},
+		{ID: "disabled", Name: "web_search", Arguments: `{"query":"test"}`},
+	}}}}
+	db := testStore(t)
+	d := newTestDispatcher(t, cfg, m, nil, db)
+	_, err := d.completeWithTools(context.Background(), 11, model.Request{}, nil, nil)
+	if err == nil || err.Error() != "tool disabled" {
+		t.Fatalf("completeWithTools error=%v", err)
+	}
+	uses, countErr := store.CountEvents(context.Background(), db, store.EventUsage)
+	if countErr != nil || uses != 0 || requests.Load() != 0 || len(m.requests) != 1 {
+		t.Fatalf("usage=%d count error=%v provider requests=%d model requests=%d", uses, countErr, requests.Load(), len(m.requests))
 	}
 }
 

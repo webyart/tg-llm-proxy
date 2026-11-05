@@ -23,8 +23,13 @@ func (d *Dispatcher) callModel(ctx context.Context, req model.Request, streamer 
 }
 
 func (d *Dispatcher) completeWithTools(ctx context.Context, userID int64, req model.Request, streamer model.Streamer, session *streamSession) (model.Response, error) {
-	req.Tools = append(calculatorTools(d.deps.Cfg.ToolsEnabled), urlReaderTools(d.deps.Cfg.URLReaderEnabled)...)
-	req.Tools = append(req.Tools, webSearchTools(d.deps.Cfg.WebSearchEnabled)...)
+	allowedTools := map[string]bool{
+		"calculator": d.deps.Cfg.ToolsEnabled,
+		"read_url":   d.deps.Cfg.ToolsEnabled && d.deps.Cfg.URLReaderEnabled,
+		"web_search": d.deps.Cfg.ToolsEnabled && d.deps.Cfg.WebSearchEnabled,
+	}
+	req.Tools = append(calculatorTools(allowedTools["calculator"]), urlReaderTools(allowedTools["read_url"])...)
+	req.Tools = append(req.Tools, webSearchTools(allowedTools["web_search"])...)
 	if len(req.Tools) > 0 {
 		req.Messages = append([]model.Message{{Role: model.RoleSystem, Content: nativeToolInstruction}}, req.Messages...)
 	}
@@ -35,6 +40,15 @@ func (d *Dispatcher) completeWithTools(ctx context.Context, userID int64, req mo
 		}
 		if len(resp.ToolCalls) > 2 {
 			return model.Response{}, errors.New("model requested more than two tool calls in one round")
+		}
+		for _, call := range resp.ToolCalls {
+			allowed, known := allowedTools[call.Name]
+			if !known {
+				return model.Response{}, errors.New("unknown tool")
+			}
+			if !allowed {
+				return model.Response{}, errors.New("tool disabled")
+			}
 		}
 		messages := append([]model.Message(nil), req.Messages...)
 		messages = append(messages, model.Message{Role: model.RoleAssistant, Content: resp.Content, ToolCalls: resp.ToolCalls})

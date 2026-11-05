@@ -3,7 +3,10 @@
 package integration
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,6 +33,36 @@ func TestCalculatorToolEndToEnd(t *testing.T) {
 	rows := rowsOf(t, db)
 	if len(rows) != 2 || rows[0].Role != store.RoleUser || rows[1].Content != "Результат равен 8" {
 		t.Fatalf("rows=%+v", rows)
+	}
+}
+
+func TestURLReaderGloballyDisabledFailsClosedEndToEnd(t *testing.T) {
+	path := dbFile(t)
+	tgAPI := testutil.NewTelegram(t, secretToken)
+	var requests atomic.Int64
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("must not be read"))
+	}))
+	t.Cleanup(target.Close)
+	strata := testutil.NewStrata(t, secretStrataKey,
+		testutil.StrataReply{ToolCallID: "forbidden-url", ToolName: "read_url", ToolArguments: `{"url":"` + target.URL + `"}`, Model: "fake-model"},
+	)
+	cfg := integrationEnv(t, path, strata.BaseURL(), map[string]string{"TOOLS_ENABLED": "false", "URL_READER_ENABLED": "true"})
+	db := openStore(t, path)
+	startBot(t, t.Context(), cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second}, storedOffset(t, db))
+	tgAPI.PushText(703, chatID, userID, "Прочитай страницу")
+	waitFor(t, "disabled tool error", func() bool { return strings.Contains(tgAPI.Joined(), "tool disabled") })
+	if strata.ChatCalls() != 1 || requests.Load() != 0 {
+		t.Fatalf("chat calls=%d URL requests=%d", strata.ChatCalls(), requests.Load())
+	}
+	if countEvents(t, db, store.EventUsage) != 0 {
+		t.Fatal("disabled read_url recorded usage")
+	}
+	body := strata.LastRequestBody()
+	if strings.Contains(body, `"tools":`) || strings.Contains(body, "native OpenAI tool_calls") {
+		t.Fatalf("globally disabled tools were offered: %s", body)
 	}
 }
 

@@ -7,14 +7,15 @@ Telegram-бот-прокси между пользователями и лока
 
 ## Возможности
 
-- 19 команд: `/start`, `/help`, `/ping`, `/status`, `/ask`, `/reset`, `/skip`, `/unskip`, `/history`, `/docs`, `/export`, `/search`, `/delete`, `/model`, `/stream`, `/persona`, `/stats`, `/whoami`, `/admin`.
+- 21 команда: `/start`, `/help`, `/ping`, `/status`, `/ask`, `/reset`, `/skip`, `/unskip`, `/history`, `/docs`, `/export`, `/search`, `/delete`, `/model`, `/stream`, `/persona`, `/stats`, `/whoami`, `/admin`, `/remind`, `/reminders`.
 - `/start` и `/help` открывают секционное inline-меню с Back-навигацией; callbacks проходят через тот же Dispatcher и allowlist.
 - Альбомы до 10 фото JPEG/PNG, текстовые документы UTF-8 до 64 КиБ, voice, аудиофайлы и video notes через Whisper. Лимиты настраиваются `MEDIA_MAX_MB` и `SPEECH_MAX_SECONDS`.
 - История и независимый контекст каждого чата в SQLite/WAL.
 - Безопасный OpenAI function calling: локальный calculator, opt-in `read_url` для чтения HTTPS-страниц и opt-in `web_search` через self-hosted SearxNG; без shell, файлов и произвольного кода. Поддерживаются обычные и streaming ответы.
 - Allowlist по Telegram user id, rate limiting, per-chat lock и ограничение параллельных запросов к модели.
 - Обработка timeout/5xx/пустых ответов, Telegram 429 и восстановление незавершённых вопросов после рестарта.
-- Версионированные миграции через `schema_migrations` (текущая схема — версия 6).
+- Persistent one-shot и ежедневные напоминания с управлением списком и plain-text доставкой без вызова модели.
+- Версионированные миграции через `schema_migrations` (текущая схема — версия 7).
 - Backup/restore, ротация копий и age-based retention с dry-run по умолчанию.
 - Безопасное восстановление Docker named volume.
 - Docker multi-stage build, non-root runtime, healthcheck, build commit и ротация логов 10 MB × 5.
@@ -108,6 +109,7 @@ docker compose logs -f bot
 | `STRATA_TIMEOUT_SECONDS` | 60 | таймаут одной попытки модели |
 | `TG_REPLY_DEADLINE_SECONDS` | 90 | общий бюджет ответа; должен быть больше timeout |
 | `RECOVERY_MAX_AGE_HOURS` | 24 | максимальный возраст unanswered-вопроса для автоматического recovery; `0` отключает лимит |
+| `REMINDER_TIMEZONE` | `UTC` | IANA timezone для ежедневных напоминаний, например `Europe/Moscow` |
 | `MEDIA_MAX_MB` | 10 | лимит каждого media-файла и альбома целиком |
 | `SPEECH_MAX_SECONDS` | 300 | лимит voice/audio/video note |
 | `DB_PATH` | `./data/bot.db` | host SQLite; в compose — `/data/bot.db` |
@@ -237,6 +239,8 @@ Reverse proxy или туннель должен перенаправлять п
 | `/skip` | запретить recovery текущего unanswered-вопроса |
 | `/unskip` | снять suppression без немедленного вызова модели |
 | `/history [N]` | последние N сообщений, по умолчанию 5 |
+| `/remind <время> <текст>` | `через 1 минуту`, `через 2 часа` или `каждый день 09:00`; текст до 500 runes |
+| `/reminders` | список активных напоминаний чата; `cancel <id>` или `delete <id>` отменяет свою запись |
 | `/docs` | RAG-база; `/docs add`, `export`, `delete <id>` и `clear` |
 | `/export [md\|json]` | экспорт последних 10000 сообщений с явным truncation warning и ID/time window |
 | `/search <текст>` | до 20 совпадений среди последних 10000 сообщений; область указана в ответе |
@@ -252,7 +256,7 @@ Reverse proxy или туннель должен перенаправлять п
 
 ## Интерактивное меню
 
-`/start` и `/help` открывают секционное inline-меню: Ask/New context, History, Documents, Settings, Status, Help и More. History поддерживает последние сообщения, поиск, MD/JSON export и удаление; Documents — добавление, export и удаление документов; Settings — Model, Persona и Stream. Admin виден только администраторам.
+`/start` и `/help` открывают секционное inline-меню: Ask/New context, History, Documents, Settings, Status, Help и More. History поддерживает последние сообщения, поиск, MD/JSON export и удаление; Documents — добавление, export и удаление документов; Settings — Model, Persona и Stream. More содержит напоминания с inline list/refresh/cancel. Admin виден только администраторам.
 
 Ask, Search и Custom Persona принимают следующий текст через pending input с TTL 2 минуты и кнопкой Cancel. Состояние привязано к chat/user/menu message и инвалидируется при рестарте. Все текстовые команды остаются доступными. Обычные запросы показывают Telegram `typing`, а streaming tools — только общие стадии без URL и поисковых запросов.
 
@@ -278,7 +282,7 @@ Release CI — `.gitlab-ci.yml`: Linux host checks, race и `govulncheck`. Share
 .\scripts\db_inspect.ps1 -Integrity
 ```
 
-`schema_version=0` означает backup до версионирования; при следующем writable `store.Open` он автоматически становится 6 без изменения прикладных строк.
+`schema_version=0` означает backup до версионирования; при следующем writable `store.Open` он автоматически становится 7 без изменения прикладных строк.
 
 ### Backup и scratch restore
 

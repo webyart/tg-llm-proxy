@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // the absence of TELEGRAM_BOT_TOKEN → a fall on the start with a clear error;
@@ -37,6 +38,7 @@ var Env = []string{
 	"WEBHOOK_PORT",
 	"WEBHOOK_PATH",
 	"DB_PATH",
+	"REMINDER_TIMEZONE",
 	"CONTEXT_MESSAGES",
 	"MAX_CONTEXT_CHARS",
 	"MAX_INPUT_CHARS",
@@ -102,6 +104,7 @@ const DefaultMaxChunk = int64(3500)
 const DefaultParseMode = "MarkdownV2"
 const DefaultHealthPort = int64(8080)
 const DefaultLogLevel = "info"
+const DefaultReminderTimezone = "UTC"
 
 // Telegram message instead of sending one, which is a visible change of behaviour for every chat, so the
 // behind a row, not behind a deploy). The other three are the budgets of one streamed answer, and the numbers
@@ -153,6 +156,8 @@ type Config struct {
 	WebhookPort             int64
 	WebhookPath             string
 	DBPath                  string
+	ReminderTimezone        string
+	ReminderLocation        *time.Location
 	ContextMessages         int64
 	MaxContextChars         int64
 	MaxInputChars           int64
@@ -580,6 +585,19 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 		dbPath = DefaultDBPath
 	}
 	cfg.DBPath = dbPath
+
+	reminderTimezone := strings.TrimSpace(raw["REMINDER_TIMEZONE"])
+	if reminderTimezone == "" {
+		reminderTimezone = DefaultReminderTimezone
+	}
+	reminderLocation, reminderLocationErr := time.LoadLocation(reminderTimezone)
+	if reminderLocationErr != nil {
+		problems = Push(problems, fmt.Sprintf("ENV REMINDER_TIMEZONE = %q could not be loaded: %v; UTC is used instead", reminderTimezone, reminderLocationErr))
+		reminderTimezone = DefaultReminderTimezone
+		reminderLocation, _ = time.LoadLocation(DefaultReminderTimezone)
+	}
+	cfg.ReminderTimezone = reminderTimezone
+	cfg.ReminderLocation = reminderLocation
 
 	var messages, badMessages = Num(raw, "CONTEXT_MESSAGES", DefaultContextMessages, 0, 200)
 	cfg.ContextMessages = messages

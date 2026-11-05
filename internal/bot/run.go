@@ -311,6 +311,10 @@ func (r *telegramReplier) Send(ctx context.Context, chatID int64, text string) e
 	return r.send(ctx, chatID, text, nil)
 }
 
+func (r *telegramReplier) SendPlain(ctx context.Context, chatID int64, text string) error {
+	return r.sendPlain(ctx, chatID, text, nil)
+}
+
 func (r *telegramReplier) SendTyping(ctx context.Context, chatID int64) error {
 	if r.bot == nil {
 		return errors.New("the telegram bot is not attached ")
@@ -325,6 +329,14 @@ func (r *telegramReplier) SendMenu(ctx context.Context, chatID int64, text strin
 }
 
 func (r *telegramReplier) send(ctx context.Context, chatID int64, text string, markup *models.InlineKeyboardMarkup) error {
+	return r.sendWithMode(ctx, chatID, text, markup, parseModeOf(r.cfg.ParseMode))
+}
+
+func (r *telegramReplier) sendPlain(ctx context.Context, chatID int64, text string, markup *models.InlineKeyboardMarkup) error {
+	return r.sendWithMode(ctx, chatID, text, markup, "")
+}
+
+func (r *telegramReplier) sendWithMode(ctx context.Context, chatID int64, text string, markup *models.InlineKeyboardMarkup, parseMode models.ParseMode) error {
 	if r.bot == nil {
 		return errors.New("the telegram bot is not attached ")
 	}
@@ -333,7 +345,7 @@ func (r *telegramReplier) send(ctx context.Context, chatID int64, text string, m
 		params := &tgbot.SendMessageParams{
 			ChatID:    chatID,
 			Text:      text,
-			ParseMode: parseModeOf(r.cfg.ParseMode),
+			ParseMode: parseMode,
 		}
 		if markup != nil {
 			params.ReplyMarkup = *markup
@@ -478,6 +490,7 @@ func Run(ctx context.Context, deps Deps, opts Options) (*Dispatcher, error) {
 	if err != nil {
 		return nil, err
 	}
+	go d.RunReminderScheduler(ctx)
 	var menuCtx, cancel = context.WithTimeout(ctx, PublishCommandsTimeout)
 	defer cancel()
 	if err := d.PublishCommands(menuCtx, tg); err != nil {

@@ -23,14 +23,43 @@ func TestAdminStatsAreAggregates(t *testing.T) {
 			t.Fatalf("Append: %v", err)
 		}
 	}
-	if err := LogEvent(ctx, db, 7, EventCommand, "ask"); err != nil {
-		t.Fatalf("LogEvent: %v", err)
+	for _, event := range []struct {
+		kind   string
+		detail string
+	}{
+		{EventCommand, "ask"},
+		{EventModelError, "upstream 502"},
+		{EventModelError, "empty_answer"},
+		{EventTimeout, "model deadline"},
+		{EventUsage, "rag"},
+		{EventUsage, "calculator"},
+		{EventUsage, "read_url"},
+		{EventUsage, "web_search"},
+		{EventDenied, "allowlist"},
+	} {
+		if err := LogEvent(ctx, db, 7, event.kind, event.detail); err != nil {
+			t.Fatalf("LogEvent(%s, %s): %v", event.kind, event.detail, err)
+		}
 	}
 	stats, err := AdminStats(ctx, db)
 	if err != nil {
 		t.Fatalf("AdminStats: %v", err)
 	}
-	if stats.Chats != 1 || stats.Messages != 2 || stats.Events != 1 || stats.Commands != 1 || stats.Pending != 0 || stats.LastActive == "" {
-		t.Fatalf("unexpected admin stats: %+v", stats)
+	lastActive := stats.LastActive
+	stats.LastActive = ""
+	want := AdminSummary{
+		Chats:          1,
+		Messages:       2,
+		Events:         9,
+		Commands:       1,
+		ModelErrors:    2,
+		Timeouts:       1,
+		RAGUses:        1,
+		CalculatorUses: 1,
+		URLReaderUses:  1,
+		WebSearchUses:  1,
+	}
+	if stats != want || lastActive == "" {
+		t.Fatalf("unexpected admin stats: %+v, last active %q", stats, lastActive)
 	}
 }

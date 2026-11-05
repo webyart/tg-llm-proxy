@@ -56,6 +56,9 @@ services:
     volumes:
       - bot-data:/data
     read_only: true
+    mem_limit: 512MiB
+    cpus: 1.0
+    pids_limit: 128
     cap_drop:
       - ALL
     security_opt:
@@ -85,6 +88,9 @@ services:
     volumes:
       - whisper-models:/home/ubuntu/.cache/huggingface/hub
     read_only: true
+    mem_limit: 4GiB
+    cpus: 4.0
+    pids_limit: 256
     cap_drop:
       - ALL
     security_opt:

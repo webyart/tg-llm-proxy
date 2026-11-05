@@ -615,6 +615,7 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 		return d.reply(ctx, ev.ChatID, "Вложение недоступно после перезапуска, поэтому отправь вложение повторно вместе с вопросом.")
 	}
 	var text = strings.TrimSpace(arg)
+	originalRequest := text
 	if ev.Attachment != nil {
 		text = attachmentPrompt(ev)
 	}
@@ -740,7 +741,18 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 	if canStream {
 		session = d.newStreamSession(replyCtx, ev.ChatID, sender)
 	}
-	resp, modelErr = d.completeWithTools(replyCtx, ev.UserID, model.Request{Model: selectedModel, Messages: messages}, streamer, session)
+	toolCtx := withToolLoopMetadata(replyCtx, toolLoopMetadata{
+		event: ev, originalRequest: originalRequest, selectedModel: selectedModel,
+		ragSources: ragSources, documentTruncated: documentTruncated,
+	})
+	resp, modelErr = d.completeWithTools(toolCtx, ev.UserID, model.Request{Model: selectedModel, Messages: messages}, streamer, session)
+	return d.finishModelAnswer(ctx, replyCtx, ev, resp, modelErr, selectedModel, ragSources, documentTruncated, session)
+}
+
+func (d *Dispatcher) finishModelAnswer(ctx context.Context, replyCtx context.Context, ev Event, resp model.Response, modelErr error, selectedModel string, ragSources []string, documentTruncated bool, session *streamSession) error {
+	if errors.Is(modelErr, errNetworkApprovalPending) {
+		return nil
+	}
 	if modelErr != nil {
 		if errors.Is(modelErr, context.Canceled) {
 			return modelErr // the process is stopping : nothing to promise the user

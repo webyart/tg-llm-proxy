@@ -43,6 +43,9 @@ services:
     volumes:
       - searxng-data:/var/cache/searxng
     read_only: true
+    mem_limit: 1GiB
+    cpus: 1.0
+    pids_limit: 128
     cap_drop:
       - ALL
     security_opt:

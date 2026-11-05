@@ -295,6 +295,14 @@ func menuCallbackText(data string) (string, bool) {
 	if token, ok := strings.CutPrefix(data, "menu:input:cancel:"); ok && validMenuToken(token) {
 		return "/help menu:input:cancel:" + token, true
 	}
+	for _, action := range []string{"confirm", "cancel"} {
+		if token, ok := strings.CutPrefix(data, "menu:network:"+action+":"); ok {
+			if validMenuToken(token) {
+				return "/help menu:network:" + action + ":" + token, true
+			}
+			return "", false
+		}
+	}
 	return "", false
 }
 
@@ -455,6 +463,9 @@ func (d *Dispatcher) helpMenu(ctx context.Context, ev Event, action string) erro
 	default:
 		if token, ok := strings.CutPrefix(action, "menu:input:cancel:"); ok && validMenuToken(token) {
 			return d.cancelPendingInputMenu(ctx, ev, token)
+		}
+		if strings.HasPrefix(action, "menu:network:") {
+			return d.networkApprovalControl(ctx, ev, action)
 		}
 		return d.showRootMenu(ctx, ev, menuExpiredText)
 	}

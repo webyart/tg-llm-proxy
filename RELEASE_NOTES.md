@@ -1,3 +1,15 @@
+# tg-llm-proxy v1.22.0
+
+## Stage D agent security and operational resilience
+
+- RAG/document/transcript/search/URL contents явно помечены untrusted: они не могут авторизовать новые network actions или копирование истории в tool arguments. Проверка выполняется server-side вне модели.
+- Прямой exact HTTPS URL и явное search-намерение пользователя работают автоматически. Другой origin или autonomous network action требует confirmation: random 128-bit token, chat/user/menu message, canonical tool arguments, TTL 5 минут и atomic single use. Cancel/expiry/wrong user/replay не выполняют действие; approval продолжает исходный tool loop.
+- Startup recovery сохраняет attempts/next_recovery_at в bot_state: до трёх попыток с backoff 1, 2, 4 минуты, затем suppression без удаления истории. Успех очищает metadata, `/unskip` сбрасывает backoff, повторные restarts не создают duplicate notices.
+- Миграция 6 добавляет indexes `events(user_id,kind)`, `events(kind,detail)` и `events(created_at)`; admin event counters объединены conditional aggregation. Данные и upgrade с версии 5 сохранены.
+- Compose ceilings: bot 512MiB/1 CPU/128 PIDs, Whisper 4GiB/4 CPU/256 PIDs, SearxNG 1GiB/1 CPU/128 PIDs. Hardening и loopback сохранены.
+- Maintenance lease содержит UTC/PID/lease_id и действует 180 минут только с живым процессом; stale lease вызывает alert и восстанавливает monitoring. Backup freshness по умолчанию 30 часов с suppression и verified receipt.
+- Добавлены restart-loop, migration-upgrade, stale-lease/backup-age, malicious-RAG exfiltration, approval cancel/expiry/replay/wrong-user и exact-resume regressions. Живой acceptance после deploy ещё предстоит.
+
 # tg-llm-proxy v1.21.0
 
 ## Stage C interactive menu and progress feedback

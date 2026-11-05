@@ -14,7 +14,7 @@ Telegram-бот-прокси между пользователями и лока
 - Безопасный OpenAI function calling: локальный calculator, opt-in `read_url` для чтения HTTPS-страниц и opt-in `web_search` через self-hosted SearxNG; без shell, файлов и произвольного кода. Поддерживаются обычные и streaming ответы.
 - Allowlist по Telegram user id, rate limiting, per-chat lock и ограничение параллельных запросов к модели.
 - Обработка timeout/5xx/пустых ответов, Telegram 429 и восстановление незавершённых вопросов после рестарта.
-- Версионированные миграции через `schema_migrations` (текущая схема — версия 5).
+- Версионированные миграции через `schema_migrations` (текущая схема — версия 6).
 - Backup/restore, ротация копий и age-based retention с dry-run по умолчанию.
 - Безопасное восстановление Docker named volume.
 - Docker multi-stage build, non-root runtime, healthcheck, build commit и ротация логов 10 MB × 5.
@@ -170,6 +170,10 @@ WEB_SEARCH_BASE_URL=http://searxng:8080
 
 Override проверен локально: контейнер стартует healthy, `format=json` отвечает выдачей, и opt-in проверка под build tag `livecheck` (`TestLiveWebSearchRealProvider`) выполнила реальный запрос через этот sidecar. Живой acceptance внутри Telegram с `WEB_SEARCH_ENABLED=true` выполнен на v1.17.3 и повторно подтверждён на v1.18.1: поисковый tool вызван, финальный streamed-ответ доставлен после tool rounds.
 
+### Подтверждение сетевых действий
+
+RAG, документы, транскрипты и веб-контент считаются untrusted-данными и не авторизуют новые сетевые действия. Точный HTTPS URL из запроса пользователя и явный поисковый запрос выполняются автоматически. Другой origin или автономный вызов требует inline-подтверждения: оно привязано к chat/user/message и canonical arguments, действует 5 минут и работает однократно. Cancel, expiry и replay не выполняют network action; Confirm продолжает исходный tool loop.
+
 ### Сеть Telegram
 
 TLS handshake timeout Telegram transport — 30 секунд вместо стандартных 10; стартовый `getMe` получает до 65 секунд на две попытки маршрута. При ошибке proxy только `getMe`/`getUpdates` автоматически пробуют direct route; `sendMessage` и edit никогда не повторяются через fallback, чтобы не создать дубли. Если прямой маршрут нестабилен, создайте локальный `data/telegram-proxy.env`:
@@ -218,6 +222,7 @@ Reverse proxy или туннель должен перенаправлять п
 - Streaming ограничен 100000 runes, tool argument — 16384 runes, один ответ — 64 Telegram-сообщениями.
 - Model work — `3 × RATE_LIMIT_PER_MINUTE` на пользователя; network tools — 8/мин/user и 4 global in flight.
 - RAG использует первые 32 термина из 4000 runes запроса. Export сериализуется инкрементально с остановкой на 5 МиБ.
+- Compose resource backstops: bot 512MiB/1 CPU/128 PIDs, Whisper 4GiB/4 CPU/256 PIDs, SearxNG 1GiB/1 CPU/128 PIDs.
 
 ## Команды бота
 
@@ -273,7 +278,7 @@ Release CI — `.gitlab-ci.yml`: Linux host checks, race и `govulncheck`. Share
 .\scripts\db_inspect.ps1 -Integrity
 ```
 
-`schema_version=0` означает backup до версионирования; при следующем writable `store.Open` он автоматически становится 4 без изменения прикладных строк.
+`schema_version=0` означает backup до версионирования; при следующем writable `store.Open` он автоматически становится 6 без изменения прикладных строк.
 
 ### Backup и scratch restore
 
@@ -338,7 +343,7 @@ Maintenance чисто останавливает бота, копирует `/d
 .\scripts\notify-telegram.ps1 -Message 'tg-llm-proxy: test'
 ```
 
-Монитор проверяет bot и Whisper, называет сервис в failure state, отправляет алерт при сбое и восстановлении, повторяет неизменный failure не чаще одного раза в 6 часов и не перезапускает контейнер автоматически. Во время штатного clean-stop backup проверка пропускается. Дополнительно `watch_runtime.ps1` анализирует последние 10 минут логов: три ошибки Telegram, STRATA или Whisper/transcription вызывают алерт, повтор подавляется на 6 часов. Состояния хранятся в `data/monitoring/container-alert.json` и `runtime-alert.json`. Уведомления используют существующие token/allowlist, не принимают token аргументом и не печатают его.
+Монитор проверяет bot и Whisper, называет сервис в failure state, отправляет алерт при сбое и восстановлении, повторяет неизменный failure не чаще одного раза в 6 часов и не перезапускает контейнер автоматически. Во время штатного clean-stop backup проверка пропускается только по свежему lease с живым PID; stale lease вызывает alert и восстанавливает проверки. Backup freshness по умолчанию ограничен 30 часами, подтверждённые копии записывают verification receipt. Дополнительно `watch_runtime.ps1` анализирует последние 10 минут логов: три ошибки Telegram, STRATA или Whisper/transcription вызывают алерт, повтор подавляется на 6 часов. Состояния хранятся в `data/monitoring`. Уведомления используют существующие token/allowlist, не принимают token аргументом и не печатают его.
 
 Speaches CPU/CUDA images закреплены по digest. Для NVIDIA GPU после настройки Docker GPU support используйте:
 
@@ -390,7 +395,7 @@ docker compose up -d
   запасным и начнёт работать сразу после разблокировки аккаунта.
 - Репозиторий опубликован в GitHub (`origin`) и GitLab (`gitlab`), ветки `main` и `develop` синхронны.
 - Стриминг реализован и проверен вживую, но остаётся opt-in. Точный 120-секундный 429 и реальный idle-stall покрыты только тестами.
-- Startup recovery рассматривает только самый новый visible unanswered-вопрос чата и ограничен `RECOVERY_MAX_AGE_HOURS` (24 часа по умолчанию).
+- Startup recovery рассматривает только самый новый visible unanswered-вопрос чата и ограничен `RECOVERY_MAX_AGE_HOURS` (24 часа по умолчанию). Выполняется до трёх попыток с backoff 1, 2, 4 минуты; затем включается suppression без удаления истории, `/unskip` сбрасывает backoff.
 - Host-side `/healthz` на Docker Desktop может давать WARN при healthy in-container healthcheck.
 - macOS использует те же Unix-ветки, что и проверенный Linux; физический Mac acceptance не выполнялся.
 - Содержимое одноразовых фото и документов не сохраняется. `/docs add` явно сохраняет текст для RAG; retrieval lexical, без embeddings. Voice хранится как текст после транскрипции.

@@ -1,10 +1,10 @@
 #Requires -Version 7
 <#
 
-Covers backup → scratch restore → counter comparison, verified external copy without overwrite, maintenance
-dry-run/apply rotation, and integrity of every retained generated backup. -WithVolumeRestore additionally runs the
-isolated compose-volume and container-monitor rehearsals and therefore requires Docker plus tg-llm-proxy-bot:latest.
-All fixture files and containers are removed in finally.
+Covers atomic lease publication and overlap protection, backup → scratch restore → counter comparison, verified external
+copy without overwrite, maintenance dry-run/apply rotation, and integrity of every retained generated backup.
+-WithVolumeRestore additionally runs the isolated compose-volume and container-monitor rehearsals and therefore requires
+Docker plus tg-llm-proxy-bot:latest. All fixture files and containers are removed in finally.
 
 Usage:
   .\scripts\test-maintenance.ps1
@@ -22,6 +22,8 @@ $source = Join-Path $work 'source.db'
 $backup = Join-Path $work 'manual-backup.db'
 $restored = Join-Path $work 'restored.db'
 $fixtureExe = Join-Path $repoRoot 'bin\dbfixture.exe'
+$maintenanceWork = Join-Path $repoRoot 'zzscratch\volume-maintenance'
+$leaseGuardCreated = $false
 $failure = $null
 
 function Get-DatabaseCounts([string]$Path) {
@@ -42,7 +44,53 @@ function Assert-SameCounts([string]$ExpectedPath, [string]$ActualPath) {
 
 Push-Location $repoRoot
 try {
+    if (Test-Path -LiteralPath $maintenanceWork) { throw 'test refused to replace an existing production maintenance lease' }
+    [void](New-Item -ItemType Directory -Path $maintenanceWork)
+    $leaseGuardCreated = $true
+    $lease = [pscustomobject]@{ started_at = [DateTime]::UtcNow.ToString('o'); pid = $PID }
+    [System.IO.File]::WriteAllText((Join-Path $maintenanceWork 'lease.json'), ($lease | ConvertTo-Json), [System.Text.UTF8Encoding]::new($false))
+    $leaseGuard = & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'db_volume_maintenance.ps1') -NoNotify
+    if ($LASTEXITCODE -ne 1 -or ($leaseGuard | Out-String) -notmatch 'another run may be in progress') {
+        throw 'an existing maintenance lease did not protect volume operations'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $maintenanceWork 'lease.json') -PathType Leaf)) {
+        throw 'the rejected maintenance run removed the existing lease'
+    }
+    Remove-Item -LiteralPath $maintenanceWork -Recurse -Force
+    $leaseGuardCreated = $false
+    Write-Output 'maintenance acceptance: existing lease prevents overlapping volume operations'
+
     if (Test-Path -LiteralPath $work) { throw "acceptance work directory already exists: $work" }
+    [void](New-Item -ItemType Directory -Path $work)
+    $capturedLeasePath = Join-Path $work 'captured-lease.json'
+    $fakeDocker = "@echo off`r`ncopy /Y `"$(Join-Path $maintenanceWork 'lease.json')`" `"$capturedLeasePath`" >nul`r`nexit /b 1`r`n"
+    [System.IO.File]::WriteAllText((Join-Path $work 'docker.cmd'), $fakeDocker, [System.Text.Encoding]::Ascii)
+    $originalPath = $env:PATH
+    $leaseGuardCreated = $true
+    try {
+        $env:PATH = "$work$([System.IO.Path]::PathSeparator)$originalPath"
+        $leaseProbe = & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'db_volume_maintenance.ps1') -NoNotify
+    }
+    finally {
+        $env:PATH = $originalPath
+    }
+    if ($LASTEXITCODE -ne 1 -or ($leaseProbe | Out-String) -notmatch 'docker compose stop bot failed') {
+        throw 'lease probe did not stop at the simulated Docker failure'
+    }
+    if (-not (Test-Path -LiteralPath $capturedLeasePath -PathType Leaf)) { throw 'maintenance did not publish lease metadata before volume operations' }
+    $capturedLeaseJson = Get-Content -LiteralPath $capturedLeasePath -Raw
+    if ($capturedLeaseJson -notmatch '"started_at"\s*:\s*"[^"]+Z"') { throw 'maintenance lease timestamp is not explicitly UTC' }
+    $capturedLease = $capturedLeaseJson | ConvertFrom-Json
+    $capturedStart = ([DateTime]$capturedLease.started_at).ToUniversalTime()
+    if ([Math]::Abs(([DateTime]::UtcNow - $capturedStart).TotalMinutes) -gt 5) {
+        throw 'maintenance lease does not contain a current UTC timestamp'
+    }
+    if ([int]$capturedLease.pid -le 0) { throw 'maintenance lease does not contain a valid PID' }
+    if (Test-Path -LiteralPath $maintenanceWork) { throw 'failed maintenance run did not clean up its lease' }
+    $leaseGuardCreated = $false
+    Remove-Item -LiteralPath $work -Recurse -Force
+    Write-Output 'maintenance acceptance: lease publication is atomic, contains UTC/PID, and is cleaned after failure'
+
     [void](New-Item -ItemType Directory -Path $work)
 
     $needsBuild = -not (Test-Path -LiteralPath $fixtureExe)
@@ -98,13 +146,13 @@ try {
     & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'db_prune.ps1') -Source $legacy -EventsDays 100000 -Apply -Backup (Join-Path $work 'legacy-pre-migration.db')
     if ($LASTEXITCODE -ne 0) { throw 'pre-versioning adoption failed' }
     $legacyAfter = Get-DatabaseCounts $legacy
-    foreach ($want in @('schema_version=5', 'table_schema_migrations=5', 'table_events=2', 'table_messages=4', 'last_update_id=4242', 'integrity=ok')) {
+    foreach ($want in @('schema_version=6', 'table_schema_migrations=6', 'table_events=2', 'table_messages=4', 'last_update_id=4242', 'integrity=ok')) {
         if ($legacyAfter -notcontains $want) { throw "migration result misses $want" }
     }
     $beforeCore = @($legacyBefore | Where-Object { $_ -notmatch '^(schema_version|table_schema_migrations)=' })
     $afterCore = @($legacyAfter | Where-Object { $_ -notmatch '^(schema_version|table_schema_migrations)=' })
     if (Compare-Object $beforeCore $afterCore) { throw 'migration changed application data' }
-    Write-Output 'maintenance acceptance: pre-versioning backup adopted at schema_version=5 without application-data changes'
+    Write-Output 'maintenance acceptance: pre-versioning backup adopted at schema_version=6 without application-data changes'
 
     $oldNames = @('bot-20000101-000000.db', 'bot-20000102-000000.db')
     foreach ($name in $oldNames + @('bot-manual.db')) {
@@ -161,6 +209,7 @@ catch {
     Write-Output "test-maintenance: FAIL — $($_.Exception.Message)"
 }
 finally {
+    if ($leaseGuardCreated -and (Test-Path -LiteralPath $maintenanceWork)) { Remove-Item -LiteralPath $maintenanceWork -Recurse -Force }
     if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
     Pop-Location
 }

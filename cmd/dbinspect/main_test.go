@@ -71,7 +71,7 @@ func TestCountsReportIsOneKeyValuePairPerLine(t *testing.T) {
 		"open_mode=mode_ro",
 		"journal_mode=wal",
 		"integrity=ok",
-		"schema_version=5",
+		"schema_version=6",
 		"last_update_id=920551547",
 		"bot_state_offset_found=true",
 		"table_bot_state=1",

@@ -87,3 +87,83 @@ func TestMigrationFailureRollsBackStatementsAndVersion(t *testing.T) {
 		t.Fatalf("failed migration left its table behind, present=%d err=%v", sentinel, err)
 	}
 }
+
+func TestEventIndexesUpgradePreservesVersion5Data(t *testing.T) {
+	ctx := context.Background()
+	db, err := OpenMemory(ctx, t.Name())
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	defer db.Close()
+
+	migrations := MigrationSQL
+	MigrationSQL = append([]string(nil), migrations[:5]...)
+	defer func() { MigrationSQL = migrations }()
+	if err := ApplySchema(ctx, db); err != nil {
+		t.Fatalf("apply version 5 schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO events (id, user_id, kind, detail, created_at)
+		VALUES (23, 7, 'usage', 'rag', '2026-01-02 03:04:05')`); err != nil {
+		t.Fatalf("seed version 5 event: %v", err)
+	}
+
+	MigrationSQL = migrations
+	if err := ApplySchema(ctx, db); err != nil {
+		t.Fatalf("upgrade version 5 schema: %v", err)
+	}
+	version, err := SchemaVersion(ctx, db)
+	if err != nil || version != len(migrations) {
+		t.Fatalf("upgraded SchemaVersion=%d err=%v, want %d", version, err, len(migrations))
+	}
+	var event struct {
+		id        int64
+		userID    int64
+		kind      string
+		detail    string
+		createdAt string
+	}
+	if err := db.QueryRowContext(ctx, `SELECT id, user_id, kind, detail, created_at FROM events`).Scan(
+		&event.id, &event.userID, &event.kind, &event.detail, &event.createdAt,
+	); err != nil {
+		t.Fatalf("read upgraded event: %v", err)
+	}
+	if event.id != 23 || event.userID != 7 || event.kind != "usage" || event.detail != "rag" || event.createdAt != "2026-01-02 03:04:05" {
+		t.Fatalf("upgraded event changed: %+v", event)
+	}
+
+	for _, index := range []struct {
+		name    string
+		columns []string
+	}{
+		{"idx_events_user_kind", []string{"user_id", "kind"}},
+		{"idx_events_kind_detail", []string{"kind", "detail"}},
+		{"idx_events_created_at", []string{"created_at"}},
+	} {
+		rows, err := db.QueryContext(ctx, `SELECT name FROM pragma_index_info(?) ORDER BY seqno`, index.name)
+		if err != nil {
+			t.Fatalf("inspect %s: %v", index.name, err)
+		}
+		var columns []string
+		for rows.Next() {
+			var column string
+			if err := rows.Scan(&column); err != nil {
+				rows.Close()
+				t.Fatalf("scan %s column: %v", index.name, err)
+			}
+			columns = append(columns, column)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			t.Fatalf("iterate %s columns: %v", index.name, err)
+		}
+		rows.Close()
+		if len(columns) != len(index.columns) {
+			t.Fatalf("%s columns=%v, want %v", index.name, columns, index.columns)
+		}
+		for i := range columns {
+			if columns[i] != index.columns[i] {
+				t.Fatalf("%s columns=%v, want %v", index.name, columns, index.columns)
+			}
+		}
+	}
+}

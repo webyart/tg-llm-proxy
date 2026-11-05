@@ -36,6 +36,8 @@ var menuCommandCallbacks = map[string]string{
 	"menu:docs:add":       "/docs menu:add",
 	"menu:docs:export":    "/docs export",
 	"menu:docs:clear":     "/docs menu:clear",
+	"menu:links":          "/links menu",
+	"menu:links:search":   "/links menu:search",
 	"menu:reminders":      "/reminders menu",
 	"menu:settings":       "/help menu:settings",
 	"menu:model":          "/model menu",
@@ -285,6 +287,31 @@ func menuCallbackText(data string) (string, bool) {
 		}
 		return "", false
 	}
+	if value, ok := strings.CutPrefix(data, "menu:link:summary:"); ok {
+		if validMenuNumber(value, int64(^uint64(0)>>1)) && value != "0" {
+			return "/links menu:summary:" + value, true
+		}
+		return "", false
+	}
+	if value, ok := strings.CutPrefix(data, "menu:link:delete:"); ok {
+		if validMenuNumber(value, int64(^uint64(0)>>1)) && value != "0" {
+			return "/links menu:delete:" + value, true
+		}
+	}
+	for _, action := range []string{"confirm", "cancel"} {
+		if token, ok := strings.CutPrefix(data, "menu:link:save:"+action+":"); ok {
+			if validMenuToken(token) {
+				return "/links menu:save:" + action + ":" + token, true
+			}
+			return "", false
+		}
+		if token, ok := strings.CutPrefix(data, "menu:link:delete:"+action+":"); ok {
+			if validMenuToken(token) {
+				return "/links menu:delete:" + action + ":" + token, true
+			}
+			return "", false
+		}
+	}
 	if value, ok := strings.CutPrefix(data, "menu:reminder:cancel:"); ok {
 		if validMenuNumber(value, int64(^uint64(0)>>1)) && value != "0" {
 			return "/reminders menu:cancel:" + value, true
@@ -479,6 +506,8 @@ func (d *Dispatcher) helpMenu(ctx context.Context, ev Event, action string) erro
 	}
 }
 
+const pendingLinkSearch = "links_search"
+
 type pendingInputKey struct {
 	ChatID int64
 	UserID int64
@@ -557,6 +586,8 @@ func (d *Dispatcher) pendingEvent(ev Event) (Event, bool) {
 			ev.Text = "/ask " + text
 		case CommandSearch:
 			ev.Text = "/search " + text
+		case pendingLinkSearch:
+			ev.Text = "/links search " + text
 		case CommandPersona:
 			ev.Text = "/persona custom " + text
 		default:
@@ -592,6 +623,8 @@ func (d *Dispatcher) cancelPendingInputMenu(ctx context.Context, ev Event, token
 		switch pending.Origin {
 		case "menu:history":
 			return d.showHistoryMenu(ctx, ev, "Ввод отменён.")
+		case "menu:links":
+			return d.showLinksMenu(ctx, ev, "Поиск отменён.")
 		case "menu:persona":
 			return d.showPersonaMenu(ctx, ev, "Ввод отменён.")
 		default:

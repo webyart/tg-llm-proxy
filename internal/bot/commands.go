@@ -37,6 +37,7 @@ const (
 	CommandSearch    = "search"
 	CommandDelete    = "delete"
 	CommandDocs      = "docs"
+	CommandLinks     = "links"
 	CommandRemind    = "remind"
 	CommandReminders = "reminders"
 )
@@ -123,6 +124,7 @@ func (d *Dispatcher) registry() []Command {
 		{Name: CommandUnskip, Description: "снова разрешить recovery ранее пропущенного вопроса", Handler: d.unskip},
 		{Name: CommandHistory, Description: "последние N сообщений (по умолчанию 5)", Handler: d.history},
 		{Name: CommandDocs, Description: "локальная RAG-база документов чата", Handler: d.documents},
+		{Name: CommandLinks, Description: "ссылки на потом: add, search, summary, delete", Handler: d.links},
 		{Name: CommandRemind, Description: "напоминание: через N минут/часов/дней или каждый день HH:MM", NeedsArgs: true, Handler: d.remind},
 		{Name: CommandReminders, Description: "активные напоминания и отмена по id", Handler: d.reminders},
 		{Name: CommandExport, Description: "экспорт истории: md или json", Handler: d.exportHistory},

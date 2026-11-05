@@ -12,6 +12,7 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -73,6 +74,7 @@ type Deps struct {
 	Model       model.Client
 	Replier     Replier
 	Attachments AttachmentDownloader
+	URLReader   *http.Client
 	Locks       *ratelimit.Locks
 	Limit       *ratelimit.Limiter
 	Logger      *slog.Logger
@@ -240,6 +242,15 @@ func (d *Dispatcher) commandFor(ev Event) (Command, string) {
 			commandArg = arg
 		}
 	}
+	if isCommand && name == CommandLinks && isLinkSummaryAction(commandArg) {
+		cmd.UsesModel = true
+	}
+	if !isCommand && ev.Attachment == nil && !ev.UnsupportedMedia && !ev.Recovery {
+		if _, ok := bareHTTPSURL(ev.Text); ok {
+			cmd = d.index[CommandLinks]
+			commandArg = "offer"
+		}
+	}
 	return cmd, commandArg
 }
 
@@ -314,6 +325,9 @@ func (d *Dispatcher) dispatchOverloaded(ctx context.Context, ev Event) error {
 
 func (d *Dispatcher) dispatchEvent(ctx context.Context, ev Event, acknowledge bool) error {
 	cmd, commandArg := d.commandFor(ev)
+	if cmd.Name == CommandLinks && strings.HasPrefix(commandArg, "menu:summary:") {
+		ev.TelegramMessageID = 0
+	}
 	ev.Question = ""
 	if cmd.UsesModel {
 		ev.Question = strings.TrimSpace(commandArg)

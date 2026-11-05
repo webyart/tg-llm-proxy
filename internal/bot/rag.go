@@ -99,6 +99,7 @@ func (d *Dispatcher) showDocumentsMenu(ctx context.Context, ev Event, note ...st
 		buttons = append(buttons, menuRow(menuButton(fmt.Sprintf("Удалить #%d %s", row.ID, brief(row.Name, 24)), fmt.Sprintf("menu:doc:delete:%d", row.ID))))
 	}
 	buttons = append(buttons,
+		menuRow(menuButton("Ссылки на потом", "menu:links")),
 		menuRow(menuButton("Как добавить", "menu:docs:add"), menuButton("Экспорт RAG JSON", "menu:docs:export")),
 		menuRow(menuButton("Удалить все документы", "menu:docs:clear")),
 		menuRow(backButton("menu:root")),

@@ -1,3 +1,14 @@
+# tg-llm-proxy v1.24.0
+
+## Saved links
+
+- `/links add <https-url>` читает явно запрошенную страницу через hardened URL reader и сохраняет canonical URL, title до 200 runes и очищенный текст до 8000 runes. Модель не вызывается, failed fetch не сохраняется, повторный add обновляет существующую запись.
+- `/links` выводит до 20 ссылок текущего чата, `/links search <текст>` ищет по title/URL/content с явной областью, `/links delete <id>` удаляет только свою запись через single-use confirmation. На чат — до 50 ссылок.
+- `/links summary <id>` резюмирует сохранённый текст через существующий model pipeline без повторной загрузки и без tools/network. Лимиты, model errors и per-chat lock сохранены.
+- Documents получил leaf «Ссылки на потом» с list/search/summary/delete/Back. Bare HTTPS URL предлагает Save/Cancel: до подтверждения нет fetch, persistence или model call.
+- Миграция 8 добавляет `saved_links` с unique(chat_id,canonical_url) и индексом обновления. Callback data содержит только bounded IDs/random tokens, URL не пишется в callback logs.
+- Добавлены migration/CRUD/replacement/isolation/search, cap, no-refetch summary, stale/wrong-user confirmation, bare-URL opt-in и fake-Telegram end-to-end regressions. Живой acceptance ещё предстоит.
+
 # tg-llm-proxy v1.23.0
 
 ## Stage E persistent reminders

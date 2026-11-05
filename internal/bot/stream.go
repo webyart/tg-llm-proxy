@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-telegram/bot/models"
+
 	"bot/internal/config"
 	"bot/internal/model"
 	"bot/internal/store"
@@ -21,8 +23,10 @@ import (
 
 // last event of the stream, so a placeholder may never promise «осталось N токенов».
 const (
-	StreamPlaceholder = "Модель думает…"
-	msgStreamThinking = "Модель думает: %d символов размышлений, %s "
+	StreamPlaceholder    = "Модель думает…"
+	streamStageReadURL   = "Читаю страницу…"
+	streamStageWebSearch = "Ищу информацию…"
+	msgStreamThinking    = "Модель думает: %d символов размышлений, %s "
 	// msgStreamSuffix is a SUFFIX with a template of its own because it is the ANSWER that gets cut: an edit
 	// of the markers before it decides how much of the answer fits into the message.
 	msgStreamSuffix = "\n\n… ответ пишется, %d символов "
@@ -71,6 +75,7 @@ type streamSession struct {
 	posted      bool
 	answer      strings.Builder
 	answerRunes int
+	stageText   string
 
 	edits        int
 	skipped      int // rewrites the cadence of refused
@@ -119,8 +124,56 @@ func (d *Dispatcher) streamingPossible(ctx context.Context, chatID int64) (model
 	return streamer, sender, true, nil
 }
 
+func (d *Dispatcher) showStreamMenu(ctx context.Context, ev Event, note ...string) error {
+	enabled, override, err := d.streamingEnabled(ctx, ev.ChatID)
+	if err != nil {
+		return err
+	}
+	state := "выключен"
+	if enabled {
+		state = "включён"
+	}
+	source := "общий STREAMING_ENABLED"
+	if override {
+		source = "настройка этого чата"
+	}
+	text := menuText(fmt.Sprintf("Стриминг: %s.\nИсточник: %s.", state, source), note)
+	markup := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+		menuRow(menuButton("Включить", "menu:stream:on"), menuButton("Выключить", "menu:stream:off")),
+		menuRow(menuButton("Сбросить", "menu:stream:reset")),
+		menuRow(backButton("menu:settings")),
+	}}
+	return d.renderMenu(ctx, ev, text, markup)
+}
+
+func (d *Dispatcher) streamMenuControl(ctx context.Context, ev Event, action string) error {
+	switch action {
+	case "menu":
+		return d.showStreamMenu(ctx, ev)
+	case "menu:on", "menu:off":
+		enabled := action == "menu:on"
+		if err := store.EnsureChat(ctx, d.deps.DB, ev.ChatID, ev.UserID, ev.ChatTitle); err != nil {
+			return err
+		}
+		if err := store.SetChatStreaming(ctx, d.deps.DB, ev.ChatID, enabled); err != nil {
+			return err
+		}
+		return d.showStreamMenu(ctx, ev, "Настройка сохранена для этого чата.")
+	case "menu:reset":
+		if err := store.ClearChatStreaming(ctx, d.deps.DB, ev.ChatID); err != nil {
+			return err
+		}
+		return d.showStreamMenu(ctx, ev, "Восстановлен общий STREAMING_ENABLED.")
+	default:
+		return d.showStreamMenu(ctx, ev, menuExpiredText)
+	}
+}
+
 func (d *Dispatcher) streamControl(ctx context.Context, ev Event, arg string) error {
 	action := strings.ToLower(strings.TrimSpace(arg))
+	if strings.HasPrefix(action, "menu") {
+		return d.streamMenuControl(ctx, ev, action)
+	}
 	switch action {
 	case "on", "off":
 		enabled := action == "on"
@@ -334,6 +387,18 @@ func (s *streamSession) post() {
 		text = s.partialView()
 	}
 	s.postText(text)
+}
+
+func (s *streamSession) stage(text string) {
+	if s.muted || text == "" || s.stageText == text {
+		return
+	}
+	s.stageText = text
+	if !s.posted {
+		s.postText(text)
+		return
+	}
+	_ = s.edit(s.ctx, text, false)
 }
 
 func (s *streamSession) postText(text string) {

@@ -1044,46 +1044,101 @@ func TestInlineMenuAndCallback(t *testing.T) {
 		t.Errorf("the actual /start text must escape '!', got %q", tgAPI.Sent()[0].Text)
 	}
 	var menu = tgAPI.Sent()[0].ReplyMarkup
-	for _, want := range []string{"inline_keyboard", "cmd:ask", "cmd:model", "cmd:stream", "cmd:persona", "cmd:status", "cmd:history", "cmd:reset", "cmd:skip", "cmd:unskip", "cmd:stats", "cmd:whoami", "cmd:ping", "cmd:help", "cmd:start", "cmd:admin"} {
+	for _, want := range []string{"inline_keyboard", "menu:ask", "menu:reset", "menu:history", "menu:docs", "menu:settings", "menu:status", "menu:help", "menu:more"} {
 		if !strings.Contains(menu, want) {
 			t.Errorf("inline menu misses %q: %s", want, menu)
 		}
 	}
 
+	menuMessageID := tgAPI.Sent()[0].MessageID
 	tgAPI.Push(models.Update{ID: 181, CallbackQuery: &models.CallbackQuery{
-		ID:   "cb1",
-		Data: "cmd:ping",
-		From: models.User{ID: userID, Username: "tester"},
+		ID: "cb-history", Data: "menu:history", From: models.User{ID: userID, Username: "tester"},
 		Message: models.MaybeInaccessibleMessage{Message: &models.Message{
-			ID:   181,
-			Date: int(time.Now().Unix()),
-			Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate},
+			ID: menuMessageID, Date: int(time.Now().Unix()), Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate},
+		}},
+	}})
+	waitFor(t, "history navigation edited the original menu", func() bool {
+		return tgAPI.Calls("answerCallbackQuery") == 1 && len(tgAPI.Edits()) == 1
+	})
+	if edit := tgAPI.Edits()[0]; edit.MessageID != menuMessageID || !strings.Contains(edit.Text, "История") {
+		t.Fatalf("history navigation edit = %+v, want message %d", edit, menuMessageID)
+	}
+	if tgAPI.Calls("sendMessage") != 1 {
+		t.Fatalf("navigation sent a new full menu instead of editing: %d sends", tgAPI.Calls("sendMessage"))
+	}
+	tgAPI.Push(models.Update{ID: 182, CallbackQuery: &models.CallbackQuery{
+		ID: "cb1", Data: "cmd:ping", From: models.User{ID: userID, Username: "tester"},
+		Message: models.MaybeInaccessibleMessage{Message: &models.Message{
+			ID: menuMessageID, Date: int(time.Now().Unix()), Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate},
 		}},
 	}})
 	waitFor(t, "callback was answered and /ping ran", func() bool {
-		return tgAPI.Calls("answerCallbackQuery") == 1 && tgAPI.Calls("sendMessage") == 2
+		return tgAPI.Calls("answerCallbackQuery") == 2 && tgAPI.Calls("sendMessage") == 2
 	})
 	if !strings.Contains(tgAPI.Joined(), "pong") {
 		t.Fatalf("callback /ping must answer pong, got %q", tgAPI.Joined())
 	}
-	tgAPI.PushText(182, chatID, userID, "/persona")
+	tgAPI.PushText(183, chatID, userID, "/persona")
 	waitFor(t, "persona menu was sent", func() bool { return tgAPI.Calls("sendMessage") == 3 })
 	if !strings.Contains(tgAPI.Sent()[2].ReplyMarkup, "persona:coder") {
 		t.Fatalf("persona response has no coder button: %q", tgAPI.Sent()[2].ReplyMarkup)
 	}
-	tgAPI.Push(models.Update{ID: 183, CallbackQuery: &models.CallbackQuery{
+	tgAPI.Push(models.Update{ID: 184, CallbackQuery: &models.CallbackQuery{
 		ID: "cb-persona", Data: "persona:coder", From: models.User{ID: userID, Username: "tester"},
 		Message: models.MaybeInaccessibleMessage{Message: &models.Message{
-			ID: 183, Date: int(time.Now().Unix()), Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate},
+			ID: menuMessageID, Date: int(time.Now().Unix()), Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate},
 		}},
 	}})
 	waitFor(t, "persona callback selected coder", func() bool {
-		return tgAPI.Calls("answerCallbackQuery") == 2 && tgAPI.Calls("sendMessage") == 4
+		return tgAPI.Calls("answerCallbackQuery") == 3 && tgAPI.Calls("sendMessage") == 4
 	})
 	prompt, found, err := store.ChatPersona(context.Background(), db, chatID)
 	if err != nil || !found || !strings.Contains(prompt, "senior software engineer") {
 		t.Fatalf("persona callback did not persist coder: prompt=%q found=%v err=%v", prompt, found, err)
 	}
+	run.stop()
+}
+
+func TestInlineAskPendingInputEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	path := dbFile(t)
+	tgAPI := testutil.NewTelegram(t, secretToken)
+	strata := testutil.NewStrata(t, secretStrataKey, testutil.StrataReply{Content: "ответ", Model: "fake-model"})
+	cfg := integrationEnv(t, path, strata.BaseURL(), map[string]string{"PROXY_FREE_TEXT": "false"})
+	db := openStore(t, path)
+	run := startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second}, 0)
+
+	tgAPI.PushText(200, chatID, userID, "/start")
+	waitFor(t, "root menu for pending Ask", func() bool { return tgAPI.Calls("sendMessage") == 1 })
+	menuMessageID := tgAPI.Sent()[0].MessageID
+	tgAPI.Push(models.Update{ID: 201, CallbackQuery: &models.CallbackQuery{
+		ID: "ask-pending", Data: "menu:ask", From: models.User{ID: userID, Username: "tester"},
+		Message: models.MaybeInaccessibleMessage{Message: &models.Message{
+			ID: menuMessageID, Date: int(time.Now().Unix()), Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate},
+		}},
+	}})
+	waitFor(t, "Ask callback installed pending input", func() bool {
+		return tgAPI.Calls("answerCallbackQuery") == 1 && len(tgAPI.Edits()) == 1
+	})
+	if !strings.Contains(tgAPI.Edits()[0].Text, "2 минуты") {
+		t.Fatalf("Ask pending prompt = %q", tgAPI.Edits()[0].Text)
+	}
+	tgAPI.PushText(202, chatID, userID, "вопрос из inline-меню")
+	waitFor(t, "pending Ask reached the model", func() bool { return strata.ChatCalls() == 1 && tgAPI.Calls("sendMessage") == 2 })
+	if !strings.Contains(strata.LastRequestBody(), "вопрос из inline-меню") {
+		t.Fatalf("model request = %s", strata.LastRequestBody())
+	}
+	rows := rowsOf(t, db)
+	if len(rows) != 2 || rows[0].Content != "вопрос из inline-меню" {
+		t.Fatalf("pending Ask rows = %+v", rows)
+	}
+	tgAPI.PushText(203, chatID, userID, "сообщение вне pending-состояния")
+	waitFor(t, "ordinary message outside pending state was handled", func() bool { return tgAPI.Calls("sendMessage") == 3 })
+	if strata.ChatCalls() != 1 {
+		t.Fatalf("message outside pending state reached model %d times", strata.ChatCalls())
+	}
+	tgAPI.Push(models.Update{ID: 204, CallbackQuery: &models.CallbackQuery{ID: "stale-menu", Data: "menu:model:set:99", From: models.User{ID: userID}}})
+	waitFor(t, "stale callback was answered", func() bool { return tgAPI.Calls("answerCallbackQuery") == 2 })
 	run.stop()
 }
 

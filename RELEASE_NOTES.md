@@ -1,3 +1,15 @@
+# tg-llm-proxy v1.21.0
+
+## Stage C interactive menu and progress feedback
+
+- Плоское меню заменено секционным: Ask/New context, History, Documents, Settings, Status, Help, More. Навигация редактирует исходное сообщение; Back возвращает в предыдущий раздел, текстовые команды сохранены.
+- History поддерживает last 5/20, Search, Export MD/JSON и существующее single-use Delete подтверждение. Documents имеет список до 20 документов, Add, RAG export, per-document Delete и Clear-all с expiring confirmation.
+- Model предлагает до 12 актуальных моделей по bounded indexes, endpoint check и reset. Persona и Stream управляются inline; Admin виден только администраторам.
+- Ask, Search и Custom Persona используют pending input с random cancel token, TTL 2 минуты и привязкой к chat/user/menu message. Документные подтверждения действуют 5 минут и одноразовые; restart безопасно инвалидирует process-local состояние.
+- Callback data ограничены 64 байтами и whitelist; model IDs/document names не передаются. Неизвестные и stale actions получают понятный expiry response.
+- Обычные requests отправляют Telegram `typing` каждые 4 секунды с отменой по context и без дополнительных сообщений. Streaming tools обновляют placeholder только текстами `Читаю страницу…` и `Ищу информацию…`, без URL/query/arguments.
+- Добавлены navigation, admin visibility, pending-input expiry/wrong-user, docs confirmations, heartbeat stop/cancel/privacy и end-to-end pending Ask regressions. Живой acceptance меню ещё предстоит.
+
 # tg-llm-proxy v1.20.0
 
 ## Stage B anti-DDoS and resource limits

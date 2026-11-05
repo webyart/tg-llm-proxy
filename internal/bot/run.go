@@ -199,6 +199,9 @@ func (d *Dispatcher) telegramHandler(ctx context.Context, tg *tgbot.Bot, upd *mo
 		d.deps.Logger.Info("the update has no supported content, skipped", "update_id", updateID, "chat_id", chatID)
 		return
 	}
+	if pendingEv, consumed := d.pendingEvent(ev); consumed {
+		ev = pendingEv
+	}
 	d.noteChatUser(ev.ChatID, ev.UserID) // the flood audit of attributes events to a user
 	if err := d.Dispatch(ctx, ev); err != nil {
 		return // Dispatch has already logged it, sanitized
@@ -306,6 +309,14 @@ func (r *telegramReplier) chatUser(chatID int64) int64 {
 
 func (r *telegramReplier) Send(ctx context.Context, chatID int64, text string) error {
 	return r.send(ctx, chatID, text, nil)
+}
+
+func (r *telegramReplier) SendTyping(ctx context.Context, chatID int64) error {
+	if r.bot == nil {
+		return errors.New("the telegram bot is not attached ")
+	}
+	_, err := r.bot.SendChatAction(ctx, &tgbot.SendChatActionParams{ChatID: chatID, Action: models.ChatActionTyping})
+	return err
 }
 
 // SendMenu sends a short menu message with its inline keyboard through the same retry path as any other reply.

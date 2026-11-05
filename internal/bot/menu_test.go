@@ -32,9 +32,14 @@ func TestMenuMarkupAndStartSendInlineKeyboard(t *testing.T) {
 			seen[button.CallbackData] = true
 		}
 	}
-	for _, name := range []string{CommandAsk, CommandModel, CommandStream, CommandPersona, CommandStatus, CommandHistory, CommandExport, CommandSearch, CommandDocs, CommandDelete, CommandReset, CommandSkip, CommandUnskip, CommandStats, CommandWhoAmI, CommandPing, CommandHelp, CommandStart, CommandAdmin} {
-		if !seen["cmd:"+name] {
-			t.Errorf("menu misses cmd:%s", name)
+	for _, data := range []string{"menu:ask", "menu:reset", "menu:history", "menu:docs", "menu:settings", "menu:status", "menu:help", "menu:more"} {
+		if !seen[data] {
+			t.Errorf("root menu misses %s", data)
+		}
+	}
+	for data := range seen {
+		if strings.HasPrefix(data, "cmd:") || len(data) > 64 {
+			t.Errorf("root menu has legacy or oversized callback %q", data)
 		}
 	}
 }

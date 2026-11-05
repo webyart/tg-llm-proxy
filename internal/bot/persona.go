@@ -76,9 +76,69 @@ func (d *Dispatcher) sendPersonaMenu(ctx context.Context, chatID int64, text str
 	return d.reply(ctx, chatID, text)
 }
 
+func personaMenuMarkup() models.InlineKeyboardMarkup {
+	rows := [][]models.InlineKeyboardButton{}
+	for _, preset := range personaPresets {
+		rows = append(rows, menuRow(menuButton(preset.description, "menu:persona:set:"+preset.name)))
+	}
+	rows = append(rows,
+		menuRow(menuButton("Своя роль", "menu:persona:custom")),
+		menuRow(menuButton("Сбросить", "menu:persona:reset")),
+		menuRow(backButton("menu:settings")),
+	)
+	return models.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+func (d *Dispatcher) showPersonaMenu(ctx context.Context, ev Event, note ...string) error {
+	_, current, override, err := d.effectivePersona(ctx, ev.ChatID)
+	if err != nil {
+		return err
+	}
+	source := "глобальный SYSTEM_PROMPT"
+	if override {
+		source = "настройка этого чата"
+	}
+	text := menuText(fmt.Sprintf("Текущая persona: %s (%s).", current, source), note)
+	return d.renderMenu(ctx, ev, text, personaMenuMarkup())
+}
+
+func (d *Dispatcher) personaMenuControl(ctx context.Context, ev Event, action string, lower string) error {
+	switch lower {
+	case "menu":
+		return d.showPersonaMenu(ctx, ev)
+	case "menu:custom":
+		return d.beginPendingInput(ctx, ev, CommandPersona, "menu:persona", "Отправь системный промпт для пользовательской persona. Ввод действует 2 минуты.")
+	case "menu:reset":
+		if err := store.ClearChatPersona(ctx, d.deps.DB, ev.ChatID); err != nil {
+			return err
+		}
+		return d.showPersonaMenu(ctx, ev, "Восстановлен глобальный SYSTEM_PROMPT.")
+	}
+	name, ok := strings.CutPrefix(lower, "menu:set:")
+	if !ok {
+		return d.showPersonaMenu(ctx, ev, menuExpiredText)
+	}
+	for _, preset := range personaPresets {
+		if name != preset.name {
+			continue
+		}
+		if err := store.EnsureChat(ctx, d.deps.DB, ev.ChatID, ev.UserID, ev.ChatTitle); err != nil {
+			return err
+		}
+		if err := store.SetChatPersona(ctx, d.deps.DB, ev.ChatID, preset.prompt); err != nil {
+			return err
+		}
+		return d.showPersonaMenu(ctx, ev, "Для этого чата выбрана persona "+preset.name+".")
+	}
+	return d.showPersonaMenu(ctx, ev, menuExpiredText)
+}
+
 func (d *Dispatcher) personaControl(ctx context.Context, ev Event, arg string) error {
 	action := strings.TrimSpace(arg)
 	lower := strings.ToLower(action)
+	if strings.HasPrefix(lower, "menu") {
+		return d.personaMenuControl(ctx, ev, action, lower)
+	}
 	if lower == "reset" {
 		if err := store.ClearChatPersona(ctx, d.deps.DB, ev.ChatID); err != nil {
 			return err

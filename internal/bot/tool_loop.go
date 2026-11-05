@@ -91,6 +91,13 @@ func (d *Dispatcher) completeWithTools(ctx context.Context, userID int64, req mo
 			case "calculator":
 				result, err = executeCalculator(call)
 			case "read_url", "web_search":
+				if session != nil {
+					if call.Name == "read_url" {
+						session.stage(streamStageReadURL)
+					} else {
+						session.stage(streamStageWebSearch)
+					}
+				}
 				result, executed, err = d.executeNetworkTool(ctx, userID, call)
 			default:
 				return model.Response{}, errors.New("unknown tool")

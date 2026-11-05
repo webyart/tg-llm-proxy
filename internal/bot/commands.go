@@ -10,6 +10,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"bot/internal/model"
@@ -55,6 +56,56 @@ const (
 // auditBudget — how long the audit of a failed call may take once the call itself gave up. The audit of a
 const auditBudget = 3 * time.Second
 
+const typingHeartbeatInterval = 4 * time.Second
+
+type typingSender interface {
+	SendTyping(context.Context, int64) error
+}
+
+func (d *Dispatcher) startTypingHeartbeat(ctx context.Context, chatID int64) func() {
+	return d.startTypingHeartbeatWithInterval(ctx, chatID, typingHeartbeatInterval)
+}
+
+func (d *Dispatcher) startTypingHeartbeatWithInterval(ctx context.Context, chatID int64, interval time.Duration) func() {
+	sender, ok := d.deps.Replier.(typingSender)
+	if !ok || ctx.Err() != nil {
+		return func() {}
+	}
+	heartbeatCtx, cancel := context.WithCancel(ctx)
+	if err := sender.SendTyping(heartbeatCtx, chatID); err != nil {
+		cancel()
+		d.deps.Logger.Debug("typing feedback is unavailable", "chat_id", chatID, "error", Sanitize(err, d.deps.Token))
+		return func() {}
+	}
+	if interval <= 0 {
+		interval = typingHeartbeatInterval
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case <-ticker.C:
+				if err := sender.SendTyping(heartbeatCtx, chatID); err != nil {
+					d.deps.Logger.Debug("typing heartbeat stopped", "chat_id", chatID, "error", Sanitize(err, d.deps.Token))
+					return
+				}
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			cancel()
+			<-done
+		})
+	}
+}
+
 func (d *Dispatcher) registry() []Command {
 	return []Command{
 		{Name: CommandStart, Description: "регистрация чата и список команд", AlwaysAllowed: true, Handler: d.start},
@@ -94,6 +145,9 @@ func (d *Dispatcher) start(ctx context.Context, ev Event, arg string) error {
 }
 
 func (d *Dispatcher) help(ctx context.Context, ev Event, arg string) error {
+	if strings.HasPrefix(strings.TrimSpace(arg), "menu:") {
+		return d.helpMenu(ctx, ev, strings.TrimSpace(arg))
+	}
 	return d.sendMenu(ctx, ev.ChatID, strings.Join(d.helpLines(), "\n"))
 }
 
@@ -120,13 +174,24 @@ func (d *Dispatcher) ping(ctx context.Context, ev Event, arg string) error {
 
 // status — operational diagnostics for an allowed chat without a model call. LastVisibleMessage uses the same
 func (d *Dispatcher) status(ctx context.Context, ev Event, arg string) error {
-	var rowID, role, err = store.LastVisibleMessage(ctx, d.deps.DB, ev.ChatID)
+	if strings.TrimSpace(arg) == "menu" {
+		return d.showStatusMenu(ctx, ev)
+	}
+	text, err := d.statusText(ctx, ev)
 	if err != nil {
 		return err
 	}
+	return d.reply(ctx, ev.ChatID, text)
+}
+
+func (d *Dispatcher) statusText(ctx context.Context, ev Event) (string, error) {
+	var rowID, role, err = store.LastVisibleMessage(ctx, d.deps.DB, ev.ChatID)
+	if err != nil {
+		return "", err
+	}
 	streamEnabled, streamOverride, streamErr := d.streamingEnabled(ctx, ev.ChatID)
 	if streamErr != nil {
-		return streamErr
+		return "", streamErr
 	}
 	var streaming = "выключен"
 	if streamEnabled {
@@ -141,7 +206,7 @@ func (d *Dispatcher) status(ctx context.Context, ev Event, arg string) error {
 		pending = fmt.Sprintf("да — сообщение id=%d", rowID)
 		var skipped, suppress, skipErr = store.ResumeSkip(ctx, d.deps.DB, ev.ChatID)
 		if skipErr != nil {
-			return skipErr
+			return "", skipErr
 		}
 		if suppress && skipped == rowID {
 			pending += "; автовосстановление отключено (/skip)"
@@ -153,11 +218,11 @@ func (d *Dispatcher) status(ctx context.Context, ev Event, arg string) error {
 	}
 	var selected, modelErr = d.modelName(ctx, ev.ChatID)
 	if modelErr != nil {
-		return modelErr
+		return "", modelErr
 	}
 	_, persona, personaOverride, personaErr := d.effectivePersona(ctx, ev.ChatID)
 	if personaErr != nil {
-		return personaErr
+		return "", personaErr
 	}
 	if personaOverride {
 		persona += " (override этого чата)"
@@ -171,7 +236,7 @@ func (d *Dispatcher) status(ctx context.Context, ev Event, arg string) error {
 		"Стриминг: " + streaming,
 		"Последний вопрос чата ждёт ответа: " + pending,
 	}
-	return d.reply(ctx, ev.ChatID, strings.Join(lines, "\n"))
+	return strings.Join(lines, "\n"), nil
 }
 
 // skip — suppress startup recovery of only the newest visible unanswered question. The row and its history stay
@@ -261,6 +326,9 @@ func (d *Dispatcher) modelName(ctx context.Context, chatID int64) (string, error
 func (d *Dispatcher) modelInfo(ctx context.Context, ev Event, arg string) error {
 	var endpoint = d.deps.Cfg.StrataBase
 	var action = strings.TrimSpace(arg)
+	if strings.HasPrefix(action, "menu") {
+		return d.modelMenuControl(ctx, ev, action)
+	}
 	var control = action
 	var requested = ""
 	if fields := strings.Fields(action); len(fields) > 0 {
@@ -320,6 +388,65 @@ func (d *Dispatcher) modelInfo(ctx context.Context, ev Event, arg string) error 
 		note = " (override; default " + d.deps.Cfg.StrataModel + ")"
 	}
 	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Модель: %s%s\nEndpoint: %s \n/model check — проверка доступности; /model select <id>, /model reset.", selected, note, endpoint))
+}
+
+func (d *Dispatcher) modelMenuControl(ctx context.Context, ev Event, action string) error {
+	switch {
+	case action == "menu" || action == "menu:check":
+		if action == "menu:check" {
+			return d.showModelMenu(ctx, ev, "Проверка endpoint выполнена.")
+		}
+		return d.showModelMenu(ctx, ev)
+	case action == "menu:reset":
+		if err := store.ClearChatModel(ctx, d.deps.DB, ev.ChatID); err != nil {
+			return err
+		}
+		return d.showModelMenu(ctx, ev, "Восстановлена модель по умолчанию: "+d.deps.Cfg.StrataModel)
+	}
+	value, ok := strings.CutPrefix(action, "menu:set:")
+	index, err := strconv.Atoi(value)
+	if !ok || err != nil || index < 0 || index >= menuModelChoiceLimit {
+		return d.showModelMenu(ctx, ev, menuExpiredText)
+	}
+	names, err := d.deps.Model.Models(ctx)
+	if err != nil {
+		d.logEvent(ctx, ev.UserID, store.EventModelError, "models:"+Sanitize(err, d.deps.Token))
+		return d.reply(ctx, ev.ChatID, fmt.Sprintf(msgModelCheckFail, Sanitize(err, d.deps.Token)))
+	}
+	if index >= len(names) {
+		return d.showModelMenu(ctx, ev, menuExpiredText)
+	}
+	selected := names[index]
+	if selected == "" {
+		return d.showModelMenu(ctx, ev, menuExpiredText)
+	}
+	if err := store.EnsureChat(ctx, d.deps.DB, ev.ChatID, ev.UserID, ev.ChatTitle); err != nil {
+		return err
+	}
+	if err := store.SetChatModel(ctx, d.deps.DB, ev.ChatID, selected); err != nil {
+		return err
+	}
+	return d.showModelMenu(ctx, ev, "Для этого чата выбрана модель: "+selected)
+}
+
+func (d *Dispatcher) showModelMenu(ctx context.Context, ev Event, note ...string) error {
+	selected, err := d.modelName(ctx, ev.ChatID)
+	if err != nil {
+		return err
+	}
+	text := menuText(fmt.Sprintf("Текущая модель: %s\nEndpoint: %s", selected, d.deps.Cfg.StrataBase), note)
+	names, modelsErr := d.deps.Model.Models(ctx)
+	if modelsErr != nil {
+		d.logEvent(ctx, ev.UserID, store.EventModelError, "models:"+Sanitize(modelsErr, d.deps.Token))
+		text += "\n" + fmt.Sprintf(msgModelCheckFail, Sanitize(modelsErr, d.deps.Token))
+		names = nil
+	} else if len(note) > 0 && strings.HasPrefix(note[0], "Проверка endpoint") {
+		text += fmt.Sprintf("\nEndpoint отвечает; моделей доступно: %d.", len(names))
+	}
+	if len(names) > menuModelChoiceLimit {
+		text += fmt.Sprintf("\nПоказаны первые %d моделей из %d.", menuModelChoiceLimit, len(names))
+	}
+	return d.renderMenu(ctx, ev, text, modelMenuMarkup(names, selected))
 }
 
 func (d *Dispatcher) downloadEventAttachments(ctx context.Context, ev Event) ([]DownloadedAttachment, error) {
@@ -507,6 +634,10 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 	}
 	var replyCtx, cancel = context.WithTimeout(ctx, time.Duration(replyBudget)*time.Second)
 	defer cancel()
+	if !canStream {
+		stopTyping := d.startTypingHeartbeat(replyCtx, ev.ChatID)
+		defer stopTyping()
+	}
 
 	downloaded, downloadErr := d.downloadEventAttachments(replyCtx, ev)
 	if downloadErr != nil {
@@ -726,6 +857,9 @@ func (d *Dispatcher) reset(ctx context.Context, ev Event, arg string) error {
 }
 
 func (d *Dispatcher) history(ctx context.Context, ev Event, arg string) error {
+	if strings.TrimSpace(arg) == "menu" {
+		return d.showHistoryMenu(ctx, ev)
+	}
 	var limit = HistoryDefault
 	if trimmed := strings.TrimSpace(arg); trimmed != "" {
 		var n, err = strconv.Atoi(trimmed)

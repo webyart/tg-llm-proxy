@@ -20,7 +20,7 @@ func TestRAGDocumentEndToEnd(t *testing.T) {
 	cfg := integrationEnv(t, path, strata.BaseURL(), nil)
 	db := openStore(t, path)
 	startBot(t, t.Context(), cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second}, storedOffset(t, db))
-	if version, err := store.SchemaVersion(context.Background(), db); err != nil || version != 5 {
+	if version, err := store.SchemaVersion(context.Background(), db); err != nil || version != len(store.MigrationSQL) {
 		t.Fatalf("schema=%d err=%v", version, err)
 	}
 	tgAPI.AddFile("rag-file", "documents/aurora.txt", "text/plain", []byte("Проект Aurora использует локальные модели."))

@@ -14,7 +14,7 @@ func TestRAGDocumentsReplaceSearchAndDelete(t *testing.T) {
 		t.Fatalf("OpenMemory: %v", err)
 	}
 	defer db.Close()
-	if version, err := SchemaVersion(ctx, db); err != nil || version != 5 {
+	if version, err := SchemaVersion(ctx, db); err != nil || version != len(MigrationSQL) {
 		t.Fatalf("schema=%d err=%v", version, err)
 	}
 	long := "Привет МИР. " + strings.Repeat("документ ", 400)

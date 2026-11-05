@@ -23,6 +23,12 @@ import (
 
 // covers a month of a small family deployment.
 const ResumeScanLimit = 20
+const ResumeMaxAttempts = 3
+
+const (
+	ResumeInitialBackoff = time.Minute
+	ResumeMaxBackoff     = 15 * time.Minute
+)
 
 // scan named the one waiting question, the guard let it through, the model spent the whole
 // STRATA_TIMEOUT_SECONDS 60s on it and answered nothing — and the process still printed «answered 1», because
@@ -43,6 +49,10 @@ const ResumeScanLimit = 20
 // RECOVERY_MAX_AGE_HOURS bounds automatic retries. An expired row receives the same bot_state suppression as
 // /skip without another model call; history stays intact. /unskip does not override the age cap.
 func (d *Dispatcher) ResumeInterruptedQuestions(ctx context.Context) (answered int, pending int, err error) {
+	return d.resumeInterruptedQuestionsAt(ctx, time.Now().UTC())
+}
+
+func (d *Dispatcher) resumeInterruptedQuestionsAt(ctx context.Context, now time.Time) (answered int, pending int, err error) {
 	if d.deps.DB == nil {
 		return 0, 0, nil
 	}
@@ -59,7 +69,7 @@ func (d *Dispatcher) ResumeInterruptedQuestions(ctx context.Context) (answered i
 			return answered, pending, err
 		}
 		var row = rows[i]
-		expired, ageErr := recoveryExpired(row.CreatedAt, d.deps.Cfg.RecoveryMaxAgeHours, time.Now().UTC())
+		expired, ageErr := recoveryExpired(row.CreatedAt, d.deps.Cfg.RecoveryMaxAgeHours, now)
 		if ageErr != nil {
 			return answered, pending, ageErr
 		}
@@ -73,6 +83,38 @@ func (d *Dispatcher) ResumeInterruptedQuestions(ctx context.Context) (answered i
 			i++
 			continue
 		}
+
+		recovery, found, recoveryErr := store.ResumeRecovery(ctx, d.deps.DB, row.ChatID, row.ID)
+		if recoveryErr != nil {
+			return answered, pending, recoveryErr
+		}
+		if found && recovery.Attempts >= ResumeMaxAttempts {
+			if skipErr := store.SetResumeSkip(ctx, d.deps.DB, row.ChatID, row.ID); skipErr != nil {
+				return answered, pending, skipErr
+			}
+			d.deps.Logger.Info("startup recovery suppressed a question after repeated failures",
+				"chat_id", row.ChatID, "question_row", row.ID, "attempts", recovery.Attempts)
+			i++
+			continue
+		}
+		if found && now.Before(recovery.NextRecoveryAt) {
+			d.deps.Logger.Info("startup recovery is waiting for the persisted backoff",
+				"chat_id", row.ChatID, "question_row", row.ID, "attempts", recovery.Attempts,
+				"next_recovery_at", recovery.NextRecoveryAt.UTC())
+			pending++
+			i++
+			continue
+		}
+
+		attempts := 1
+		if found {
+			attempts = recovery.Attempts + 1
+		}
+		nextRecoveryAt := now.Add(recoveryBackoff(attempts))
+		if setErr := store.SetResumeRecovery(ctx, d.deps.DB, row.ChatID, row.ID, attempts, nextRecoveryAt); setErr != nil {
+			return answered, pending, setErr
+		}
+
 		var ev = Event{
 			TelegramMessageID: *row.TelegramMessageID,
 			ChatID:            row.ChatID,
@@ -83,7 +125,8 @@ func (d *Dispatcher) ResumeInterruptedQuestions(ctx context.Context) (answered i
 		}
 		d.deps.Logger.Info("the stored question has no answer; startup is answering it",
 			"chat_id", ev.ChatID, "user_id", ev.UserID, "question_row", row.ID,
-			"telegram_message_id", ev.TelegramMessageID, "stored_at_utc", row.CreatedAt)
+			"telegram_message_id", ev.TelegramMessageID, "stored_at_utc", row.CreatedAt,
+			"recovery_attempt", attempts, "next_recovery_at", nextRecoveryAt)
 		var chainErr = d.chain(func(handlerCtx context.Context, ev Event, cmd Command) error {
 			return cmd.Handler(handlerCtx, ev, ev.Question)
 		})(ctx, ev, ask)
@@ -91,6 +134,9 @@ func (d *Dispatcher) ResumeInterruptedQuestions(ctx context.Context) (answered i
 			// The answer is stored before Telegram delivery. A send failure with that row present is the deliberate
 			var newestID, newestRole, checkErr = store.LastVisibleMessage(ctx, d.deps.DB, ev.ChatID)
 			if checkErr == nil && newestRole == store.RoleAssistant && newestID > row.ID {
+				if clearErr := store.ClearResumeRecovery(ctx, d.deps.DB, row.ChatID, row.ID); clearErr != nil {
+					return answered, pending, clearErr
+				}
 				d.deps.Logger.Error("the answer was stored, but Telegram delivery is incomplete; automatic replay stays disabled to prevent duplicates",
 					"chat_id", ev.ChatID, "question_row", row.ID,
 					"error", Sanitize(chainErr, d.deps.Token))
@@ -98,9 +144,14 @@ func (d *Dispatcher) ResumeInterruptedQuestions(ctx context.Context) (answered i
 				i++
 				continue
 			}
+			if attempts >= ResumeMaxAttempts {
+				if skipErr := store.SetResumeSkip(ctx, d.deps.DB, row.ChatID, row.ID); skipErr != nil {
+					return answered, pending, skipErr
+				}
+			}
 			d.deps.Logger.Error("the stored question remains unanswered",
-				"chat_id", ev.ChatID, "question_row", row.ID,
-				"error", Sanitize(chainErr, d.deps.Token))
+				"chat_id", ev.ChatID, "question_row", row.ID, "recovery_attempt", attempts,
+				"next_recovery_at", nextRecoveryAt, "error", Sanitize(chainErr, d.deps.Token))
 			pending++
 			i++
 			continue
@@ -126,16 +177,36 @@ func (d *Dispatcher) ResumeInterruptedQuestions(ctx context.Context) (answered i
 		// chat can be the newest row by the time the replay ends. An assistant row newer than the question this
 		// replay was built from is the only thing that proves the user was finally answered.
 		if newestRole == store.RoleAssistant && newestID > row.ID {
+			if clearErr := store.ClearResumeRecovery(ctx, d.deps.DB, row.ChatID, row.ID); clearErr != nil {
+				return answered, pending, clearErr
+			}
 			answered++
 			i++
 			continue
 		}
-		d.deps.Logger.Warn("replay left the stored question unanswered; the next start will try again",
-			"chat_id", ev.ChatID, "question_row", row.ID, "newest_row", newestID, "newest_role", newestRole)
+		if attempts >= ResumeMaxAttempts {
+			if skipErr := store.SetResumeSkip(ctx, d.deps.DB, row.ChatID, row.ID); skipErr != nil {
+				return answered, pending, skipErr
+			}
+		}
+		d.deps.Logger.Warn("replay left the stored question unanswered; persisted backoff will delay the next attempt",
+			"chat_id", ev.ChatID, "question_row", row.ID, "newest_row", newestID, "newest_role", newestRole,
+			"recovery_attempt", attempts, "next_recovery_at", nextRecoveryAt)
 		pending++
 		i++
 	}
 	return answered, pending, nil
+}
+
+func recoveryBackoff(attempt int) time.Duration {
+	delay := ResumeInitialBackoff
+	for current := 1; current < attempt && delay < ResumeMaxBackoff; current++ {
+		delay *= 2
+		if delay > ResumeMaxBackoff {
+			return ResumeMaxBackoff
+		}
+	}
+	return delay
 }
 
 func recoveryExpired(createdAt string, maxAgeHours int64, now time.Time) (bool, error) {

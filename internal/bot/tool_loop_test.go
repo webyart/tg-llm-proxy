@@ -32,6 +32,10 @@ func (m *scriptedToolModel) Complete(ctx context.Context, req model.Request) (mo
 
 func (m *scriptedToolModel) Models(ctx context.Context) ([]string, error) { return nil, nil }
 
+func explicitSearchToolRequest() model.Request {
+	return model.Request{Messages: []model.Message{{Role: model.RoleUser, Content: "Найди в интернете актуальную информацию"}}}
+}
+
 func TestCalculatorToolLoopStoresOnlyFinalAnswer(t *testing.T) {
 	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "TOOLS_ENABLED": "true"})
 	call := model.ToolCall{ID: "call-1", Name: "calculator", Arguments: `{"expression":"2+2*3"}`}
@@ -120,7 +124,7 @@ func TestURLReaderToolLoopDispatch(t *testing.T) {
 	}}
 	db := testStore(t)
 	d := newTestDispatcher(t, cfg, m, &fakeReplier{}, db)
-	if err := dispatch(t, d, testEvent(221, 11, 1701, "Прочитай страницу")); err != nil {
+	if err := dispatch(t, d, testEvent(221, 11, 1701, "Прочитай https://127.0.0.1/")); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	if len(m.requests) != 2 {
@@ -458,7 +462,7 @@ func TestNetworkToolWorkBudgetReturnsJSONForSynthesis(t *testing.T) {
 	db := testStore(t)
 	d := newTestDispatcher(t, cfg, m, nil, db)
 	for i := 0; i < 3; i++ {
-		resp, err := d.completeWithTools(context.Background(), 11, model.Request{}, nil, nil)
+		resp, err := d.completeWithTools(context.Background(), 11, explicitSearchToolRequest(), nil, nil)
 		if err != nil || resp.Content != "synthesized" {
 			t.Fatalf("question %d response=%+v err=%v", i, resp, err)
 		}
@@ -575,7 +579,7 @@ func TestNetworkToolGlobalConcurrencyLimit(t *testing.T) {
 	for i := 0; i < callers; i++ {
 		go func(userID int64) {
 			<-begin
-			_, err := d.completeWithTools(context.Background(), userID, model.Request{}, nil, nil)
+			_, err := d.completeWithTools(context.Background(), userID, explicitSearchToolRequest(), nil, nil)
 			errs <- err
 		}(int64(100 + i))
 	}

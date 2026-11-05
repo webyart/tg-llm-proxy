@@ -3,10 +3,16 @@ package model
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"bot/internal/testutil"
 )
@@ -263,5 +269,197 @@ func TestStreamCallerMayStopIt(t *testing.T) {
 	}
 	if fake.ChatCalls() != 1 {
 		t.Errorf("the fake got %d chat requests, want 1 (the caller said stop — that is not a retry reason)", fake.ChatCalls())
+	}
+}
+
+func streamTestEvent(t *testing.T, delta any) string {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"choices": []any{map[string]any{"delta": delta}},
+	})
+	if err != nil {
+		t.Fatalf("marshal stream event: %v", err)
+	}
+	return string(payload)
+}
+
+func toolStreamEvent(t *testing.T, index int, id string, arguments string) string {
+	t.Helper()
+	return streamTestEvent(t, map[string]any{
+		"tool_calls": []any{map[string]any{
+			"index": index,
+			"id":    id,
+			"function": map[string]any{
+				"name":      "lookup",
+				"arguments": arguments,
+			},
+		}},
+	})
+}
+
+func serveTestStream(t *testing.T, events []string, continuous bool) (string, func() int32) {
+	t.Helper()
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		write := func(event string) bool {
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", event); err != nil {
+				return false
+			}
+			flusher.Flush()
+			return true
+		}
+		for {
+			for _, event := range events {
+				select {
+				case <-r.Context().Done():
+					return
+				default:
+				}
+				if !write(event) {
+					return
+				}
+			}
+			if !continuous {
+				write("[DONE]")
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server.URL, requests.Load
+}
+
+func limitedStreamClient(t *testing.T, url string) *OpenAI {
+	t.Helper()
+	return clientForNoFake(t, url, Options{
+		Attempts: 3,
+		Stream:   StreamSettings{Idle: time.Second, Total: 5 * time.Second},
+	})
+}
+
+func TestStreamAcceptsAnswerAtRuneLimit(t *testing.T) {
+	content := strings.Repeat("界", StreamAnswerLimit)
+	url, requests := serveTestStream(t, []string{streamTestEvent(t, map[string]any{"content": content})}, false)
+	rec := &streamRecorder{}
+
+	res, err := limitedStreamClient(t, url).Stream(context.Background(), oneRequest("вопрос"), rec.handler())
+	if err != nil {
+		t.Fatalf("Stream at the exact rune limit: %v", err)
+	}
+	if res.Content != content || strings.Join(rec.deltas, "") != content {
+		t.Fatalf("exact-limit answer changed: response=%d runes deltas=%d runes", utf8.RuneCountInString(res.Content), utf8.RuneCountInString(strings.Join(rec.deltas, "")))
+	}
+	if requests() != 1 {
+		t.Fatalf("requests = %d, want 1", requests())
+	}
+}
+
+func TestStreamContinuousContentStopsAtRuneLimit(t *testing.T) {
+	const deltaRunes = 1024
+	event := streamTestEvent(t, map[string]any{"content": strings.Repeat("界", deltaRunes)})
+	url, requests := serveTestStream(t, []string{event}, true)
+	rec := &streamRecorder{}
+
+	res, err := limitedStreamClient(t, url).Stream(context.Background(), oneRequest("вопрос"), rec.handler())
+	if !errors.Is(err, ErrStreamLimit) {
+		t.Fatalf("err = %v, want ErrStreamLimit", err)
+	}
+	gotRunes := utf8.RuneCountInString(res.Content)
+	if gotRunes > StreamAnswerLimit || gotRunes <= StreamAnswerLimit-deltaRunes {
+		t.Fatalf("partial answer = %d runes, want the accepted prefix within one delta of %d", gotRunes, StreamAnswerLimit)
+	}
+	if strings.Join(rec.deltas, "") != res.Content {
+		t.Fatal("an overflowing delta reached the answer handler")
+	}
+	if len(err.Error()) > 256 {
+		t.Fatalf("error is not bounded: %d bytes", len(err.Error()))
+	}
+	if requests() != 1 {
+		t.Fatalf("a resource overflow was retried: %d requests", requests())
+	}
+}
+
+func TestStreamAllowsEightDenseToolCallsAndFragmentedArguments(t *testing.T) {
+	prefix := `{"value":"`
+	suffix := `"}`
+	longArguments := prefix + strings.Repeat("界", StreamToolArgumentLimit-utf8.RuneCountInString(prefix)-utf8.RuneCountInString(suffix)) + suffix
+	events := make([]string, 0, 40)
+	for _, index := range []int{7, 2, 5, 0, 6, 1, 4, 3} {
+		events = append(events, toolStreamEvent(t, index, fmt.Sprintf("call-%d", index), ""))
+		if index != 7 {
+			events = append(events,
+				toolStreamEvent(t, index, "", `{"value":`),
+				toolStreamEvent(t, index, "", fmt.Sprintf("%d}", index)),
+			)
+			continue
+		}
+		runes := []rune(longArguments)
+		for len(runes) > 0 {
+			n := min(1024, len(runes))
+			events = append(events, toolStreamEvent(t, index, "", string(runes[:n])))
+			runes = runes[n:]
+		}
+	}
+	url, requests := serveTestStream(t, events, false)
+
+	res, err := limitedStreamClient(t, url).Stream(context.Background(), oneRequest("вопрос"), silentHandler())
+	if err != nil {
+		t.Fatalf("Stream with eight tool calls: %v", err)
+	}
+	if len(res.ToolCalls) != StreamToolCallLimit {
+		t.Fatalf("tool calls = %d, want %d", len(res.ToolCalls), StreamToolCallLimit)
+	}
+	for index, call := range res.ToolCalls {
+		if call.ID != fmt.Sprintf("call-%d", index) {
+			t.Errorf("tool call %d has ID %q, want dense sorted output", index, call.ID)
+		}
+		if index == 7 && call.Arguments != longArguments {
+			t.Errorf("fragmented arguments = %d runes, want exact %d-rune payload", utf8.RuneCountInString(call.Arguments), StreamToolArgumentLimit)
+		}
+	}
+	if requests() != 1 {
+		t.Fatalf("requests = %d, want 1", requests())
+	}
+}
+
+func TestStreamContinuousToolArgumentStopsAtRuneLimit(t *testing.T) {
+	event := toolStreamEvent(t, 3, "call-3", strings.Repeat("x", 64))
+	url, requests := serveTestStream(t, []string{event}, true)
+
+	res, err := limitedStreamClient(t, url).Stream(context.Background(), oneRequest("вопрос"), silentHandler())
+	if !errors.Is(err, ErrStreamLimit) {
+		t.Fatalf("err = %v, want ErrStreamLimit", err)
+	}
+	if len(res.ToolCalls) != 1 {
+		t.Fatalf("partial tool calls = %d, want 1", len(res.ToolCalls))
+	}
+	if got := utf8.RuneCountInString(res.ToolCalls[0].Arguments); got != StreamToolArgumentLimit {
+		t.Fatalf("partial arguments = %d runes, want exactly %d", got, StreamToolArgumentLimit)
+	}
+	if requests() != 1 {
+		t.Fatalf("a resource overflow was retried: %d requests", requests())
+	}
+}
+
+func TestStreamRejectsArbitraryToolCallIndexes(t *testing.T) {
+	for _, index := range []int{-1, StreamToolCallLimit, 1_000_000} {
+		t.Run(fmt.Sprintf("index-%d", index), func(t *testing.T) {
+			url, requests := serveTestStream(t, []string{toolStreamEvent(t, index, "bad", "{}")}, true)
+			res, err := limitedStreamClient(t, url).Stream(context.Background(), oneRequest("вопрос"), silentHandler())
+			if !errors.Is(err, ErrStreamLimit) || !strings.Contains(err.Error(), "index") {
+				t.Fatalf("err = %v, want a bounded tool-index error", err)
+			}
+			if len(res.ToolCalls) != 0 {
+				t.Fatalf("an invalid index allocated tool calls: %+v", res.ToolCalls)
+			}
+			if requests() != 1 {
+				t.Fatalf("an invalid index was retried: %d requests", requests())
+			}
+		})
 	}
 }

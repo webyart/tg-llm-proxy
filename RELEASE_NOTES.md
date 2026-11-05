@@ -1,3 +1,15 @@
+# tg-llm-proxy v1.20.0
+
+## Stage B anti-DDoS and resource limits
+
+- `WithNotAsyncHandlers` и bounded admission ограничивают реальную работу: active handlers по `MAX_CONCURRENT_MODEL_REQUESTS`, ещё 32 ожидания, один active + четыре FIFO waiters на чат с queue timeout 2 секунды. Albums используют тот же путь; максимум 32 pending batches.
+- Перегруженные updates получают coalesced overload response и advances offset без command/history/model/attachment work. Allowlist проверяется до album timers и persistent mutations; denied/bootstrap replies coalesce с ограниченным state.
+- Webhook secret проверяется constant-time до чтения body; invalid secret получает 403 без library logs. In-flight limit — 16, headers — 16 КиБ, body — 1 МиБ.
+- Streaming ограничен 100000 runes, каждым tool argument — 16384 runes, восемью dense tool calls и 64 Telegram messages. Ошибки используют `ErrStreamLimit` без retry. Chunks вычисляются один раз на due tick.
+- Фактическая model work ограничена `3 × RATE_LIMIT_PER_MINUTE` на пользователя (60/мин по умолчанию). Network tools — 8/мин/user, четыре global in flight; busy/budget JSON идёт модели для synthesis, calculator не расходует network budget.
+- RAG retrieval ограничен 4000 runes и первыми 32 терминами без изменения полного prompt. History export пишется инкрементально и останавливается на 5 МиБ, metadata и порядок сохранены.
+- Добавлены 1000-update/album floods, FIFO, denied-state, webhook no-body-read/overload, continuous SSE, tool-argument/index caps, model/network budget, export oversize и many-term regressions. Живой acceptance после deploy ещё предстоит.
+
 # tg-llm-proxy v1.19.0
 
 ## Stage A security hotfix

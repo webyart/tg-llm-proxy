@@ -209,7 +209,15 @@ WEBHOOK_PATH=/telegram/webhook
 
 Reverse proxy или туннель должен перенаправлять публичный URL на `http://127.0.0.1:8082/telegram/webhook` с тем же path. В compose listener доступен только через loopback host. Не публикуйте его напрямую в интернет.
 
-При старте listener поднимается до `setWebhook`. Проверяются secret header, метод POST и размер тела до 1 MiB. Pending updates не удаляются, `getUpdates` не запускается. Для возврата к polling сначала вызовите Telegram `deleteWebhook`.
+При старте listener поднимается до `setWebhook`. Secret header проверяется до чтения body, затем метод POST, JSON и размер тела до 1 MiB. In-flight requests ограничены 16, headers — 16 КиБ. Pending updates не удаляются, `getUpdates` не запускается. Для возврата к polling сначала вызовите Telegram `deleteWebhook`.
+
+### Защита от перегрузки
+
+- Active handlers ограничены `MAX_CONCURRENT_MODEL_REQUESTS`; на чат — один active и до четырёх FIFO waiters с queue timeout 2 секунды. Albums используют тот же bounded executor.
+- Denied/bootstrap/overload replies coalesce, а отклонённая работа не скачивает вложения, не вызывает модель и не создаёт command/history rows.
+- Streaming ограничен 100000 runes, tool argument — 16384 runes, один ответ — 64 Telegram-сообщениями.
+- Model work — `3 × RATE_LIMIT_PER_MINUTE` на пользователя; network tools — 8/мин/user и 4 global in flight.
+- RAG использует первые 32 термина из 4000 runes запроса. Export сериализуется инкрементально с остановкой на 5 МиБ.
 
 ## Команды бота
 

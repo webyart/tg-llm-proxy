@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -188,6 +189,87 @@ func TestExportAndSearchDescribeTruncatedWindow(t *testing.T) {
 	outsideReply := r.texts()[len(r.texts())-1]
 	if !strings.Contains(outsideReply, "Совпадений не найдено") || !strings.Contains(outsideReply, "последние 10000 сообщений") || !strings.Contains(outsideReply, "не проверялись") {
 		t.Fatalf("outside-window reply=%q", outsideReply)
+	}
+}
+
+func TestIncrementalHistoryExportsRemainValid(t *testing.T) {
+	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	r := &fakeReplier{}
+	db := testStore(t)
+	d := newTestDispatcher(t, cfg, &fakeModel{}, r, db)
+	tokensIn, tokensOut := int64(12), int64(34)
+	for _, row := range []store.Message{
+		{ChatID: 203, UserID: 11, Role: store.RoleUser, Content: "строка \"json\" <tag>\nновая"},
+		{ChatID: 203, UserID: 11, Role: store.RoleAssistant, Content: "ответ", Model: "test-model", TokensIn: &tokensIn, TokensOut: &tokensOut},
+	} {
+		if _, err := store.Append(context.Background(), db, row); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	for index, format := range []string{"json", "md"} {
+		if err := dispatch(t, d, testEvent(203, 11, int64(1530+index), "/export "+format)); err != nil {
+			t.Fatalf("export %s: %v", format, err)
+		}
+		if len(r.documents) != index+1 || len(r.documents[index].Data) == 0 || len(r.documents[index].Data) > ExportMaxBytes {
+			t.Fatalf("%s documents=%+v", format, r.documents)
+		}
+		if format == "json" {
+			var payload historyExport
+			if err := json.Unmarshal(r.documents[index].Data, &payload); err != nil {
+				t.Fatalf("invalid incremental JSON: %v", err)
+			}
+			if len(payload.Messages) != 2 || payload.Messages[0].Content != "строка \"json\" <tag>\nновая" || payload.Messages[1].Model != "test-model" || payload.Messages[1].TokensIn == nil || *payload.Messages[1].TokensIn != tokensIn || payload.Messages[1].TokensOut == nil || *payload.Messages[1].TokensOut != tokensOut {
+				t.Fatalf("JSON messages=%+v", payload.Messages)
+			}
+			if payload.Window.Count != 2 || payload.Window.OldestID != 1 || payload.Window.NewestID != 2 || payload.ExportedAt == "" {
+				t.Fatalf("JSON metadata=%+v exported_at=%q", payload.Window, payload.ExportedAt)
+			}
+		} else {
+			markdown := string(r.documents[index].Data)
+			if !strings.Contains(markdown, "включено: 2") || !strings.Contains(markdown, "строка \"json\" <tag>\nновая") || !strings.Contains(markdown, "## assistant") {
+				t.Fatalf("invalid incremental Markdown: %.500s", markdown)
+			}
+		}
+	}
+}
+
+func TestOversizedHistoryTranscriptStopsWithBoundedAllocations(t *testing.T) {
+	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	r := &fakeReplier{}
+	db := testStore(t)
+	d := newTestDispatcher(t, cfg, &fakeModel{}, r, db)
+	ctx := context.Background()
+	if err := store.EnsureChat(ctx, db, 204, 11, ""); err != nil {
+		t.Fatalf("EnsureChat: %v", err)
+	}
+	_, err := db.ExecContext(ctx, `
+		WITH RECURSIVE seq(n) AS (
+			SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 40
+		)
+		INSERT INTO messages (chat_id, role, content, created_at)
+		SELECT ?, 'user', hex(zeroblob(262144)), strftime('%Y-%m-%dT%H:%M:%SZ', '2026-01-01T00:00:00Z', '+' || n || ' seconds')
+		FROM seq`, 204)
+	if err != nil {
+		t.Fatalf("seed oversized transcript: %v", err)
+	}
+	for index, format := range []string{"json", "md"} {
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		if err := dispatch(t, d, testEvent(204, 11, int64(1540+index), "/export "+format)); err != nil {
+			t.Fatalf("export %s: %v", format, err)
+		}
+		runtime.ReadMemStats(&after)
+		allocated := after.TotalAlloc - before.TotalAlloc
+		if allocated > 8*ExportMaxBytes {
+			t.Fatalf("%s export allocated %d bytes, above eight times the output cap, for a 20 MiB transcript", format, allocated)
+		}
+		if len(r.documents) != 0 {
+			t.Fatalf("%s oversized export produced a document", format)
+		}
+		texts := r.texts()
+		if len(texts) != index+1 || !strings.Contains(texts[len(texts)-1], "превышает 5 МиБ") {
+			t.Fatalf("%s overflow replies=%q", format, texts)
+		}
 	}
 }
 

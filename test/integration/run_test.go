@@ -173,7 +173,7 @@ func startBot(t *testing.T, ctx context.Context, cfg config.Config, db *sql.DB, 
 	}
 	var webhookServer *bot.WebhookServer
 	if cfg.WebhookEnabled {
-		webhookServer, err = bot.NewWebhookServer(tg, cfg.WebhookAddress(), cfg.WebhookPath)
+		webhookServer, err = bot.NewWebhookServer(tg, cfg.WebhookAddress(), cfg.WebhookPath, cfg.WebhookSecretToken)
 		if err != nil {
 			t.Fatalf("NewWebhookServer: %v", err)
 		}
@@ -943,12 +943,19 @@ func TestWebhookAcceptsOnlySecretUpdatesWithoutPolling(t *testing.T) {
 	}
 
 	wrong := postWebhook(t, run.webhookURL, "wrong-secret")
-	if wrong.StatusCode != http.StatusOK {
-		t.Fatalf("the library's rejected-secret response = %d, want 200 without handler delivery", wrong.StatusCode)
+	if wrong.StatusCode != http.StatusForbidden {
+		t.Fatalf("wrong-secret response = %d, want 403", wrong.StatusCode)
+	}
+	missing := postWebhook(t, run.webhookURL, "")
+	if missing.StatusCode != http.StatusForbidden {
+		t.Fatalf("missing-secret response = %d, want 403", missing.StatusCode)
 	}
 	quiet()
 	if tgAPI.Calls("sendMessage") != 0 {
-		t.Fatal("an update with a wrong secret reached the model")
+		t.Fatal("an update with a wrong or missing secret reached the model")
+	}
+	if strings.Contains(run.logs.String(), "invalid webhook secret") || strings.Contains(run.logs.String(), "error decode request body") {
+		t.Fatalf("rejected webhook reached the library logging path: %s", run.logs.String())
 	}
 	resp, err := http.Get(run.webhookURL)
 	if err != nil {

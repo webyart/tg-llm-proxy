@@ -66,10 +66,11 @@ type streamSession struct {
 	maxRunes   int
 	start      time.Time
 
-	messageID  int64
-	messageIDs []int64
-	posted     bool
-	answer     strings.Builder
+	messageID   int64
+	messageIDs  []int64
+	posted      bool
+	answer      strings.Builder
+	answerRunes int
 
 	edits        int
 	skipped      int // rewrites the cadence of refused
@@ -81,7 +82,10 @@ type streamSession struct {
 
 // deliveryFailureBudget — how many refused Telegram calls this chat may collect before the session stops
 // is not receiving anything, and muting is not the end of the answer — deliver() still sends the whole text the
-const deliveryFailureBudget = 3
+const (
+	deliveryFailureBudget = 3
+	maxStreamChunks       = 64
+)
 
 func (d *Dispatcher) streamingEnabled(ctx context.Context, chatID int64) (bool, bool, error) {
 	enabled := d.deps.Cfg.Streaming
@@ -177,9 +181,13 @@ func (s *streamSession) handler() model.StreamHandler {
 	return model.StreamHandler{
 		Progress: func(info model.StreamInfo) { s.progress(info) },
 		Delta: func(text string) error {
+			runes := Runes(text)
+			if runes > model.StreamAnswerLimit-s.answerRunes {
+				return fmt.Errorf("%w: answer content exceeds %d runes", model.ErrStreamLimit, model.StreamAnswerLimit)
+			}
 			s.answer.WriteString(text)
-			s.refresh()
-			return nil
+			s.answerRunes += runes
+			return s.refresh()
 		},
 	}
 }
@@ -197,36 +205,62 @@ func (s *streamSession) progress(info model.StreamInfo) {
 		s.skipped++
 		return
 	}
-	s.rotate()
 	var elapsed = time.Since(s.start).Round(time.Second)
 	if s.answer.Len() == 0 {
 		s.edit(s.ctx, fmt.Sprintf(msgStreamThinking, info.ReasoningRunes, elapsed), false)
 		return
 	}
-	s.edit(s.ctx, s.partialView(), false)
+	chunks, err := s.answerChunks()
+	if err != nil {
+		s.muted = true
+		return
+	}
+	s.rotateChunks(chunks)
+	s.edit(s.ctx, s.partialViewChunks(chunks), false)
 }
 
 // refresh — an answer token arrived. The first delta posts the message when no Progress got there first (a
-func (s *streamSession) refresh() {
+func (s *streamSession) refresh() error {
 	if s.muted {
 		s.skipped++
-		return
+		return nil
 	}
 	if !s.posted {
 		s.post()
-		return
+		return nil
 	}
 	if !s.due() {
 		s.skipped++
-		return
+		return nil
 	}
-	s.rotate()
-	s.edit(s.ctx, s.partialView(), false)
+	chunks, err := s.answerChunks()
+	if err != nil {
+		return err
+	}
+	s.rotateChunks(chunks)
+	s.edit(s.ctx, s.partialViewChunks(chunks), false)
+	return nil
+}
+
+func (s *streamSession) answerChunks() ([]string, error) {
+	chunks := s.dispatcher.chunksOf(s.answer.String())
+	if len(chunks) > maxStreamChunks {
+		return nil, fmt.Errorf("%w: Telegram output exceeds %d chunks", model.ErrStreamLimit, maxStreamChunks)
+	}
+	return chunks, nil
 }
 
 func (s *streamSession) rotate() {
-	chunks := s.dispatcher.chunksOf(s.answer.String())
-	for len(s.messageIDs) < len(chunks) && !s.muted {
+	chunks, err := s.answerChunks()
+	if err != nil {
+		s.muted = true
+		return
+	}
+	s.rotateChunks(chunks)
+}
+
+func (s *streamSession) rotateChunks(chunks []string) {
+	for len(s.messageIDs) < len(chunks) && len(s.messageIDs) < maxStreamChunks && !s.muted {
 		index := len(s.messageIDs)
 		s.postText(plainForParseFallback(chunks[index], s.dispatcher.deps.Cfg.ParseMode))
 	}
@@ -237,6 +271,10 @@ func (s *streamSession) rotate() {
 // The two markers are reserved their room BEFORE the answer is cut, which is what keeps every interim edit
 // inside the limit of one message — a rewrite Telegram refuses for length is a rewrite the user never sees.
 func (s *streamSession) partialView() string {
+	return s.partialViewChunks(s.dispatcher.chunksOf(s.answer.String()))
+}
+
+func (s *streamSession) partialViewChunks(chunks []string) string {
 	var total = Runes(s.answer.String())
 	var suffix = fmt.Sprintf(msgStreamSuffix, total)
 	var marker = ""
@@ -251,14 +289,17 @@ func (s *streamSession) partialView() string {
 	if Runes(suffix) >= s.maxRunes {
 		suffix = ""
 	}
-	return s.head(Runes(suffix)+Runes(marker)) + marker + suffix
+	return s.headOf(s.currentAnswerChunks(chunks), Runes(suffix)+Runes(marker)) + marker + suffix
 }
 
 // head — the part of the answer the placeholder can carry once `reserve` symbols of the message are given to the
 // the message, and sending more than the limit is the 400 Telegram answers «too long» rather than a reason to
 // grow the message.
 func (s *streamSession) currentAnswer() string {
-	chunks := s.dispatcher.chunksOf(s.answer.String())
+	return s.currentAnswerChunks(s.dispatcher.chunksOf(s.answer.String()))
+}
+
+func (s *streamSession) currentAnswerChunks(chunks []string) string {
 	if len(chunks) == 0 {
 		return s.answer.String()
 	}
@@ -266,7 +307,10 @@ func (s *streamSession) currentAnswer() string {
 }
 
 func (s *streamSession) head(reserve int) string {
-	var text = s.currentAnswer()
+	return s.headOf(s.currentAnswer(), reserve)
+}
+
+func (s *streamSession) headOf(text string, reserve int) string {
 	var runes = []rune(text)
 	var room = s.maxRunes - reserve
 	if room < 0 {
@@ -336,6 +380,9 @@ func (s *streamSession) editMessage(ctx context.Context, messageID int64, text s
 // A stream that never got a message into the chat (every post failed, or the model produced no event before its
 func (s *streamSession) deliver(ctx context.Context, d *Dispatcher, full string) error {
 	var chunks = d.chunksOf(full)
+	if len(chunks) > maxStreamChunks {
+		return fmt.Errorf("%w: Telegram output exceeds %d chunks", model.ErrStreamLimit, maxStreamChunks)
+	}
 	if len(chunks) == 0 {
 		return nil // an empty answer is the error of and never reaches this call
 	}

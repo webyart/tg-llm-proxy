@@ -91,10 +91,12 @@ func (d *Dispatcher) NewTelegram(opts Options) (*tgbot.Bot, error) {
 		client = defaultTelegramHTTPClient(poll)
 	}
 
+	d.configureAdmission(workers)
 	var setting = []tgbot.Option{
 		tgbot.WithHTTPClient(poll, client),
 		tgbot.WithCheckInitTimeout(InitTimeout),
-		tgbot.WithWorkers(workers),
+		tgbot.WithWorkers(workers + updateQueueCapacity),
+		tgbot.WithNotAsyncHandlers(),
 		// Accept messages and menu callbacks; eventOf handles text, attachments and unsupported media.
 		tgbot.WithAllowedUpdates(tgbot.AllowedUpdates{"message", "callback_query"}),
 		tgbot.WithDefaultHandler(d.telegramHandler),
@@ -471,7 +473,7 @@ func Run(ctx context.Context, deps Deps, opts Options) (*Dispatcher, error) {
 		d.deps.Logger.Warn("the command menu was not published, the commands still work", "error", err)
 	}
 	if deps.Cfg.WebhookEnabled {
-		server, err := NewWebhookServer(tg, deps.Cfg.WebhookAddress(), deps.Cfg.WebhookPath)
+		server, err := NewWebhookServer(tg, deps.Cfg.WebhookAddress(), deps.Cfg.WebhookPath, deps.Cfg.WebhookSecretToken)
 		if err != nil {
 			return nil, err
 		}
@@ -484,6 +486,6 @@ func Run(ctx context.Context, deps Deps, opts Options) (*Dispatcher, error) {
 		}
 		return d, nil
 	}
-	tg.Start(ctx) // blocks: one getUpdates poller and `workers` handler goroutines
+	tg.Start(ctx) // blocks: one getUpdates poller and a bounded set of admission goroutines
 	return d, nil
 }

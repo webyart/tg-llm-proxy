@@ -342,7 +342,9 @@ func Decode(status int, payload []byte, model string, attempt int) (Response, er
 
 // `/model` slower than the answer it reports on.
 func (c *OpenAI) Models(ctx context.Context) ([]string, error) {
-	var httpReq, err = http.NewRequestWithContext(ctx, http.MethodGet, c.modelsURL, nil)
+	var modelCtx, cancel = context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	var httpReq, err = http.NewRequestWithContext(modelCtx, http.MethodGet, c.modelsURL, nil)
 	if err != nil {
 		return nil, err
 	}

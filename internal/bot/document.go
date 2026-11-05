@@ -14,9 +14,10 @@ import (
 const ExportMaxBytes = 5 << 20
 
 type Document struct {
-	Name string
-	Data []byte
-	MIME string
+	Name    string
+	Data    []byte
+	MIME    string
+	Caption string
 }
 
 type DocumentSender interface {
@@ -35,10 +36,14 @@ func (r *telegramReplier) SendDocument(ctx context.Context, chatID int64, docume
 	if mime == "" {
 		mime = "application/octet-stream"
 	}
+	caption := strings.TrimSpace(document.Caption)
+	if caption == "" {
+		caption = "Экспорт истории"
+	}
 	_, err := r.bot.SendDocument(ctx, &tgbot.SendDocumentParams{
 		ChatID:   chatID,
 		Document: &models.InputFileUpload{Filename: name, Data: bytes.NewReader(document.Data)},
-		Caption:  "Экспорт истории",
+		Caption:  caption,
 	})
 	return err
 }

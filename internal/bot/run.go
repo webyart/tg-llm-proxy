@@ -180,7 +180,7 @@ func (d *Dispatcher) telegramHandler(ctx context.Context, tg *tgbot.Bot, upd *mo
 			return
 		}
 		d.deps.Logger.Error("the update handler panicked before Dispatch, the update is lost",
-			"update_id", updateID, "panic", fmt.Sprint(r))
+			"update_id", updateID, "panic", d.recoveredPanicText(r))
 	}()
 	if upd != nil && upd.CallbackQuery != nil {
 		d.handleCallback(ctx, tg, upd)

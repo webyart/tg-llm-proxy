@@ -131,7 +131,7 @@ docker compose logs -f bot
 | `HEALTH_PORT` | 8080 | loopback health endpoint |
 | `LOG_LEVEL` | `info` | `error`, `warning`, `info`, `debug` |
 
-`STRATA_BASE_URL` нормализуется к ровно одному `/v1`: chat и models используют этот base. `TRANSCRIPTION_BASE_URL` независимо ведёт в `/audio/transcriptions`; compose запускает Speaches Whisper без публичного порта и заранее загружает multilingual small-модель. Voice хранится только как текст транскрипции; исходное аудио остаётся в памяти на время запроса.
+`STRATA_BASE_URL` нормализуется к ровно одному `/v1`: chat и models используют этот base. `TRANSCRIPTION_BASE_URL` независимо ведёт в `/audio/transcriptions`. Оба endpoint запрещают userinfo, query и fragment, чтобы credentials не попадали в логи или диагностику. Compose запускает Speaches Whisper без публичного порта и заранее загружает multilingual small-модель. Voice хранится только как текст транскрипции; исходное аудио остаётся в памяти на время запроса.
 
 При `PARSE_MODE=MarkdownV2` сохраняются заголовки, жирный и курсивный текст, `code`, code fences и
 http/https-ссылки. Обычные специальные символы экранируются, а небезопасные схемы ссылок не пропускаются.
@@ -225,9 +225,9 @@ Reverse proxy или туннель должен перенаправлять п
 | `/unskip` | снять suppression без немедленного вызова модели |
 | `/history [N]` | последние N сообщений, по умолчанию 5 |
 | `/docs` | RAG-база; `/docs add`, `export`, `delete <id>` и `clear` |
-| `/export [md\|json]` | экспорт истории Telegram-документом |
-| `/search <текст>` | поиск по истории без вызова модели |
-| `/delete` | удаление истории после Confirm/Cancel; настройки сохраняются |
+| `/export [md\|json]` | экспорт последних 10000 сообщений с явным truncation warning и ID/time window |
+| `/search <текст>` | до 20 совпадений среди последних 10000 сообщений; область указана в ответе |
+| `/delete` | одноразовые Confirm/Cancel с TTL 5 минут, привязкой к пользователю и сообщению; настройки сохраняются |
 | `/model [check]` | модель, endpoint и проверка доступности |
 | `/model select <id>` | выбрать модель текущего чата из `GET /models` |
 | `/model reset` | вернуть модель по умолчанию `STRATA_MODEL` |

@@ -101,7 +101,7 @@ func (d *Dispatcher) exportDocuments(ctx context.Context, ev Event) error {
 	if !ok {
 		return errors.New("telegram document sender is unavailable")
 	}
-	return sender.SendDocument(ctx, ev.ChatID, Document{Name: fmt.Sprintf("rag-%d.json", ev.ChatID), Data: data, MIME: "application/json"})
+	return sender.SendDocument(ctx, ev.ChatID, Document{Name: fmt.Sprintf("rag-%d.json", ev.ChatID), Data: data, MIME: "application/json", Caption: "Экспорт RAG-документов"})
 }
 
 func (d *Dispatcher) addRAGContext(ctx context.Context, chatID int64, userID int64, query string, messages []model.Message) ([]model.Message, []string, error) {

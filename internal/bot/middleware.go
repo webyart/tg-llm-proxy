@@ -3,14 +3,17 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"bot/internal/ratelimit"
 	"bot/internal/store"
 )
 
 const msgPanic = "Бот не смог обработать это сообщение. Попробуй ещё раз."
+const recoveredPanicMaxBytes = 1024
 
 const msgTooOftenFormat = "Слишком часто: не больше %d запросов в минуту. Подожди %s и попробуй ещё раз."
 
@@ -122,9 +125,10 @@ func (d *Dispatcher) recovered(next HandlerFunc) HandlerFunc {
 			if r == nil {
 				return
 			}
-			err = fmt.Errorf("panic in the handler of /%s: %v", cmd.Name, r)
+			panicText := d.recoveredPanicText(r)
+			err = fmt.Errorf("panic in the handler of /%s: %s", cmd.Name, panicText)
 			d.deps.Logger.Error("recovered a panic", "chat_id", ev.ChatID, "command", cmd.Name,
-				"panic", fmt.Sprint(r))
+				"panic", panicText)
 			d.logEvent(ctx, ev.UserID, store.EventCommand, "panic:"+cmd.Name)
 			if sendErr := d.reply(ctx, ev.ChatID, msgPanic); sendErr != nil {
 				d.deps.Logger.Error("the panic notice was not delivered", "chat_id", ev.ChatID,
@@ -133,6 +137,21 @@ func (d *Dispatcher) recovered(next HandlerFunc) HandlerFunc {
 		}()
 		return next(ctx, ev, cmd)
 	}
+}
+
+func (d *Dispatcher) recoveredPanicText(recovered any) string {
+	text := fmt.Sprint(recovered)
+	for _, secret := range []string{d.deps.Token, d.deps.Cfg.BotToken, d.deps.Cfg.StrataKey, d.deps.Cfg.WebhookSecretToken} {
+		text = Sanitize(errors.New(text), secret)
+	}
+	if len(text) <= recoveredPanicMaxBytes {
+		return text
+	}
+	text = text[:recoveredPanicMaxBytes]
+	for !utf8.ValidString(text) {
+		text = text[:len(text)-1]
+	}
+	return text
 }
 
 func messageIDOrNull(id int64) *int64 {

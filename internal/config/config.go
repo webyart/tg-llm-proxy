@@ -204,7 +204,7 @@ func JoinURL(base string, path string) string {
 }
 
 func validateStrataBase(base string) string {
-	parsed, err := url.Parse(NormalizeBase(base))
+	parsed, err := url.Parse(strings.TrimSpace(base))
 	if err != nil || parsed.Host == "" {
 		return "ENV STRATA_BASE_URL must be a valid absolute HTTP(S) URL"
 	}
@@ -214,10 +214,25 @@ func validateStrataBase(base string) string {
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return "ENV STRATA_BASE_URL must use http or https"
 	}
+	if parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(base, "#") {
+		return "ENV STRATA_BASE_URL must not contain query or fragment components"
+	}
 	if parsed.Scheme == "http" && !localStrataHost(parsed.Hostname()) {
 		return "ENV STRATA_BASE_URL must use HTTPS for a non-local endpoint"
 	}
 	return ""
+}
+
+func baseWithoutQueryOrFragment(base string) string {
+	parsed, err := url.Parse(strings.TrimSpace(base))
+	if err != nil {
+		return ""
+	}
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
+	return parsed.String()
 }
 
 func localStrataHost(host string) bool {
@@ -480,16 +495,18 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	if base == "" {
 		base = DefaultBaseURL
 	}
-	cfg.StrataBase = NormalizeBase(base)
-	cfg.ChatURL = JoinURL(base, "/chat/completions")
-	cfg.ModelsURL = JoinURL(base, "/models")
+	endpointBase := baseWithoutQueryOrFragment(base)
+	cfg.StrataBase = NormalizeBase(endpointBase)
+	cfg.ChatURL = JoinURL(endpointBase, "/chat/completions")
+	cfg.ModelsURL = JoinURL(endpointBase, "/models")
 	problems = Push(problems, validateStrataBase(base))
 	transcriptionBase := strings.TrimSpace(raw["TRANSCRIPTION_BASE_URL"])
 	if transcriptionBase == "" {
 		transcriptionBase = base
 	}
-	cfg.TranscriptionBase = NormalizeBase(transcriptionBase)
-	cfg.TranscriptionURL = JoinURL(transcriptionBase, "/audio/transcriptions")
+	transcriptionEndpointBase := baseWithoutQueryOrFragment(transcriptionBase)
+	cfg.TranscriptionBase = NormalizeBase(transcriptionEndpointBase)
+	cfg.TranscriptionURL = JoinURL(transcriptionEndpointBase, "/audio/transcriptions")
 	if problem := validateStrataBase(transcriptionBase); problem != "" {
 		problems = Push(problems, strings.Replace(problem, "STRATA_BASE_URL", "TRANSCRIPTION_BASE_URL", 1))
 	}

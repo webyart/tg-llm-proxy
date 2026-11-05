@@ -53,9 +53,25 @@ func TestExportSearchAndDeleteHistoryEndToEnd(t *testing.T) {
 	waitFor(t, "Unicode history search", func() bool { return strings.Contains(tgAPI.Joined(), "Привет МИР") })
 	tgAPI.PushText(503, chatID, userID, "/delete")
 	waitFor(t, "delete confirmation", func() bool { return strings.Contains(tgAPI.Joined(), "Удалить всю историю") })
+	callbackData := ""
+	menuMessageID := 0
+	for _, message := range tgAPI.Sent() {
+		if !strings.Contains(message.Text, "Удалить всю историю") {
+			continue
+		}
+		var markup models.InlineKeyboardMarkup
+		if err := json.Unmarshal([]byte(message.ReplyMarkup), &markup); err != nil || len(markup.InlineKeyboard) == 0 || len(markup.InlineKeyboard[0]) == 0 {
+			t.Fatalf("delete markup=%q err=%v", message.ReplyMarkup, err)
+		}
+		callbackData = markup.InlineKeyboard[0][0].CallbackData
+		menuMessageID = message.MessageID
+	}
+	if callbackData == "" || menuMessageID == 0 {
+		t.Fatalf("delete callback or menu message id not found")
+	}
 	tgAPI.Push(models.Update{ID: 504, CallbackQuery: &models.CallbackQuery{
-		ID: "delete-confirm", Data: "delete:confirm", From: models.User{ID: userID, Username: "tester"},
-		Message: models.MaybeInaccessibleMessage{Message: &models.Message{ID: 504, Date: int(time.Now().Unix()), Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate}}},
+		ID: "delete-confirm", Data: callbackData, From: models.User{ID: userID, Username: "tester"},
+		Message: models.MaybeInaccessibleMessage{Message: &models.Message{ID: menuMessageID, Date: int(time.Now().Unix()), Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate}}},
 	}})
 	waitFor(t, "confirmed delete", func() bool { return strings.Contains(tgAPI.Joined(), "Удалено сообщений: 2") })
 	rows, err := store.HistoryOfChat(context.Background(), db, chatID, 10)

@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -417,6 +419,35 @@ func TestModels(t *testing.T) {
 	}
 	if fake.LastAuthorization() != "Bearer k" {
 		t.Error("GET /models must carry the key of too")
+	}
+}
+
+func TestModelsTimeout(t *testing.T) {
+	var started = make(chan struct{})
+	var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	var c, newErr = New(Options{
+		ChatURL: server.URL + "/v1/chat/completions", ModelsURL: server.URL + "/v1/models", Timeout: 50 * time.Millisecond,
+	})
+	if newErr != nil {
+		t.Fatalf("New: %v", newErr)
+	}
+
+	var start = time.Now()
+	var _, err = c.Models(context.Background())
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Models error = %v, want context.DeadlineExceeded", err)
+	}
+	if spent := time.Since(start); spent > 500*time.Millisecond {
+		t.Fatalf("Models took %v with a 50ms budget", spent)
+	}
+	select {
+	case <-started:
+	default:
+		t.Fatal("the hanging server never received the Models request")
 	}
 }
 

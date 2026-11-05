@@ -2,10 +2,15 @@ package bot
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
+	"time"
 
 	tgbot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
+
+	"bot/internal/store"
 )
 
 // menuMarkup is the inline command menu shown by /start and /help. Every callback carries only a command name;
@@ -55,6 +60,64 @@ func (d *Dispatcher) sendMenu(ctx context.Context, chatID int64, text string) er
 	return d.reply(ctx, chatID, text)
 }
 
+func (r *telegramReplier) SendMenuWithID(ctx context.Context, chatID int64, text string, markup models.InlineKeyboardMarkup) (int64, error) {
+	if r.bot == nil {
+		return 0, errors.New("the telegram bot is not attached ")
+	}
+	attempt := 0
+	for {
+		params := &tgbot.SendMessageParams{ChatID: chatID, Text: text, ParseMode: parseModeOf(r.cfg.ParseMode), ReplyMarkup: markup}
+		message, err := r.bot.SendMessage(ctx, params)
+		if err == nil {
+			if message == nil || message.ID == 0 {
+				return 0, errors.New("telegram menu response has no message id")
+			}
+			return int64(message.ID), nil
+		}
+		if isParseEntitiesError(err) && params.ParseMode != "" {
+			params.Text = plainForParseFallback(text, r.cfg.ParseMode)
+			params.ParseMode = ""
+			message, fallbackErr := r.bot.SendMessage(ctx, params)
+			if fallbackErr == nil {
+				r.logger.Warn("telegram rejected formatted text; delivered it as plain text", "chat_id", chatID)
+				if message == nil || message.ID == 0 {
+					return 0, errors.New("telegram menu response has no message id")
+				}
+				return int64(message.ID), nil
+			}
+			err = fallbackErr
+		}
+		var flood *tgbot.TooManyRequestsError
+		if !errors.As(err, &flood) || flood.RetryAfter <= 0 || attempt >= 1 {
+			return 0, err
+		}
+		attempt++
+		sleep := time.Duration(flood.RetryAfter) * time.Second
+		if sleep > FloodSleepMax {
+			sleep = FloodSleepMax
+		}
+		r.d.logEvent(ctx, r.chatUser(chatID), store.EventFlood, fmt.Sprintf("retry_after %d s", flood.RetryAfter))
+		r.logger.Warn("telegram answered 429, the chat waits", "chat_id", chatID, "retry_after", flood.RetryAfter)
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-time.After(sleep):
+		}
+	}
+}
+
+func (r *telegramReplier) RemoveMenu(ctx context.Context, chatID int64, messageID int64) error {
+	if r.bot == nil {
+		return errors.New("the telegram bot is not attached ")
+	}
+	_, err := r.bot.EditMessageReplyMarkup(ctx, &tgbot.EditMessageReplyMarkupParams{
+		ChatID:      chatID,
+		MessageID:   int(messageID),
+		ReplyMarkup: models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{}},
+	})
+	return err
+}
+
 func (d *Dispatcher) callbackText(data string) (string, bool) {
 	if strings.HasPrefix(data, "cmd:") {
 		name := strings.TrimPrefix(data, "cmd:")
@@ -63,8 +126,14 @@ func (d *Dispatcher) callbackText(data string) (string, bool) {
 		}
 		return "", false
 	}
-	if data == "delete:confirm" || data == "delete:cancel" {
-		return "/delete " + strings.TrimPrefix(data, "delete:"), true
+	for _, action := range []string{"confirm", "cancel"} {
+		prefix := "delete:" + action
+		if data == prefix {
+			return "/delete callback " + action + ":", true
+		}
+		if strings.HasPrefix(data, prefix+":") {
+			return "/delete callback " + action + ":" + strings.TrimPrefix(data, prefix+":"), true
+		}
 	}
 	if strings.HasPrefix(data, "persona:") {
 		action := strings.TrimPrefix(data, "persona:")
@@ -109,14 +178,24 @@ func (d *Dispatcher) handleCallback(ctx context.Context, tg *tgbot.Bot, upd *mod
 	if upd == nil || upd.CallbackQuery == nil {
 		return
 	}
+	ev, ok := d.callbackEventOf(upd)
+	if !ok {
+		if tg != nil && upd.CallbackQuery.ID != "" {
+			params := &tgbot.AnswerCallbackQueryParams{CallbackQueryID: upd.CallbackQuery.ID}
+			if strings.HasPrefix(strings.TrimSpace(upd.CallbackQuery.Data), "delete:") {
+				params.Text = "Это меню удаления истекло или уже использовано. Отправь /delete заново."
+				params.ShowAlert = true
+			}
+			if _, err := tg.AnswerCallbackQuery(ctx, params); err != nil {
+				d.deps.Logger.Error("answerCallbackQuery failed", "error", Sanitize(err, d.deps.Token))
+			}
+		}
+		return
+	}
 	if tg != nil && upd.CallbackQuery.ID != "" {
 		if _, err := tg.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{CallbackQueryID: upd.CallbackQuery.ID}); err != nil {
 			d.deps.Logger.Error("answerCallbackQuery failed", "error", Sanitize(err, d.deps.Token))
 		}
-	}
-	ev, ok := d.callbackEventOf(upd)
-	if !ok {
-		return
 	}
 	d.noteChatUser(ev.ChatID, ev.UserID)
 	if err := d.Dispatch(ctx, ev); err != nil {

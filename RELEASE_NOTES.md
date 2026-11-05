@@ -1,3 +1,14 @@
+# tg-llm-proxy v1.19.0
+
+## Stage A security hotfix
+
+- Tool schemas и executor используют единый server-side allowlist: calculator только при `TOOLS_ENABLED=true`, `read_url`/`web_search` — при master flag и собственном opt-in. Все calls в round проверяются до первого side effect; disabled/unknown tools и usage/network activity отклоняются.
+- `/models` ограничен существующим `STRATA_TIMEOUT_SECONDS`. `/model CHECK`, `SELECT`, `RESET` работают case-insensitively, control tokens требуют точного совпадения, model ID сохраняет регистр.
+- Delete inline confirmations используют random 128-bit token с TTL 5 минут, привязкой к chat/user/message и атомарным consume на Confirm или Cancel. Повторные, старые и чужие callbacks не удаляют историю; production keyboard удаляется после использования.
+- Export содержит явные `truncated`, warning и ID/time window; search сообщает область newest 10000 и лимит 20 результатов. RAG export получил отдельную подпись.
+- `STRATA_BASE_URL` и `TRANSCRIPTION_BASE_URL` запрещают query/fragment без вывода значения. Panic logs проходят redaction настроенных secrets и ограничены 1024 байтами. URL reader дополнительно блокирует NAT64 `64:ff9b::/96`.
+- Добавлены disabled-tool/no-dial, hanging-server, mixed-case, confirmation replay/wrong-user/expiry, 10001-row export/search, redaction и NAT64 regressions. Живой Telegram acceptance этой версии ещё предстоит.
+
 # tg-llm-proxy v1.18.1
 
 ## Markdown nesting and native tools patch

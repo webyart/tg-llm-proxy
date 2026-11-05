@@ -112,6 +112,9 @@ func TestURLReaderRejectsUnsafeURLs(t *testing.T) {
 		"https://198.18.0.1",
 		"https://240.0.0.1",
 		"https://[2001:db8::1]",
+		"https://[64:ff9b::7f00:1]",
+		"https://[64:ff9b::a00:1]",
+		"https://[64:ff9b::a9fe:a9fe]",
 		"https://example.com/" + strings.Repeat("a", urlReaderMaxURLBytes),
 	}
 	for _, rawURL := range urls {
@@ -123,6 +126,20 @@ func TestURLReaderRejectsUnsafeURLs(t *testing.T) {
 		if payload["error"] == "" || payload["result"] != "" {
 			t.Errorf("unsafe URL was not rejected: %v", payload)
 		}
+	}
+}
+
+func TestURLReaderRejectsNAT64PrivateDNSAnswer(t *testing.T) {
+	fixture := newURLReaderTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("private"))
+	}), []net.IP{net.ParseIP("64:ff9b::a9fe:a9fe")})
+	payload, err := executeTestURLReader(context.Background(), fixture, fixture.url)
+	if err != nil || payload["error"] == "" {
+		t.Fatalf("NAT64 private DNS answer payload=%v err=%v", payload, err)
+	}
+	if len(fixture.dialAddresses) != 0 {
+		t.Fatalf("NAT64 private address was dialed: %v", fixture.dialAddresses)
 	}
 }
 

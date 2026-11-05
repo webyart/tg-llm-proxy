@@ -24,11 +24,12 @@ import (
 )
 
 const (
-	urlReaderMaxURLBytes  = 2048
-	urlReaderMaxBodyBytes = 1 << 20
-	urlReaderMaxRunes     = 8000
-	urlReaderMaxRedirects = 5
-	urlReaderTimeout      = 15 * time.Second
+	urlReaderMaxURLBytes   = 2048
+	urlReaderMaxBodyBytes  = 1 << 20
+	urlReaderMaxRunes      = 8000
+	urlReaderMaxTitleRunes = 200
+	urlReaderMaxRedirects  = 5
+	urlReaderTimeout       = 15 * time.Second
 )
 
 type urlReaderResolver interface {
@@ -241,46 +242,95 @@ var urlReaderBlockedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("fec0::/10"),
 }
 
+type urlReaderPage struct {
+	text     string
+	title    string
+	finalURL string
+}
+
 func readURL(ctx context.Context, client *http.Client, rawURL string) (string, error) {
+	page, err := readURLPage(ctx, client, rawURL)
+	return page.text, err
+}
+
+func readURLPage(ctx context.Context, client *http.Client, rawURL string) (urlReaderPage, error) {
 	u, err := parseURLReaderURL(rawURL)
 	if err != nil {
-		return "", err
+		return urlReaderPage{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return "", errors.New("invalid URL")
+		return urlReaderPage{}, errors.New("invalid URL")
 	}
 	req.Header.Set("Accept", "text/*, application/json, application/xml, application/xhtml+xml")
 	defer client.CloseIdleConnections()
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", errors.New("failed to read URL")
+		return urlReaderPage{}, errors.New("failed to read URL")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return "", fmt.Errorf("unexpected HTTP status %d", resp.StatusCode)
+		return urlReaderPage{}, fmt.Errorf("unexpected HTTP status %d", resp.StatusCode)
 	}
 	mediaType, err := urlReaderMediaType(resp.Header.Get("Content-Type"))
 	if err != nil {
-		return "", err
+		return urlReaderPage{}, err
 	}
 	if resp.ContentLength > urlReaderMaxBodyBytes {
-		return "", errors.New("response body exceeds 1 MiB")
+		return urlReaderPage{}, errors.New("response body exceeds 1 MiB")
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, urlReaderMaxBodyBytes+1))
 	if err != nil {
-		return "", errors.New("failed to read response body")
+		return urlReaderPage{}, errors.New("failed to read response body")
 	}
 	if len(body) > urlReaderMaxBodyBytes {
-		return "", errors.New("response body exceeds 1 MiB")
+		return urlReaderPage{}, errors.New("response body exceeds 1 MiB")
 	}
+	page := urlReaderPage{finalURL: resp.Request.URL.String()}
 	text := string(body)
 	if mediaType == "text/html" || mediaType == "application/xhtml+xml" {
+		page.title = truncateURLReaderTitle(cleanURLReaderText(htmlURLReaderTitle(text)))
 		text = htmlURLReaderText(text)
 	} else {
 		text = strings.ToValidUTF8(text, "")
 	}
-	return truncateURLReaderText(cleanURLReaderText(text)), nil
+	page.text = truncateURLReaderText(cleanURLReaderText(text))
+	return page, nil
+}
+
+func htmlURLReaderTitle(input string) string {
+	input = strings.ToValidUTF8(input, "")
+	lower := asciiLowerURLReader(input)
+	for position := 0; position < len(input); {
+		open := strings.Index(lower[position:], "<title")
+		if open < 0 {
+			return ""
+		}
+		open += position
+		afterName := open + len("<title")
+		if afterName < len(input) && !strings.ContainsRune(" \t\r\n>", rune(input[afterName])) {
+			position = afterName
+			continue
+		}
+		tagEnd := htmlTagEndURLReader(input, afterName)
+		if tagEnd < 0 {
+			return ""
+		}
+		close := strings.Index(lower[tagEnd+1:], "</title")
+		if close < 0 {
+			return ""
+		}
+		close += tagEnd + 1
+		return htmlURLReaderText(input[tagEnd+1 : close])
+	}
+	return ""
+}
+
+func truncateURLReaderTitle(input string) string {
+	if utf8.RuneCountInString(input) <= urlReaderMaxTitleRunes {
+		return input
+	}
+	return string([]rune(input)[:urlReaderMaxTitleRunes])
 }
 
 func urlReaderMediaType(header string) (string, error) {

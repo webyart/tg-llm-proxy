@@ -149,12 +149,18 @@ func (l *syncLog) String() string {
 // without racing an old poller.
 func startBot(t *testing.T, ctx context.Context, cfg config.Config, db *sql.DB, client model.Client, tgAPI *testutil.Telegram, opts bot.Options, startOffset int64) *botRun {
 	t.Helper()
+	return startBotWithURLReader(t, ctx, cfg, db, client, tgAPI, nil, opts, startOffset)
+}
+
+func startBotWithURLReader(t *testing.T, ctx context.Context, cfg config.Config, db *sql.DB, client model.Client, tgAPI *testutil.Telegram, urlReader *http.Client, opts bot.Options, startOffset int64) *botRun {
+	t.Helper()
 	var logs = &syncLog{}
 	var logger = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	var d = bot.New(bot.Deps{
 		Cfg:         cfg,
 		DB:          db,
 		Model:       client,
+		URLReader:   urlReader,
 		Logger:      logger,
 		Token:       cfg.BotToken,
 		StartOffset: startOffset,

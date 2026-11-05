@@ -118,6 +118,7 @@ type Dispatcher struct {
 	outboundTools       chan struct{}
 	activeModelRequests atomic.Int64
 	activeHandlers      atomic.Int64
+	now                 func() time.Time
 }
 
 // logger. A missing model client or replier is a wiring mistake and stays visible as one.
@@ -140,6 +141,7 @@ func New(deps Deps) *Dispatcher {
 		modelWork:        ratelimit.New(int(deps.Cfg.RateLimitPerMinute) * modelWorkPerQuestion),
 		networkWork:      ratelimit.New(networkWorkPerMinute),
 		outboundTools:    make(chan struct{}, globalOutboundToolLimit),
+		now:              time.Now,
 	}
 	d.configureAdmission(int(deps.Cfg.MaxConcurrentRequests))
 	d.commands = d.registry()

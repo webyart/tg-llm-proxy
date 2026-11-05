@@ -1,3 +1,14 @@
+# tg-llm-proxy v1.23.0
+
+## Stage E persistent reminders
+
+- `/remind через <N секунд/минут/часов/дней> <текст>` создаёт one-shot reminder, `/remind каждый день HH:MM <текст>` — ежедневное напоминание. Текст ограничен 500 runes, на чат — до 20 active/sending reminders.
+- `/reminders` показывает список текущего чата, `/reminders cancel <id>` и `delete <id>` отменяют только свои записи. More → Напоминания предоставляет inline list/refresh/cancel/Back.
+- Миграция 7 добавляет `reminders` с due/lease/chat indexes. Scheduler использует один loop, atomic claim с 30-секундным lease, 10-секундный send timeout и повторную проверку allowlist. Модель не вызывается, история и token/query logs не создаются.
+- Доставка идёт plain text без Markdown/HTML. Ошибки получают retry 2/4/8/16/32 секунды; после пяти one-shot становится failed, daily пропускает occurrence и переходит к следующему wall-clock запуску.
+- `REMINDER_TIMEZONE=UTC` по умолчанию, валидируется `time.LoadLocation`. Daily использует локальные календарные даты и корректно переносит wall-clock через DST; пропущенные occurrences схлопываются до следующего будущего запуска.
+- Добавлены migration/CRUD/claim/idempotency, parser/DST, retry/denied-user, restart и fake-Telegram delivery-once regressions. Живой acceptance напоминаний ещё предстоит.
+
 # tg-llm-proxy v1.22.0
 
 ## Stage D agent security and operational resilience

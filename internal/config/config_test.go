@@ -88,6 +88,9 @@ func TestLoadFromDefaults(t *testing.T) {
 	if cfg.DBPath != DefaultDBPath {
 		t.Errorf("DBPath = %q, want %q ", cfg.DBPath, DefaultDBPath)
 	}
+	if cfg.ReminderTimezone != DefaultReminderTimezone || cfg.ReminderLocation == nil {
+		t.Errorf("reminder timezone = %q/%v, want UTC", cfg.ReminderTimezone, cfg.ReminderLocation)
+	}
 	if cfg.TimeoutSeconds != DefaultTimeoutSeconds || cfg.ReplyDeadlineSeconds != DefaultDeadlineSeconds {
 		t.Errorf("timeouts = %d/%d, want %d/%d", cfg.TimeoutSeconds, cfg.ReplyDeadlineSeconds,
 			DefaultTimeoutSeconds, DefaultDeadlineSeconds)
@@ -291,8 +294,8 @@ func TestOldNameOfTheRowIsRefusedByName(t *testing.T) {
 }
 
 func TestEnvIsTheRowsOfTheTable(t *testing.T) {
-	if len(Env) != 44 {
-		t.Errorf("Env holds %d names, want 44 including URL reader and web search", len(Env))
+	if len(Env) != 45 {
+		t.Errorf("Env holds %d names, want 45 including reminders", len(Env))
 	}
 	var seen = map[string]bool{}
 	var i = 0

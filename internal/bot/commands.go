@@ -18,25 +18,27 @@ import (
 )
 
 const (
-	CommandStart   = "start"
-	CommandHelp    = "help"
-	CommandPing    = "ping"
-	CommandStatus  = "status"
-	CommandModel   = "model"
-	CommandStream  = "stream"
-	CommandPersona = "persona"
-	CommandAsk     = "ask"
-	CommandReset   = "reset"
-	CommandSkip    = "skip"
-	CommandUnskip  = "unskip"
-	CommandHistory = "history"
-	CommandStats   = "stats"
-	CommandWhoAmI  = "whoami"
-	CommandAdmin   = "admin"
-	CommandExport  = "export"
-	CommandSearch  = "search"
-	CommandDelete  = "delete"
-	CommandDocs    = "docs"
+	CommandStart     = "start"
+	CommandHelp      = "help"
+	CommandPing      = "ping"
+	CommandStatus    = "status"
+	CommandModel     = "model"
+	CommandStream    = "stream"
+	CommandPersona   = "persona"
+	CommandAsk       = "ask"
+	CommandReset     = "reset"
+	CommandSkip      = "skip"
+	CommandUnskip    = "unskip"
+	CommandHistory   = "history"
+	CommandStats     = "stats"
+	CommandWhoAmI    = "whoami"
+	CommandAdmin     = "admin"
+	CommandExport    = "export"
+	CommandSearch    = "search"
+	CommandDelete    = "delete"
+	CommandDocs      = "docs"
+	CommandRemind    = "remind"
+	CommandReminders = "reminders"
 )
 
 // answer to be exact («Модель не ответила за 60 с, попробуй ещё раз»).
@@ -121,6 +123,8 @@ func (d *Dispatcher) registry() []Command {
 		{Name: CommandUnskip, Description: "снова разрешить recovery ранее пропущенного вопроса", Handler: d.unskip},
 		{Name: CommandHistory, Description: "последние N сообщений (по умолчанию 5)", Handler: d.history},
 		{Name: CommandDocs, Description: "локальная RAG-база документов чата", Handler: d.documents},
+		{Name: CommandRemind, Description: "напоминание: через N минут/часов/дней или каждый день HH:MM", NeedsArgs: true, Handler: d.remind},
+		{Name: CommandReminders, Description: "активные напоминания и отмена по id", Handler: d.reminders},
 		{Name: CommandExport, Description: "экспорт истории: md или json", Handler: d.exportHistory},
 		{Name: CommandSearch, Description: "поиск по истории: /search <текст>", NeedsArgs: true, Handler: d.searchHistory},
 		{Name: CommandDelete, Description: "удаление истории с подтверждением", Handler: d.deleteHistory},

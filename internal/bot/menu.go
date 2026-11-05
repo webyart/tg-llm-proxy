@@ -36,6 +36,7 @@ var menuCommandCallbacks = map[string]string{
 	"menu:docs:add":       "/docs menu:add",
 	"menu:docs:export":    "/docs export",
 	"menu:docs:clear":     "/docs menu:clear",
+	"menu:reminders":      "/reminders menu",
 	"menu:settings":       "/help menu:settings",
 	"menu:model":          "/model menu",
 	"menu:model:check":    "/model menu:check",
@@ -284,6 +285,12 @@ func menuCallbackText(data string) (string, bool) {
 		}
 		return "", false
 	}
+	if value, ok := strings.CutPrefix(data, "menu:reminder:cancel:"); ok {
+		if validMenuNumber(value, int64(^uint64(0)>>1)) && value != "0" {
+			return "/reminders menu:cancel:" + value, true
+		}
+		return "", false
+	}
 	for _, action := range []string{"confirm", "cancel"} {
 		if token, ok := strings.CutPrefix(data, "menu:doc:"+action+":"); ok {
 			if validMenuToken(token) {
@@ -438,6 +445,7 @@ func (d *Dispatcher) showMoreMenu(ctx context.Context, ev Event) error {
 	if suppressed {
 		rows = append(rows, menuRow(menuButton("Возобновить восстановление", "menu:unskip")))
 	}
+	rows = append(rows, menuRow(menuButton("Напоминания", "menu:reminders")))
 	rows = append(rows, menuRow(menuButton("Кто я", "menu:whoami")))
 	if d.deps.Cfg.IsAdmin(ev.UserID) {
 		rows = append(rows, menuRow(menuButton("Админ", "menu:admin")))

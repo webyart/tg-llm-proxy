@@ -60,6 +60,7 @@ func PrintConfig(cfg config.Config) {
 		fmt.Println("WEBHOOK_SECRET_TOKEN is set, length", len(cfg.WebhookSecretToken), "")
 	}
 	fmt.Println("DB_PATH", cfg.DBPath, "")
+	fmt.Println("REMINDER_TIMEZONE", cfg.ReminderTimezone, "")
 	fmt.Println("CONTEXT_MESSAGES", cfg.ContextMessages, "")
 	fmt.Println("MAX_CONTEXT_CHARS", cfg.MaxContextChars, "")
 	fmt.Println("MAX_INPUT_CHARS", cfg.MaxInputChars, "")
@@ -248,6 +249,11 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	var reminderDone = make(chan struct{})
+	go func() {
+		defer close(reminderDone)
+		dispatcher.RunReminderScheduler(ctx)
+	}()
 	// Start owns polling, or Run owns the webhook workers and listener. Either way an unexpected return means
 	// this bot can no longer receive updates and the process must not remain a healthy-looking shell.
 	var botDone = make(chan struct{}, 1)
@@ -323,6 +329,11 @@ func main() {
 	case <-time.After(pollerWait):
 	}
 	fmt.Println("poller stopped", pollerGone, "")
+	select {
+	case <-reminderDone:
+	case <-time.After(pollerWait):
+		fmt.Println("reminder scheduler was still stopping when the process left")
+	}
 	// the database stays open for that goroutine too — bounded by the same pollerWait window, because a stop
 	// Response), which is the state the next start of the process picks up again.
 	var resumeGone = false

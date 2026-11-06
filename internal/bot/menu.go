@@ -41,6 +41,7 @@ var menuCommandCallbacks = map[string]string{
 	"menu:reminders":      "/reminders menu",
 	"menu:task":           "/task menu",
 	"menu:task:cancel":    "/task menu:cancel",
+	"menu:tts":            "/help menu:tts",
 	"menu:settings":       "/help menu:settings",
 	"menu:model":          "/model menu",
 	"menu:model:check":    "/model menu:check",
@@ -476,6 +477,9 @@ func (d *Dispatcher) showMoreMenu(ctx context.Context, ev Event) error {
 	}
 	rows = append(rows, menuRow(menuButton("Напоминания", "menu:reminders")))
 	rows = append(rows, menuRow(menuButton("Задача", "menu:task")))
+	if d.deps.Cfg.TTSEnabled {
+		rows = append(rows, menuRow(menuButton("Озвучить текст", "menu:tts")))
+	}
 	rows = append(rows, menuRow(menuButton("Кто я", "menu:whoami")))
 	if d.deps.Cfg.IsAdmin(ev.UserID) {
 		rows = append(rows, menuRow(menuButton("Админ", "menu:admin")))
@@ -498,6 +502,8 @@ func (d *Dispatcher) helpMenu(ctx context.Context, ev Event, action string) erro
 		return d.beginPendingInput(ctx, ev, CommandAsk, "menu:root", "Отправь вопрос одним сообщением. Он будет обработан как /ask. Ввод действует 2 минуты.")
 	case "menu:search":
 		return d.beginPendingInput(ctx, ev, CommandSearch, "menu:history", "Отправь текст для поиска по истории. Ввод действует 2 минуты.")
+	case "menu:tts":
+		return d.synthesizeSpeech(ctx, ev, "")
 	default:
 		if token, ok := strings.CutPrefix(action, "menu:input:cancel:"); ok && validMenuToken(token) {
 			return d.cancelPendingInputMenu(ctx, ev, token)
@@ -593,6 +599,8 @@ func (d *Dispatcher) pendingEvent(ev Event) (Event, bool) {
 			ev.Text = "/links search " + text
 		case CommandPersona:
 			ev.Text = "/persona custom " + text
+		case CommandTTS:
+			ev.Text = "/tts " + text
 		default:
 			return ev, false
 		}
@@ -630,6 +638,8 @@ func (d *Dispatcher) cancelPendingInputMenu(ctx context.Context, ev Event, token
 			return d.showLinksMenu(ctx, ev, "Поиск отменён.")
 		case "menu:persona":
 			return d.showPersonaMenu(ctx, ev, "Ввод отменён.")
+		case "menu:more":
+			return d.showMoreMenu(ctx, ev)
 		default:
 			return d.showRootMenu(ctx, ev, "Ввод отменён.")
 		}

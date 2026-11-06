@@ -26,6 +26,7 @@ type fakeReplier struct {
 	sent      []sentMessage
 	menus     []tgmodels.InlineKeyboardMarkup
 	documents []Document
+	audio     []Audio
 	err       error
 }
 
@@ -50,6 +51,13 @@ func (f *fakeReplier) SendDocument(ctx context.Context, chatID int64, document D
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.documents = append(f.documents, document)
+	return nil
+}
+
+func (f *fakeReplier) SendAudio(ctx context.Context, chatID int64, audio Audio) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.audio = append(f.audio, audio)
 	return nil
 }
 

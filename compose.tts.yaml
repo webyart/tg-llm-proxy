@@ -1,0 +1,35 @@
+# Opt-in Piper voice alongside the existing Whisper model:
+#   docker compose -f docker-compose.yml -f compose.tts.yaml up -d
+# Set TTS_ENABLED=true in .env to enable /tts. The base compose file stays unchanged.
+services:
+  whisper:
+    environment:
+      PRELOAD_MODELS: '["Systran/faster-whisper-small","speaches-ai/piper-ru_RU-ruslan-medium"]'
+
+  tts-model-init:
+    image: ghcr.io/speaches-ai/speaches:latest-cpu@sha256:21e3df06d842fb7802ab470dd77c25f0e8c0d22950e8d8c6ae886e851af53ef8
+    depends_on:
+      whisper:
+        condition: service_healthy
+    command: python -c 'import urllib.request; request=urllib.request.Request("http://whisper:8000/v1/models/speaches-ai/piper-ru_RU-ruslan-medium", data=b"", method="POST"); response=urllib.request.urlopen(request, timeout=300); print(response.read().decode())'
+    environment:
+      HF_HUB_DISABLE_XET: "1"
+      LOG_LEVEL: info
+    volumes:
+      - whisper-models:/home/ubuntu/.cache/huggingface/hub
+    read_only: true
+    mem_limit: 1GiB
+    cpus: 1.0
+    pids_limit: 128
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    restart: "no"
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "5"

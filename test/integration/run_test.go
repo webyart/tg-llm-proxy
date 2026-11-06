@@ -157,10 +157,22 @@ func startBotWithURLReader(t *testing.T, ctx context.Context, cfg config.Config,
 	t.Helper()
 	var logs = &syncLog{}
 	var logger = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	var synthesizer model.SpeechSynthesizer
+	if cfg.TTSEnabled {
+		ttsClient, err := model.NewTTS(model.TTSOptions{
+			URL: cfg.TTSURL, Model: cfg.TTSModel, Voice: cfg.TTSVoice,
+			Timeout: time.Duration(cfg.TTSTimeoutSeconds) * time.Second, MaxChars: int(cfg.TTSMaxChars),
+		})
+		if err != nil {
+			t.Fatalf("model.NewTTS: %v", err)
+		}
+		synthesizer = ttsClient
+	}
 	var d = bot.New(bot.Deps{
 		Cfg:         cfg,
 		DB:          db,
 		Model:       client,
+		TTS:         synthesizer,
 		URLReader:   urlReader,
 		Logger:      logger,
 		Token:       cfg.BotToken,

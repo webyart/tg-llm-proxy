@@ -23,6 +23,11 @@ var Env = []string{
 	"TRANSCRIPTION_BASE_URL",
 	"MEDIA_MAX_MB",
 	"SPEECH_MAX_SECONDS",
+	"TTS_ENABLED",
+	"TTS_MODEL",
+	"TTS_VOICE",
+	"TTS_MAX_CHARS",
+	"TTS_TIMEOUT_SECONDS",
 	"STRATA_API_KEY",
 	"STRATA_TIMEOUT_SECONDS",
 	"TG_REPLY_DEADLINE_SECONDS",
@@ -88,6 +93,11 @@ const DefaultSystemPrompt = "You are a helpful assistant."
 const DefaultTranscriptionModel = "Systran/faster-whisper-small"
 const DefaultMediaMaxMB = int64(10)
 const DefaultSpeechMaxSeconds = int64(300)
+const DefaultTTSEnabled = false
+const DefaultTTSModel = "speaches-ai/piper-ru_RU-ruslan-medium"
+const DefaultTTSVoice = "ruslan"
+const DefaultTTSMaxChars = int64(1000)
+const DefaultTTSTimeoutSeconds = int64(60)
 const DefaultToolsEnabled = true
 const DefaultTimeoutSeconds = int64(60)
 const DefaultDeadlineSeconds = int64(90)
@@ -137,6 +147,12 @@ type Config struct {
 	TranscriptionModel   string
 	TranscriptionBase    string
 	TranscriptionURL     string
+	TTSURL               string
+	TTSEnabled           bool
+	TTSModel             string
+	TTSVoice             string
+	TTSMaxChars          int64
+	TTSTimeoutSeconds    int64
 	MediaMaxBytes        int64
 	SpeechMaxSeconds     int64
 	TimeoutSeconds       int64
@@ -533,6 +549,7 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	speechMaxSeconds, badSpeechMaxSeconds := Num(raw, "SPEECH_MAX_SECONDS", DefaultSpeechMaxSeconds, 1, 3600)
 	cfg.SpeechMaxSeconds = speechMaxSeconds
 	problems = Push(problems, badSpeechMaxSeconds)
+	problems = append(problems, loadTTS(raw, &cfg)...)
 
 	var timeout, badTimeout = Num(raw, "STRATA_TIMEOUT_SECONDS", DefaultTimeoutSeconds, 1, 3600)
 	cfg.TimeoutSeconds = timeout

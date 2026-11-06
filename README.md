@@ -7,7 +7,7 @@ Telegram-бот-прокси между пользователями и лока
 
 ## Возможности
 
-- 24 команды: `/start`, `/help`, `/ping`, `/status`, `/ask`, `/reset`, `/skip`, `/unskip`, `/history`, `/docs`, `/export`, `/search`, `/delete`, `/model`, `/stream`, `/persona`, `/stats`, `/whoami`, `/admin`, `/remind`, `/reminders`, `/links`, `/task`, `/tts`.
+- 25 команд: `/start`, `/help`, `/ping`, `/status`, `/ask`, `/reset`, `/skip`, `/unskip`, `/history`, `/docs`, `/export`, `/search`, `/delete`, `/model`, `/stream`, `/persona`, `/stats`, `/whoami`, `/admin`, `/remind`, `/reminders`, `/links`, `/task`, `/tts`, `/usage`.
 - `/start` и `/help` открывают секционное inline-меню с Back-навигацией; callbacks проходят через тот же Dispatcher и allowlist.
 - Альбомы до 10 фото JPEG/PNG, текстовые документы UTF-8 до 64 КиБ, voice, аудиофайлы и video notes через Whisper. Лимиты настраиваются `MEDIA_MAX_MB` и `SPEECH_MAX_SECONDS`.
 - История и независимый контекст каждого чата в SQLite/WAL.
@@ -118,6 +118,9 @@ docker compose logs -f bot
 | `TTS_VOICE` | `ruslan` | voice для `/v1/audio/speech` |
 | `TTS_MAX_CHARS` | 1000 | максимум runes текста; 1..10000 |
 | `TTS_TIMEOUT_SECONDS` | 60 | timeout синтеза; 1..300 |
+| `USER_DAILY_MODEL_LIMIT` | 0 = без ограничений | дневной лимит model calls пользователя по UTC |
+| `USER_DAILY_NETWORK_TOOL_LIMIT` | 0 = без ограничений | дневной лимит read_url/web_search пользователя по UTC |
+| `USER_LIMITS_JSON` | `{}` | per-user overrides: `{"id":{"model":N,"network_tools":N}}` |
 | `MINIAPP_ENABLED` | false | opt-in read-only Telegram Mini App |
 | `MINIAPP_LISTEN_HOST` | `127.0.0.1`; в compose — `0.0.0.0` | listener Mini App |
 | `MINIAPP_PORT` | 8084 | loopback port Mini App |
@@ -278,12 +281,13 @@ Reverse proxy или туннель должен перенаправлять п
 | `/stream [on\|off\|reset]` | стриминг текущего чата; без аргумента — состояние |
 | `/persona` | inline-меню и текущая роль; `assistant`, `coder`, `writer`, `translator`, `custom <текст>`, `reset` |
 | `/stats` | сообщения, токены и ошибки текущего чата |
+| `/usage` | дневные вызовы и tokens по моделям, использование tools и остаток лимитов без текстов запросов |
 | `/whoami` | `user_id`, `chat_id` и состояние allowlist |
 | `/admin` | агрегаты, usage RAG/calculator/read_url, активные model calls и busy chats; только для `TELEGRAM_ADMIN_USERS` |
 
 ## Интерактивное меню
 
-`/start` и `/help` открывают секционное inline-меню: Ask/New context, History, Documents, Settings, Status, Help и More. History поддерживает последние сообщения, поиск, MD/JSON export и удаление; Documents — добавление, export, удаление документов и «Ссылки на потом» с list/search/summary/delete; Settings — Model, Persona и Stream. More содержит напоминания, многошаговые задачи и opt-in озвучку текста. Admin виден только администраторам.
+`/start` и `/help` открывают секционное inline-меню: Ask/New context, History, Documents, Settings, Status, Help и More. History поддерживает последние сообщения, поиск, MD/JSON export и удаление; Documents — добавление, export, удаление документов и «Ссылки на потом» с list/search/summary/delete; Settings — Model, Persona и Stream. More содержит напоминания, многошаговые задачи, opt-in озвучку текста и `/usage` с дневной статистикой. Admin виден только администраторам.
 
 Ask, Search и Custom Persona принимают следующий текст через pending input с TTL 2 минуты и кнопкой Cancel. Состояние привязано к chat/user/menu message и инвалидируется при рестарте. Все текстовые команды остаются доступными. Обычные запросы показывают Telegram `typing`, а streaming tools — только общие стадии без URL и поисковых запросов.
 

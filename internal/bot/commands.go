@@ -31,6 +31,7 @@ const (
 	CommandUnskip    = "unskip"
 	CommandHistory   = "history"
 	CommandStats     = "stats"
+	CommandUsage     = "usage"
 	CommandWhoAmI    = "whoami"
 	CommandAdmin     = "admin"
 	CommandExport    = "export"
@@ -135,6 +136,7 @@ func (d *Dispatcher) registry() []Command {
 		{Name: CommandSearch, Description: "поиск по истории: /search <текст>", NeedsArgs: true, Handler: d.searchHistory},
 		{Name: CommandDelete, Description: "удаление истории с подтверждением", Handler: d.deleteHistory},
 		{Name: CommandStats, Description: "счётчики чата: сообщения, токены, ошибки", Handler: d.stats},
+		{Name: CommandUsage, Description: "использование модели и инструментов за UTC-сутки", Handler: d.usage},
 		{Name: CommandWhoAmI, Description: "user_id и chat_id для TELEGRAM_ALLOWED_USERS", AlwaysAllowed: true, Handler: d.whoami},
 		{Name: CommandAdmin, Description: "агрегированные метрики для администратора", Handler: d.admin},
 	}
@@ -819,6 +821,13 @@ func (d *Dispatcher) finishModelAnswer(ctx context.Context, replyCtx context.Con
 		}
 		d.logEvent(auditCtx, ev.UserID, store.EventModelError, Sanitize(modelErr, d.deps.Token))
 		return d.reply(ctx, ev.ChatID, fmt.Sprintf(msgModelError, Sanitize(modelErr, d.deps.Token)))
+	}
+
+	if resp.Content == modelDailyLimitErrorText {
+		if session == nil {
+			return d.Send(replyCtx, ev.ChatID, resp.Content)
+		}
+		return session.deliver(replyCtx, d, resp.Content)
 	}
 
 	var _, writeErr = store.Append(replyCtx, d.deps.DB, store.Message{

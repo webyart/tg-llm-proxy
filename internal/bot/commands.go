@@ -40,6 +40,7 @@ const (
 	CommandLinks     = "links"
 	CommandRemind    = "remind"
 	CommandReminders = "reminders"
+	CommandTask      = "task"
 )
 
 // answer to be exact («Модель не ответила за 60 с, попробуй ещё раз»).
@@ -127,6 +128,7 @@ func (d *Dispatcher) registry() []Command {
 		{Name: CommandLinks, Description: "ссылки на потом: add, search, summary, delete", Handler: d.links},
 		{Name: CommandRemind, Description: "напоминание: через N минут/часов/дней или каждый день HH:MM", NeedsArgs: true, Handler: d.remind},
 		{Name: CommandReminders, Description: "активные напоминания и отмена по id", Handler: d.reminders},
+		{Name: CommandTask, Description: "безопасная задача из 1–3 шагов: создать, статус, cancel", Handler: d.task},
 		{Name: CommandExport, Description: "экспорт истории: md или json", Handler: d.exportHistory},
 		{Name: CommandSearch, Description: "поиск по истории: /search <текст>", NeedsArgs: true, Handler: d.searchHistory},
 		{Name: CommandDelete, Description: "удаление истории с подтверждением", Handler: d.deleteHistory},

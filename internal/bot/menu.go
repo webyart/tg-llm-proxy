@@ -39,6 +39,8 @@ var menuCommandCallbacks = map[string]string{
 	"menu:links":          "/links menu",
 	"menu:links:search":   "/links menu:search",
 	"menu:reminders":      "/reminders menu",
+	"menu:task":           "/task menu",
+	"menu:task:cancel":    "/task menu:cancel",
 	"menu:settings":       "/help menu:settings",
 	"menu:model":          "/model menu",
 	"menu:model:check":    "/model menu:check",
@@ -473,6 +475,7 @@ func (d *Dispatcher) showMoreMenu(ctx context.Context, ev Event) error {
 		rows = append(rows, menuRow(menuButton("Возобновить восстановление", "menu:unskip")))
 	}
 	rows = append(rows, menuRow(menuButton("Напоминания", "menu:reminders")))
+	rows = append(rows, menuRow(menuButton("Задача", "menu:task")))
 	rows = append(rows, menuRow(menuButton("Кто я", "menu:whoami")))
 	if d.deps.Cfg.IsAdmin(ev.UserID) {
 		rows = append(rows, menuRow(menuButton("Админ", "menu:admin")))

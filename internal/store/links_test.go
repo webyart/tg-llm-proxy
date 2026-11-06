@@ -33,7 +33,7 @@ func TestSavedLinkMigration8PreservesSchema7Data(t *testing.T) {
 		t.Fatal(err)
 	}
 	version, err := SchemaVersion(ctx, db)
-	if err != nil || version != 8 || version != len(MigrationSQL) {
+	if err != nil || version != 9 || version != len(MigrationSQL) {
 		t.Fatalf("version=%d err=%v", version, err)
 	}
 	var title string

@@ -38,6 +38,7 @@ type toolLoopMetadata struct {
 	selectedModel     string
 	ragSources        []string
 	documentTruncated bool
+	taskID            int64
 }
 
 type toolLoopMetadataContextKey struct{}
@@ -93,8 +94,16 @@ const (
 func consumeNetworkConfirmation(d *Dispatcher, token string, ev Event) (networkConfirmation, networkConfirmationStatus) {
 	set := networkConfirmationsFor(d)
 	set.mu.Lock()
-	defer set.mu.Unlock()
 	pending, ok := set.pending[token]
+	set.mu.Unlock()
+	if !ok && d.restoreTaskNetworkConfirmation(token) {
+		set.mu.Lock()
+		pending, ok = set.pending[token]
+		set.mu.Unlock()
+	}
+	set.mu.Lock()
+	defer set.mu.Unlock()
+	pending, ok = set.pending[token]
 	if !ok {
 		return networkConfirmation{}, networkConfirmationStale
 	}
@@ -296,6 +305,9 @@ func networkApprovalTarget(call model.ToolCall) string {
 }
 
 func (d *Dispatcher) promptNetworkApproval(ctx context.Context, state *toolLoopContinuation, callIndex int) (model.Response, error) {
+	if state.metadata.taskID > 0 {
+		return d.promptTaskNetworkApproval(ctx, state, callIndex)
+	}
 	metadata := state.metadata
 	if metadata.event.ChatID == 0 || metadata.event.UserID == 0 {
 		return model.Response{}, errors.New("network action requires same-chat user confirmation")
@@ -379,6 +391,17 @@ func (d *Dispatcher) networkApprovalControl(ctx context.Context, ev Event, actio
 		return d.reply(ctx, ev.ChatID, "Это подтверждение недействительно для этого чата или сообщения.")
 	}
 	d.removeNetworkApprovalMenu(ctx, ev.ChatID, ev.TelegramMessageID)
+	if pending.continuation != nil && pending.continuation.metadata.taskID > 0 {
+		continuation := pending.continuation
+		if pending.ToolName == "" || pending.Arguments == "" || continuation.approvedCall < 0 || continuation.approvedCall >= len(continuation.response.ToolCalls) || !continuation.approvedCalls[continuation.approvedCall] {
+			return d.reply(ctx, ev.ChatID, "Подтверждение не совпадает с сетевым действием. Задача не продолжена.")
+		}
+		approved := continuation.response.ToolCalls[continuation.approvedCall]
+		if approved.Name != pending.ToolName || approved.Arguments != pending.Arguments {
+			return d.reply(ctx, ev.ChatID, "Подтверждение не совпадает с сетевым действием. Задача не продолжена.")
+		}
+		return d.taskNetworkApprovalControl(ctx, ev, operation, token, pending)
+	}
 	if operation == "cancel" {
 		if pending.continuation != nil && pending.continuation.session != nil {
 			pending.continuation.session.broken(ctx, d, "Сетевое действие отменено пользователем.")

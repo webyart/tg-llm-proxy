@@ -491,6 +491,7 @@ func Run(ctx context.Context, deps Deps, opts Options) (*Dispatcher, error) {
 		return nil, err
 	}
 	go d.RunReminderScheduler(ctx)
+	go d.RunTaskScheduler(ctx)
 	var menuCtx, cancel = context.WithTimeout(ctx, PublishCommandsTimeout)
 	defer cancel()
 	if err := d.PublishCommands(menuCtx, tg); err != nil {

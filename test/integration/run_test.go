@@ -117,6 +117,7 @@ type botRun struct {
 	cancel       context.CancelFunc
 	done         chan struct{}
 	reminderDone chan struct{}
+	taskDone     chan struct{}
 	logs         *syncLog
 	offset       int64 // bot_state value the run was seeded with
 	webhookURL   string
@@ -196,6 +197,11 @@ func startBotWithURLReader(t *testing.T, ctx context.Context, cfg config.Config,
 		defer close(reminderDone)
 		d.RunReminderScheduler(runCtx)
 	}()
+	var taskDone = make(chan struct{})
+	go func() {
+		defer close(taskDone)
+		d.RunTaskScheduler(runCtx)
+	}()
 	go func() {
 		if webhookServer != nil {
 			if err := webhookServer.Run(runCtx); err != nil {
@@ -206,7 +212,7 @@ func startBotWithURLReader(t *testing.T, ctx context.Context, cfg config.Config,
 		}
 		close(done)
 	}()
-	var run = &botRun{d: d, tg: tg, cancel: cancel, done: done, reminderDone: reminderDone, logs: logs, offset: startOffset}
+	var run = &botRun{d: d, tg: tg, cancel: cancel, done: done, reminderDone: reminderDone, taskDone: taskDone, logs: logs, offset: startOffset}
 	if webhookServer != nil {
 		run.webhookURL = webhookServer.URL()
 	}
@@ -228,6 +234,10 @@ func (b *botRun) stop() {
 	}
 	select {
 	case <-b.reminderDone:
+	case <-time.After(3 * time.Second):
+	}
+	select {
+	case <-b.taskDone:
 	case <-time.After(3 * time.Second):
 	}
 }

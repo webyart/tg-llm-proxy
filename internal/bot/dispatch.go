@@ -121,6 +121,7 @@ type Dispatcher struct {
 	activeModelRequests atomic.Int64
 	activeHandlers      atomic.Int64
 	now                 func() time.Time
+	taskWake            chan struct{}
 }
 
 // logger. A missing model client or replier is a wiring mistake and stays visible as one.
@@ -144,6 +145,7 @@ func New(deps Deps) *Dispatcher {
 		networkWork:      ratelimit.New(networkWorkPerMinute),
 		outboundTools:    make(chan struct{}, globalOutboundToolLimit),
 		now:              time.Now,
+		taskWake:         make(chan struct{}, 1),
 	}
 	d.configureAdmission(int(deps.Cfg.MaxConcurrentRequests))
 	d.commands = d.registry()
@@ -244,6 +246,10 @@ func (d *Dispatcher) commandFor(ev Event) (Command, string) {
 	}
 	if isCommand && name == CommandLinks && isLinkSummaryAction(commandArg) {
 		cmd.UsesModel = true
+	}
+	if isCommand && name == CommandTask {
+		goal := strings.TrimSpace(commandArg)
+		cmd.UsesModel = goal != "" && !strings.EqualFold(goal, "cancel") && !strings.HasPrefix(goal, "menu")
 	}
 	if !isCommand && ev.Attachment == nil && !ev.UnsupportedMedia && !ev.Recovery {
 		if _, ok := bareHTTPSURL(ev.Text); ok {

@@ -254,6 +254,11 @@ func main() {
 		defer close(reminderDone)
 		dispatcher.RunReminderScheduler(ctx)
 	}()
+	var taskDone = make(chan struct{})
+	go func() {
+		defer close(taskDone)
+		dispatcher.RunTaskScheduler(ctx)
+	}()
 	// Start owns polling, or Run owns the webhook workers and listener. Either way an unexpected return means
 	// this bot can no longer receive updates and the process must not remain a healthy-looking shell.
 	var botDone = make(chan struct{}, 1)
@@ -333,6 +338,11 @@ func main() {
 	case <-reminderDone:
 	case <-time.After(pollerWait):
 		fmt.Println("reminder scheduler was still stopping when the process left")
+	}
+	select {
+	case <-taskDone:
+	case <-time.After(pollerWait):
+		fmt.Println("task scheduler was still stopping when the process left")
 	}
 	// the database stays open for that goroutine too — bounded by the same pollerWait window, because a stop
 	// Response), which is the state the next start of the process picks up again.

@@ -1,3 +1,14 @@
+# tg-llm-proxy v1.25.0
+
+## Bounded multi-step tasks
+
+- `/task <goal>` запрашивает у выбранной модели строгий JSON-план из 1–3 шагов по 240 символов. Extra fields, URLs, tool names, code/shell/files, embeddings и agent nesting отклоняются до создания задачи. На чат — одна active task.
+- Шаги выполняются последовательно с видимым `1/N` прогрессом и результатом до 4000 runes каждый. Финальный no-tools request объединяет результаты; в историю попадают только исходная цель и финальный ответ.
+- `/task` показывает состояние, `/task cancel` отменяет дальнейшие шаги и pending approval. More → Задача предоставляет Refresh/Cancel/Back.
+- Миграция 9 добавляет tasks с partial unique active index, due/lease/chat indexes и claim tokens. Состояния: ready/running/awaiting_approval/completed/cancelled/failed.
+- Используются только существующие calculator/read_url/web_search и exact-action approvals. Approval resume сохраняется между рестартами; consumed approval не может выполниться повторно. Task expiry — 1 час, approval expiry — 5 минут.
+- Финальный completion и один assistant history insert коммитятся одной транзакцией. Добавлены migration/state/claim/recovery, strict plan, cancellation, approval replay prevention и fake-Telegram end-to-end regressions. Живой acceptance ещё предстоит.
+
 # tg-llm-proxy v1.24.0
 
 ## Saved links

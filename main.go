@@ -10,6 +10,7 @@ import (
 	"bot/internal/health"
 	"bot/internal/model"
 	"bot/internal/store"
+	"bot/internal/webapp"
 	"context"
 	"errors"
 
@@ -62,6 +63,11 @@ func PrintConfig(cfg config.Config) {
 		fmt.Println("WEBHOOK_PUBLIC_URL", cfg.WebhookPublicURL)
 		fmt.Println("WEBHOOK_LISTEN", cfg.WebhookAddress(), cfg.WebhookPath)
 		fmt.Println("WEBHOOK_SECRET_TOKEN is set, length", len(cfg.WebhookSecretToken), "")
+	}
+	fmt.Println("MINIAPP_ENABLED", cfg.MiniAppEnabled, "")
+	if cfg.MiniAppEnabled {
+		fmt.Println("MINIAPP_PUBLIC_URL", cfg.MiniAppPublicURL)
+		fmt.Println("MINIAPP_LISTEN", cfg.MiniAppAddress())
 	}
 	fmt.Println("DB_PATH", cfg.DBPath, "")
 	fmt.Println("REMINDER_TIMEZONE", cfg.ReminderTimezone, "")
@@ -185,6 +191,21 @@ func main() {
 	}()
 	fmt.Println("health is listening on 127.0.0.1:", healthServer.Port(), health.Path, "")
 	var logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel(cfg.LogLevel)}))
+	var miniApp *webapp.App
+	var miniAppErr chan error
+	if cfg.MiniAppEnabled {
+		miniApp = webapp.New(cfg, db, logger)
+		miniAppServer, listenErr := webapp.Listen(miniApp, cfg.MiniAppAddress())
+		if listenErr != nil {
+			fmt.Println("Mini App listener:", listenErr, "")
+			db.Close()
+			os.Exit(1)
+		}
+		defer miniAppServer.Close()
+		miniAppErr = make(chan error, 1)
+		go func() { miniAppErr <- miniAppServer.Run(ctx) }()
+		fmt.Println("Mini App is listening on", miniAppServer.URL(), "public URL", cfg.MiniAppPublicURL, "")
+	}
 	var client, clientErr = model.New(model.Options{
 		ChatURL:             cfg.ChatURL,
 		ModelsURL:           cfg.ModelsURL,
@@ -227,14 +248,15 @@ func main() {
 		os.Exit(1)
 	}
 	var dispatcher = bot.New(bot.Deps{
-		Cfg:         cfg,
-		DB:          db,
-		Model:       client,
-		TTS:         synthesizer,
-		Logger:      logger,
-		Token:       cfg.BotToken,
-		StartOffset: startOffset,
-		BuildCommit: buildCommit,
+		Cfg:            cfg,
+		DB:             db,
+		Model:          client,
+		TTS:            synthesizer,
+		Logger:         logger,
+		Token:          cfg.BotToken,
+		StartOffset:    startOffset,
+		BuildCommit:    buildCommit,
+		MiniAppTickets: miniApp,
 		Offset: func(writeCtx context.Context, updateID int64) error {
 			return store.SetLastUpdateID(writeCtx, db, updateID)
 		},
@@ -336,6 +358,13 @@ func main() {
 	case err := <-healthErr:
 		if err != nil {
 			fmt.Println("health:", err, "")
+			db.Close()
+			os.Exit(1)
+		}
+		stoppedBySignal = false
+	case err := <-miniAppErr:
+		if err != nil {
+			fmt.Println("Mini App:", err, "")
 			db.Close()
 			os.Exit(1)
 		}

@@ -1,0 +1,315 @@
+package webapp
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+
+	"bot/internal/config"
+	"bot/internal/store"
+)
+
+const (
+	testChatID = int64(4242)
+	testUserID = int64(1717)
+)
+
+func newTestApp(t *testing.T) (*App, *httptest.Server) {
+	t.Helper()
+	cfg, problems := config.LoadFrom(map[string]string{
+		"TELEGRAM_BOT_TOKEN": "123:test", "TELEGRAM_ALLOWED_USERS": strconv.FormatInt(testUserID, 10),
+		"MINIAPP_ENABLED": "true", "MINIAPP_PUBLIC_URL": "https://example.test/app",
+	})
+	if len(problems) != 0 {
+		t.Fatalf("config: %v", problems)
+	}
+	db, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "miniapp.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	app := New(cfg, db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server := httptest.NewServer(app.Handler())
+	t.Cleanup(server.Close)
+	return app, server
+}
+
+func launchSession(t *testing.T, app *App, server *httptest.Server) string {
+	t.Helper()
+	ticket, err := app.NewLaunchTicket(testChatID, testUserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := signedInitData(t, app.cfg.BotToken, testUserID, app.auth.now())
+	req := httptest.NewRequest(http.MethodPost, "/api/session", strings.NewReader(raw))
+	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("X-Launch-Ticket", ticket)
+	response := httptest.NewRecorder()
+	app.Handler().ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("exchange status=%d body=%s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || body.Token == "" {
+		t.Fatalf("exchange response=%q err=%v", response.Body.String(), err)
+	}
+	return body.Token
+}
+
+func apiRequest(t *testing.T, server *httptest.Server, method string, path string, bearer string) (int, []byte, http.Header) {
+	t.Helper()
+	req, err := http.NewRequest(method, server.URL+path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	response, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response.StatusCode, body, response.Header
+}
+
+func decodePage(t *testing.T, body []byte) ([]map[string]any, *int64) {
+	t.Helper()
+	var decoded struct {
+		Items []map[string]any `json:"items"`
+		Next  *int64           `json:"next_before_id"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("page JSON=%s err=%v", body, err)
+	}
+	return decoded.Items, decoded.Next
+}
+
+func seedChatData(t *testing.T, app *App) {
+	t.Helper()
+	ctx := context.Background()
+	for index := 0; index < 12; index++ {
+		content := fmt.Sprintf("chat message %d", index)
+		if index == 11 {
+			content = "<script>alert('not html')</script> " + strings.Repeat("x", maxHistoryRunes+100)
+		}
+		if _, err := store.Append(ctx, app.db, store.Message{ChatID: testChatID, UserID: testUserID, Role: store.RoleUser, Content: content}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.Append(ctx, app.db, store.Message{ChatID: 999, UserID: testUserID, Role: store.RoleUser, Content: "other-chat-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 12; index++ {
+		name := fmt.Sprintf("document-%02d", index)
+		if _, _, err := store.PutRAGDocument(ctx, app.db, testChatID, testUserID, name, "private document body"); err != nil {
+			t.Fatal(err)
+		}
+		link := store.SavedLink{ChatID: testChatID, UserID: testUserID, Title: fmt.Sprintf("link-%02d", index),
+			CanonicalURL: fmt.Sprintf("https://example.test/%d", index), Content: strings.Repeat("summary ", 200)}
+		if _, _, err := store.PutSavedLink(ctx, app.db, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index := 0; index < 12; index++ {
+		_, err := app.db.ExecContext(ctx, `INSERT INTO tasks
+			(chat_id, user_id, goal, model, plan_json, results_json, next_step, status, attempts, due_at, expires_at, created_at, updated_at, error)
+			VALUES (?, ?, ?, 'test-model', '[{"tool":"private-tool-arguments"}]', '["private-result"]', 0, 'completed', 1,
+			'2026-01-01 00:00:00', '2026-01-02 00:00:00', '2026-01-01 00:00:00', '2026-01-01 00:00:00', 'private-error')`,
+			testChatID, testUserID, fmt.Sprintf("task-%02d", index))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestReadOnlyAPIPaginationScopeAndContentBounds(t *testing.T) {
+	app, server := newTestApp(t)
+	seedChatData(t, app)
+	bearer := launchSession(t, app, server)
+
+	for _, endpoint := range []string{"history", "documents", "links", "tasks"} {
+		status, body, _ := apiRequest(t, server, http.MethodGet, "/api/"+endpoint+"?limit=10", bearer)
+		if status != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", endpoint, status, body)
+		}
+		items, next := decodePage(t, body)
+		if len(items) != 10 || next == nil {
+			t.Fatalf("%s first page len=%d next=%v", endpoint, len(items), next)
+		}
+		joined := string(body)
+		for _, forbidden := range []string{"other-chat-secret", "private document body", "private-tool-arguments", "private-result", "private-error", "claim_token", "continuation_json", "plan_json"} {
+			if strings.Contains(joined, forbidden) {
+				t.Errorf("%s leaked %q: %s", endpoint, forbidden, joined)
+			}
+		}
+		status, body, _ = apiRequest(t, server, http.MethodGet, fmt.Sprintf("/api/%s?limit=10&before=%d", endpoint, *next), bearer)
+		if status != http.StatusOK {
+			t.Fatalf("%s second page status=%d", endpoint, status)
+		}
+		items, next = decodePage(t, body)
+		if len(items) != 2 || next != nil {
+			t.Fatalf("%s second page len=%d next=%v", endpoint, len(items), next)
+		}
+	}
+
+	_, historyBody, _ := apiRequest(t, server, http.MethodGet, "/api/history?limit=1", bearer)
+	var history struct {
+		Items []historyItem `json:"items"`
+	}
+	if err := json.Unmarshal(historyBody, &history); err != nil || len(history.Items) != 1 {
+		t.Fatalf("history decode=%s err=%v", historyBody, err)
+	}
+	if !history.Items[0].Truncated || len([]rune(history.Items[0].Content)) > maxHistoryRunes+1 {
+		t.Fatalf("history content was not bounded: runes=%d truncated=%v", len([]rune(history.Items[0].Content)), history.Items[0].Truncated)
+	}
+	_, linksBody, _ := apiRequest(t, server, http.MethodGet, "/api/links?limit=1", bearer)
+	var links struct {
+		Items []linkItem `json:"items"`
+	}
+	if err := json.Unmarshal(linksBody, &links); err != nil || len(links.Items) != 1 || !links.Items[0].Truncated || len([]rune(links.Items[0].Content)) > maxLinkRunes+1 {
+		t.Fatalf("link content was not bounded: %s err=%v", linksBody, err)
+	}
+
+	status, statusBody, _ := apiRequest(t, server, http.MethodGet, "/api/status", bearer)
+	if status != http.StatusOK || !strings.Contains(string(statusBody), `"messages":12`) || !strings.Contains(string(statusBody), `"documents":12`) {
+		t.Fatalf("status=%d body=%s", status, statusBody)
+	}
+}
+
+func TestEndpointIsolationAndSessionRevocation(t *testing.T) {
+	app, server := newTestApp(t)
+	bearer := launchSession(t, app, server)
+	for _, test := range []struct {
+		method string
+		path   string
+		want   int
+	}{
+		{http.MethodGet, "/api/status", http.StatusOK},
+		{http.MethodGet, "/api/events", http.StatusNotFound},
+		{http.MethodGet, "/api/admin", http.StatusNotFound},
+		{http.MethodPost, "/api/history", http.StatusMethodNotAllowed},
+		{http.MethodDelete, "/api/tasks", http.StatusMethodNotAllowed},
+		{http.MethodGet, "/api/history?chat_id=999", http.StatusBadRequest},
+		{http.MethodGet, "/api/history?before=0", http.StatusBadRequest},
+		{http.MethodGet, "/api/history?limit=21", http.StatusBadRequest},
+	} {
+		status, body, _ := apiRequest(t, server, test.method, test.path, bearer)
+		if status != test.want {
+			t.Errorf("%s %s status=%d want=%d body=%s", test.method, test.path, status, test.want, body)
+		}
+		var strict map[string]any
+		if test.want != http.StatusOK && json.Unmarshal(body, &strict) != nil {
+			t.Errorf("%s %s returned non-JSON error: %q", test.method, test.path, body)
+		}
+	}
+	status, _, _ := apiRequest(t, server, http.MethodGet, "/api/status", "")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("missing bearer status=%d", status)
+	}
+	status, _, _ = apiRequest(t, server, http.MethodDelete, "/api/session", bearer)
+	if status != http.StatusOK {
+		t.Fatalf("revoke status=%d", status)
+	}
+	status, _, _ = apiRequest(t, server, http.MethodGet, "/api/status", bearer)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("revoked bearer status=%d", status)
+	}
+}
+
+func TestBodyCapDoesNotLogInitData(t *testing.T) {
+	var logs bytes.Buffer
+	app, _ := newTestApp(t)
+	app.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	secretShapedBody := "raw-init-data-must-not-be-logged=" + strings.Repeat("x", maxBodyBytes)
+	req := httptest.NewRequest(http.MethodPost, "/api/session", strings.NewReader(secretShapedBody))
+	req.Header.Set("Content-Type", "text/plain")
+	response := httptest.NewRecorder()
+	app.Handler().ServeHTTP(response, req)
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized body status=%d body=%s", response.Code, response.Body.String())
+	}
+	if strings.Contains(logs.String(), "raw-init-data-must-not-be-logged") {
+		t.Fatalf("raw initData reached logs: %s", logs.String())
+	}
+}
+
+func TestGlobalInFlightCap(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	handler := limitInFlight(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		once.Do(func() { close(entered) })
+		<-release
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}), 1)
+	done := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+		close(done)
+	}()
+	<-entered
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("in-flight cap status=%d", response.Code)
+	}
+	close(release)
+	<-done
+}
+
+func TestStaticCSPAndNoExternalScriptsOrSecrets(t *testing.T) {
+	_, server := newTestApp(t)
+	for _, path := range []string{"/", "/app.js", "/style.css"} {
+		status, body, headers := apiRequest(t, server, http.MethodGet, path, "")
+		if status != http.StatusOK {
+			t.Fatalf("GET %s status=%d", path, status)
+		}
+		if csp := headers.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'none'") || !strings.Contains(csp, "script-src 'self'") || !strings.Contains(csp, "connect-src 'self'") {
+			t.Errorf("GET %s CSP=%q", path, csp)
+		}
+		text := string(body)
+		for _, forbidden := range []string{"123:test", "https://telegram.org/js", "https://cdn.", "initDataUnsafe", "STRATA_API_KEY"} {
+			if strings.Contains(text, forbidden) {
+				t.Errorf("GET %s contains %q", path, forbidden)
+			}
+		}
+	}
+}
+
+func TestListenerAllowsLoopbackAndContainerBridge(t *testing.T) {
+	app, server := newTestApp(t)
+	server.Close()
+	if _, err := Listen(app, "192.0.2.1:0"); err == nil {
+		t.Fatal("public listener was accepted")
+	}
+	bridge, err := Listen(app, "0.0.0.0:0")
+	if err != nil {
+		t.Fatalf("container bridge was rejected: %v", err)
+	}
+	defer bridge.Close()
+	listener, err := Listen(app, "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if listener.srv.MaxHeaderBytes != maxHeaderBytes || listener.srv.ReadTimeout <= 0 || listener.srv.WriteTimeout <= 0 {
+		t.Fatalf("HTTP limits are missing: %+v", listener.srv)
+	}
+}

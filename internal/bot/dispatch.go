@@ -53,6 +53,10 @@ type Replier interface {
 // stored after the update is processed so a restart does not answer it twice).
 type OffsetWriter func(ctx context.Context, updateID int64) error
 
+type MiniAppTicketIssuer interface {
+	NewLaunchTicket(chatID int64, userID int64) (string, error)
+}
+
 type Command struct {
 	Name          string
 	Description   string
@@ -69,17 +73,18 @@ type HandlerFunc func(ctx context.Context, ev Event, cmd Command) error
 type Middleware func(next HandlerFunc) HandlerFunc
 
 type Deps struct {
-	Cfg         config.Config
-	DB          *sql.DB
-	Model       model.Client
-	TTS         model.SpeechSynthesizer
-	Replier     Replier
-	Attachments AttachmentDownloader
-	URLReader   *http.Client
-	Locks       *ratelimit.Locks
-	Limit       *ratelimit.Limiter
-	Logger      *slog.Logger
-	Offset      OffsetWriter
+	Cfg            config.Config
+	DB             *sql.DB
+	Model          model.Client
+	TTS            model.SpeechSynthesizer
+	Replier        Replier
+	Attachments    AttachmentDownloader
+	URLReader      *http.Client
+	Locks          *ratelimit.Locks
+	Limit          *ratelimit.Limiter
+	Logger         *slog.Logger
+	Offset         OffsetWriter
+	MiniAppTickets MiniAppTicketIssuer
 	// monotonic guard of persistOffset continues the previous run instead of starting at 0.
 	StartOffset int64
 	BotName     string

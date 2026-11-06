@@ -86,6 +86,13 @@ func TestSettingsReadAndModelMutations(t *testing.T) {
 	client.mu.Lock()
 	client.models = []string{app.cfg.StrataModel}
 	client.mu.Unlock()
+	status, body = putSettings(t, server.URL, "/api/settings/model", bearer, `{"model":"qwen-alt"}`)
+	if status != http.StatusOK {
+		t.Fatalf("fresh cache was not used for model validation: status=%d body=%s", status, body)
+	}
+	app.modelCache.mu.Lock()
+	app.modelCache.fetchedAt = time.Now().Add(-settingsModelCacheTTL)
+	app.modelCache.mu.Unlock()
 	status, _ = putSettings(t, server.URL, "/api/settings/model", bearer, `{"model":"qwen-alt"}`)
 	if status != http.StatusBadRequest {
 		t.Fatalf("stale provider model status=%d", status)
@@ -304,4 +311,162 @@ func TestSettingsStrictMethodsJSONAndBodyCap(t *testing.T) {
 func strconvQuote(value string) string {
 	encoded, _ := json.Marshal(value)
 	return string(encoded)
+}
+
+func TestSettingsDegradedModelListKeepsOtherSettingsAndReset(t *testing.T) {
+	app, server := newTestApp(t)
+	bearer := launchSession(t, app, server)
+	status, body := putSettings(t, server.URL, "/api/settings/model", bearer, `{"model":"qwen-alt"}`)
+	if status != http.StatusOK {
+		t.Fatalf("prime model selection status=%d body=%s", status, body)
+	}
+	client := app.model.(*fakeModelClient)
+	client.mu.Lock()
+	client.modelsErr = context.DeadlineExceeded
+	client.mu.Unlock()
+	app.modelCache.mu.Lock()
+	app.modelCache.fetchedAt = time.Now().Add(-settingsModelCacheTTL)
+	app.modelCache.mu.Unlock()
+
+	status, body = settingsRequest(t, server.URL, http.MethodGet, "/api/settings", bearer, "", "")
+	if status != http.StatusOK {
+		t.Fatalf("degraded settings status=%d body=%s", status, body)
+	}
+	var decoded settingsResponse
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Warning != "models_unavailable" || len(decoded.Model.Available) != 3 || decoded.Model.Current != "qwen-alt" {
+		t.Fatalf("degraded model settings=%+v warning=%q", decoded.Model, decoded.Warning)
+	}
+	status, body = putSettings(t, server.URL, "/api/settings/persona", bearer, `{"preset":"coder"}`)
+	if status != http.StatusOK {
+		t.Fatalf("degraded persona update status=%d body=%s", status, body)
+	}
+	status, body = putSettings(t, server.URL, "/api/settings/stream", bearer, `{"enabled":true}`)
+	if status != http.StatusOK {
+		t.Fatalf("degraded stream update status=%d body=%s", status, body)
+	}
+	status, body = putSettings(t, server.URL, "/api/settings/model", bearer, `{"model":"`+app.cfg.StrataModel+`"}`)
+	if status != http.StatusBadGateway || !strings.Contains(string(body), `"code":"models_unavailable"`) {
+		t.Fatalf("degraded model mutation status=%d body=%s", status, body)
+	}
+	selected, found, err := store.ChatModel(context.Background(), app.db, testChatID)
+	if err != nil || !found || selected != "qwen-alt" {
+		t.Fatalf("failed-closed mutation changed model=%q found=%v err=%v", selected, found, err)
+	}
+	status, body = settingsRequest(t, server.URL, http.MethodDelete, "/api/settings/model", bearer, "", "")
+	if status != http.StatusOK {
+		t.Fatalf("degraded model reset status=%d body=%s", status, body)
+	}
+	if _, found, err := store.ChatModel(context.Background(), app.db, testChatID); err != nil || found {
+		t.Fatalf("degraded model reset found=%v err=%v", found, err)
+	}
+	status, body = settingsRequest(t, server.URL, http.MethodGet, "/api/settings", bearer, "", "")
+	if status != http.StatusOK || !strings.Contains(string(body), `"current":"coder"`) || !strings.Contains(string(body), `"enabled":true`) {
+		t.Fatalf("other settings did not survive degradation: status=%d body=%s", status, body)
+	}
+}
+
+func TestSettingsHangingProviderHasBoundedDeadline(t *testing.T) {
+	if settingsModelProviderTimeout >= 10*time.Second {
+		t.Fatalf("provider deadline %s must be below the HTTP write timeout", settingsModelProviderTimeout)
+	}
+	app, server := newTestApp(t)
+	bearer := launchSession(t, app, server)
+	client := app.model.(*fakeModelClient)
+	deadlineRemaining := make(chan time.Duration, 1)
+	client.modelsFunc = func(ctx context.Context) ([]string, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			deadlineRemaining <- 0
+		} else {
+			deadlineRemaining <- time.Until(deadline)
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	app.modelCache.providerTimeout = 50 * time.Millisecond
+	started := time.Now()
+	status, body := settingsRequest(t, server.URL, http.MethodGet, "/api/settings", bearer, "", "")
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("hanging provider held settings for %s", elapsed)
+	}
+	if status != http.StatusOK || !strings.Contains(string(body), `"warning":"models_unavailable"`) || !strings.Contains(string(body), `"available":[]`) {
+		t.Fatalf("hanging provider response status=%d body=%s", status, body)
+	}
+	select {
+	case remaining := <-deadlineRemaining:
+		if remaining <= 0 || remaining > 60*time.Millisecond {
+			t.Fatalf("provider deadline remaining=%s", remaining)
+		}
+	default:
+		t.Fatal("provider did not receive a deadline")
+	}
+}
+
+func TestSettingsConcurrentModelRefreshIsSingleFlight(t *testing.T) {
+	app, _ := newTestApp(t)
+	client := app.model.(*fakeModelClient)
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	client.modelsFunc = func(ctx context.Context) ([]string, error) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		select {
+		case <-release:
+			return []string{app.cfg.StrataModel, "qwen-alt", "qwen-other"}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	app.modelCache.providerTimeout = time.Second
+	const callers = 6
+	start := make(chan struct{})
+	type result struct {
+		status int
+		body   string
+	}
+	results := make(chan result, callers)
+	for index := 0; index < callers; index++ {
+		go func() {
+			<-start
+			req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+			response := httptest.NewRecorder()
+			app.settings(response, req, scope{ChatID: testChatID, UserID: testUserID})
+			results <- result{status: response.Code, body: response.Body.String()}
+		}()
+	}
+	close(start)
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("provider refresh did not start")
+	}
+	time.Sleep(25 * time.Millisecond)
+	client.mu.Lock()
+	calls := client.modelsCalls
+	client.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("concurrent refresh made %d provider calls before release", calls)
+	}
+	close(release)
+	for index := 0; index < callers; index++ {
+		select {
+		case result := <-results:
+			if result.status != http.StatusOK || strings.Contains(result.body, `"warning"`) {
+				t.Fatalf("concurrent settings response status=%d body=%s", result.status, result.body)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("concurrent settings request did not finish")
+		}
+	}
+	client.mu.Lock()
+	calls = client.modelsCalls
+	client.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("single-flight refresh made %d provider calls", calls)
+	}
 }

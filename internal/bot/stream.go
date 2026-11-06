@@ -70,12 +70,15 @@ type streamSession struct {
 	maxRunes   int
 	start      time.Time
 
-	messageID   int64
-	messageIDs  []int64
-	posted      bool
-	answer      strings.Builder
-	answerRunes int
-	stageText   string
+	messageID      int64
+	messageIDs     []int64
+	posted         bool
+	answer         strings.Builder
+	answerRunes    int
+	rendered       bool
+	renderedAnswer string
+	renderedChunks []string
+	stageText      string
 
 	edits        int
 	skipped      int // rewrites the cadence of refused
@@ -296,10 +299,17 @@ func (s *streamSession) refresh() error {
 }
 
 func (s *streamSession) answerChunks() ([]string, error) {
-	chunks := s.dispatcher.chunksOf(s.answer.String())
+	answer := s.answer.String()
+	if s.rendered && answer == s.renderedAnswer {
+		return s.renderedChunks, nil
+	}
+	chunks := s.dispatcher.chunksOf(answer)
 	if len(chunks) > maxStreamChunks {
 		return nil, fmt.Errorf("%w: Telegram output exceeds %d chunks", model.ErrStreamLimit, maxStreamChunks)
 	}
+	s.rendered = true
+	s.renderedAnswer = answer
+	s.renderedChunks = chunks
 	return chunks, nil
 }
 
@@ -324,11 +334,19 @@ func (s *streamSession) rotateChunks(chunks []string) {
 // The two markers are reserved their room BEFORE the answer is cut, which is what keeps every interim edit
 // inside the limit of one message — a rewrite Telegram refuses for length is a rewrite the user never sees.
 func (s *streamSession) partialView() string {
-	return s.partialViewChunks(s.dispatcher.chunksOf(s.answer.String()))
+	return s.partialViewChunks(s.answerChunksForView())
+}
+
+func (s *streamSession) answerChunksForView() []string {
+	chunks, err := s.answerChunks()
+	if err != nil {
+		return s.dispatcher.chunksOf(s.answer.String())
+	}
+	return chunks
 }
 
 func (s *streamSession) partialViewChunks(chunks []string) string {
-	var total = Runes(s.answer.String())
+	var total = s.answerRunes
 	var suffix = fmt.Sprintf(msgStreamSuffix, total)
 	var marker = ""
 	if total > s.maxRunes {
@@ -349,7 +367,7 @@ func (s *streamSession) partialViewChunks(chunks []string) string {
 // the message, and sending more than the limit is the 400 Telegram answers «too long» rather than a reason to
 // grow the message.
 func (s *streamSession) currentAnswer() string {
-	return s.currentAnswerChunks(s.dispatcher.chunksOf(s.answer.String()))
+	return s.currentAnswerChunks(s.answerChunksForView())
 }
 
 func (s *streamSession) currentAnswerChunks(chunks []string) string {

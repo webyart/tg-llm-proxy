@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"bot/internal/store"
@@ -11,6 +12,7 @@ import (
 const (
 	ReminderPollInterval    = time.Second
 	ReminderBatchLimit      = 20
+	reminderWorkerLimit     = 4
 	ReminderClaimLease      = 30 * time.Second
 	ReminderSendTimeout     = 10 * time.Second
 	ReminderMaxSendAttempts = 5
@@ -35,13 +37,41 @@ func ReminderRetryDelay(attempt int) time.Duration {
 func (d *Dispatcher) RunReminderScheduler(ctx context.Context) {
 	ticker := time.NewTicker(ReminderPollInterval)
 	defer ticker.Stop()
-	d.processDueReminders(ctx, d.now(), ReminderBatchLimit)
+	passDone := make(chan struct{})
+	running := false
+	pending := false
+	startPass := func(now time.Time) {
+		if ctx.Err() != nil {
+			return
+		}
+		if running {
+			pending = true
+			return
+		}
+		running = true
+		done := make(chan struct{})
+		passDone = done
+		go func() {
+			d.processDueReminders(ctx, now, ReminderBatchLimit)
+			close(done)
+		}()
+	}
+	startPass(d.now())
 	for {
 		select {
 		case <-ctx.Done():
+			if running {
+				<-passDone
+			}
 			return
+		case <-passDone:
+			running = false
+			if pending {
+				pending = false
+				startPass(d.now())
+			}
 		case now := <-ticker.C:
-			d.processDueReminders(ctx, now, ReminderBatchLimit)
+			startPass(now)
 		}
 	}
 }
@@ -50,62 +80,109 @@ func (d *Dispatcher) ProcessDueReminders(ctx context.Context, now time.Time, lim
 	if limit <= 0 || limit > ReminderBatchLimit {
 		limit = ReminderBatchLimit
 	}
+	type reminderJob struct {
+		index    int
+		reminder store.Reminder
+	}
+	jobs := make(chan reminderJob)
+	errs := make([]error, limit)
+	workerCount := reminderWorkerLimit
+	if limit < workerCount {
+		workerCount = limit
+	}
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+	for i := 0; i < workerCount; i++ {
+		go func() {
+			defer workers.Done()
+			for job := range jobs {
+				errs[job.index] = d.processClaimedReminder(ctx, job.reminder, now)
+			}
+		}()
+	}
+
 	processed := 0
-	for i := 0; i < limit; i++ {
+	var claimErr error
+claimLoop:
+	for processed < limit {
 		if ctx.Err() != nil {
-			return processed, ctx.Err()
+			claimErr = ctx.Err()
+			break
 		}
 		reminder, found, err := store.ClaimNextReminder(ctx, d.deps.DB, now, ReminderClaimLease)
 		if err != nil {
-			return processed, err
+			claimErr = err
+			break
 		}
 		if !found {
-			return processed, nil
+			break
 		}
+		job := reminderJob{index: processed, reminder: reminder}
 		processed++
-		if !d.deps.Cfg.Allows(reminder.UserID) {
-			if _, err := store.CancelClaimedReminder(ctx, d.deps.DB, reminder, now); err != nil {
-				return processed, err
-			}
-			d.deps.Logger.Info("reminder cancelled because its owner is no longer allowed", "reminder_id", reminder.ID, "chat_id", reminder.ChatID, "user_id", reminder.UserID)
-			continue
+		select {
+		case jobs <- job:
+		case <-ctx.Done():
+			claimErr = ctx.Err()
+			break claimLoop
 		}
-
-		sendCtx, cancel := context.WithTimeout(ctx, ReminderSendTimeout)
-		err = d.sendPlainReminder(sendCtx, reminder.ChatID, "Напоминание: "+reminder.Text)
-		cancel()
+	}
+	close(jobs)
+	workers.Wait()
+	if claimErr != nil {
+		return processed, claimErr
+	}
+	for _, err := range errs {
 		if err != nil {
-			if errors.Is(err, context.Canceled) && ctx.Err() != nil {
-				return processed, ctx.Err()
-			}
-			exhausted := reminder.Attempts >= ReminderMaxSendAttempts
-			var dailyNext time.Time
-			if exhausted && reminder.Cadence == store.ReminderCadenceDaily {
-				dailyNext, err = AdvanceDailyReminder(reminder.NextRunAt, now, reminder.DailyTime, reminderLocation(d))
-				if err != nil {
-					return processed, err
-				}
-			}
-			if _, retryErr := store.RetryReminder(ctx, d.deps.DB, reminder, now, now.Add(ReminderRetryDelay(reminder.Attempts)), exhausted, dailyNext); retryErr != nil {
-				return processed, retryErr
-			}
-			d.deps.Logger.Warn("reminder delivery failed", "reminder_id", reminder.ID, "chat_id", reminder.ChatID,
-				"attempt", reminder.Attempts, "exhausted", exhausted, "error", Sanitize(err, d.deps.Token))
-			continue
-		}
-
-		var dailyNext time.Time
-		if reminder.Cadence == store.ReminderCadenceDaily {
-			dailyNext, err = AdvanceDailyReminder(reminder.NextRunAt, now, reminder.DailyTime, reminderLocation(d))
-			if err != nil {
-				return processed, err
-			}
-		}
-		if _, err := store.CompleteReminder(ctx, d.deps.DB, reminder, now, dailyNext); err != nil {
 			return processed, err
 		}
 	}
 	return processed, nil
+}
+
+func (d *Dispatcher) processClaimedReminder(ctx context.Context, reminder store.Reminder, now time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !d.deps.Cfg.Allows(reminder.UserID) {
+		if _, err := store.CancelClaimedReminder(ctx, d.deps.DB, reminder, now); err != nil {
+			return err
+		}
+		d.deps.Logger.Info("reminder cancelled because its owner is no longer allowed", "reminder_id", reminder.ID, "chat_id", reminder.ChatID, "user_id", reminder.UserID)
+		return nil
+	}
+
+	sendCtx, cancel := context.WithTimeout(ctx, ReminderSendTimeout)
+	err := d.sendPlainReminder(sendCtx, reminder.ChatID, "Напоминание: "+reminder.Text)
+	cancel()
+	if err != nil {
+		if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		exhausted := reminder.Attempts >= ReminderMaxSendAttempts
+		var dailyNext time.Time
+		if exhausted && reminder.Cadence == store.ReminderCadenceDaily {
+			dailyNext, err = AdvanceDailyReminder(reminder.NextRunAt, now, reminder.DailyTime, reminderLocation(d))
+			if err != nil {
+				return err
+			}
+		}
+		if _, retryErr := store.RetryReminder(ctx, d.deps.DB, reminder, now, now.Add(ReminderRetryDelay(reminder.Attempts)), exhausted, dailyNext); retryErr != nil {
+			return retryErr
+		}
+		d.deps.Logger.Warn("reminder delivery failed", "reminder_id", reminder.ID, "chat_id", reminder.ChatID,
+			"attempt", reminder.Attempts, "exhausted", exhausted, "error", Sanitize(err, d.deps.Token))
+		return nil
+	}
+
+	var dailyNext time.Time
+	if reminder.Cadence == store.ReminderCadenceDaily {
+		dailyNext, err = AdvanceDailyReminder(reminder.NextRunAt, now, reminder.DailyTime, reminderLocation(d))
+		if err != nil {
+			return err
+		}
+	}
+	_, err = store.CompleteReminder(ctx, d.deps.DB, reminder, now, dailyNext)
+	return err
 }
 
 func (d *Dispatcher) processDueReminders(ctx context.Context, now time.Time, limit int) {

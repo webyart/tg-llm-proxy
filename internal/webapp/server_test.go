@@ -30,6 +30,7 @@ type fakeModelClient struct {
 	mu            sync.Mutex
 	models        []string
 	modelsErr     error
+	modelsFunc    func(context.Context) ([]string, error)
 	modelsCalls   int
 	completeCalls int
 }
@@ -41,11 +42,17 @@ func (f *fakeModelClient) Complete(context.Context, model.Request) (model.Respon
 	return model.Response{}, errors.New("Mini App tests must not call completions")
 }
 
-func (f *fakeModelClient) Models(context.Context) ([]string, error) {
+func (f *fakeModelClient) Models(ctx context.Context) ([]string, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.modelsCalls++
-	return append([]string{}, f.models...), f.modelsErr
+	modelsFunc := f.modelsFunc
+	models := append([]string{}, f.models...)
+	modelsErr := f.modelsErr
+	f.mu.Unlock()
+	if modelsFunc != nil {
+		return modelsFunc(ctx)
+	}
+	return models, modelsErr
 }
 
 func newTestApp(t *testing.T) (*App, *httptest.Server) {
@@ -380,5 +387,52 @@ func TestListenerAllowsLoopbackAndContainerBridge(t *testing.T) {
 	defer listener.Close()
 	if listener.srv.MaxHeaderBytes != maxHeaderBytes || listener.srv.ReadTimeout <= 0 || listener.srv.WriteTimeout <= 0 {
 		t.Fatalf("HTTP limits are missing: %+v", listener.srv)
+	}
+}
+
+func TestStatusPendingHonorsResumeSkipNewerQuestionAndReset(t *testing.T) {
+	app, server := newTestApp(t)
+	bearer := launchSession(t, app, server)
+	ctx := context.Background()
+	questionID, err := store.Append(ctx, app.db, store.Message{ChatID: testChatID, UserID: testUserID, Role: store.RoleUser, Content: "interrupted question"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type statusState struct {
+		Pending            bool `json:"pending"`
+		RecoverySuppressed bool `json:"recovery_suppressed"`
+	}
+	readStatus := func() statusState {
+		t.Helper()
+		status, body, _ := apiRequest(t, server, http.MethodGet, "/api/status", bearer)
+		if status != http.StatusOK {
+			t.Fatalf("status code=%d body=%s", status, body)
+		}
+		var state statusState
+		if err := json.Unmarshal(body, &state); err != nil {
+			t.Fatal(err)
+		}
+		return state
+	}
+	if state := readStatus(); !state.Pending || state.RecoverySuppressed {
+		t.Fatalf("new question state=%+v", state)
+	}
+	if err := store.SetResumeSkip(ctx, app.db, testChatID, questionID); err != nil {
+		t.Fatal(err)
+	}
+	if state := readStatus(); !state.Pending || !state.RecoverySuppressed {
+		t.Fatalf("skipped question state=%+v", state)
+	}
+	if _, err := store.Append(ctx, app.db, store.Message{ChatID: testChatID, UserID: testUserID, Role: store.RoleUser, Content: "newer question"}); err != nil {
+		t.Fatal(err)
+	}
+	if state := readStatus(); !state.Pending || state.RecoverySuppressed {
+		t.Fatalf("newer question inherited suppression: %+v", state)
+	}
+	if _, err := store.ClearChat(ctx, app.db, testChatID); err != nil {
+		t.Fatal(err)
+	}
+	if state := readStatus(); state.Pending || state.RecoverySuppressed {
+		t.Fatalf("reset exposed hidden pending state: %+v", state)
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strconv"
 	"unicode/utf8"
+
+	"bot/internal/store"
 )
 
 const (
@@ -76,15 +78,15 @@ func nextID(count int, limit int, id int64) *int64 {
 
 func (a *App) status(w http.ResponseWriter, req *http.Request, current scope) {
 	var response struct {
-		Messages     int64  `json:"messages"`
-		Documents    int64  `json:"documents"`
-		Links        int64  `json:"links"`
-		Tasks        int64  `json:"tasks"`
-		ActiveTasks  int64  `json:"active_tasks"`
-		Pending      bool   `json:"pending"`
-		LastActivity string `json:"last_activity,omitempty"`
+		Messages           int64  `json:"messages"`
+		Documents          int64  `json:"documents"`
+		Links              int64  `json:"links"`
+		Tasks              int64  `json:"tasks"`
+		ActiveTasks        int64  `json:"active_tasks"`
+		Pending            bool   `json:"pending"`
+		RecoverySuppressed bool   `json:"recovery_suppressed"`
+		LastActivity       string `json:"last_activity,omitempty"`
 	}
-	var lastRole string
 	var lastActivity *string
 	err := a.db.QueryRowContext(req.Context(), `
 		SELECT
@@ -93,15 +95,27 @@ func (a *App) status(w http.ResponseWriter, req *http.Request, current scope) {
 			(SELECT COUNT(*) FROM saved_links WHERE chat_id = ?),
 			(SELECT COUNT(*) FROM tasks WHERE chat_id = ?),
 			(SELECT COUNT(*) FROM tasks WHERE chat_id = ? AND status IN ('ready', 'running', 'awaiting_approval')),
-			COALESCE((SELECT role FROM messages WHERE chat_id = ? AND role IN ('user', 'assistant') ORDER BY id DESC LIMIT 1), ''),
 			(SELECT MAX(created_at) FROM messages WHERE chat_id = ?)`,
-		current.ChatID, current.ChatID, current.ChatID, current.ChatID, current.ChatID, current.ChatID, current.ChatID).
-		Scan(&response.Messages, &response.Documents, &response.Links, &response.Tasks, &response.ActiveTasks, &lastRole, &lastActivity)
+		current.ChatID, current.ChatID, current.ChatID, current.ChatID, current.ChatID, current.ChatID).
+		Scan(&response.Messages, &response.Documents, &response.Links, &response.Tasks, &response.ActiveTasks, &lastActivity)
 	if err != nil {
 		a.queryFailed(w, "status", err)
 		return
 	}
-	response.Pending = lastRole == "user"
+	rowID, visibleRole, err := store.LastVisibleMessage(req.Context(), a.db, current.ChatID)
+	if err != nil {
+		a.queryFailed(w, "status last visible message", err)
+		return
+	}
+	response.Pending = rowID > 0 && visibleRole == store.RoleUser
+	if response.Pending {
+		skipped, suppress, err := store.ResumeSkip(req.Context(), a.db, current.ChatID)
+		if err != nil {
+			a.queryFailed(w, "status resume skip", err)
+			return
+		}
+		response.RecoverySuppressed = suppress && skipped == rowID
+	}
 	if lastActivity != nil {
 		response.LastActivity = *lastActivity
 	}

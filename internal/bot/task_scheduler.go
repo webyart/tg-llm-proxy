@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-telegram/bot/models"
@@ -123,15 +124,43 @@ func (d *Dispatcher) taskStepTimeout(ctx context.Context) (context.Context, cont
 func (d *Dispatcher) RunTaskScheduler(ctx context.Context) {
 	ticker := time.NewTicker(TaskPollInterval)
 	defer ticker.Stop()
-	d.processDueTasks(ctx, d.now(), TaskBatchLimit)
+	passDone := make(chan struct{})
+	running := false
+	pending := false
+	startPass := func(now time.Time) {
+		if ctx.Err() != nil {
+			return
+		}
+		if running {
+			pending = true
+			return
+		}
+		running = true
+		done := make(chan struct{})
+		passDone = done
+		go func() {
+			d.processDueTasks(ctx, now, TaskBatchLimit)
+			close(done)
+		}()
+	}
+	startPass(d.now())
 	for {
 		select {
 		case <-ctx.Done():
+			if running {
+				<-passDone
+			}
 			return
+		case <-passDone:
+			running = false
+			if pending {
+				pending = false
+				startPass(d.now())
+			}
 		case <-d.taskWake:
-			d.processDueTasks(ctx, d.now(), TaskBatchLimit)
+			startPass(d.now())
 		case now := <-ticker.C:
-			d.processDueTasks(ctx, now, TaskBatchLimit)
+			startPass(now)
 		}
 	}
 }
@@ -162,38 +191,76 @@ func (d *Dispatcher) ProcessDueTasks(ctx context.Context, now time.Time, limit i
 			}
 		}
 	}
-	processed := 0
+
+	tasks := make([]store.Task, 0, limit)
+	var claimErr error
 	for index := 0; index < limit; index++ {
 		if ctx.Err() != nil {
-			return processed, ctx.Err()
+			claimErr = ctx.Err()
+			break
 		}
 		task, found, err := store.ClaimNextTask(ctx, d.deps.DB, now, d.taskLease())
 		if err != nil {
-			return processed, err
+			claimErr = err
+			break
 		}
 		if !found {
-			return processed, nil
+			break
 		}
-		processed++
-		err = d.deps.Locks.WithChat(ctx, task.ChatID, func() error {
-			return d.executeClaimedTask(ctx, task)
-		})
-		if err != nil {
-			if ctx.Err() != nil || errors.Is(err, context.Canceled) && ctx.Err() != nil {
-				return processed, ctx.Err()
+		tasks = append(tasks, task)
+	}
+
+	errs := make([]error, len(tasks))
+	var workers sync.WaitGroup
+	for index, task := range tasks {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			err := d.deps.Locks.WithChat(ctx, task.ChatID, func() error {
+				return d.revalidateAndExecuteClaimedTask(ctx, task)
+			})
+			if ctx.Err() != nil {
+				errs[index] = ctx.Err()
+				return
 			}
-			if errors.Is(err, errTaskStale) {
-				continue
+			if err == nil || errors.Is(err, errTaskStale) {
+				return
 			}
 			if failErr := d.failClaimedTask(ctx, task, err); failErr != nil {
-				return processed, failErr
+				errs[index] = failErr
 			}
+		}()
+	}
+	workers.Wait()
+	if claimErr != nil {
+		return len(tasks), claimErr
+	}
+	for _, err := range errs {
+		if err != nil {
+			return len(tasks), err
 		}
 	}
-	return processed, nil
+	return len(tasks), nil
 }
 
 var errTaskStale = errors.New("task claim is stale")
+
+func (d *Dispatcher) revalidateAndExecuteClaimedTask(ctx context.Context, task store.Task) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	current, found, err := store.CurrentTask(ctx, d.deps.DB, task.ChatID)
+	if err != nil {
+		return err
+	}
+	now := d.now()
+	if !found || current.ID != task.ID || current.Status != store.TaskStatusRunning ||
+		task.ClaimToken == "" || current.ClaimToken != task.ClaimToken || current.LeaseUntil == nil ||
+		!now.Before(*current.LeaseUntil) || !now.Before(current.ExpiresAt) {
+		return errTaskStale
+	}
+	return d.executeClaimedTask(ctx, current)
+}
 
 func (d *Dispatcher) executeClaimedTask(ctx context.Context, task store.Task) error {
 	if !d.deps.Cfg.Allows(task.UserID) {

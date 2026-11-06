@@ -96,6 +96,40 @@ func TestSavedLinkCRUDReplacementAndChatIsolation(t *testing.T) {
 	}
 }
 
+func TestClearSavedLinksDeletesOnlyCurrentChat(t *testing.T) {
+	ctx := context.Background()
+	db := reminderTestDB(t)
+	for index := 0; index < 3; index++ {
+		if _, _, err := PutSavedLink(ctx, db, savedLinkFixture(100, index)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other, _, err := PutSavedLink(ctx, db, savedLinkFixture(101, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, chatID := range []int64{0, 999} {
+		deleted, err := ClearSavedLinks(ctx, db, chatID)
+		if err != nil || deleted != 0 {
+			t.Fatalf("clear chat %d deleted=%d err=%v", chatID, deleted, err)
+		}
+	}
+	deleted, err := ClearSavedLinks(ctx, db, 100)
+	if err != nil || deleted != 3 {
+		t.Fatalf("deleted=%d err=%v", deleted, err)
+	}
+	if rows, err := ListSavedLinks(ctx, db, 100, 20); err != nil || len(rows) != 0 {
+		t.Fatalf("current chat rows=%+v err=%v", rows, err)
+	}
+	if deleted, err := ClearSavedLinks(ctx, db, 100); err != nil || deleted != 0 {
+		t.Fatalf("repeat clear deleted=%d err=%v", deleted, err)
+	}
+	rows, err := ListSavedLinks(ctx, db, 101, 20)
+	if err != nil || len(rows) != 1 || rows[0].ID != other.ID {
+		t.Fatalf("other chat rows=%+v err=%v", rows, err)
+	}
+}
+
 func TestSavedLinkSearchIsBoundedUnicodeCaseInsensitive(t *testing.T) {
 	ctx := context.Background()
 	db := reminderTestDB(t)

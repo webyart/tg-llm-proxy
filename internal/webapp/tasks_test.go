@@ -373,3 +373,180 @@ func TestTaskClearReportsStoreFailure(t *testing.T) {
 		t.Fatalf("store failure status=%d body=%s", status, body)
 	}
 }
+
+func setWebappTaskStatus(t *testing.T, app *App, taskID int64, status string) {
+	t.Helper()
+	if _, err := app.db.ExecContext(context.Background(), `UPDATE tasks SET status = ? WHERE id = ?`, status, taskID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func webappTaskExists(t *testing.T, app *App, chatID int64, taskID int64) bool {
+	t.Helper()
+	var found int
+	err := app.db.QueryRowContext(context.Background(), `SELECT 1 FROM tasks WHERE chat_id = ? AND id = ?`, chatID, taskID).Scan(&found)
+	if err != nil {
+		return false
+	}
+	return found == 1
+}
+
+func TestTaskDeleteAllowsTerminalOnlyAndIsScoped(t *testing.T) {
+	app, server := newTestApp(t)
+	bearer := launchSession(t, app, server)
+	otherBearer := launchSessionFor(t, app, server, testChatID+1, testUserID)
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	terminal := make([]store.Task, 0, 3)
+	for index, status := range []string{store.TaskStatusCompleted, store.TaskStatusFailed, store.TaskStatusCancelled} {
+		created := createWebappTask(t, app, testChatID, now.Add(time.Duration(index)*time.Second))
+		setWebappTaskStatus(t, app, created.ID, status)
+		terminal = append(terminal, created)
+	}
+	activeTask := createWebappTask(t, app, testChatID, now.Add(3*time.Second))
+	active := []store.Task{activeTask}
+	other := createWebappTask(t, app, testChatID+1, now)
+	setWebappTaskStatus(t, app, other.ID, store.TaskStatusCompleted)
+	path := fmt.Sprintf("/api/tasks/%d/delete", terminal[0].ID)
+
+	status, body := settingsRequest(t, server.URL, http.MethodPost, path, otherBearer, "", "")
+	if status != http.StatusConflict || !strings.Contains(string(body), `"code":"task_not_deletable"`) {
+		t.Fatalf("cross-chat delete status=%d body=%s", status, body)
+	}
+	status, body = settingsRequest(t, server.URL, http.MethodPost, fmt.Sprintf("/api/tasks/%d/delete", other.ID), bearer, "", "")
+	if status != http.StatusConflict || !strings.Contains(string(body), `"code":"task_not_deletable"`) {
+		t.Fatalf("wrong-chat delete status=%d body=%s", status, body)
+	}
+	status, body = settingsRequest(t, server.URL, http.MethodPost, "/api/tasks/999999/delete", bearer, "", "")
+	if status != http.StatusConflict || !strings.Contains(string(body), `"code":"task_not_deletable"`) {
+		t.Fatalf("missing delete status=%d body=%s", status, body)
+	}
+	for _, taskStatus := range []string{store.TaskStatusReady, store.TaskStatusRunning, store.TaskStatusAwaitingApproval} {
+		setWebappTaskStatus(t, app, activeTask.ID, taskStatus)
+		status, body = settingsRequest(t, server.URL, http.MethodPost, fmt.Sprintf("/api/tasks/%d/delete", activeTask.ID), bearer, "", "")
+		if status != http.StatusConflict || !strings.Contains(string(body), `"code":"task_not_deletable"`) {
+			t.Errorf("active %s task delete status=%d body=%s", taskStatus, status, body)
+		}
+	}
+	for _, invalidPath := range []string{
+		"/api/tasks/01/delete", "/api/tasks/0/delete", "/api/tasks/-1/delete", "/api/tasks/+1/delete",
+		"/api/tasks/1.0/delete", "/api/tasks/9223372036854775808/delete", "/api/tasks/1/extra/delete",
+		"/api/tasks/delete", "/api/tasks/1/delete/",
+	} {
+		status, body = settingsRequest(t, server.URL, http.MethodPost, invalidPath, bearer, "", "")
+		if status != http.StatusNotFound || !strings.Contains(string(body), `"code":"not_found"`) {
+			t.Errorf("non-canonical path %q status=%d body=%s", invalidPath, status, body)
+		}
+	}
+	if got := webappTaskCount(t, app, testChatID); got != 4 || !webappTaskExists(t, app, testChatID+1, other.ID) {
+		t.Fatalf("rejected deletes changed tasks: current=%d", got)
+	}
+
+	for _, task := range terminal {
+		status, body = settingsRequest(t, server.URL, http.MethodPost, fmt.Sprintf("/api/tasks/%d/delete", task.ID), bearer, "", "")
+		if status != http.StatusOK {
+			t.Fatalf("terminal task %d delete status=%d body=%s", task.ID, status, body)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(body, &decoded); err != nil || len(decoded) != 2 || decoded["ok"] != true || decoded["task_id"] != float64(task.ID) {
+			t.Fatalf("task %d delete response=%s err=%v", task.ID, body, err)
+		}
+		if webappTaskExists(t, app, testChatID, task.ID) {
+			t.Fatalf("terminal task %d still exists", task.ID)
+		}
+	}
+	for _, task := range active {
+		if !webappTaskExists(t, app, testChatID, task.ID) {
+			t.Fatalf("active task %d was deleted", task.ID)
+		}
+	}
+	if !webappTaskExists(t, app, testChatID+1, other.ID) {
+		t.Fatal("deletes changed another chat")
+	}
+	status, body = settingsRequest(t, server.URL, http.MethodPost, path, bearer, "", "")
+	if status != http.StatusConflict || !strings.Contains(string(body), `"code":"task_not_deletable"`) {
+		t.Fatalf("second delete status=%d body=%s", status, body)
+	}
+}
+
+func TestTaskDeleteRequiresStrictMethodBodyAndQuery(t *testing.T) {
+	app, server := newTestApp(t)
+	bearer := launchSession(t, app, server)
+	created := createWebappTask(t, app, testChatID, time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC))
+	setWebappTaskStatus(t, app, created.ID, store.TaskStatusCompleted)
+	path := fmt.Sprintf("/api/tasks/%d/delete", created.ID)
+
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		status, body, headers := apiRequest(t, server, method, path, bearer)
+		if status != http.StatusMethodNotAllowed || headers.Get("Allow") != http.MethodPost {
+			t.Errorf("%s delete status=%d Allow=%q body=%s", method, status, headers.Get("Allow"), body)
+		}
+	}
+	for _, test := range []struct {
+		name string
+		path string
+		body string
+	}{
+		{"JSON body", path, `{}`},
+		{"invalid body", path, `{`},
+		{"whitespace body", path, " \n"},
+		{"query", path + "?chat_id=4242", ""},
+	} {
+		status, body := settingsRequest(t, server.URL, http.MethodPost, test.path, bearer, test.body, "")
+		if status != http.StatusBadRequest || !strings.Contains(string(body), `"code":"invalid_body"`) {
+			t.Errorf("%s status=%d body=%s", test.name, status, body)
+		}
+	}
+	status, body := settingsRequest(t, server.URL, http.MethodPost, path, bearer, strings.Repeat("x", maxBodyBytes+1), "")
+	if status != http.StatusRequestEntityTooLarge || !strings.Contains(string(body), `"code":"body_too_large"`) {
+		t.Fatalf("oversized delete status=%d body=%s", status, body)
+	}
+	if !webappTaskExists(t, app, testChatID, created.ID) {
+		t.Fatal("rejected delete requests removed the task")
+	}
+}
+
+func TestTaskDeleteRejectsWrongSessionAndRemovedAllowlist(t *testing.T) {
+	app, server := newTestApp(t)
+	bearer := launchSession(t, app, server)
+	created := createWebappTask(t, app, testChatID, time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC))
+	setWebappTaskStatus(t, app, created.ID, store.TaskStatusCompleted)
+	path := fmt.Sprintf("/api/tasks/%d/delete", created.ID)
+	for _, wrongBearer := range []string{"", "not-a-session"} {
+		status, body := settingsRequest(t, server.URL, http.MethodPost, path, wrongBearer, "", "")
+		if status != http.StatusUnauthorized || !strings.Contains(string(body), `"code":"session_expired"`) {
+			t.Errorf("wrong session status=%d body=%s", status, body)
+		}
+	}
+	if !webappTaskExists(t, app, testChatID, created.ID) {
+		t.Fatal("wrong sessions deleted the task")
+	}
+
+	app, server = newTestApp(t)
+	allowed := true
+	app.auth.authorize = func(int64) bool { return allowed }
+	bearer = launchSession(t, app, server)
+	created = createWebappTask(t, app, testChatID, time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC))
+	setWebappTaskStatus(t, app, created.ID, store.TaskStatusCompleted)
+	allowed = false
+	status, body := settingsRequest(t, server.URL, http.MethodPost, fmt.Sprintf("/api/tasks/%d/delete", created.ID), bearer, "", "")
+	if status != http.StatusUnauthorized || !strings.Contains(string(body), `"code":"session_expired"`) {
+		t.Fatalf("removed allowlist status=%d body=%s", status, body)
+	}
+	if !webappTaskExists(t, app, testChatID, created.ID) {
+		t.Fatal("removed allowlist request deleted the task")
+	}
+}
+
+func TestTaskDeleteReportsStoreFailure(t *testing.T) {
+	app, server := newTestApp(t)
+	bearer := launchSession(t, app, server)
+	created := createWebappTask(t, app, testChatID, time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC))
+	setWebappTaskStatus(t, app, created.ID, store.TaskStatusCompleted)
+	if err := app.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	status, body := settingsRequest(t, server.URL, http.MethodPost, fmt.Sprintf("/api/tasks/%d/delete", created.ID), bearer, "", "")
+	if status != http.StatusInternalServerError || !strings.Contains(string(body), `"code":"task_mutation_failed"`) {
+		t.Fatalf("store failure status=%d body=%s", status, body)
+	}
+}

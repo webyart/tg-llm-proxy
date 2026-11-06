@@ -19,9 +19,16 @@
       task_ready: "готова", task_running: "выполняется", task_awaiting_approval: "ждёт разрешения",
       task_completed: "завершена", task_cancelled: "отменена", task_failed: "ошибка",
       expires: "истекает", taskError: "Причина", cancelTask: "Отменить", resumeTask: "Возобновить",
+      deleteLink: "Удалить", deleteLinkConfirm: "Подтвердить", clearLinks: "Очистить ссылки", clearLinksConfirm: "Подтвердить",
+      deleteLinkWarning: "Удалить эту сохранённую ссылку? Это действие нельзя отменить.",
+      clearLinksWarning: "Удалить все сохранённые ссылки этого чата? Это действие нельзя отменить.",
+      linkUpdated: "Ссылка удалена.", linkMutationFailed: "Не удалось удалить ссылку.",
+      deleteTask: "Удалить", deleteTaskConfirm: "Подтвердить",
+      deleteTaskWarning: "Удалить эту задачу из истории? Это действие нельзя отменить.",
       clearTasks: "Очистить задачи", clearTasksConfirm: "Подтвердить",
       clearTasksWarning: "Удалить все задачи этого чата, включая активные и завершённые? Это действие нельзя отменить.",
       taskUpdated: "Задача обновлена.", taskNotActive: "Активной задачи для отмены нет.",
+      taskNotDeletable: "Удалить можно только завершённую, отменённую или завершившуюся ошибкой задачу.",
       taskNotResumable: "Возобновить можно только последнюю задачу с ошибкой или отменённую задачу.",
       taskMutationFailed: "Не удалось изменить задачу.", networkApprovalTelegram: "Сетевое действие подтверждается только в Telegram.",
       usageDate: "Дата", modelCalls: "вызовов", tokensIn: "входящих токенов", tokensOut: "исходящих токенов",
@@ -71,9 +78,16 @@
       task_ready: "ready", task_running: "running", task_awaiting_approval: "awaiting approval",
       task_completed: "completed", task_cancelled: "cancelled", task_failed: "failed",
       expires: "expires", taskError: "Reason", cancelTask: "Cancel", resumeTask: "Resume",
+      deleteLink: "Delete", deleteLinkConfirm: "Confirm", clearLinks: "Clear links", clearLinksConfirm: "Confirm",
+      deleteLinkWarning: "Delete this saved link? This cannot be undone.",
+      clearLinksWarning: "Delete every saved link in this chat? This cannot be undone.",
+      linkUpdated: "Link deleted.", linkMutationFailed: "The link could not be deleted.",
+      deleteTask: "Delete", deleteTaskConfirm: "Confirm",
+      deleteTaskWarning: "Delete this task from history? This cannot be undone.",
       clearTasks: "Clear tasks", clearTasksConfirm: "Confirm",
       clearTasksWarning: "Delete every task in this chat, including active and completed tasks? This cannot be undone.",
       taskUpdated: "Task updated.", taskNotActive: "There is no active task to cancel.",
+      taskNotDeletable: "Only a completed, cancelled, or failed task can be deleted.",
       taskNotResumable: "Only the latest failed or cancelled task can be resumed.",
       taskMutationFailed: "The task could not be changed.", networkApprovalTelegram: "Approve network actions only in Telegram.",
       usageDate: "Date", modelCalls: "calls", tokensIn: "input tokens", tokensOut: "output tokens",
@@ -115,6 +129,7 @@
     method_not_allowed: "errorMethod", invalid_pagination: "errorPagination", read_failed: "errorRead",
     overloaded: "errorOverloaded", not_found: "errorNotFound", invalid_body: "errorInvalidJSON", static_error: "errorRead",
     task_not_active: "taskNotActive", task_not_resumable: "taskNotResumable", task_mutation_failed: "taskMutationFailed",
+    task_not_deletable: "taskNotDeletable",
   };
 
   function initialLanguage() {
@@ -152,8 +167,18 @@
   let activeTab = "status";
   let nextBefore = null;
   let loading = false;
+  let clearLinksArmed = false;
   let clearTasksArmed = false;
+  let deleteLinkArmed = null;
+  let deleteTaskArmed = null;
   let view = { tab: "status", data: null, items: [] };
+
+  function resetArmedStates() {
+    clearLinksArmed = false;
+    clearTasksArmed = false;
+    deleteLinkArmed = null;
+    deleteTaskArmed = null;
+  }
 
   function showError(message) {
     ui.error.textContent = message;
@@ -227,9 +252,42 @@
     ui.content.appendChild(grid);
   }
 
+  function setLinkClearArmed(armed, items) {
+    if (loading) return;
+    resetArmedStates();
+    clearLinksArmed = armed;
+    renderItems("links", items);
+  }
+
   function setTaskClearArmed(armed, items) {
+    if (loading) return;
+    resetArmedStates();
     clearTasksArmed = armed;
     renderItems("tasks", items);
+  }
+
+  function setLinkDeleteArmed(id, items) {
+    if (loading) return;
+    resetArmedStates();
+    deleteLinkArmed = id;
+    renderItems("links", items);
+  }
+
+  function setTaskDeleteArmed(id, items) {
+    if (loading) return;
+    resetArmedStates();
+    deleteTaskArmed = id;
+    renderItems("tasks", items);
+  }
+
+  function inlineConfirmation(warning, confirmLabel, onConfirm, onCancel) {
+    const confirmation = element("div", "inline-confirm");
+    confirmation.appendChild(element("p", "inline-confirm-warning", warning));
+    const actions = element("div", "task-actions inline-confirm-actions");
+    actions.appendChild(settingsButton(confirmLabel, onConfirm));
+    actions.appendChild(settingsButton(t("cancelTask"), onCancel, true));
+    confirmation.appendChild(actions);
+    return confirmation;
   }
 
   function renderItems(tab, items) {
@@ -237,6 +295,19 @@
     if (!items.length) {
       renderEmpty(t(tab === "history" ? "emptyHistory" : "emptyItems"));
       return;
+    }
+    if (tab === "links") {
+      const clear = element("div", clearLinksArmed ? "task-clear link-clear task-clear-confirm" : "task-clear link-clear");
+      if (clearLinksArmed) {
+        clear.appendChild(element("p", "task-clear-warning", t("clearLinksWarning")));
+        const actions = element("div", "task-actions task-clear-actions");
+        actions.appendChild(settingsButton(t("clearLinksConfirm"), () => changeLink("/api/links/clear")));
+        actions.appendChild(settingsButton(t("cancelTask"), () => setLinkClearArmed(false, items), true));
+        clear.appendChild(actions);
+      } else {
+        clear.appendChild(settingsButton(t("clearLinks"), () => setLinkClearArmed(true, items)));
+      }
+      ui.content.appendChild(clear);
     }
     if (tab === "tasks") {
       const clear = element("div", clearTasksArmed ? "task-clear task-clear-confirm" : "task-clear");
@@ -271,6 +342,16 @@
           wrapper.appendChild(element("div", "content", item.url));
         }
         wrapper.appendChild(element("div", "content", item.content));
+        if (deleteLinkArmed === item.id) {
+          wrapper.appendChild(inlineConfirmation(
+            t("deleteLinkWarning"), t("deleteLinkConfirm"),
+            () => changeLink(`/api/links/${item.id}/delete`), () => setLinkDeleteArmed(null, items),
+          ));
+        } else {
+          const actions = element("div", "task-actions");
+          actions.appendChild(settingsButton(t("deleteLink"), () => setLinkDeleteArmed(item.id, items), true));
+          wrapper.appendChild(actions);
+        }
       } else if (tab === "tasks") {
         wrapper.appendChild(element("div", "content", item.goal));
         const status = maybe(`task_${item.status}`, item.status);
@@ -281,9 +362,18 @@
         const actions = element("div", "task-actions");
         if (["ready", "running", "awaiting_approval"].includes(item.status)) {
           actions.appendChild(settingsButton(t("cancelTask"), () => changeTask("/api/tasks/cancel"), true));
-        }
-        if (index === 0 && ["failed", "cancelled"].includes(item.status)) {
-          actions.appendChild(settingsButton(t("resumeTask"), () => changeTask(`/api/tasks/${item.id}/resume`)));
+        } else if (["completed", "failed", "cancelled"].includes(item.status)) {
+          if (deleteTaskArmed === item.id) {
+            wrapper.appendChild(inlineConfirmation(
+              t("deleteTaskWarning"), t("deleteTaskConfirm"),
+              () => changeTask(`/api/tasks/${item.id}/delete`), () => setTaskDeleteArmed(null, items),
+            ));
+          } else {
+            if (index === 0 && ["failed", "cancelled"].includes(item.status)) {
+              actions.appendChild(settingsButton(t("resumeTask"), () => changeTask(`/api/tasks/${item.id}/resume`)));
+            }
+            actions.appendChild(settingsButton(t("deleteTask"), () => setTaskDeleteArmed(item.id, items), true));
+          }
         }
         if (actions.childNodes.length) wrapper.appendChild(actions);
       }
@@ -331,6 +421,28 @@
     }
   }
 
+  async function changeLink(path) {
+    if (loading || !session) return;
+    loading = true;
+    ui.refresh.disabled = true;
+    showError("");
+    let changed = false;
+    try {
+      await api(path, { method: "POST" });
+      changed = true;
+    } catch (error) {
+      showError(error.message || t("linkMutationFailed"));
+    } finally {
+      loading = false;
+      ui.refresh.disabled = false;
+    }
+    if (changed) {
+      resetArmedStates();
+      await load();
+      showError(t("linkUpdated"));
+    }
+  }
+
   async function changeTask(path) {
     if (loading || !session) return;
     loading = true;
@@ -347,7 +459,7 @@
       ui.refresh.disabled = false;
     }
     if (changed) {
-      clearTasksArmed = false;
+      resetArmedStates();
       await load();
       showError(t("taskUpdated"));
     }
@@ -485,6 +597,8 @@
   async function load(append = false) {
     if (loading || !session) return;
     loading = true;
+    resetArmedStates();
+    if (!["status", "settings", "usage"].includes(activeTab)) renderItems(activeTab, view.items);
     showError("");
     ui.refresh.disabled = true;
     ui.more.disabled = true;
@@ -544,7 +658,7 @@
   document.getElementById("tabs").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-tab]");
     if (!button || loading) return;
-    clearTasksArmed = false;
+    resetArmedStates();
     activeTab = button.dataset.tab;
     nextBefore = null;
     view = { tab: activeTab, data: null, items: [] };
@@ -560,7 +674,7 @@
     showError("");
     applyTranslations();
   });
-  ui.refresh.addEventListener("click", () => { clearTasksArmed = false; nextBefore = null; load(); });
+  ui.refresh.addEventListener("click", () => { resetArmedStates(); nextBefore = null; load(); });
   ui.more.addEventListener("click", () => load(true));
   ui.logout.addEventListener("click", async () => {
     try { await api("/api/session", { method: "DELETE" }); } catch (_) { /* local close still applies */ }

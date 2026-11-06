@@ -1,3 +1,13 @@
+# tg-llm-proxy v1.32.0
+
+## Mini App Links and per-item task deletion
+
+- Links получил Delete для каждой ссылки и Clear links для непустого списка. `POST /api/links/{id}/delete` использует `store.DeleteSavedLink`, `POST /api/links/clear` — новый `store.ClearSavedLinks`; обе операции ограничены текущим чатом.
+- Tasks получил Delete для каждой terminal задачи. `POST /api/tasks/{id}/delete` через новый conditional `store.DeleteTask` удаляет только completed/failed/cancelled; ready/running/awaiting_approval требуют предварительного Cancel. Общий Clear tasks сохранён.
+- Все mutations требуют bearer session/current allowlist, POST с пустым body и без query params. Success responses содержат только ids/counts, без содержимого ссылок или задач. Wrong-chat/missing/active запросы отклоняются.
+- Каждое individual delete и каждое clear имеет отдельное inline Confirm/Cancel на RU/EN. Armed states сбрасываются при tab switch/refresh/pagination/success; loading блокирует повторные mutations. Dynamic content по-прежнему использует `textContent`.
+- Добавлены store transitions/isolation, API method/body/query/canonical-id/session/allowlist/store-error и frontend confirmation regressions.
+
 # tg-llm-proxy v1.31.1
 
 ## Mini App task cleanup and acceptance

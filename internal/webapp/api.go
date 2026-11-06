@@ -263,6 +263,96 @@ func (a *App) links(w http.ResponseWriter, req *http.Request, current scope) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_before_id": next})
 }
 
+func linkBodyError(w http.ResponseWriter, status int) {
+	if status == http.StatusRequestEntityTooLarge {
+		writeError(w, status, "body_too_large", "Request body is too large.")
+		return
+	}
+	writeError(w, http.StatusBadRequest, "invalid_body", "Link controls accept an empty request body.")
+}
+
+func (a *App) linkMutationFailed(w http.ResponseWriter, req *http.Request, operation string, err error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, req.Context().Err()) {
+		return
+	}
+	a.logger.Error("Mini App link mutation failed", "operation", operation, "error", err)
+	writeError(w, http.StatusInternalServerError, "link_mutation_failed", "The links could not be changed.")
+}
+
+func (a *App) clearLinks(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.Method != http.MethodPost {
+		methodAllowed(w, http.MethodPost)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Link controls do not accept query parameters.")
+		return
+	}
+	if status, ok := emptySettingsBody(req); !ok {
+		linkBodyError(w, status)
+		return
+	}
+	deleted, err := store.ClearSavedLinks(req.Context(), a.db, current.ChatID)
+	if err != nil {
+		a.linkMutationFailed(w, req, "clear", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": deleted})
+}
+
+func deleteLinkID(path string) (int64, bool) {
+	if !strings.HasPrefix(path, "/api/links/") || !strings.HasSuffix(path, "/delete") {
+		return 0, false
+	}
+	raw := strings.TrimSuffix(strings.TrimPrefix(path, "/api/links/"), "/delete")
+	if raw == "" || strings.Contains(raw, "/") {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 || strconv.FormatInt(id, 10) != raw {
+		return 0, false
+	}
+	return id, true
+}
+
+func (a *App) deleteLink(w http.ResponseWriter, req *http.Request, current scope) {
+	linkID, valid := deleteLinkID(req.URL.Path)
+	if !valid {
+		writeError(w, http.StatusNotFound, "not_found", "API endpoint not found.")
+		return
+	}
+	if req.Method != http.MethodPost {
+		methodAllowed(w, http.MethodPost)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Link controls do not accept query parameters.")
+		return
+	}
+	if status, ok := emptySettingsBody(req); !ok {
+		linkBodyError(w, status)
+		return
+	}
+	deleted, err := store.DeleteSavedLink(req.Context(), a.db, current.ChatID, linkID)
+	if err != nil {
+		a.linkMutationFailed(w, req, "delete", err)
+		return
+	}
+	if !deleted {
+		writeError(w, http.StatusNotFound, "not_found", "Saved link not found.")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": linkID})
+}
+
+func (a *App) linkControl(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.URL.Path == "/api/links/clear" {
+		a.clearLinks(w, req, current)
+		return
+	}
+	a.deleteLink(w, req, current)
+}
+
 const maxTaskErrorRunes = 300
 
 type taskItem struct {
@@ -414,6 +504,51 @@ func (a *App) resumeTask(w http.ResponseWriter, req *http.Request, current scope
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "task_id": resumed.ID, "status": resumed.Status})
 }
 
+func deleteTaskID(path string) (int64, bool) {
+	if !strings.HasPrefix(path, "/api/tasks/") || !strings.HasSuffix(path, "/delete") {
+		return 0, false
+	}
+	raw := strings.TrimSuffix(strings.TrimPrefix(path, "/api/tasks/"), "/delete")
+	if raw == "" || strings.Contains(raw, "/") {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 || strconv.FormatInt(id, 10) != raw {
+		return 0, false
+	}
+	return id, true
+}
+
+func (a *App) deleteTask(w http.ResponseWriter, req *http.Request, current scope) {
+	taskID, valid := deleteTaskID(req.URL.Path)
+	if !valid {
+		writeError(w, http.StatusNotFound, "not_found", "API endpoint not found.")
+		return
+	}
+	if req.Method != http.MethodPost {
+		methodAllowed(w, http.MethodPost)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Task controls do not accept query parameters.")
+		return
+	}
+	if status, ok := emptySettingsBody(req); !ok {
+		taskBodyError(w, status)
+		return
+	}
+	deleted, err := store.DeleteTask(req.Context(), a.db, current.ChatID, taskID)
+	if err != nil {
+		a.taskMutationFailed(w, req, "delete", err)
+		return
+	}
+	if !deleted {
+		writeError(w, http.StatusConflict, "task_not_deletable", "Only a completed, failed, or cancelled task in this chat can be deleted.")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "task_id": taskID})
+}
+
 func (a *App) clearTasks(w http.ResponseWriter, req *http.Request, current scope) {
 	if req.Method != http.MethodPost {
 		methodAllowed(w, http.MethodPost)
@@ -442,6 +577,10 @@ func (a *App) taskControl(w http.ResponseWriter, req *http.Request, current scop
 	case "/api/tasks/clear":
 		a.clearTasks(w, req, current)
 	default:
+		if strings.HasSuffix(req.URL.Path, "/delete") {
+			a.deleteTask(w, req, current)
+			return
+		}
 		a.resumeTask(w, req, current)
 	}
 }

@@ -5,8 +5,9 @@
 # TLS to api.telegram.org, and the bot would fail its Telegram requests silently (§8.1).
 # The test stage is the only place `-race` exists on this host: there is no C compiler on Windows
 # (§3.1), so CGO_ENABLED=1 lives here, in `apk add gcc musl-dev`.
+# Multi-architecture index digests make the base images reproducible without losing the readable tags.
 
-FROM golang:1.27-alpine AS base
+FROM golang:1.27-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS base
 WORKDIR /src
 # go.mod/go.sum first: the module cache layer survives source edits and rebuilds skip the download.
 COPY go.mod go.sum ./
@@ -19,7 +20,7 @@ ENV CGO_ENABLED=0 GOOS=linux
 ARG BUILD_COMMIT=dev
 RUN go build -trimpath -ldflags="-s -w -X main.buildCommit=${BUILD_COMMIT}" -o /bot .
 
-FROM alpine:3.21 AS run
+FROM alpine:3.21@sha256:87a4361f6c819618a6bafa2ed5228714cb0bb22195d2b49c95eb26799990128a AS run
 # tzdata: created_at is stored in UTC (§5) and the logs of §12 name the timezone of the container.
 RUN apk add --no-cache ca-certificates tzdata
 COPY --from=builder /bot /bot

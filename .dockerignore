@@ -1,4 +1,4 @@
-# .dockerignore — §10 Day 1: bin/, data/, *.db (+ gitignored: .env, .cache) не included in build context
+# .dockerignore — keep local state, tooling and scratch packages out of the release build context.
 .git/
 .github/
 .gitlab-ci.yml
@@ -7,6 +7,7 @@ scripts/
 .env.*
 !.env.example
 .cache/
+zzscratch/
 bin/
 data/
 docs/

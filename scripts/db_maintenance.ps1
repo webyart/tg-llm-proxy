@@ -32,20 +32,16 @@ param(
     [switch]$Rebuild
 )
 
+. (Join-Path $PSScriptRoot 'MaintenancePaths.ps1')
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $backupRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot 'data\backups'))
 $scratchRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot 'zzscratch'))
 
-function Test-WithinRoot([string]$path, [string]$root) {
-    $prefix = $root + [System.IO.Path]::DirectorySeparatorChar
-    return $path.Equals($root, [System.StringComparison]::OrdinalIgnoreCase) -or
-        $path.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
-}
-
 if (-not $Directory) { $Directory = $backupRoot }
 elseif (-not [System.IO.Path]::IsPathRooted($Directory)) { $Directory = Join-Path $repoRoot $Directory }
 $Directory = [System.IO.Path]::GetFullPath($Directory)
-if ((-not (Test-WithinRoot $Directory $backupRoot)) -and (-not (Test-WithinRoot $Directory $scratchRoot))) {
+if ((-not (Test-MaintenancePathWithinRoot $Directory $backupRoot)) -and
+    (-not (Test-MaintenancePathWithinRoot $Directory $scratchRoot))) {
     Write-Output "db_maintenance: directory $Directory is outside the allowed roots $backupRoot and $scratchRoot"
     exit 1
 }

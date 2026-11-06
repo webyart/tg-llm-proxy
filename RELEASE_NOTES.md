@@ -1,3 +1,16 @@
+# tg-llm-proxy v1.36.0
+
+## Executable frontend tests
+
+- Добавлены `node:test` + `vm` harness и 11 executable сценариев для фактического Mini App `app.js`: boot, Delete/Clear/Cancel/Confirm, loading/double-click, Documents search, Reminders, notices, 401/429, export/revoke и TTS speed. Runtime/npm dependencies не добавлены.
+- GitLab `frontend` job выполняет `node --check` и `node --test` в pinned Node 22 image. На host Node отсутствует, поэтому те же команды проверены в pinned container: 11/11 PASS.
+
+## Reproducible release and maintenance
+
+- `zzscratch/` исключён из Docker context. Host tests/vet используют явные package roots и integration `./test/...`, поэтому локальные scratch-пакеты не влияют на release. `go mod tidy` заменён на проверку `go mod tidy -diff`.
+- Docker base images, CI Go/Node images и `govulncheck` зафиксированы по digest/версии вместо mutable/latest. `govulncheck@v1.9.0` не нашёл уязвимостей. Docker run/test builds и полный race в test image зелёные.
+- Maintenance path containment использует общий `Test-MaintenancePathWithinRoot`: OrdinalIgnoreCase на Windows и Ordinal на Unix, с сохранением exact-root/prefix boundary. Case-variant outside-root regressions и maintenance acceptance зелёные.
+
 # tg-llm-proxy v1.35.0
 
 ## Mini App History and full content

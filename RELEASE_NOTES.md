@@ -8,7 +8,7 @@
 - API ограничен 20 items/page с explicit before/next_before_id. Нет model keys, document bodies, task plans/results, approval/continuation tokens или tool arguments в ответах.
 - Frontend same-origin без CDN/framework, `textContent` вместо HTML injection, CSP, 16KiB headers/body, global in-flight 8 и strict JSON.
 - `MINIAPP_ENABLED=false` по умолчанию. Для включения нужны HTTPS `MINIAPP_PUBLIC_URL`, reverse proxy/tunnel и loopback-only порт 8084 на хосте. Внутри контейнера listener `0.0.0.0`, снаружи только `127.0.0.1`.
-- Добавлены official HMAC fixture, auth_date/ticket/session expiry, replay/wrong user/chat, allowlist removal, caps/isolation/pagination/CSP и fake Telegram end-to-end regressions. Внешний HTTPS acceptance не выполнялся.
+- Добавлены official HMAC fixture, auth_date/ticket/session expiry, replay/wrong user/chat, allowlist removal, caps/isolation/pagination/CSP и fake Telegram end-to-end regressions. Внешний HTTPS acceptance выполнен через Tailscale Funnel: local/public 200, unauthorized API 401, запуск в Telegram client подтверждён.
 
 # tg-llm-proxy v1.26.3
 

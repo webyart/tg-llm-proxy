@@ -1,3 +1,12 @@
+# tg-llm-proxy v1.29.1
+
+## Mini App mobile layout and localization
+
+- Мобильная вёрстка больше не вызывает горизонтальный скролл: вкладки и кнопки переносятся, selects/forms/model names ограничены viewport, responsive layout для ~360px.
+- По умолчанию русский. В header добавлен переключатель RU/EN; выбор сохраняется только в localStorage `miniapp-language`.
+- Локализованы вкладки, заголовки, кнопки, settings controls, статусы, ошибки и session messages. Переключение языка не вызывает API и сохраняет уже загруженные страницы.
+- Dynamic content по-прежнему рендерится через `textContent`, без HTML injection. Добавлены static tests для переводов, language persistence, responsive wrap/viewport caps и отсутствия fixed-width overflow. Визуальный acceptance на физическом устройстве не выполнялся.
+
 # tg-llm-proxy v1.29.0
 
 ## Mini App settings

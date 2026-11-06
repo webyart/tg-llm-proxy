@@ -37,4 +37,17 @@ nav button.active { color: var(--tg-theme-button-text-color, white); background:
 a { color: var(--tg-theme-link-color, #2678c8); overflow-wrap: anywhere; }
 .empty { color: var(--tg-theme-hint-color, #607080); }
 #more { width: 100%; margin-top: 14px; }
+.settings-section { padding: 14px 0; border-top: 1px solid #7b899633; }
+.settings-section:first-child { border-top: 0; padding-top: 0; }
+.settings-section h3 { font-size: 1rem; margin: 0 0 6px; }
+.settings-section p { margin: 4px 0 10px; }
+.settings-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 9px; }
+select, textarea {
+  width: 100%; border: 1px solid #7b899666; border-radius: 9px; padding: 9px;
+  color: var(--tg-theme-text-color, #17202a); background: var(--tg-theme-bg-color, #f4f6f8); font: inherit;
+}
+select { flex: 1 1 220px; width: auto; }
+textarea { min-height: 120px; resize: vertical; }
+.settings-row button { flex: 0 0 auto; }
+.counter { font-size: .78rem; color: var(--tg-theme-hint-color, #607080); text-align: right; }
 [hidden] { display: none !important; }

@@ -23,6 +23,20 @@ var personaPresets = []personaPreset{
 	{name: "translator", prompt: "You are a professional translator. Preserve meaning, tone, and formatting; translate into the language requested by the user.", description: "перевод с сохранением смысла и формата"},
 }
 
+type PersonaPresetInfo struct {
+	Name        string
+	Prompt      string
+	Description string
+}
+
+func PersonaPresetDefinitions() []PersonaPresetInfo {
+	presets := make([]PersonaPresetInfo, 0, len(personaPresets))
+	for _, preset := range personaPresets {
+		presets = append(presets, PersonaPresetInfo{Name: preset.name, Prompt: preset.prompt, Description: preset.description})
+	}
+	return presets
+}
+
 func (d *Dispatcher) effectivePersona(ctx context.Context, chatID int64) (string, string, bool, error) {
 	if d.deps.DB == nil {
 		return d.deps.Cfg.SystemPrompt, "default", false, nil

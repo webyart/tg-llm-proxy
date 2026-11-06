@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"testing"
 
 	"bot/internal/config"
+	"bot/internal/model"
 	"bot/internal/store"
 )
 
@@ -23,6 +25,28 @@ const (
 	testChatID = int64(4242)
 	testUserID = int64(1717)
 )
+
+type fakeModelClient struct {
+	mu            sync.Mutex
+	models        []string
+	modelsErr     error
+	modelsCalls   int
+	completeCalls int
+}
+
+func (f *fakeModelClient) Complete(context.Context, model.Request) (model.Response, error) {
+	f.mu.Lock()
+	f.completeCalls++
+	f.mu.Unlock()
+	return model.Response{}, errors.New("Mini App tests must not call completions")
+}
+
+func (f *fakeModelClient) Models(context.Context) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.modelsCalls++
+	return append([]string{}, f.models...), f.modelsErr
+}
 
 func newTestApp(t *testing.T) (*App, *httptest.Server) {
 	t.Helper()
@@ -38,7 +62,8 @@ func newTestApp(t *testing.T) (*App, *httptest.Server) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	app := New(cfg, db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	client := &fakeModelClient{models: []string{cfg.StrataModel, "qwen-alt", "qwen-other"}}
+	app := New(cfg, db, client, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	server := httptest.NewServer(app.Handler())
 	t.Cleanup(server.Close)
 	return app, server

@@ -40,11 +40,33 @@ func miniAppInitData(t *testing.T, token string, id int64, authDate time.Time) s
 	return values.Encode()
 }
 
-func TestMiniAppFakeTelegramLaunchAndReadOnlyAPI(t *testing.T) {
+func miniAppSettingsRequest(t *testing.T, baseURL string, method string, path string, bearer string, body string) (int, []byte) {
+	t.Helper()
+	req, err := http.NewRequest(method, baseURL+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response.StatusCode, responseBody
+}
+
+func TestMiniAppFakeTelegramLaunchAndSettingsAPI(t *testing.T) {
 	ctx := context.Background()
 	path := dbFile(t)
 	tgAPI := testutil.NewTelegram(t, secretToken)
-	strata := testutil.NewStrata(t, secretStrataKey, testutil.StrataReply{Content: "must not be called"})
+	strata := testutil.NewStrata(t, secretStrataKey, testutil.StrataReply{Content: "must not be called", Models: []string{"qwen-test", "qwen-alt"}})
 	cfg := integrationEnv(t, path, strata.BaseURL(), map[string]string{
 		"MINIAPP_ENABLED": "true", "MINIAPP_PUBLIC_URL": "https://example.test/companion",
 	})
@@ -131,6 +153,49 @@ func TestMiniAppFakeTelegramLaunchAndReadOnlyAPI(t *testing.T) {
 	if len(rowsOf(t, db)) != 1 {
 		t.Fatal("read-only Mini App changed chat history")
 	}
+	if strata.ModelsCalls() != 0 {
+		t.Fatalf("ordinary reads made %d provider calls", strata.ModelsCalls())
+	}
+
+	status, settingsBody := miniAppSettingsRequest(t, run.miniAppURL, http.MethodGet, "/api/settings", session.Token, "")
+	if status != http.StatusOK || !bytes.Contains(settingsBody, []byte("qwen-alt")) || strata.ModelsCalls() != 1 {
+		t.Fatalf("settings read status=%d models calls=%d body=%s", status, strata.ModelsCalls(), settingsBody)
+	}
+	status, settingsBody = miniAppSettingsRequest(t, run.miniAppURL, http.MethodPut, "/api/settings/model", session.Token, `{"model":"qwen-alt"}`)
+	if status != http.StatusOK {
+		t.Fatalf("model update status=%d body=%s", status, settingsBody)
+	}
+	if selected, found, err := store.ChatModel(ctx, db, chatID); err != nil || !found || selected != "qwen-alt" {
+		t.Fatalf("selected model=%q found=%v err=%v", selected, found, err)
+	}
+	privatePersona := "integration private persona must not be logged"
+	status, settingsBody = miniAppSettingsRequest(t, run.miniAppURL, http.MethodPut, "/api/settings/persona", session.Token, `{"custom":"`+privatePersona+`"}`)
+	if status != http.StatusOK {
+		t.Fatalf("persona update status=%d body=%s", status, settingsBody)
+	}
+	if prompt, found, err := store.ChatPersona(ctx, db, chatID); err != nil || !found || prompt != privatePersona {
+		t.Fatalf("persona found=%v err=%v", found, err)
+	}
+	status, settingsBody = miniAppSettingsRequest(t, run.miniAppURL, http.MethodPut, "/api/settings/stream", session.Token, `{"enabled":true}`)
+	if status != http.StatusOK {
+		t.Fatalf("stream update status=%d body=%s", status, settingsBody)
+	}
+	if enabled, found, err := store.ChatStreaming(ctx, db, chatID); err != nil || !found || !enabled {
+		t.Fatalf("stream enabled=%v found=%v err=%v", enabled, found, err)
+	}
+	status, settingsBody = miniAppSettingsRequest(t, run.miniAppURL, http.MethodDelete, "/api/settings/stream", session.Token, "")
+	if status != http.StatusOK {
+		t.Fatalf("stream reset status=%d body=%s", status, settingsBody)
+	}
+	if _, found, err := store.ChatStreaming(ctx, db, chatID); err != nil || found {
+		t.Fatalf("stream reset found=%v err=%v", found, err)
+	}
+	if strata.ChatCalls() != 0 {
+		t.Fatalf("settings made %d completion calls", strata.ChatCalls())
+	}
+	if len(rowsOf(t, db)) != 1 {
+		t.Fatal("settings changed chat history")
+	}
 
 	replayReq, _ := http.NewRequest(http.MethodPost, run.miniAppURL+"/api/session", strings.NewReader(raw))
 	replayReq.Header.Set("Content-Type", "text/plain")
@@ -144,7 +209,7 @@ func TestMiniAppFakeTelegramLaunchAndReadOnlyAPI(t *testing.T) {
 		t.Fatalf("ticket replay status=%d", replayResponse.StatusCode)
 	}
 	logText := run.logs.String()
-	if strings.Contains(logText, raw) || strings.Contains(logText, session.Token) || strings.Contains(logText, ticket) {
+	if strings.Contains(logText, raw) || strings.Contains(logText, session.Token) || strings.Contains(logText, ticket) || strings.Contains(logText, privatePersona) {
 		t.Fatalf("Mini App credentials reached logs: %s", logText)
 	}
 	secretLeak(t, "Mini App integration logs", logText)

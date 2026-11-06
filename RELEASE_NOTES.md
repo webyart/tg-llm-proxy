@@ -1,3 +1,13 @@
+# tg-llm-proxy v1.29.0
+
+## Mini App settings
+
+- Mini App получил Settings: Model, Persona и Stream. `GET /api/settings` возвращает effective/global model, до 50 provider models, persona presets и stream source без custom persona text.
+- Разрешены только выбор модели из актуального provider list, model reset, persona preset/custom до 4000 runes, persona reset и stream on/off/reset. Используются те же store-операции, что и Telegram-команды.
+- Каждый mutation повторно проверяет bearer session, signed chat/user и current allowlist. JSON strict content type/unknown fields/body cap 16KiB; cookie не используется, browser не обращается к STRATA напрямую.
+- Frontend добавил Settings с model choices/reset, persona presets/custom editor/reset и stream controls. Dynamic content создаётся через `textContent`, без HTML injection.
+- Добавлены успешные settings/reset, wrong session/allowlist, invalid model/persona, unknown fields/methods/body cap, store effects и no-secrets-in-logs regressions. Обычные reads не вызывают chat completions; provider вызывается только для model list/selection.
+
 # tg-llm-proxy v1.28.0
 
 ## TTS monitoring and task resume

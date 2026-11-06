@@ -16,7 +16,7 @@
     title: document.getElementById("section-title"), more: document.getElementById("more"),
     refresh: document.getElementById("refresh"), logout: document.getElementById("logout"),
   };
-  const labels = { status: "Status", history: "History", documents: "Documents", links: "Saved links", tasks: "Tasks" };
+  const labels = { status: "Status", history: "History", documents: "Documents", links: "Saved links", tasks: "Tasks", settings: "Settings" };
   let session = "";
   let activeTab = "status";
   let nextBefore = null;
@@ -119,6 +119,116 @@
     }
   }
 
+  function settingsButton(label, handler, secondary = false) {
+    const button = element("button", secondary ? "secondary" : "", label);
+    button.type = "button";
+    button.addEventListener("click", handler);
+    return button;
+  }
+
+  function settingsSection(title, description) {
+    const section = element("section", "settings-section");
+    section.appendChild(element("h3", "", title));
+    section.appendChild(element("p", "meta", description));
+    return section;
+  }
+
+  async function changeSettings(path, method, payload) {
+    if (loading || !session) return;
+    loading = true;
+    ui.refresh.disabled = true;
+    showError("");
+    let saved = false;
+    try {
+      const options = { method };
+      if (payload !== undefined) {
+        options.headers = { "Content-Type": "application/json" };
+        options.body = JSON.stringify(payload);
+      }
+      await api(path, options);
+      saved = true;
+    } catch (error) {
+      showError(error.message || "The setting could not be saved.");
+    } finally {
+      loading = false;
+      ui.refresh.disabled = false;
+    }
+    if (saved) {
+      await load();
+      showError("Settings saved for this chat.");
+    }
+  }
+
+  function renderSettings(data) {
+    ui.content.replaceChildren();
+    const source = (value) => value === "chat" ? "this chat override" : "global default";
+
+    const model = settingsSection("Model", `Current: ${data.model.current} · ${source(data.model.source)} · Global default: ${data.model.default}`);
+    const modelChoice = element("select");
+    modelChoice.setAttribute("aria-label", "Available provider models");
+    for (const name of data.model.available) {
+      const option = element("option", "", name);
+      option.value = name;
+      option.selected = name === data.model.current;
+      modelChoice.appendChild(option);
+    }
+    if (!data.model.available.length) {
+      const option = element("option", "", "No models reported by the provider");
+      option.disabled = true;
+      modelChoice.appendChild(option);
+    }
+    const modelRow = element("div", "settings-row");
+    modelRow.appendChild(modelChoice);
+    modelRow.appendChild(settingsButton("Use model", () => changeSettings("/api/settings/model", "PUT", { model: modelChoice.value })));
+    modelRow.appendChild(settingsButton("Reset to default", () => changeSettings("/api/settings/model", "DELETE"), true));
+    model.appendChild(modelRow);
+    if (data.model.available_truncated) model.appendChild(element("p", "meta", "Only the first 50 provider models are shown; refresh to check the endpoint again."));
+    ui.content.appendChild(model);
+
+    const persona = settingsSection("Persona", `Current: ${data.persona.current} · ${source(data.persona.source)}${data.persona.custom ? " · custom text" : ""}`);
+    const presetChoice = element("select");
+    presetChoice.setAttribute("aria-label", "Persona presets");
+    for (const preset of data.persona.presets) {
+      const option = element("option", "", `${preset.name} — ${preset.description}`);
+      option.value = preset.name;
+      option.selected = preset.name === data.persona.current;
+      presetChoice.appendChild(option);
+    }
+    const presetRow = element("div", "settings-row");
+    presetRow.appendChild(presetChoice);
+    presetRow.appendChild(settingsButton("Use preset", () => changeSettings("/api/settings/persona", "PUT", { preset: presetChoice.value })));
+    presetRow.appendChild(settingsButton("Reset persona", () => changeSettings("/api/settings/persona", "DELETE"), true));
+    persona.appendChild(presetRow);
+    const custom = element("textarea");
+    custom.maxLength = 8000;
+    custom.placeholder = "Custom persona text (1–4000 Unicode characters)";
+    custom.setAttribute("aria-label", "Custom persona text");
+    const counter = element("div", "counter", "0 / 4000");
+    custom.addEventListener("input", () => { counter.textContent = `${Array.from(custom.value).length} / 4000`; });
+    persona.appendChild(custom);
+    persona.appendChild(counter);
+    const customRow = element("div", "settings-row");
+    customRow.appendChild(settingsButton("Save custom persona", () => changeSettings("/api/settings/persona", "PUT", { custom: custom.value })));
+    persona.appendChild(customRow);
+    ui.content.appendChild(persona);
+
+    const stream = settingsSection("Stream responses", `Current: ${data.stream.enabled ? "on" : "off"} · ${source(data.stream.source)}`);
+    const streamChoice = element("select");
+    streamChoice.setAttribute("aria-label", "Stream responses");
+    for (const [value, label] of [["true", "On"], ["false", "Off"]]) {
+      const option = element("option", "", label);
+      option.value = value;
+      option.selected = String(data.stream.enabled) === value;
+      streamChoice.appendChild(option);
+    }
+    const streamRow = element("div", "settings-row");
+    streamRow.appendChild(streamChoice);
+    streamRow.appendChild(settingsButton("Save stream setting", () => changeSettings("/api/settings/stream", "PUT", { enabled: streamChoice.value === "true" })));
+    streamRow.appendChild(settingsButton("Reset to global", () => changeSettings("/api/settings/stream", "DELETE"), true));
+    stream.appendChild(streamRow);
+    ui.content.appendChild(stream);
+  }
+
   async function load(append = false) {
     if (loading || !session) return;
     loading = true;
@@ -129,6 +239,9 @@
       if (activeTab === "status") {
         renderStatus(await api("/api/status"));
         nextBefore = null;
+      } else if (activeTab === "settings") {
+        renderSettings(await api("/api/settings"));
+        nextBefore = null;
       } else {
         const params = new URLSearchParams({ limit: "10" });
         if (append && nextBefore) params.set("before", String(nextBefore));
@@ -136,7 +249,7 @@
         nextBefore = data.next_before_id || null;
         renderItems(activeTab, data.items, append);
       }
-      ui.more.hidden = activeTab === "status" || !nextBefore;
+      ui.more.hidden = activeTab === "status" || activeTab === "settings" || !nextBefore;
     } catch (error) {
       showError(error.message || "The data could not be loaded.");
     } finally {

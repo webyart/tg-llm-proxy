@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"bot/internal/config"
+	"bot/internal/model"
 )
 
 const (
@@ -33,16 +34,17 @@ var staticFiles embed.FS
 type App struct {
 	cfg     config.Config
 	db      *sql.DB
+	model   model.Client
 	logger  *slog.Logger
 	auth    *authenticator
 	handler http.Handler
 }
 
-func New(cfg config.Config, db *sql.DB, logger *slog.Logger) *App {
+func New(cfg config.Config, db *sql.DB, client model.Client, logger *slog.Logger) *App {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	app := &App{cfg: cfg, db: db, logger: logger}
+	app := &App{cfg: cfg, db: db, model: client, logger: logger}
 	app.auth = newAuthenticator(cfg.BotToken, cfg.Allows)
 	app.handler = securityHeaders(limitInFlight(http.HandlerFunc(app.route), maxInFlight))
 	return app
@@ -121,13 +123,27 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 		}
 		return
 	}
-	if req.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
-		return
-	}
 	current, err := a.currentScope(req)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "session_expired", "Session expired. Reopen the Mini App from Telegram.")
+		return
+	}
+	switch req.URL.Path {
+	case "/api/settings":
+		a.settings(w, req, current)
+		return
+	case "/api/settings/model":
+		a.settingsModel(w, req, current)
+		return
+	case "/api/settings/persona":
+		a.settingsPersona(w, req, current)
+		return
+	case "/api/settings/stream":
+		a.settingsStream(w, req, current)
+		return
+	}
+	if req.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 		return
 	}
 	switch req.URL.Path {

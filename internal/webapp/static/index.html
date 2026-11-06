@@ -4,50 +4,60 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f4f7fb">
   <title>Бот — компаньон</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header>
-    <div class="header-title">
-      <h1 data-i18n="headerTitle">Бот — компаньон</h1>
-      <p data-i18n="headerSubtitle">Данные чата и его настройки</p>
-    </div>
-    <div class="header-actions">
-      <label class="language-label" for="language" data-i18n="languageLabel">Язык</label>
-      <select id="language" data-i18n-aria="languageLabel" aria-label="Язык">
-        <option value="ru">RU</option>
-        <option value="en">EN</option>
-      </select>
-      <button id="logout" class="secondary" type="button" data-i18n="closeSession" hidden>Закрыть сессию</button>
+  <header class="app-header">
+    <div class="header-inner">
+      <div class="header-title">
+        <div class="brand-mark" aria-hidden="true">B</div>
+        <div>
+          <h1 data-i18n="headerTitle">Бот — компаньон</h1>
+          <p data-i18n="headerSubtitle">Данные чата и его настройки</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <label class="language-label" for="language" data-i18n="languageLabel">Язык</label>
+        <select id="language" class="compact-select" data-i18n-aria="languageLabel" aria-label="Язык">
+          <option value="ru">RU</option>
+          <option value="en">EN</option>
+        </select>
+        <button id="logout" class="secondary" type="button" data-i18n="closeSession" hidden>Закрыть сессию</button>
+      </div>
     </div>
   </header>
   <main>
     <div id="error" role="alert" hidden></div>
     <div id="notice" role="status" hidden></div>
-    <section id="launch" class="panel">
+    <section id="launch" class="panel launch-panel">
+      <span class="eyebrow" data-i18n="headerTitle">Бот — компаньон</span>
       <h2 data-i18n="launchTitle">Запуск из Telegram</h2>
       <p data-i18n="launchText">Откройте Mini App через «Ещё → Mini App» в меню бота. Ссылка запуска и подпись Telegram проверяются до показа данных чата.</p>
     </section>
     <div id="app" hidden>
-      <nav id="tabs" data-i18n-aria="navLabel" aria-label="Разделы чата">
-        <button type="button" data-tab="status" class="active" data-i18n="tabStatus">Статус</button>
-        <button type="button" data-tab="history" data-i18n="tabHistory">История</button>
-        <button type="button" data-tab="documents" data-i18n="tabDocuments">Документы</button>
-        <button type="button" data-tab="links" data-i18n="tabLinks">Ссылки</button>
-        <button type="button" data-tab="tasks" data-i18n="tabTasks">Задачи</button>
-        <button type="button" data-tab="reminders" data-i18n="tabReminders">Напоминания</button>
-        <button type="button" data-tab="usage" data-i18n="tabUsage">Использование</button>
-        <button type="button" data-tab="settings" data-i18n="tabSettings">Настройки</button>
+      <nav id="tabs" class="tabs" role="tablist" data-i18n-aria="navLabel" aria-label="Разделы чата">
+        <button id="tab-status" type="button" role="tab" aria-selected="true" aria-controls="content" tabindex="0" data-tab="status" class="active" data-i18n="tabStatus">Статус</button>
+        <button id="tab-history" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="history" data-i18n="tabHistory">История</button>
+        <button id="tab-documents" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="documents" data-i18n="tabDocuments">Документы</button>
+        <button id="tab-links" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="links" data-i18n="tabLinks">Ссылки</button>
+        <button id="tab-tasks" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="tasks" data-i18n="tabTasks">Задачи</button>
+        <button id="tab-reminders" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="reminders" data-i18n="tabReminders">Напоминания</button>
+        <button id="tab-usage" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="usage" data-i18n="tabUsage">Использование</button>
+        <button id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="settings" data-i18n="tabSettings">Настройки</button>
       </nav>
-      <section class="panel">
+      <section class="panel workspace-panel" aria-labelledby="section-title">
         <div class="section-heading">
-          <h2 id="section-title">Статус</h2>
-          <button id="refresh" class="secondary" type="button" data-i18n="refresh">Обновить</button>
+          <div>
+            <span class="eyebrow" data-i18n="headerSubtitle">Данные чата и его настройки</span>
+            <h2 id="section-title">Статус</h2>
+          </div>
+          <button id="refresh" class="secondary refresh-button" type="button" data-i18n="refresh">Обновить</button>
         </div>
         <div id="loading" class="loading" role="status" data-i18n="loading" hidden>Загрузка…</div>
         <div id="content" aria-live="polite" aria-busy="false"></div>
-        <button id="more" type="button" data-i18n="loadOlder" hidden>Показать ранее</button>
+        <button id="more" class="load-more" type="button" data-i18n="loadOlder" hidden>Показать ранее</button>
       </section>
     </div>
   </main>

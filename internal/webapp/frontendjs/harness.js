@@ -121,7 +121,13 @@ class FakeElement {
   click() {
     if (this.disabled) return;
     if (this.tagName === "A") this.ownerDocument.downloads.push({ element: this, href: this.href, download: this.download });
-    this.dispatchEvent({ type: "click", bubbles: true });
+    const allowed = this.dispatchEvent({ type: "click", bubbles: true });
+    const form = this.type === "submit" ? this.closest("form") : null;
+    if (allowed && form) form.dispatchEvent({ type: "submit", bubbles: false, target: this });
+  }
+
+  focus() {
+    this.ownerDocument.activeElement = this;
   }
 
   closest(selector) {
@@ -212,7 +218,9 @@ function initialDocument() {
   const app = staticElement(document, "div", { id: "app", hidden: true });
   const tabs = staticElement(document, "nav", { id: "tabs", i18nAria: "navLabel" });
   for (const tab of ["status", "history", "documents", "links", "tasks", "reminders", "usage", "settings"]) {
-    const button = staticElement(document, "button", { tab, i18n: `tab${tab[0].toUpperCase()}${tab.slice(1)}` });
+    const button = staticElement(document, "button", { id: `tab-${tab}`, tab, i18n: `tab${tab[0].toUpperCase()}${tab.slice(1)}` });
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", String(tab === "status"));
     if (tab === "status") button.className = "active";
     tabs.appendChild(button);
   }
@@ -261,6 +269,7 @@ function defaultResponse(request) {
   if (pathname === "/api/history") return jsonResponse({ items: [{ id: "msg-1", role: "user", content: "hello", created_at: "2026-01-01" }] });
   if (pathname === "/api/history/search") return jsonResponse({ items: [], truncated: false });
   if (pathname === "/api/history/export") return blobResponse({ size: 4 });
+  if (pathname === "/api/links/search") return jsonResponse({ items: [] });
   if (pathname === "/api/reminders") {
     return jsonResponse({
       active: [{ id: "active-1", text: "active reminder", cadence: "daily", daily_time: "09:00", next_run: "2026-01-02", attempts: 0 }],
@@ -292,6 +301,7 @@ async function createHarness() {
     setImmediate,
     clearImmediate,
     Headers,
+    TextEncoder,
     URLSearchParams,
     localStorage: {
       getItem() { return null; },

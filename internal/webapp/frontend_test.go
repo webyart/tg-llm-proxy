@@ -437,12 +437,15 @@ func TestFrontendRemindersAreScopedToActiveAndFailedActions(t *testing.T) {
 		`deleteReminderWarning: "Delete this failed reminder? This cannot be undone."`,
 		`api("/api/reminders")`, `data.active || []`, `data.failed || []`,
 		`item.text`, `item.cadence`, `item.next_run`, `item.attempts`,
-		`settingsButton(t("cancelTask"), () => changeReminder(` + "`/api/reminders/${item.id}/cancel`" + `), true)`,
+		`settingsButton(t("cancelTask"), () => setReminderCancelArmed(item.id, view.data), true)`,
 		`settingsButton(t("retryReminder"), () => changeReminder(` + "`/api/reminders/${item.id}/retry`" + `))`,
 		`settingsButton(t("deleteReminder"), () => setReminderDeleteArmed(item.id, view.data), true)`,
 		`() => changeReminder(` + "`/api/reminders/${item.id}/delete`" + `)`,
 		`() => setReminderDeleteArmed(null, view.data)`,
+		`() => changeReminder(` + "`/api/reminders/${item.id}/cancel`" + `)`,
+		`() => setReminderCancelArmed(null, view.data)`,
 		`reminder_mutation_failed: "reminderMutationFailed"`,
+		`renderReminderCreation()`, `cancelReminderWarning`, `setReminderCancelArmed(null, view.data)`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("app.js misses reminders regression %q", want)
@@ -454,9 +457,9 @@ func TestFrontendRemindersAreScopedToActiveAndFailedActions(t *testing.T) {
 			t.Errorf("reminder %s endpoint count = %d, want 1", action, got)
 		}
 	}
-	for _, rejected := range []string{"/api/reminders/new", "/api/reminders/create", "createReminder("} {
-		if strings.Contains(script, rejected) {
-			t.Errorf("Mini App unexpectedly exposes reminder creation %q", rejected)
+	for _, want := range []string{`function createReminder(`, `const cadence = cadenceControl.value === "daily" ? "daily" : "once";`, `payload.daily_time = dailyTime`, `payload.next_run = nextRun.toISOString()`, `createResource("/api/reminders", payload`} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js misses reminder creation %q", want)
 		}
 	}
 	armBody := regexp.MustCompile(`(?s)function setReminderDeleteArmed\([^\n]*\) \{(.*?)\n  \}`).FindStringSubmatch(script)
@@ -468,22 +471,20 @@ func TestFrontendRemindersAreScopedToActiveAndFailedActions(t *testing.T) {
 			t.Errorf("showing or cancelling reminder confirmation unexpectedly calls %q", rejected)
 		}
 	}
-	actions := regexp.MustCompile(`(?s)if \(failed\) \{(.*?)\n      \} else \{(.*?)\n      \}\n      if \(actions`).FindStringSubmatch(script)
-	if len(actions) != 3 {
-		t.Fatal("reminder active/failed action branches are missing")
+	failedActions := regexp.MustCompile(`(?s)if \(failed\) \{(.*?)\n      \} else if \(cancelReminderArmed`).FindStringSubmatch(script)
+	if len(failedActions) != 2 {
+		t.Fatal("reminder failed action branch is missing")
 	}
 	for _, want := range []string{"/retry", "/delete", "deleteReminderWarning"} {
-		if !strings.Contains(actions[1], want) {
+		if !strings.Contains(failedActions[1], want) {
 			t.Errorf("failed reminders miss %q", want)
 		}
 	}
-	if strings.Contains(actions[1], "/cancel") || !strings.Contains(actions[2], "/cancel") {
-		t.Error("reminder Cancel is not restricted to active reminders")
+	if strings.Contains(failedActions[1], "/cancel") {
+		t.Error("failed reminders unexpectedly expose active-only Cancel")
 	}
-	for _, rejected := range []string{"/retry", "/delete", "deleteReminderWarning"} {
-		if strings.Contains(actions[2], rejected) {
-			t.Errorf("active reminders unexpectedly expose %q", rejected)
-		}
+	if !strings.Contains(script, `} else if (cancelReminderArmed === item.id) {`) {
+		t.Error("reminder active Cancel confirmation is missing")
 	}
 }
 

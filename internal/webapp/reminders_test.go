@@ -235,9 +235,9 @@ func TestReminderEndpointsRequireStrictMethodsBodiesAndQueries(t *testing.T) {
 	failed := createWebappReminder(t, app, testChatID, "strict failed", store.ReminderCadenceOnce, now)
 	failWebappReminder(t, app, failed.ID, now)
 
-	status, body, headers := apiRequest(t, server, http.MethodPost, "/api/reminders", bearer)
-	if status != http.StatusMethodNotAllowed || headers.Get("Allow") != http.MethodGet {
-		t.Fatalf("POST reminder list status=%d Allow=%q body=%s", status, headers.Get("Allow"), body)
+	status, body, headers := apiRequest(t, server, http.MethodPut, "/api/reminders", bearer)
+	if status != http.StatusMethodNotAllowed || headers.Get("Allow") != http.MethodGet+", "+http.MethodPost {
+		t.Fatalf("PUT reminder list status=%d Allow=%q body=%s", status, headers.Get("Allow"), body)
 	}
 	status, body, _ = apiRequest(t, server, http.MethodGet, "/api/reminders?limit=20", bearer)
 	if status != http.StatusBadRequest || !strings.Contains(string(body), `"code":"invalid_query"`) {

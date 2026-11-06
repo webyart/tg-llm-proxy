@@ -53,6 +53,10 @@ type recordingTaskLifecycle struct {
 	clearCalls  int
 }
 
+func (l *recordingTaskLifecycle) CreateTask(ctx context.Context, chatID int64, userID int64, goal string) (store.Task, error) {
+	return l.base.CreateTask(ctx, chatID, userID, goal)
+}
+
 func (l *recordingTaskLifecycle) CancelTask(ctx context.Context, chatID int64) (store.Task, bool, error) {
 	l.cancelCalls++
 	return l.base.CancelTask(ctx, chatID)

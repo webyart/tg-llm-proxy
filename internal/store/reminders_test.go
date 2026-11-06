@@ -223,3 +223,74 @@ func TestReminderRestartRecoversLeaseWithoutDuplicateAfterCompletion(t *testing.
 		t.Fatalf("completed reminder duplicated after restart found=%v err=%v", found, err)
 	}
 }
+
+func TestFailedReminderListRetryDeleteIsolationAndBound(t *testing.T) {
+	ctx := context.Background()
+	db := reminderTestDB(t)
+	for _, chatID := range []int64{100, 101} {
+		if err := EnsureChat(ctx, db, chatID, 11, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	failed := make([]Reminder, 0, 7)
+	for i := 0; i < 7; i++ {
+		created, err := CreateReminder(ctx, db, Reminder{ChatID: 100, UserID: 11, Text: strings.Repeat("x", i+1), Cadence: ReminderCadenceOnce, NextRunAt: now, CreatedAt: now})
+		if err != nil {
+			t.Fatal(err)
+		}
+		finishedAt := now.Add(time.Duration(i) * time.Minute)
+		if _, err := db.ExecContext(ctx, `UPDATE reminders SET status = 'failed', attempts = 5, finished_at = ?, updated_at = ? WHERE id = ?`, formatReminderTime(finishedAt), formatReminderTime(finishedAt), created.ID); err != nil {
+			t.Fatal(err)
+		}
+		failed = append(failed, created)
+	}
+	other, err := CreateReminder(ctx, db, Reminder{ChatID: 101, UserID: 11, Text: "other chat", Cadence: ReminderCadenceOnce, NextRunAt: now, CreatedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE reminders SET status = 'failed', attempts = 5, finished_at = ?, updated_at = ? WHERE id = ?`, formatReminderTime(now), formatReminderTime(now), other.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := ListFailedReminders(ctx, db, 100, 5)
+	if err != nil || len(rows) != 5 {
+		t.Fatalf("failed rows=%+v err=%v", rows, err)
+	}
+	for i, row := range rows {
+		want := failed[len(failed)-1-i]
+		if row.ID != want.ID || row.Status != ReminderStatusFailed || row.ChatID != 100 {
+			t.Fatalf("failed row %d=%+v want id=%d", i, row, want.ID)
+		}
+	}
+	if ok, err := RetryFailedReminder(ctx, db, 101, rows[0].ID, now.Add(time.Hour)); err != nil || ok {
+		t.Fatalf("cross-chat retry ok=%v err=%v", ok, err)
+	}
+	retryAt := now.Add(time.Hour)
+	if ok, err := RetryFailedReminder(ctx, db, 100, rows[0].ID, retryAt); err != nil || !ok {
+		t.Fatalf("retry ok=%v err=%v", ok, err)
+	}
+	active, err := ListReminders(ctx, db, 100, ReminderListLimit)
+	if err != nil || len(active) != 1 || active[0].ID != rows[0].ID || active[0].Attempts != 0 || !active[0].NextRunAt.Equal(retryAt) || active[0].FinishedAt != nil {
+		t.Fatalf("retried active=%+v err=%v", active, err)
+	}
+	if ok, err := RetryFailedReminder(ctx, db, 100, rows[0].ID, retryAt); err != nil || ok {
+		t.Fatalf("stale retry ok=%v err=%v", ok, err)
+	}
+	if ok, err := DeleteFailedReminder(ctx, db, 100, rows[0].ID); err != nil || ok {
+		t.Fatalf("active delete ok=%v err=%v", ok, err)
+	}
+	if ok, err := DeleteFailedReminder(ctx, db, 100, other.ID); err != nil || ok {
+		t.Fatalf("cross-chat delete ok=%v err=%v", ok, err)
+	}
+	if ok, err := DeleteFailedReminder(ctx, db, 100, rows[1].ID); err != nil || !ok {
+		t.Fatalf("failed delete ok=%v err=%v", ok, err)
+	}
+	if ok, err := DeleteFailedReminder(ctx, db, 100, rows[1].ID); err != nil || ok {
+		t.Fatalf("stale delete ok=%v err=%v", ok, err)
+	}
+	otherRows, err := ListFailedReminders(ctx, db, 101, 5)
+	if err != nil || len(otherRows) != 1 || otherRows[0].ID != other.ID {
+		t.Fatalf("other chat failed rows=%+v err=%v", otherRows, err)
+	}
+}

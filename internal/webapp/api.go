@@ -5,8 +5,11 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 	"unicode/utf8"
 
+	"bot/internal/bot"
 	"bot/internal/store"
 )
 
@@ -260,17 +263,21 @@ func (a *App) links(w http.ResponseWriter, req *http.Request, current scope) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_before_id": next})
 }
 
+const maxTaskErrorRunes = 300
+
 type taskItem struct {
-	ID        int64  `json:"id"`
-	Goal      string `json:"goal"`
-	Truncated bool   `json:"truncated"`
-	Status    string `json:"status"`
-	NextStep  int    `json:"next_step"`
-	Attempts  int    `json:"attempts"`
-	DueAt     string `json:"due_at"`
-	ExpiresAt string `json:"expires_at"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	ID             int64  `json:"id"`
+	Goal           string `json:"goal"`
+	Truncated      bool   `json:"truncated"`
+	Status         string `json:"status"`
+	NextStep       int    `json:"next_step"`
+	Attempts       int    `json:"attempts"`
+	DueAt          string `json:"due_at"`
+	ExpiresAt      string `json:"expires_at"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
+	Error          string `json:"error,omitempty"`
+	ErrorTruncated bool   `json:"error_truncated,omitempty"`
 }
 
 func (a *App) tasks(w http.ResponseWriter, req *http.Request, current scope) {
@@ -280,7 +287,7 @@ func (a *App) tasks(w http.ResponseWriter, req *http.Request, current scope) {
 		return
 	}
 	rows, err := a.db.QueryContext(req.Context(), `
-		SELECT id, goal, status, next_step, attempts, due_at, expires_at, created_at, updated_at FROM tasks
+		SELECT id, goal, status, next_step, attempts, due_at, expires_at, created_at, updated_at, COALESCE(error, '') FROM tasks
 		WHERE chat_id = ? AND (? = 0 OR id < ?)
 		ORDER BY id DESC LIMIT ?`, current.ChatID, page.Before, page.Before, page.Limit+1)
 	if err != nil {
@@ -292,11 +299,21 @@ func (a *App) tasks(w http.ResponseWriter, req *http.Request, current scope) {
 	for rows.Next() {
 		var item taskItem
 		if err := rows.Scan(&item.ID, &item.Goal, &item.Status, &item.NextStep, &item.Attempts,
-			&item.DueAt, &item.ExpiresAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			&item.DueAt, &item.ExpiresAt, &item.CreatedAt, &item.UpdatedAt, &item.Error); err != nil {
 			a.queryFailed(w, "tasks", err)
 			return
 		}
 		item.Goal, item.Truncated = boundedText(item.Goal, maxTaskRunes)
+		if item.Status == store.TaskStatusFailed {
+			for _, secret := range []string{a.cfg.BotToken, a.cfg.StrataKey} {
+				if secret = strings.TrimSpace(secret); secret != "" {
+					item.Error = strings.ReplaceAll(item.Error, secret, "***")
+				}
+			}
+			item.Error, item.ErrorTruncated = boundedText(item.Error, maxTaskErrorRunes)
+		} else {
+			item.Error = ""
+		}
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -309,4 +326,163 @@ func (a *App) tasks(w http.ResponseWriter, req *http.Request, current scope) {
 		items = items[:page.Limit]
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_before_id": next})
+}
+
+func taskBodyError(w http.ResponseWriter, status int) {
+	if status == http.StatusRequestEntityTooLarge {
+		writeError(w, status, "body_too_large", "Request body is too large.")
+		return
+	}
+	writeError(w, http.StatusBadRequest, "invalid_body", "Task controls accept an empty request body.")
+}
+
+func (a *App) taskMutationFailed(w http.ResponseWriter, req *http.Request, operation string, err error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, req.Context().Err()) {
+		return
+	}
+	a.logger.Error("Mini App task mutation failed", "operation", operation, "error", err)
+	writeError(w, http.StatusInternalServerError, "task_mutation_failed", "The task could not be changed.")
+}
+
+func (a *App) cancelTask(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.Method != http.MethodPost {
+		methodAllowed(w, http.MethodPost)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Task controls do not accept query parameters.")
+		return
+	}
+	if status, ok := emptySettingsBody(req); !ok {
+		taskBodyError(w, status)
+		return
+	}
+	cancelled, changed, err := store.CancelTask(req.Context(), a.db, current.ChatID, time.Now().UTC())
+	if err != nil {
+		a.taskMutationFailed(w, req, "cancel", err)
+		return
+	}
+	if !changed {
+		writeError(w, http.StatusConflict, "task_not_active", "There is no active task to cancel.")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "task_id": cancelled.ID, "status": cancelled.Status})
+}
+
+func resumeTaskID(path string) (int64, bool) {
+	if !strings.HasPrefix(path, "/api/tasks/") || !strings.HasSuffix(path, "/resume") {
+		return 0, false
+	}
+	raw := strings.TrimSuffix(strings.TrimPrefix(path, "/api/tasks/"), "/resume")
+	if raw == "" || strings.Contains(raw, "/") {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 || strconv.FormatInt(id, 10) != raw {
+		return 0, false
+	}
+	return id, true
+}
+
+func (a *App) resumeTask(w http.ResponseWriter, req *http.Request, current scope) {
+	taskID, valid := resumeTaskID(req.URL.Path)
+	if !valid {
+		writeError(w, http.StatusNotFound, "not_found", "API endpoint not found.")
+		return
+	}
+	if req.Method != http.MethodPost {
+		methodAllowed(w, http.MethodPost)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Task controls do not accept query parameters.")
+		return
+	}
+	if status, ok := emptySettingsBody(req); !ok {
+		taskBodyError(w, status)
+		return
+	}
+	resumed, changed, err := store.ResumeTask(req.Context(), a.db, current.ChatID, taskID, time.Now().UTC(), bot.TaskLifetime)
+	if err != nil {
+		a.taskMutationFailed(w, req, "resume", err)
+		return
+	}
+	if !changed {
+		writeError(w, http.StatusConflict, "task_not_resumable", "Only the latest failed or cancelled task can be resumed.")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "task_id": resumed.ID, "status": resumed.Status})
+}
+
+func (a *App) taskControl(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.URL.Path == "/api/tasks/cancel" {
+		a.cancelTask(w, req, current)
+		return
+	}
+	a.resumeTask(w, req, current)
+}
+
+type usageModel struct {
+	Model     string `json:"model"`
+	Calls     int64  `json:"calls"`
+	TokensIn  int64  `json:"tokens_in"`
+	TokensOut int64  `json:"tokens_out"`
+}
+
+type usageResponse struct {
+	Date   string       `json:"date"`
+	Models []usageModel `json:"models"`
+	Tools  struct {
+		ReadURL    int64 `json:"read_url"`
+		WebSearch  int64 `json:"web_search"`
+		Calculator int64 `json:"calculator"`
+		RAG        int64 `json:"rag"`
+	} `json:"tools"`
+	Limits struct {
+		Model        usageLimit `json:"model"`
+		NetworkTools usageLimit `json:"network_tools"`
+	} `json:"limits"`
+}
+
+type usageLimit struct {
+	Used      int64  `json:"used"`
+	Limit     int64  `json:"limit"`
+	Remaining *int64 `json:"remaining"`
+}
+
+func makeUsageLimit(used int64, limit int64) usageLimit {
+	result := usageLimit{Used: used, Limit: limit}
+	if limit > 0 {
+		remaining := limit - used
+		if remaining < 0 {
+			remaining = 0
+		}
+		result.Remaining = &remaining
+	}
+	return result
+}
+
+func (a *App) usage(w http.ResponseWriter, req *http.Request, current scope) {
+	now := time.Now().UTC()
+	daily, err := store.UserDailyUsage(req.Context(), a.db, current.UserID, now)
+	if err != nil {
+		a.queryFailed(w, "usage", err)
+		return
+	}
+	var response usageResponse
+	response.Date = now.Format("2006-01-02")
+	response.Models = make([]usageModel, 0, len(daily.Models))
+	for _, model := range daily.Models {
+		response.Models = append(response.Models, usageModel{
+			Model: model.Model, Calls: model.Calls, TokensIn: model.TokensIn, TokensOut: model.TokensOut,
+		})
+	}
+	response.Tools.ReadURL = daily.Tools.ReadURL
+	response.Tools.WebSearch = daily.Tools.WebSearch
+	response.Tools.Calculator = daily.Tools.Calculator
+	response.Tools.RAG = daily.Tools.RAG
+	limits := a.cfg.DailyLimitsFor(current.UserID)
+	response.Limits.Model = makeUsageLimit(daily.ModelCalls(), limits.Model)
+	response.Limits.NetworkTools = makeUsageLimit(daily.NetworkToolCalls(), limits.NetworkTools)
+	writeJSON(w, http.StatusOK, response)
 }

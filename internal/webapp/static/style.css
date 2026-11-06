@@ -47,6 +47,9 @@ a { color: var(--tg-theme-link-color, #2678c8); overflow-wrap: anywhere; word-br
 .settings-section p { margin: 4px 0 10px; }
 .settings-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; max-width: 100%; margin-top: 9px; }
 .settings-row > * { min-width: 0; max-width: 100%; }
+.task-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.task-error { white-space: pre-wrap; overflow-wrap: anywhere; color: #a82b2b; margin-top: 6px; }
+.usage-row { padding: 8px 0; border-top: 1px solid #7b899633; }
 select, textarea {
   width: 100%; min-width: 0; max-width: 100%; border: 1px solid #7b899666; border-radius: 9px; padding: 9px;
   color: var(--tg-theme-text-color, #17202a); background: var(--tg-theme-bg-color, #f4f6f8); font: inherit;

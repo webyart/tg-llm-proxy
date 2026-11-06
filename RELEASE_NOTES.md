@@ -1,3 +1,24 @@
+# tg-llm-proxy v1.30.4
+
+## Reminders failure UX
+
+- Меню напоминаний создаёт one-shot через 10 минут, 1 час или завтра в 09:00 с указанием `REMINDER_TIMEZONE`. Раздел «Недоставленные» показывает до пяти recent failed текущего чата с действиями Retry/Delete.
+- Retry возвращает напоминание в `active` с нулевыми `attempts`; Delete удаляет только failed-запись текущего чата. После пятой ошибки one-shot становится failed и получает best-effort terminal notification. Atomic claims, backoff и wall-clock/DST для daily сохранены.
+
+## Mini App Tasks/Usage
+
+- Tasks показывает sanitized error и expiry для failed, Cancel для active и Resume последней failed/cancelled через `store.ResumeTask`. Network approvals по-прежнему подтверждаются только в Telegram.
+- Новый `GET /api/usage` и вкладка Usage показывают за UTC-сутки model calls по моделям, входящие/исходящие tokens, вызовы tools, effective limits и remaining; для unlimited `remaining` равен `null`. Ответ не содержит текстов запросов, целей задач или event detail.
+
+## TTS last/speed
+
+- `/tts last` озвучивает последний assistant answer текущего чата без вызова модели. `/tts speed` показывает текущую скорость, а `/tts speed 0.75|1|1.25|1.5` сохраняет per-chat настройку в `bot_state`.
+- Speaches получает выбранную скорость вместо hardcoded `1`. Opt-in `TTS_ENABLED`, privacy caps и redaction upstream errors сохранены.
+
+## Regressions
+
+- Добавлены regressions для quick/failed reminders и terminal notification, Mini App task mutations и content-free Usage, `/tts last` без model call, per-chat speed и Speaches payload, включая integration-сценарий.
+
 # tg-llm-proxy v1.30.3
 
 ## Reliability improvements

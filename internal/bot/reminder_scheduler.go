@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -166,11 +167,21 @@ func (d *Dispatcher) processClaimedReminder(ctx context.Context, reminder store.
 				return err
 			}
 		}
-		if _, retryErr := store.RetryReminder(ctx, d.deps.DB, reminder, now, now.Add(ReminderRetryDelay(reminder.Attempts)), exhausted, dailyNext); retryErr != nil {
+		retried, retryErr := store.RetryReminder(ctx, d.deps.DB, reminder, now, now.Add(ReminderRetryDelay(reminder.Attempts)), exhausted, dailyNext)
+		if retryErr != nil {
 			return retryErr
 		}
 		d.deps.Logger.Warn("reminder delivery failed", "reminder_id", reminder.ID, "chat_id", reminder.ChatID,
 			"attempt", reminder.Attempts, "exhausted", exhausted, "error", Sanitize(err, d.deps.Token))
+		if retried && exhausted && reminder.Cadence == store.ReminderCadenceOnce {
+			noticeCtx, noticeCancel := context.WithTimeout(ctx, ReminderSendTimeout)
+			notice := fmt.Sprintf("Напоминание #%d не доставлено после %d попыток. Текст: %s\nОткрой /reminders, чтобы повторить или удалить его.", reminder.ID, ReminderMaxSendAttempts, reminder.Text)
+			noticeErr := d.sendPlainReminder(noticeCtx, reminder.ChatID, notice)
+			noticeCancel()
+			if noticeErr != nil {
+				d.deps.Logger.Warn("reminder terminal failure notification failed", "reminder_id", reminder.ID, "chat_id", reminder.ChatID, "error", Sanitize(noticeErr, d.deps.Token))
+			}
+		}
 		return nil
 	}
 

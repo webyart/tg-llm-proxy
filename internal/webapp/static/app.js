@@ -7,7 +7,7 @@
       languageLabel: "Язык", closeSession: "Закрыть сессию", launchTitle: "Запуск из Telegram",
       launchText: "Откройте Mini App через «Ещё → Mini App» в меню бота. Ссылка запуска и подпись Telegram проверяются до показа данных чата.",
       navLabel: "Разделы чата", tabStatus: "Статус", tabHistory: "История", tabDocuments: "Документы",
-      tabLinks: "Ссылки", tabTasks: "Задачи", tabSettings: "Настройки", refresh: "Обновить", loadOlder: "Показать ранее",
+      tabLinks: "Ссылки", tabTasks: "Задачи", tabUsage: "Использование", tabSettings: "Настройки", refresh: "Обновить", loadOlder: "Показать ранее",
       sessionExpired: "Сессия истекла. Откройте Mini App заново из Telegram.",
       launchRequired: "Запустите страницу через «Ещё → Mini App» в Telegram.",
       verifyLaunch: "Проверяем запуск из Telegram…", launchFailed: "Не удалось проверить запуск. Откройте Mini App заново из Telegram.",
@@ -18,6 +18,14 @@
       bytes: "байт", chunks: "фрагментов", step: "шаг", attempts: "попыток", due: "срок",
       task_ready: "готова", task_running: "выполняется", task_awaiting_approval: "ждёт разрешения",
       task_completed: "завершена", task_cancelled: "отменена", task_failed: "ошибка",
+      expires: "истекает", taskError: "Причина", cancelTask: "Отменить", resumeTask: "Возобновить",
+      taskUpdated: "Задача обновлена.", taskNotActive: "Активной задачи для отмены нет.",
+      taskNotResumable: "Возобновить можно только последнюю задачу с ошибкой или отменённую задачу.",
+      taskMutationFailed: "Не удалось изменить задачу.", networkApprovalTelegram: "Сетевое действие подтверждается только в Telegram.",
+      usageDate: "Дата", modelCalls: "вызовов", tokensIn: "входящих токенов", tokensOut: "исходящих токенов",
+      toolsTitle: "Инструменты", dailyLimits: "Дневные лимиты", used: "использовано", limit: "лимит",
+      remaining: "осталось", unlimited: "без ограничений", modelUnspecified: "модель не указана",
+      networkTools: "Сетевые инструменты", noUsage: "Обращений за сегодня не было.",
       settingsSaved: "Настройки чата сохранены.", settingsSaveFailed: "Не удалось сохранить настройку.",
       dataLoadFailed: "Не удалось загрузить данные.", invalidResponse: "Сервер вернул некорректный ответ.",
       networkError: "Нет соединения с сервером. Проверьте сеть и повторите попытку.", requestFailed: "Запрос не выполнен (код {status}).",
@@ -49,7 +57,7 @@
       languageLabel: "Language", closeSession: "Close session", launchTitle: "Launch from Telegram",
       launchText: "Open this Mini App with More → Mini App in the bot menu. The launch link and Telegram signature are checked before any chat data is shown.",
       navLabel: "Chat sections", tabStatus: "Status", tabHistory: "History", tabDocuments: "Documents",
-      tabLinks: "Links", tabTasks: "Tasks", tabSettings: "Settings", refresh: "Refresh", loadOlder: "Load older",
+      tabLinks: "Links", tabTasks: "Tasks", tabUsage: "Usage", tabSettings: "Settings", refresh: "Refresh", loadOlder: "Load older",
       sessionExpired: "Session expired. Reopen the Mini App from Telegram.",
       launchRequired: "This page needs a launch from More → Mini App in Telegram.",
       verifyLaunch: "Verifying Telegram launch…", launchFailed: "Launch verification failed. Reopen the Mini App from Telegram.",
@@ -60,6 +68,14 @@
       bytes: "bytes", chunks: "chunks", step: "step", attempts: "attempts", due: "due",
       task_ready: "ready", task_running: "running", task_awaiting_approval: "awaiting approval",
       task_completed: "completed", task_cancelled: "cancelled", task_failed: "failed",
+      expires: "expires", taskError: "Reason", cancelTask: "Cancel", resumeTask: "Resume",
+      taskUpdated: "Task updated.", taskNotActive: "There is no active task to cancel.",
+      taskNotResumable: "Only the latest failed or cancelled task can be resumed.",
+      taskMutationFailed: "The task could not be changed.", networkApprovalTelegram: "Approve network actions only in Telegram.",
+      usageDate: "Date", modelCalls: "calls", tokensIn: "input tokens", tokensOut: "output tokens",
+      toolsTitle: "Tools", dailyLimits: "Daily limits", used: "used", limit: "limit",
+      remaining: "remaining", unlimited: "unlimited", modelUnspecified: "model not specified",
+      networkTools: "Network tools", noUsage: "No calls today.",
       settingsSaved: "Settings saved for this chat.", settingsSaveFailed: "The setting could not be saved.",
       dataLoadFailed: "The data could not be loaded.", invalidResponse: "The server returned an invalid response.",
       networkError: "The server could not be reached. Check your connection and try again.", requestFailed: "Request failed ({status}).",
@@ -94,6 +110,7 @@
     invalid_json: "errorInvalidJSON", content_type: "errorContentType", body_too_large: "errorBodyLarge",
     method_not_allowed: "errorMethod", invalid_pagination: "errorPagination", read_failed: "errorRead",
     overloaded: "errorOverloaded", not_found: "errorNotFound", invalid_body: "errorInvalidJSON", static_error: "errorRead",
+    task_not_active: "taskNotActive", task_not_resumable: "taskNotResumable", task_mutation_failed: "taskMutationFailed",
   };
 
   function initialLanguage() {
@@ -211,7 +228,7 @@
       renderEmpty(t(tab === "history" ? "emptyHistory" : "emptyItems"));
       return;
     }
-    for (const item of items) {
+    for (const [index, item] of items.entries()) {
       const wrapper = itemShell(item.id, item.created_at || item.updated_at);
       if (tab === "history") {
         wrapper.appendChild(element("div", "role", item.role === "user" ? t("you") : t("assistant")));
@@ -235,6 +252,17 @@
         wrapper.appendChild(element("div", "content", item.goal));
         const status = maybe(`task_${item.status}`, item.status);
         wrapper.appendChild(element("div", "meta", `${status} · ${t("step")} ${item.next_step} · ${item.attempts} ${t("attempts")} · ${t("due")} ${item.due_at}`));
+        wrapper.appendChild(element("div", "meta", `${t("expires")}: ${item.expires_at}`));
+        if (item.error) wrapper.appendChild(element("div", "task-error", `${t("taskError")}: ${item.error}`));
+        if (item.status === "awaiting_approval") wrapper.appendChild(element("p", "meta", t("networkApprovalTelegram")));
+        const actions = element("div", "task-actions");
+        if (["ready", "running", "awaiting_approval"].includes(item.status)) {
+          actions.appendChild(settingsButton(t("cancelTask"), () => changeTask("/api/tasks/cancel"), true));
+        }
+        if (index === 0 && ["failed", "cancelled"].includes(item.status)) {
+          actions.appendChild(settingsButton(t("resumeTask"), () => changeTask(`/api/tasks/${item.id}/resume`)));
+        }
+        if (actions.childNodes.length) wrapper.appendChild(actions);
       }
       ui.content.appendChild(wrapper);
     }
@@ -250,7 +278,7 @@
   function settingsSection(title, description) {
     const section = element("section", "settings-section");
     section.appendChild(element("h3", "", title));
-    section.appendChild(element("p", "meta", description));
+    if (description) section.appendChild(element("p", "meta", description));
     return section;
   }
 
@@ -277,6 +305,27 @@
     if (saved) {
       await load();
       showError(t("settingsSaved"));
+    }
+  }
+
+  async function changeTask(path) {
+    if (loading || !session) return;
+    loading = true;
+    ui.refresh.disabled = true;
+    showError("");
+    let changed = false;
+    try {
+      await api(path, { method: "POST" });
+      changed = true;
+    } catch (error) {
+      showError(error.message || t("taskMutationFailed"));
+    } finally {
+      loading = false;
+      ui.refresh.disabled = false;
+    }
+    if (changed) {
+      await load();
+      showError(t("taskUpdated"));
     }
   }
 
@@ -358,11 +407,45 @@
     ui.content.appendChild(stream);
   }
 
+  function renderUsage(data) {
+    ui.content.replaceChildren();
+    ui.content.appendChild(element("p", "meta", `${t("usageDate")}: ${data.date} (UTC)`));
+    const models = settingsSection(t("modelTitle"), "");
+    if (!data.models.length) models.appendChild(element("p", "empty", t("noUsage")));
+    for (const model of data.models) {
+      const row = element("div", "usage-row");
+      row.appendChild(element("div", "content", model.model || t("modelUnspecified")));
+      row.appendChild(element("div", "meta", `${model.calls} ${t("modelCalls")} · ${model.tokens_in} ${t("tokensIn")} · ${model.tokens_out} ${t("tokensOut")}`));
+      models.appendChild(row);
+    }
+    ui.content.appendChild(models);
+
+    const tools = settingsSection(t("toolsTitle"), "");
+    for (const name of ["read_url", "web_search", "calculator", "rag"]) {
+      tools.appendChild(element("div", "meta", `${name}: ${data.tools[name]}`));
+    }
+    ui.content.appendChild(tools);
+
+    const limits = settingsSection(t("dailyLimits"), "");
+    const grid = element("div", "stats");
+    for (const [label, value] of [[t("modelTitle"), data.limits.model], [t("networkTools"), data.limits.network_tools]]) {
+      const card = element("div", "stat");
+      const remaining = value.remaining === null ? t("unlimited") : String(value.remaining);
+      card.appendChild(element("strong", "", remaining));
+      card.appendChild(element("span", "", `${label} · ${t("remaining")}`));
+      card.appendChild(element("div", "meta", `${t("used")}: ${value.used} · ${t("limit")}: ${value.limit || t("unlimited")}`));
+      grid.appendChild(card);
+    }
+    limits.appendChild(grid);
+    ui.content.appendChild(limits);
+  }
+
   function renderView() {
     if (view.tab !== activeTab) return;
     if (activeTab === "status" && view.data) renderStatus(view.data);
     else if (activeTab === "settings" && view.data) renderSettings(view.data);
-    else if (activeTab !== "status" && activeTab !== "settings") renderItems(activeTab, view.items);
+    else if (activeTab === "usage" && view.data) renderUsage(view.data);
+    else if (!["status", "settings", "usage"].includes(activeTab)) renderItems(activeTab, view.items);
   }
 
   function applyTranslations() {
@@ -390,6 +473,10 @@
         view = { tab: activeTab, data: await api("/api/settings"), items: [] };
         renderSettings(view.data);
         nextBefore = null;
+      } else if (activeTab === "usage") {
+        view = { tab: activeTab, data: await api("/api/usage"), items: [] };
+        renderUsage(view.data);
+        nextBefore = null;
       } else {
         if (!append) view = { tab: activeTab, data: null, items: [] };
         const params = new URLSearchParams({ limit: "10" });
@@ -399,7 +486,7 @@
         view.items = view.items.concat(data.items);
         renderItems(activeTab, view.items);
       }
-      ui.more.hidden = activeTab === "status" || activeTab === "settings" || !nextBefore;
+      ui.more.hidden = ["status", "settings", "usage"].includes(activeTab) || !nextBefore;
     } catch (error) {
       showError(error.message || t("dataLoadFailed"));
     } finally {

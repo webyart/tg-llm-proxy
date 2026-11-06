@@ -212,6 +212,54 @@ func ListReminders(ctx context.Context, db *sql.DB, chatID int64, limit int) ([]
 	return reminders, rows.Err()
 }
 
+func ListFailedReminders(ctx context.Context, db *sql.DB, chatID int64, limit int) ([]Reminder, error) {
+	if limit <= 0 || limit > ReminderListLimit {
+		limit = ReminderListLimit
+	}
+	rows, err := db.QueryContext(ctx, `SELECT `+reminderColumns+` FROM reminders
+		WHERE chat_id = ? AND status = 'failed' ORDER BY finished_at DESC, updated_at DESC, id DESC LIMIT ?`, chatID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	reminders := []Reminder{}
+	for rows.Next() {
+		reminder, scanErr := scanReminder(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		reminders = append(reminders, reminder)
+	}
+	return reminders, rows.Err()
+}
+
+func RetryFailedReminder(ctx context.Context, db *sql.DB, chatID int64, reminderID int64, now time.Time) (bool, error) {
+	if chatID == 0 || reminderID <= 0 {
+		return false, nil
+	}
+	result, err := db.ExecContext(ctx, `UPDATE reminders
+		SET status = 'active', attempts = 0, next_run_at = ?, updated_at = ?, finished_at = NULL, claim_token = NULL, lease_until = NULL
+		WHERE id = ? AND chat_id = ? AND status = 'failed'`,
+		formatReminderTime(now), formatReminderTime(now), reminderID, chatID)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
+}
+
+func DeleteFailedReminder(ctx context.Context, db *sql.DB, chatID int64, reminderID int64) (bool, error) {
+	if chatID == 0 || reminderID <= 0 {
+		return false, nil
+	}
+	result, err := db.ExecContext(ctx, `DELETE FROM reminders WHERE id = ? AND chat_id = ? AND status = 'failed'`, reminderID, chatID)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
+}
+
 func CancelReminder(ctx context.Context, db *sql.DB, chatID int64, reminderID int64, now time.Time) (bool, error) {
 	if chatID == 0 || reminderID <= 0 {
 		return false, nil

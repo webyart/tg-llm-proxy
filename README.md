@@ -291,7 +291,7 @@ Ask, Search и Custom Persona принимают следующий текст �
 
 More → Mini App открывает companion со Status, History, Documents, Links и Tasks. Для включения задайте `MINIAPP_ENABLED=true` и HTTPS `MINIAPP_PUBLIC_URL`, затем запустите Compose. Публичный URL должен вести через reverse proxy/tunnel на host `127.0.0.1:8084`; внутри контейнера listener `0.0.0.0`.
 
-Raw `initData` проверяется через Telegram HMAC и `auth_date`, launch ticket привязан к chat/user на 2 минуты, session — на 15 минут. Доступ проверяется при каждом запросе. Нет mutations, model calls, model keys, task plans/results или tool arguments. Внешний HTTPS acceptance не выполнялся; перед production использованием проверьте реальный Telegram client.
+Raw `initData` проверяется через Telegram HMAC и `auth_date`, launch ticket привязан к chat/user на 2 минуты, session — на 15 минут. Доступ проверяется при каждом запросе. Нет mutations, model calls, model keys, task plans/results или tool arguments. Внешний HTTPS acceptance выполнен через Tailscale Funnel: локальный и публичный endpoint отвечают 200, `/api/history` без авторизации возвращает 401, запуск в Telegram client подтверждён.
 
 ## Проверка проекта
 

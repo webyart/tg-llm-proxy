@@ -44,7 +44,7 @@ func TestTaskMigration9PreservesDataAndIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 	version, err := SchemaVersion(ctx, db)
-	if err != nil || version != 9 || version != len(MigrationSQL) {
+	if err != nil || version != len(MigrationSQL) {
 		t.Fatalf("version=%d err=%v", version, err)
 	}
 	var title string
@@ -100,15 +100,15 @@ func TestTaskSingletonClaimStepAndFinalCompletion(t *testing.T) {
 	if err != nil || !found || finalClaim.NextStep != 1 {
 		t.Fatalf("final claim=%+v found=%v err=%v", finalClaim, found, err)
 	}
-	ok, err := CompleteTask(ctx, db, finalClaim, Message{ChatID: 100, Role: RoleAssistant, Content: "consolidated", Model: "selected-model"}, now)
+	ok, err := CompleteTask(ctx, db, finalClaim, Message{ChatID: 100, UserID: 11, Role: RoleAssistant, Content: "consolidated", Model: "selected-model"}, now)
 	if err != nil || !ok {
 		t.Fatalf("CompleteTask ok=%v err=%v", ok, err)
 	}
-	if ok, err := CompleteTask(ctx, db, finalClaim, Message{ChatID: 100, Role: RoleAssistant, Content: "duplicate"}, now); err != nil || ok {
+	if ok, err := CompleteTask(ctx, db, finalClaim, Message{ChatID: 100, UserID: 11, Role: RoleAssistant, Content: "duplicate"}, now); err != nil || ok {
 		t.Fatalf("duplicate final completion ok=%v err=%v", ok, err)
 	}
 	rows, err := HistoryOfChat(ctx, db, 100, 10)
-	if err != nil || len(rows) != 1 || rows[0].Content != "consolidated" {
+	if err != nil || len(rows) != 1 || rows[0].Content != "consolidated" || rows[0].UserID != 11 {
 		t.Fatalf("history=%+v err=%v", rows, err)
 	}
 	if _, found, err := ClaimNextTask(ctx, db, now.Add(2*time.Minute), time.Minute); err != nil || found {

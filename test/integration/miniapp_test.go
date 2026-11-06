@@ -10,7 +10,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
@@ -22,6 +24,7 @@ import (
 	"bot/internal/bot"
 	"bot/internal/store"
 	"bot/internal/testutil"
+	"bot/internal/webapp"
 )
 
 func miniAppInitData(t *testing.T, token string, id int64, authDate time.Time) string {
@@ -214,4 +217,90 @@ func TestMiniAppFakeTelegramLaunchAndSettingsAPI(t *testing.T) {
 	}
 	secretLeak(t, "Mini App integration logs", logText)
 	run.stop()
+}
+
+func TestMiniAppSettingsMutationPreservesGroupTokenAttribution(t *testing.T) {
+	ctx := context.Background()
+	path := dbFile(t)
+	tgAPI := testutil.NewTelegram(t, secretToken)
+	strata := testutil.NewStrata(t, secretStrataKey, testutil.StrataReply{
+		Content: "group answer", Model: "fake-model", TokensIn: 10, TokensOut: 20,
+		Models: []string{"qwen-test", "qwen-alt"},
+	})
+	const (
+		groupID  int64 = -100500
+		secondID int64 = 1818
+	)
+	cfg := integrationEnv(t, path, strata.BaseURL(), map[string]string{
+		"TELEGRAM_ALLOWED_USERS": "1717,1818",
+		"MINIAPP_ENABLED":        "true",
+		"MINIAPP_PUBLIC_URL":     "https://example.test/companion",
+	})
+	db := openStore(t, path)
+	client := newClient(t, cfg, strata)
+	startBot(t, ctx, cfg, db, client, tgAPI, bot.Options{ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second}, 0)
+	app := webapp.New(cfg, db, client, slog.Default())
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+	pushGroupQuestion := func(updateID int64, senderID int64, text string) {
+		tgAPI.Push(models.Update{ID: updateID, Message: &models.Message{
+			ID: int(updateID), Date: int(time.Now().Unix()),
+			Chat: models.Chat{ID: groupID, Type: models.ChatTypeGroup, Title: "Accounting group"},
+			From: &models.User{ID: senderID, FirstName: "Tester"}, Text: text,
+		}})
+	}
+	pushGroupQuestion(800, userID, "first user question")
+	waitFor(t, "first group answer", func() bool { return tgAPI.Calls("sendMessage") == 1 && strata.ChatCalls() == 1 })
+
+	ticket, err := app.NewLaunchTicket(groupID, secondID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := miniAppInitData(t, secretToken, secondID, time.Now())
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/session", strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("X-Launch-Ticket", ticket)
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("group Mini App session status=%d body=%s", response.StatusCode, body)
+	}
+	var session struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body, &session); err != nil || session.Token == "" {
+		t.Fatalf("group Mini App session body=%s err=%v", body, err)
+	}
+	status, body := miniAppSettingsRequest(t, server.URL, http.MethodPut, "/api/settings/model", session.Token, `{"model":"qwen-alt"}`)
+	if status != http.StatusOK {
+		t.Fatalf("group Mini App model mutation status=%d body=%s", status, body)
+	}
+
+	pushGroupQuestion(801, secondID, "second user question")
+	waitFor(t, "second group answer", func() bool { return tgAPI.Calls("sendMessage") == 2 && strata.ChatCalls() == 2 })
+	rows, err := store.HistoryOfChat(ctx, db, groupID, 10)
+	if err != nil || len(rows) != 4 {
+		t.Fatalf("group history=%+v err=%v", rows, err)
+	}
+	if rows[1].Role != store.RoleAssistant || rows[1].UserID != userID || rows[3].Role != store.RoleAssistant || rows[3].UserID != secondID {
+		t.Fatalf("group assistant attribution=%+v", rows)
+	}
+	for _, id := range []int64{userID, secondID} {
+		usage, err := store.UserDailyUsage(ctx, db, id, time.Now())
+		var tokensIn, tokensOut int64
+		for _, usageModel := range usage.Models {
+			tokensIn += usageModel.TokensIn
+			tokensOut += usageModel.TokensOut
+		}
+		if err != nil || usage.ModelCalls() != 1 || tokensIn != 10 || tokensOut != 20 {
+			t.Fatalf("user %d usage=%+v err=%v", id, usage, err)
+		}
+	}
 }

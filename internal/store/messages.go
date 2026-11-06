@@ -97,9 +97,9 @@ func Append(ctx context.Context, db *sql.DB, m Message) (int64, error) {
 		return 0, err
 	}
 	var res, err = db.ExecContext(ctx, `
-		INSERT INTO messages (chat_id, role, content, tokens_in, tokens_out, model, latency_ms, telegram_message_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ChatID, m.Role, m.Content, m.TokensIn, m.TokensOut, nullable(m.Model), m.LatencyMs, m.TelegramMessageID)
+		INSERT INTO messages (chat_id, user_id, role, content, tokens_in, tokens_out, model, latency_ms, telegram_message_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ChatID, m.UserID, m.Role, m.Content, m.TokensIn, m.TokensOut, nullable(m.Model), m.LatencyMs, m.TelegramMessageID)
 	if err != nil {
 		if isUniqueTelegramID(err) {
 			return 0, fmt.Errorf("%w: %v", ErrDuplicateMessage, err)
@@ -140,7 +140,7 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 		var m = Message{}
 		var model sql.NullString // messages.model is TEXT
 		var tgID, tokensIn, tokensOut, latency sql.NullInt64
-		if err := rows.Scan(&m.ID, &m.ChatID, &m.Role, &m.Content, &tokensIn, &tokensOut,
+		if err := rows.Scan(&m.ID, &m.ChatID, &m.UserID, &m.Role, &m.Content, &tokensIn, &tokensOut,
 			&model, &latency, &tgID, &m.CreatedAt); err != nil {
 			return nil, err
 		}
@@ -219,7 +219,7 @@ func RecentByChat(ctx context.Context, db *sql.DB, chatID int64, limit int) ([]M
 	queryArgs = append(queryArgs, args...) // the placeholder of contextFilter, when it has one
 	queryArgs = append(queryArgs, limit)   // LIMIT ? is the last placeholder of the statement
 	var rows, queryErr = db.QueryContext(ctx, `
-		SELECT m.id, m.chat_id, m.role, m.content, m.tokens_in, m.tokens_out, m.model, m.latency_ms, m.telegram_message_id, m.created_at
+		SELECT m.id, m.chat_id, m.user_id, m.role, m.content, m.tokens_in, m.tokens_out, m.model, m.latency_ms, m.telegram_message_id, m.created_at
 		FROM messages m
 		WHERE m.chat_id = ? AND `+filter+`
 		ORDER BY m.id DESC
@@ -237,7 +237,7 @@ func HistoryOfChat(ctx context.Context, db *sql.DB, chatID int64, limit int) ([]
 		return []Message{}, nil
 	}
 	var rows, err = db.QueryContext(ctx, `
-		SELECT id, chat_id, role, content, tokens_in, tokens_out, model, latency_ms, telegram_message_id, created_at
+		SELECT id, chat_id, user_id, role, content, tokens_in, tokens_out, model, latency_ms, telegram_message_id, created_at
 		FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?`, chatID, limit)
 	if err != nil {
 		return nil, err
@@ -362,7 +362,7 @@ func lastVisibleRow(ctx context.Context, db *sql.DB, chatID int64) (Message, err
 	}
 	var queryArgs = append([]any{chatID}, args...) // the placeholder of contextFilter, when it has one
 	var rows, queryErr = db.QueryContext(ctx, `
-		SELECT m.id, m.chat_id, m.role, m.content, m.tokens_in, m.tokens_out, m.model, m.latency_ms, m.telegram_message_id, m.created_at
+		SELECT m.id, m.chat_id, m.user_id, m.role, m.content, m.tokens_in, m.tokens_out, m.model, m.latency_ms, m.telegram_message_id, m.created_at
 		FROM messages m
 		WHERE m.chat_id = ? AND `+filter+`
 		ORDER BY m.id DESC

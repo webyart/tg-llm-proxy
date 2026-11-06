@@ -13,7 +13,7 @@ func ExportMessages(ctx context.Context, db *sql.DB, chatID int64, max int) ([]M
 		return nil, errors.New("export limit must be positive")
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, chat_id, role, content, tokens_in, tokens_out, model, latency_ms, telegram_message_id, created_at
+		SELECT id, chat_id, user_id, role, content, tokens_in, tokens_out, model, latency_ms, telegram_message_id, created_at
 		FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?`, chatID, max)
 	if err != nil {
 		return nil, err

@@ -636,7 +636,7 @@ func TestUpdatesWithoutMessageSurviveTheHandler(t *testing.T) {
 		rows[after[k].Name] = after[k].Rows
 		k++
 	}
-	if rows["chats"] != 1 || rows["events"] != 1 || rows["messages"] != 2 {
+	if rows["chats"] != 1 || rows["events"] != 2 || rows["messages"] != 2 {
 		t.Fatalf("/ask through the same handler must behave as before the net : chats=%d events=%d messages=%d",
 			rows["chats"], rows["events"], rows["messages"])
 	}

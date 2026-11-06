@@ -38,9 +38,15 @@ var SavedLinksSQL string
 //go:embed migrations/009_tasks.sql
 var TasksSQL string
 
+//go:embed migrations/010_daily_quota_reservations.sql
+var DailyQuotaReservationsSQL string
+
+//go:embed migrations/011_message_user_attribution.sql
+var MessageUserAttributionSQL string
+
 // MigrationSQL is the ordered, append-only migration history. The slice index plus one is the permanent schema
 // version recorded in schema_migrations; existing entries must never be edited after deployment.
-var MigrationSQL = []string{InitSQL, ChatSettingsSQL, ChatStreamingSQL, ChatPersonasSQL, RAGDocumentsSQL, EventIndexesSQL, RemindersSQL, SavedLinksSQL, TasksSQL}
+var MigrationSQL = []string{InitSQL, ChatSettingsSQL, ChatStreamingSQL, ChatPersonasSQL, RAGDocumentsSQL, EventIndexesSQL, RemindersSQL, SavedLinksSQL, TasksSQL, DailyQuotaReservationsSQL, MessageUserAttributionSQL}
 
 // SchemaVersion returns the newest applied migration, or zero for a pre-versioning backup.
 func SchemaVersion(ctx context.Context, db *sql.DB) (int, error) {

@@ -44,7 +44,7 @@ func TestDailyModelLimitBelowAtOverAndPerUser(t *testing.T) {
 		}
 	}
 	resp, err := d.callModel(context.Background(), 11, model.Request{}, nil, nil)
-	if err != nil || resp.Content != modelDailyLimitErrorText {
+	if err != ErrModelDailyLimited || resp.Content != "" {
 		t.Fatalf("at-limit response=%+v err=%v", resp, err)
 	}
 	if m.callCount() != 2 {
@@ -56,7 +56,7 @@ func TestDailyModelLimitBelowAtOverAndPerUser(t *testing.T) {
 	}
 }
 
-func TestDailyModelLimitRefusalIsNotStoredAsUsage(t *testing.T) {
+func TestDailyModelLimitRefusalIsNotStoredAsUsageOrAssistantAnswer(t *testing.T) {
 	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "USER_DAILY_MODEL_LIMIT": "1"})
 	m := &fakeModel{response: model.Response{Content: "actual answer"}}
 	r := &fakeReplier{}
@@ -74,6 +74,10 @@ func TestDailyModelLimitRefusalIsNotStoredAsUsage(t *testing.T) {
 	calls, err := store.DailyModelCalls(context.Background(), db, 11, d.now())
 	if err != nil || calls != 1 {
 		t.Fatalf("DailyModelCalls=%d err=%v, want only the actual answer", calls, err)
+	}
+	rows, err := store.HistoryOfChat(context.Background(), db, 100, 10)
+	if err != nil || len(rows) != 3 || rows[1].Role != store.RoleAssistant || rows[1].Content != "actual answer" {
+		t.Fatalf("limited dispatch stored an assistant notice: rows=%+v err=%v", rows, err)
 	}
 }
 
@@ -215,7 +219,7 @@ func TestDailyModelLimitCountsEveryToolLoopProviderCall(t *testing.T) {
 		t.Fatalf("completeWithTools response=%+v err=%v", resp, err)
 	}
 	resp, err = d.completeWithTools(context.Background(), 11, model.Request{Model: "test-model"}, nil, nil)
-	if err != nil || resp.Content != modelDailyLimitErrorText {
+	if err != ErrModelDailyLimited || resp.Content != "" {
 		t.Fatalf("at-limit tool-loop response=%+v err=%v", resp, err)
 	}
 	if len(m.requests) != 2 {

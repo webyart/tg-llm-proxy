@@ -426,7 +426,7 @@ func TestModelWorkBudgetIncludesToolRoundsAndFinalSynthesis(t *testing.T) {
 		t.Fatalf("model requests=%d budget count=%d, want 60", len(m.requests), d.modelWork.Count(11))
 	}
 	resp, err := d.completeWithTools(context.Background(), 11, model.Request{}, nil, nil)
-	if err != nil || resp.Content != modelWorkBudgetErrorText {
+	if err != ErrModelRateLimited || resp.Content != "" {
 		t.Fatalf("over-budget response=%+v err=%v", resp, err)
 	}
 	if len(m.requests) != 60 {

@@ -137,6 +137,7 @@ func (d *Dispatcher) RunTaskScheduler(ctx context.Context) {
 }
 
 func (d *Dispatcher) ProcessDueTasks(ctx context.Context, now time.Time, limit int) (int, error) {
+	d.pruneExpiredNonTaskNetworkConfirmations(now)
 	if limit <= 0 || limit > TaskBatchLimit {
 		limit = TaskBatchLimit
 	}
@@ -317,7 +318,11 @@ func (d *Dispatcher) failClaimedTask(ctx context.Context, task store.Task, cause
 		return nil
 	}
 	d.removeTaskApproval(ctx, task)
-	return d.reply(ctx, task.ChatID, fmt.Sprintf("Задача #%d остановлена: %s. Будущие шаги не выполняются.", task.ID, brief(Sanitize(cause, d.deps.Token), 300)))
+	reason := brief(Sanitize(cause, d.deps.Token), 300)
+	if notice, limited := modelLimitNotice(cause); limited {
+		reason = notice
+	}
+	return d.reply(ctx, task.ChatID, fmt.Sprintf("Задача #%d остановлена: %s. Будущие шаги не выполняются.", task.ID, reason))
 }
 
 func (d *Dispatcher) processDueTasks(ctx context.Context, now time.Time, limit int) {

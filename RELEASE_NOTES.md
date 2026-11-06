@@ -1,3 +1,13 @@
+# tg-llm-proxy v1.30.1
+
+## Correctness patch
+
+- `/task resume`, `/task clear` и `clear confirm` больше не считаются model-запросами: не расходуют model quota, не создают history rows и не попадают в startup recovery. Model work выполняется только для новой цели задачи.
+- Добавлены typed `ErrModelRateLimited` и `ErrModelDailyLimited`. Они переводятся в понятные сообщения только на UX-границе и больше не сохраняются как assistant answers и не завершают task step.
+- Scoped `read_url` больше не разрешает cross-origin redirect: цель требует нового request/approval. Direct user-requested URL сохраняет текущее поведение redirects.
+- Non-task approvals получили periodic expiry pruning, один active confirmation per chat, лимиты 8 per user и 128 globally. Старые continuations удаляются, новые prompts заменяют старую клавиатуру.
+- Добавлены classification/quota/no-recovery, mid-task exhaustion, redirect no-dial и superseded/expired approval regressions.
+
 # tg-llm-proxy v1.30.0
 
 ## Per-user daily quotas and usage

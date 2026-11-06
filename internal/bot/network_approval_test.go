@@ -3,6 +3,7 @@ package bot
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -429,5 +430,115 @@ func TestStreamingApprovalRewritesPlaceholderWithoutDuplicateAnswer(t *testing.T
 	}
 	if rows := assistantRows(t, d.deps.DB, 100); len(rows) != 1 || rows[0].Content != "Итог после подтверждения" {
 		t.Fatalf("stream approval stored duplicate answers: %+v", rows)
+	}
+}
+
+func TestSchedulerPrunesExpiredNonTaskConfirmations(t *testing.T) {
+	d := newTestDispatcher(t, testConfig(t, nil), nil, &fakeReplier{}, testStore(t))
+	now := time.Now()
+	set := networkConfirmationsFor(d)
+	set.mu.Lock()
+	set.pending["expired-non-task"] = networkConfirmation{
+		ChatID: 100, UserID: 11, ExpiresAt: now.Add(-time.Second),
+		continuation: &toolLoopContinuation{request: model.Request{Messages: []model.Message{{Role: model.RoleUser, Content: "sensitive continuation"}}}},
+	}
+	set.pending["active-non-task"] = networkConfirmation{ChatID: 101, UserID: 12, ExpiresAt: now.Add(time.Minute)}
+	set.pending["expired-task"] = networkConfirmation{
+		ChatID: 102, UserID: 13, ExpiresAt: now.Add(-time.Second),
+		continuation: &toolLoopContinuation{metadata: toolLoopMetadata{taskID: 99}},
+	}
+	set.mu.Unlock()
+	if _, err := d.ProcessDueTasks(context.Background(), now, TaskBatchLimit); err != nil {
+		t.Fatal(err)
+	}
+	set.mu.Lock()
+	defer set.mu.Unlock()
+	if _, found := set.pending["expired-non-task"]; found {
+		t.Fatal("expired non-task confirmation retained its continuation")
+	}
+	if _, found := set.pending["active-non-task"]; !found {
+		t.Fatal("active non-task confirmation was pruned")
+	}
+	if _, found := set.pending["expired-task"]; !found {
+		t.Fatal("task confirmation was pruned outside task persistence lifecycle")
+	}
+}
+
+func TestNewNonTaskApprovalSupersedesPreviousChatPrompt(t *testing.T) {
+	var providerCalls atomic.Int64
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		providerCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer provider.Close()
+	m := &scriptedToolModel{responses: []model.Response{
+		{ToolCalls: []model.ToolCall{{ID: "old", Name: "web_search", Arguments: `{"query":"old prompt"}`}}},
+		{ToolCalls: []model.ToolCall{{ID: "new", Name: "web_search", Arguments: `{"query":"new prompt"}`}}},
+		{Content: "new prompt completed"},
+	}}
+	r := &networkMenuReplier{}
+	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "WEB_SEARCH_ENABLED": "true", "WEB_SEARCH_BASE_URL": provider.URL})
+	d := newTestDispatcher(t, cfg, m, r, testStore(t))
+	if err := dispatch(t, d, testEvent(100, 11, 9100, "first request")); err != nil {
+		t.Fatal(err)
+	}
+	oldConfirm, _ := latestNetworkCallbacks(t, r)
+	if err := dispatch(t, d, testEvent(100, 11, 9101, "second request")); err != nil {
+		t.Fatal(err)
+	}
+	newConfirm, _ := latestNetworkCallbacks(t, r)
+	if oldConfirm == newConfirm {
+		t.Fatal("new prompt reused the old token")
+	}
+	set := networkConfirmationsFor(d)
+	set.mu.Lock()
+	pendingCount := len(set.pending)
+	set.mu.Unlock()
+	if pendingCount != 1 {
+		t.Fatalf("chat has %d active non-task confirmations", pendingCount)
+	}
+	if err := dispatchMenuData(t, d, 100, 11, 700, oldConfirm); err != nil {
+		t.Fatal(err)
+	}
+	if providerCalls.Load() != 0 || len(m.requests) != 2 {
+		t.Fatal("superseded approval executed the old request")
+	}
+	if err := dispatchMenuData(t, d, 100, 11, 700, newConfirm); err != nil {
+		t.Fatal(err)
+	}
+	if providerCalls.Load() != 1 || len(m.requests) != 3 || !strings.Contains(r.joined(), "new prompt completed") {
+		t.Fatalf("new approval did not resume: provider=%d model=%d replies=%q", providerCalls.Load(), len(m.requests), r.joined())
+	}
+}
+
+func TestNonTaskConfirmationCaps(t *testing.T) {
+	d := newTestDispatcher(t, testConfig(t, nil), nil, &fakeReplier{}, testStore(t))
+	now := time.Now()
+	for index := 0; index < networkConfirmationPerUserLimit+3; index++ {
+		d.rememberNonTaskNetworkConfirmation(context.Background(), fmt.Sprintf("user-%d", index), networkConfirmation{
+			ChatID: int64(1000 + index), UserID: 11, ExpiresAt: now.Add(networkApprovalTTL),
+		})
+	}
+	set := networkConfirmationsFor(d)
+	set.mu.Lock()
+	if len(set.pending) != networkConfirmationPerUserLimit {
+		set.mu.Unlock()
+		t.Fatalf("per-user pending count=%d", len(set.pending))
+	}
+	set.pending = map[string]networkConfirmation{}
+	set.mu.Unlock()
+	for index := 0; index < networkConfirmationGlobalLimit+5; index++ {
+		d.rememberNonTaskNetworkConfirmation(context.Background(), fmt.Sprintf("global-%d", index), networkConfirmation{
+			ChatID: int64(2000 + index), UserID: int64(100 + index), ExpiresAt: now.Add(networkApprovalTTL),
+		})
+	}
+	set.mu.Lock()
+	defer set.mu.Unlock()
+	if len(set.pending) != networkConfirmationGlobalLimit {
+		t.Fatalf("global pending count=%d", len(set.pending))
+	}
+	if _, found := set.pending[fmt.Sprintf("global-%d", networkConfirmationGlobalLimit+4)]; !found {
+		t.Fatal("newest confirmation was evicted")
 	}
 }

@@ -156,7 +156,11 @@ func (d *Dispatcher) task(ctx context.Context, ev Event, arg string) error {
 	}
 	plan, err := d.planTask(ctx, ev.UserID, selectedModel, action)
 	if err != nil {
-		return d.reply(ctx, ev.ChatID, "Не удалось составить безопасный план. Активная задача не создана. Причина: "+brief(Sanitize(err, d.deps.Token), 300))
+		reason := brief(Sanitize(err, d.deps.Token), 300)
+		if notice, limited := modelLimitNotice(err); limited {
+			reason = notice
+		}
+		return d.reply(ctx, ev.ChatID, "Не удалось составить безопасный план. Активная задача не создана. Причина: "+reason)
 	}
 	encodedPlan, err := taskPlanJSON(plan)
 	if err != nil {

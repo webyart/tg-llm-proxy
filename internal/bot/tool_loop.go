@@ -33,7 +33,22 @@ const (
 	toolRoundCallLimitErrorJSON = `{"error":"tool_round_call_limit"}`
 )
 
-var errNetworkApprovalPending = errors.New("network action is waiting for user confirmation")
+var (
+	ErrModelRateLimited       = errors.New("model per-minute rate limit exceeded")
+	ErrModelDailyLimited      = errors.New("model daily limit exceeded")
+	errNetworkApprovalPending = errors.New("network action is waiting for user confirmation")
+)
+
+func modelLimitNotice(err error) (string, bool) {
+	switch {
+	case errors.Is(err, ErrModelRateLimited):
+		return modelWorkBudgetErrorText, true
+	case errors.Is(err, ErrModelDailyLimited):
+		return modelDailyLimitErrorText, true
+	default:
+		return "", false
+	}
+}
 
 type toolLoopMetadata struct {
 	event             Event
@@ -88,6 +103,93 @@ func networkConfirmationsFor(d *Dispatcher) *networkConfirmationSet {
 	return set.(*networkConfirmationSet)
 }
 
+const (
+	networkConfirmationGlobalLimit  = 128
+	networkConfirmationPerUserLimit = 8
+)
+
+func isNonTaskNetworkConfirmation(pending networkConfirmation) bool {
+	return pending.continuation == nil || pending.continuation.metadata.taskID == 0
+}
+
+func pruneExpiredNonTaskNetworkConfirmationsLocked(set *networkConfirmationSet, now time.Time) []networkConfirmation {
+	var removed []networkConfirmation
+	for token, pending := range set.pending {
+		if isNonTaskNetworkConfirmation(pending) && !now.Before(pending.ExpiresAt) {
+			delete(set.pending, token)
+			removed = append(removed, pending)
+		}
+	}
+	return removed
+}
+
+func (d *Dispatcher) pruneExpiredNonTaskNetworkConfirmations(now time.Time) {
+	set := networkConfirmationsFor(d)
+	set.mu.Lock()
+	pruneExpiredNonTaskNetworkConfirmationsLocked(set, now)
+	set.mu.Unlock()
+}
+
+func nonTaskNetworkConfirmationCount(set *networkConfirmationSet, userID int64) int {
+	count := 0
+	for _, pending := range set.pending {
+		if isNonTaskNetworkConfirmation(pending) && (userID == 0 || pending.UserID == userID) {
+			count++
+		}
+	}
+	return count
+}
+
+func oldestNonTaskNetworkConfirmation(set *networkConfirmationSet, userID int64) (string, networkConfirmation, bool) {
+	oldestToken := ""
+	var oldest networkConfirmation
+	for token, pending := range set.pending {
+		if !isNonTaskNetworkConfirmation(pending) || userID != 0 && pending.UserID != userID {
+			continue
+		}
+		if oldestToken == "" || pending.ExpiresAt.Before(oldest.ExpiresAt) || pending.ExpiresAt.Equal(oldest.ExpiresAt) && token < oldestToken {
+			oldestToken, oldest = token, pending
+		}
+	}
+	return oldestToken, oldest, oldestToken != ""
+}
+
+func (d *Dispatcher) rememberNonTaskNetworkConfirmation(ctx context.Context, token string, pending networkConfirmation) {
+	set := networkConfirmationsFor(d)
+	set.mu.Lock()
+	removed := pruneExpiredNonTaskNetworkConfirmationsLocked(set, time.Now())
+	for key, existing := range set.pending {
+		if isNonTaskNetworkConfirmation(existing) && existing.ChatID == pending.ChatID {
+			delete(set.pending, key)
+			removed = append(removed, existing)
+		}
+	}
+	for nonTaskNetworkConfirmationCount(set, pending.UserID) >= networkConfirmationPerUserLimit {
+		key, existing, ok := oldestNonTaskNetworkConfirmation(set, pending.UserID)
+		if !ok {
+			break
+		}
+		delete(set.pending, key)
+		removed = append(removed, existing)
+	}
+	for nonTaskNetworkConfirmationCount(set, 0) >= networkConfirmationGlobalLimit {
+		key, existing, ok := oldestNonTaskNetworkConfirmation(set, 0)
+		if !ok {
+			break
+		}
+		delete(set.pending, key)
+		removed = append(removed, existing)
+	}
+	set.pending[token] = pending
+	set.mu.Unlock()
+	for _, existing := range removed {
+		if existing.ChatID == pending.ChatID && existing.MessageID == pending.MessageID {
+			continue
+		}
+		d.removeNetworkApprovalMenu(ctx, existing.ChatID, existing.MessageID)
+	}
+}
+
 type networkConfirmationStatus int
 
 const (
@@ -130,14 +232,14 @@ func consumeNetworkConfirmation(d *Dispatcher, token string, ev Event) (networkC
 
 func (d *Dispatcher) callModel(ctx context.Context, userID int64, req model.Request, streamer model.Streamer, session *streamSession) (model.Response, error) {
 	if !d.modelWork.Allow(userID) {
-		return model.Response{Content: modelWorkBudgetErrorText}, nil
+		return model.Response{}, ErrModelRateLimited
 	}
 	exceeded, err := d.dailyModelLimitExceeded(ctx, userID)
 	if err != nil {
 		return model.Response{}, fmt.Errorf("check daily model limit: %w", err)
 	}
 	if exceeded {
-		return model.Response{Content: modelDailyLimitErrorText}, nil
+		return model.Response{}, ErrModelDailyLimited
 	}
 	if err := d.recordModelCall(ctx, userID, req.Model); err != nil {
 		return model.Response{}, fmt.Errorf("record daily model call: %w", err)
@@ -376,19 +478,11 @@ func (d *Dispatcher) promptNetworkApproval(ctx context.Context, state *toolLoopC
 		continuation.approvedCalls[index] = approved
 	}
 	continuation.approvedCalls[callIndex] = true
-	set := networkConfirmationsFor(d)
-	set.mu.Lock()
 	now := time.Now()
-	for key, pending := range set.pending {
-		if !now.Before(pending.ExpiresAt) {
-			delete(set.pending, key)
-		}
-	}
-	set.pending[token] = networkConfirmation{
+	d.rememberNonTaskNetworkConfirmation(ctx, token, networkConfirmation{
 		ChatID: metadata.event.ChatID, UserID: metadata.event.UserID, MessageID: messageID,
 		ToolName: call.Name, Arguments: call.Arguments, ExpiresAt: now.Add(networkApprovalTTL), continuation: &continuation,
-	}
-	set.mu.Unlock()
+	})
 	return model.Response{}, errNetworkApprovalPending
 }
 
@@ -562,7 +656,7 @@ func (d *Dispatcher) runToolLoop(ctx context.Context, state *toolLoopContinuatio
 							state.session.stage(streamStageWebSearch)
 						}
 					}
-					result, executed, err = d.executeNetworkTool(ctx, state.userID, call)
+					result, executed, err = d.executeNetworkTool(d.networkToolContext(ctx, state, index, call), state.userID, call)
 				default:
 					return model.Response{}, errors.New("unknown tool")
 				}

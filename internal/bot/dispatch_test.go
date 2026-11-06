@@ -333,6 +333,43 @@ func TestAllowlistRowOpensTheBot(t *testing.T) {
 	}
 }
 
+func TestModelRateLimitDispatchIsNotStoredAsAssistantAnswer(t *testing.T) {
+	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "RATE_LIMIT_PER_MINUTE": "2"})
+	m := &fakeModel{response: model.Response{Content: "actual answer"}}
+	r := &fakeReplier{}
+	db := testStore(t)
+	d := newTestDispatcher(t, cfg, m, r, db)
+	now := time.Unix(1700000000, 0)
+	d.modelWork.WithClock(func() time.Time { return now })
+	for range 5 {
+		if !d.modelWork.Allow(11) {
+			t.Fatal("failed to pre-consume model work")
+		}
+	}
+
+	if err := dispatch(t, d, testEvent(100, 11, 650, "first")); err != nil {
+		t.Fatalf("first Dispatch: %v", err)
+	}
+	if err := dispatch(t, d, testEvent(100, 11, 651, "second")); err != nil {
+		t.Fatalf("limited Dispatch: %v", err)
+	}
+	if m.callCount() != 1 || r.count() != 2 || !strings.Contains(r.texts()[1], modelWorkBudgetErrorText) {
+		t.Fatalf("calls=%d replies=%q", m.callCount(), r.texts())
+	}
+	rows, err := store.HistoryOfChat(context.Background(), db, 100, 10)
+	if err != nil {
+		t.Fatalf("HistoryOfChat: %v", err)
+	}
+	if len(rows) != 3 || rows[0].Role != store.RoleUser || rows[1].Role != store.RoleAssistant || rows[1].Content != "actual answer" || rows[2].Role != store.RoleUser {
+		t.Fatalf("limited notice changed stored conversation: %+v", rows)
+	}
+	for _, row := range rows {
+		if strings.Contains(row.Content, modelWorkBudgetErrorText) {
+			t.Fatalf("limit notice persisted as a message: %+v", row)
+		}
+	}
+}
+
 func TestRateLimitRefusesAndAudits(t *testing.T) {
 	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "RATE_LIMIT_PER_MINUTE": "2"})
 	var m = &fakeModel{response: model.Response{Content: "ответ"}}

@@ -765,6 +765,12 @@ func (d *Dispatcher) finishModelAnswer(ctx context.Context, replyCtx context.Con
 	if errors.Is(modelErr, errNetworkApprovalPending) {
 		return nil
 	}
+	if notice, limited := modelLimitNotice(modelErr); limited {
+		if session == nil {
+			return d.Send(replyCtx, ev.ChatID, notice)
+		}
+		return session.deliver(replyCtx, d, notice)
+	}
 	if modelErr != nil {
 		if errors.Is(modelErr, context.Canceled) {
 			return modelErr // the process is stopping : nothing to promise the user
@@ -821,13 +827,6 @@ func (d *Dispatcher) finishModelAnswer(ctx context.Context, replyCtx context.Con
 		}
 		d.logEvent(auditCtx, ev.UserID, store.EventModelError, Sanitize(modelErr, d.deps.Token))
 		return d.reply(ctx, ev.ChatID, fmt.Sprintf(msgModelError, Sanitize(modelErr, d.deps.Token)))
-	}
-
-	if resp.Content == modelDailyLimitErrorText {
-		if session == nil {
-			return d.Send(replyCtx, ev.ChatID, resp.Content)
-		}
-		return session.deliver(replyCtx, d, resp.Content)
 	}
 
 	var _, writeErr = store.Append(replyCtx, d.deps.DB, store.Message{

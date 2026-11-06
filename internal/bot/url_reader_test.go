@@ -231,3 +231,24 @@ func TestURLReaderDNSRebindingAndDirectDial(t *testing.T) {
 		t.Fatalf("DNS calls=%d dials=%v", fixture.resolver.calls, fixture.dialAddresses)
 	}
 }
+
+func TestApprovedURLReaderAllowsSameOriginRedirect(t *testing.T) {
+	fixture := newURLReaderTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/start":
+			w.Header().Set("Location", "/final")
+			w.WriteHeader(http.StatusFound)
+		case "/final":
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte("same origin"))
+		default:
+			http.NotFound(w, r)
+		}
+	}), []net.IP{net.ParseIP("93.184.216.34")}, []net.IP{net.ParseIP("93.184.216.34")})
+	call := model.ToolCall{Name: "read_url", Arguments: `{"url":"` + fixture.url + `/start"}`}
+	ctx := withURLReaderApprovedOrigin(context.Background(), networkCallOrigin(call))
+	payload, err := executeTestURLReader(ctx, fixture, fixture.url+"/start")
+	if err != nil || payload["result"] != "same origin" || payload["error"] != "" {
+		t.Fatalf("same-origin redirect payload=%v err=%v", payload, err)
+	}
+}

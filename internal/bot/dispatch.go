@@ -254,8 +254,7 @@ func (d *Dispatcher) commandFor(ev Event) (Command, string) {
 		cmd.UsesModel = true
 	}
 	if isCommand && name == CommandTask {
-		goal := strings.TrimSpace(commandArg)
-		cmd.UsesModel = goal != "" && !strings.EqualFold(goal, "cancel") && !strings.HasPrefix(goal, "menu")
+		cmd.UsesModel = isNewTaskGoal(commandArg)
 	}
 	if !isCommand && ev.Attachment == nil && !ev.UnsupportedMedia && !ev.Recovery {
 		if _, ok := bareHTTPSURL(ev.Text); ok {
@@ -264,6 +263,19 @@ func (d *Dispatcher) commandFor(ev Event) (Command, string) {
 		}
 	}
 	return cmd, commandArg
+}
+
+func isNewTaskGoal(arg string) bool {
+	action := strings.TrimSpace(arg)
+	switch action {
+	case "", "menu", "menu:cancel", "menu:resume", "menu:clear", "clear", "clear confirm", "menu:new":
+		return false
+	}
+	if strings.EqualFold(action, "cancel") {
+		return false
+	}
+	fields := strings.Fields(action)
+	return len(fields) == 0 || !strings.EqualFold(fields[0], "resume")
 }
 
 func (d *Dispatcher) Dispatch(ctx context.Context, ev Event) error {

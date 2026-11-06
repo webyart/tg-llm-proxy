@@ -58,6 +58,7 @@ var menuCommandCallbacks = map[string]string{
 	"menu:stream:reset":   "/stream menu:reset",
 	"menu:status":         "/status menu",
 	"menu:stats":          "/stats",
+	"menu:usage":          "/usage menu",
 	"menu:ping":           "/ping",
 	"menu:help":           "/help menu:help",
 	"menu:more":           "/help menu:more",
@@ -132,8 +133,16 @@ func modelMenuMarkup(names []string, current string) models.InlineKeyboardMarkup
 func statusMenuMarkup() models.InlineKeyboardMarkup {
 	return models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
 		menuRow(menuButton("Обновить", "menu:status")),
-		menuRow(menuButton("Статистика", "menu:stats"), menuButton("Ping", "menu:ping")),
+		menuRow(menuButton("Статистика", "menu:stats"), menuButton("Использование", "menu:usage")),
+		menuRow(menuButton("Ping", "menu:ping")),
 		menuRow(backButton("menu:root")),
+	}}
+}
+
+func usageMenuMarkup() models.InlineKeyboardMarkup {
+	return models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+		menuRow(menuButton("Обновить", "menu:usage")),
+		menuRow(backButton("menu:status")),
 	}}
 }
 

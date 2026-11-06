@@ -58,6 +58,9 @@ var Env = []string{
 	"TELEGRAM_ALLOWED_USERS",
 	"TELEGRAM_ADMIN_USERS",
 	"RATE_LIMIT_PER_MINUTE",
+	"USER_DAILY_MODEL_LIMIT",
+	"USER_DAILY_NETWORK_TOOL_LIMIT",
+	"USER_LIMITS_JSON",
 	"MAX_CONCURRENT_MODEL_REQUESTS",
 	"PROXY_FREE_TEXT",
 	"TOOLS_ENABLED",
@@ -165,46 +168,49 @@ type Config struct {
 	// rewritten as the model writes; StreamEditIntervalMS is the cadence of those rewrites; StreamIdleSeconds
 	// is the pause between two SSE events past which the stream is considered dead; StreamTotalSeconds is the
 	// ceiling of one streamed answer. The semantics of TimeoutSeconds and ReplyDeadlineSeconds do NOT change
-	Streaming               bool
-	StreamEditIntervalMS    int64
-	StreamIdleSeconds       int64
-	StreamTotalSeconds      int64
-	WebhookEnabled          bool
-	WebhookPublicURL        string
-	WebhookSecretToken      string
-	WebhookHost             string
-	WebhookPort             int64
-	WebhookPath             string
-	MiniAppEnabled          bool
-	MiniAppPublicURL        string
-	MiniAppHost             string
-	MiniAppPort             int64
-	DBPath                  string
-	ReminderTimezone        string
-	ReminderLocation        *time.Location
-	ContextMessages         int64
-	MaxContextChars         int64
-	MaxInputChars           int64
-	RAGMaxDocuments         int64
-	RAGResultLimit          int64
-	RAGMaxContextChars      int64
-	SystemPrompt            string
-	UserIDs                 []int64
-	AdminIDs                []int64
-	DenyByDefault           bool
-	RateLimitPerMinute      int64
-	MaxConcurrentRequests   int64
-	FreeText                bool
-	ToolsEnabled            bool
-	URLReaderEnabled        bool
-	WebSearchEnabled        bool
-	WebSearchBaseURL        string
-	WebSearchTimeoutSeconds int64
-	WebSearchMaxResults     int64
-	MaxMessageChunk         int64
-	ParseMode               string
-	HealthPort              int64
-	LogLevel                string
+	Streaming                 bool
+	StreamEditIntervalMS      int64
+	StreamIdleSeconds         int64
+	StreamTotalSeconds        int64
+	WebhookEnabled            bool
+	WebhookPublicURL          string
+	WebhookSecretToken        string
+	WebhookHost               string
+	WebhookPort               int64
+	WebhookPath               string
+	MiniAppEnabled            bool
+	MiniAppPublicURL          string
+	MiniAppHost               string
+	MiniAppPort               int64
+	DBPath                    string
+	ReminderTimezone          string
+	ReminderLocation          *time.Location
+	ContextMessages           int64
+	MaxContextChars           int64
+	MaxInputChars             int64
+	RAGMaxDocuments           int64
+	RAGResultLimit            int64
+	RAGMaxContextChars        int64
+	SystemPrompt              string
+	UserIDs                   []int64
+	AdminIDs                  []int64
+	DenyByDefault             bool
+	RateLimitPerMinute        int64
+	UserDailyModelLimit       int64
+	UserDailyNetworkToolLimit int64
+	UserLimits                map[int64]UserDailyLimits
+	MaxConcurrentRequests     int64
+	FreeText                  bool
+	ToolsEnabled              bool
+	URLReaderEnabled          bool
+	WebSearchEnabled          bool
+	WebSearchBaseURL          string
+	WebSearchTimeoutSeconds   int64
+	WebSearchMaxResults       int64
+	MaxMessageChunk           int64
+	ParseMode                 string
+	HealthPort                int64
+	LogLevel                  string
 }
 
 // wrote is normalized so the endpoint it points at is reached EXACTLY ONCE through
@@ -667,6 +673,7 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	var rate, badRate = Num(raw, "RATE_LIMIT_PER_MINUTE", DefaultRateLimit, 0, 1000)
 	cfg.RateLimitPerMinute = rate
 	problems = Push(problems, badRate)
+	problems = append(problems, loadUserDailyLimits(raw, &cfg)...)
 
 	var concurrent, badConcurrent = Num(raw, "MAX_CONCURRENT_MODEL_REQUESTS", DefaultConcurrent, 1, 16)
 	cfg.MaxConcurrentRequests = concurrent

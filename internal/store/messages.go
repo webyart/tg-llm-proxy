@@ -31,6 +31,7 @@ const (
 	EventFlood      = "flood"
 	EventCommand    = "command"
 	EventUsage      = "usage"
+	EventModelCall  = "model_call"
 	EventLimit      = "limit"
 	// STRATA_TIMEOUT_SECONDS, or the whole answer under TG_REPLY_DEADLINE_SECONDS. Which of the two expired,
 	// the detail of the row says by name; measured 2026-10-31 with 15/30 it is the model budget that goes first.

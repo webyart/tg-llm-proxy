@@ -1,3 +1,12 @@
+# tg-llm-proxy v1.30.0
+
+## Per-user daily quotas and usage
+
+- `USER_DAILY_MODEL_LIMIT=0` и `USER_DAILY_NETWORK_TOOL_LIMIT=0` добавляют дневные UTC-лимиты; `0` оставляет прежнее поведение без ограничений. `USER_LIMITS_JSON={}` задаёт per-user overrides `{"id":{"model":N,"network_tools":N}}` со строгой валидацией.
+- Model quota проверяется до provider call, network quota — до outbound side effect. Disabled tools по-прежнему fail closed first. Превышение model limit возвращает понятное русское сообщение, network limit — bounded JSON для synthesis.
+- `/usage` показывает вызовы и tokens по каждой модели, использование calculator/read_url/web_search/RAG, эффективные лимиты и остаток. Вывод собирается SQL-агрегацией и не содержит текстов запросов.
+- Добавлены unlimited defaults, invalid overrides, UTC-day aggregation, per-model/token/tool counts, limit boundaries, user isolation, multi-round accounting и content-free output regressions. Одновременные запросы одного пользователя из разных чатов могут временно превысить дневной лимит: проверка и запись usage не являются атомарной reservation.
+
 # tg-llm-proxy v1.29.1
 
 ## Mini App mobile layout and localization

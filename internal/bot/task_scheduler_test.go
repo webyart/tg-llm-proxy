@@ -86,6 +86,23 @@ func waitForTaskModelCalls(t *testing.T, model *taskScriptModel, want int) {
 	t.Fatalf("model calls=%d, want %d", model.callCount(), want)
 }
 
+func waitForTaskReadyStep(t *testing.T, d *Dispatcher, chatID int64, step int) store.Task {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		task, found, err := store.CurrentTask(context.Background(), d.deps.DB, chatID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if found && task.NextStep == step && task.Status == store.TaskStatusReady {
+			return task
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("task did not reach ready step %d", step)
+	return store.Task{}
+}
+
 func TestTaskSchedulerBlockedChatAllowsOtherChatProgress(t *testing.T) {
 	m := taskTextModel("first result", "second result")
 	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"}), m, &fakeReplier{}, testStore(t))
@@ -104,10 +121,7 @@ func TestTaskSchedulerBlockedChatAllowsOtherChatProgress(t *testing.T) {
 		done <- taskPassResult{processed: processed, err: err}
 	}()
 	waitForTaskModelCalls(t, m, 1)
-	other, found, err := store.CurrentTask(context.Background(), d.deps.DB, 200)
-	if err != nil || !found || other.NextStep != 1 || other.Status != store.TaskStatusReady {
-		t.Fatalf("other chat did not finish its step while chat 100 was blocked: task=%+v found=%v err=%v", other, found, err)
-	}
+	_ = waitForTaskReadyStep(t, d, 200, 1)
 	select {
 	case result := <-done:
 		t.Fatalf("pass returned while a chat lock was still blocked: %+v", result)

@@ -1,3 +1,18 @@
+# tg-llm-proxy v1.37.0
+
+## Mini App management
+
+- History получил chat-scoped Delete для user/assistant сообщений и Clear через `DeleteChatHistory`. Сохранены search/export/full view и Confirm/Cancel.
+- Links получил Add HTTPS URL и Search. Создание идёт через общий `LinkLifecycle` и Dispatcher `CreateLink`: canonicalization, SSRF/private-IP protections, outbound limits и сохранение текста страницы без model call не дублируются в webapp.
+- Reminders получил создание once/daily с strict JSON, text≤500, RFC3339 future≤3650d или HH:MM и расчётом через `NextDailyReminder` с configured location. Active Cancel и failed Delete теперь также требуют Confirm.
+- Tasks получил создание goal через общий `TaskLifecycle`: per-chat lock, active singleton, modelWork/daily quotas, выбор модели, безопасный plan 1–3 шага и scheduler wake. Success response не раскрывает plan/results. Production и integration wiring подключает Task и Link lifecycles до listener start.
+
+## Modern interactive frontend
+
+- Обновлены sticky header/tablist, карточки/panels, badges, responsive form grids, loading/notices, focus-visible и небольшие transitions с `prefers-reduced-motion`.
+- Добавлены inline creation forms с Enter/validation/aria-invalid/focus, keyboard ArrowLeft/ArrowRight/Home/End navigation и подтверждения destructive actions. Внешние assets/frameworks не используются, dynamic DOM остаётся `textContent`.
+- Executable frontend расширен до 22 сценариев `node:test+vm`, включая creation/navigation/confirmations. Backend покрыт lifecycle validation/isolation/strict JSON/store errors/rate/audit regressions.
+
 # tg-llm-proxy v1.36.0
 
 ## Executable frontend tests

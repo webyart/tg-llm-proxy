@@ -253,6 +253,7 @@ func main() {
 	})
 	if miniApp != nil {
 		miniApp.SetTaskLifecycle(dispatcher)
+		miniApp.SetLinkLifecycle(dispatcher)
 		miniAppServer, listenErr := webapp.Listen(miniApp, cfg.MiniAppAddress())
 		if listenErr != nil {
 			fmt.Println("Mini App listener:", listenErr, "")

@@ -195,6 +195,7 @@ func startBotWithURLReader(t *testing.T, ctx context.Context, cfg config.Config,
 	})
 	if miniApp != nil {
 		miniApp.SetTaskLifecycle(d)
+		miniApp.SetLinkLifecycle(d)
 		miniAppHTTP.Start()
 		t.Cleanup(miniAppHTTP.Close)
 	}

@@ -280,8 +280,6 @@ func TestReadOnlyAPIRejectsMethodsWithAllowGet(t *testing.T) {
 		{http.MethodPost, "/api/status"},
 		{http.MethodPut, "/api/history"},
 		{http.MethodPatch, "/api/documents"},
-		{http.MethodDelete, "/api/links"},
-		{http.MethodPost, "/api/tasks"},
 		{http.MethodPut, "/api/usage"},
 		{http.MethodDelete, "/api/settings"},
 	} {

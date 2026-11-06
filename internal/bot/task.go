@@ -91,6 +91,81 @@ func mustTaskPlanJSON(plan TaskPlan) string {
 	return string(encoded)
 }
 
+type taskActiveError struct {
+	taskID int64
+}
+
+func (e *taskActiveError) Error() string { return store.ErrTaskActive.Error() }
+func (e *taskActiveError) Unwrap() error { return store.ErrTaskActive }
+
+type taskPlanningError struct {
+	cause error
+}
+
+func (e *taskPlanningError) Error() string { return e.cause.Error() }
+func (e *taskPlanningError) Unwrap() error { return e.cause }
+
+func (d *Dispatcher) CreateTask(ctx context.Context, chatID int64, userID int64, goal string) (store.Task, error) {
+	var created store.Task
+	err := d.deps.Locks.WithChat(ctx, chatID, func() error {
+		var err error
+		created, _, err = d.createTask(ctx, chatID, userID, "", goal)
+		return err
+	})
+	if err != nil {
+		return store.Task{}, err
+	}
+	return created, nil
+}
+
+func (d *Dispatcher) createTask(ctx context.Context, chatID int64, userID int64, chatTitle string, goal string) (store.Task, TaskPlan, error) {
+	goal = strings.TrimSpace(goal)
+	if goal == "" || len([]rune(goal)) > store.TaskMaxGoalRunes || strings.ContainsRune(goal, '\x00') {
+		return store.Task{}, TaskPlan{}, store.ErrTaskGoal
+	}
+	current, found, err := store.CurrentTask(ctx, d.deps.DB, chatID)
+	if err != nil {
+		return store.Task{}, TaskPlan{}, err
+	}
+	if found && store.ActiveTaskStatus(current.Status) {
+		return store.Task{}, TaskPlan{}, &taskActiveError{taskID: current.ID}
+	}
+	questionID, role, err := store.LastVisibleMessage(ctx, d.deps.DB, chatID)
+	if err != nil {
+		return store.Task{}, TaskPlan{}, err
+	}
+	if questionID > 0 && role == store.RoleUser {
+		if err := store.SetResumeSkip(ctx, d.deps.DB, chatID, questionID); err != nil {
+			return store.Task{}, TaskPlan{}, err
+		}
+	}
+	selectedModel, err := d.modelName(ctx, chatID)
+	if err != nil {
+		return store.Task{}, TaskPlan{}, err
+	}
+	plan, err := d.planTask(ctx, userID, selectedModel, goal)
+	if err != nil {
+		return store.Task{}, TaskPlan{}, &taskPlanningError{cause: err}
+	}
+	encodedPlan, err := taskPlanJSON(plan)
+	if err != nil {
+		return store.Task{}, TaskPlan{}, &taskPlanningError{cause: err}
+	}
+	if err := store.EnsureChat(ctx, d.deps.DB, chatID, userID, chatTitle); err != nil {
+		return store.Task{}, TaskPlan{}, err
+	}
+	now := d.now().UTC()
+	created, err := store.CreateTask(ctx, d.deps.DB, store.Task{
+		ChatID: chatID, UserID: userID, Goal: goal, Model: selectedModel, PlanJSON: encodedPlan,
+		DueAt: now, ExpiresAt: now.Add(TaskLifetime), CreatedAt: now,
+	})
+	if err != nil {
+		return store.Task{}, TaskPlan{}, err
+	}
+	d.wakeTasks()
+	return created, plan, nil
+}
+
 func (d *Dispatcher) task(ctx context.Context, ev Event, arg string) error {
 	action := strings.TrimSpace(arg)
 	if action == "" {
@@ -131,56 +206,28 @@ func (d *Dispatcher) task(ctx context.Context, ev Event, arg string) error {
 		}
 		return d.resumeTask(ctx, ev, taskID, false)
 	}
-	if len([]rune(action)) > store.TaskMaxGoalRunes || strings.ContainsRune(action, '\x00') {
+	created, plan, err := d.createTask(ctx, ev.ChatID, ev.UserID, ev.ChatTitle, action)
+	if errors.Is(err, store.ErrTaskGoal) {
 		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Цель задачи должна быть непустой и не длиннее %d символов.", store.TaskMaxGoalRunes))
 	}
-	current, found, err := store.CurrentTask(ctx, d.deps.DB, ev.ChatID)
-	if err != nil {
-		return err
+	var active *taskActiveError
+	if errors.As(err, &active) {
+		return d.reply(ctx, ev.ChatID, fmt.Sprintf("В чате уже выполняется задача #%d. Дождись завершения или используй /task cancel.", active.taskID))
 	}
-	if found && store.ActiveTaskStatus(current.Status) {
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf("В чате уже выполняется задача #%d. Дождись завершения или используй /task cancel.", current.ID))
-	}
-	questionID, role, err := store.LastVisibleMessage(ctx, d.deps.DB, ev.ChatID)
-	if err != nil {
-		return err
-	}
-	if questionID > 0 && role == store.RoleUser {
-		if err := store.SetResumeSkip(ctx, d.deps.DB, ev.ChatID, questionID); err != nil {
-			return err
-		}
-	}
-	selectedModel, err := d.modelName(ctx, ev.ChatID)
-	if err != nil {
-		return err
-	}
-	plan, err := d.planTask(ctx, ev.UserID, selectedModel, action)
-	if err != nil {
-		reason := brief(Sanitize(err, d.deps.Token), 300)
-		if notice, limited := modelLimitNotice(err); limited {
+	var planning *taskPlanningError
+	if errors.As(err, &planning) {
+		reason := brief(Sanitize(planning.cause, d.deps.Token), 300)
+		if notice, limited := modelLimitNotice(planning.cause); limited {
 			reason = notice
 		}
 		return d.reply(ctx, ev.ChatID, "Не удалось составить безопасный план. Активная задача не создана. Причина: "+reason)
 	}
-	encodedPlan, err := taskPlanJSON(plan)
-	if err != nil {
-		return d.reply(ctx, ev.ChatID, "Не удалось проверить план. Активная задача не создана.")
-	}
-	if err := store.EnsureChat(ctx, d.deps.DB, ev.ChatID, ev.UserID, ev.ChatTitle); err != nil {
-		return err
-	}
-	now := d.now().UTC()
-	created, err := store.CreateTask(ctx, d.deps.DB, store.Task{
-		ChatID: ev.ChatID, UserID: ev.UserID, Goal: action, Model: selectedModel, PlanJSON: encodedPlan,
-		DueAt: now, ExpiresAt: now.Add(TaskLifetime), CreatedAt: now,
-	})
 	if errors.Is(err, store.ErrTaskActive) {
 		return d.reply(ctx, ev.ChatID, "В чате уже есть активная задача. Дождись завершения или используй /task cancel.")
 	}
 	if err != nil {
 		return err
 	}
-	d.wakeTasks()
 	lines := []string{fmt.Sprintf("Задача #%d создана. План (%d шаг.):", created.ID, len(plan.Steps))}
 	for index, step := range plan.Steps {
 		lines = append(lines, fmt.Sprintf("%d. %s", index+1, step.Description))

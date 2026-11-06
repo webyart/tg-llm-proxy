@@ -58,6 +58,68 @@ func TestHistoryExportSearchAndDelete(t *testing.T) {
 	}
 }
 
+func TestDeleteMessageScopesChatAndVisibleRoles(t *testing.T) {
+	ctx := context.Background()
+	db, err := OpenMemory(ctx, "history_delete_message_"+t.Name())
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	defer db.Close()
+
+	ids := make(map[string]int64)
+	for name, row := range map[string]Message{
+		"user":         {ChatID: 70, UserID: 11, Role: RoleUser, Content: "user"},
+		"assistant":    {ChatID: 70, UserID: 11, Role: RoleAssistant, Content: "assistant"},
+		"system":       {ChatID: 70, UserID: 11, Role: RoleSystem, Content: "system"},
+		"foreign_user": {ChatID: 71, UserID: 12, Role: RoleUser, Content: "foreign"},
+	} {
+		id, err := Append(ctx, db, row)
+		if err != nil {
+			t.Fatalf("Append %s: %v", name, err)
+		}
+		ids[name] = id
+	}
+
+	for _, test := range []struct {
+		name   string
+		chatID int64
+		id     int64
+	}{
+		{name: "wrong chat", chatID: 71, id: ids["user"]},
+		{name: "system role", chatID: 70, id: ids["system"]},
+		{name: "missing", chatID: 70, id: ids["assistant"] + 1000},
+		{name: "zero chat", chatID: 0, id: ids["user"]},
+		{name: "zero id", chatID: 70, id: 0},
+		{name: "negative id", chatID: 70, id: -1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			deleted, err := DeleteMessage(ctx, db, test.chatID, test.id)
+			if err != nil || deleted {
+				t.Fatalf("DeleteMessage deleted=%v err=%v", deleted, err)
+			}
+		})
+	}
+
+	for _, name := range []string{"user", "assistant"} {
+		deleted, err := DeleteMessage(ctx, db, 70, ids[name])
+		if err != nil || !deleted {
+			t.Fatalf("DeleteMessage %s deleted=%v err=%v", name, deleted, err)
+		}
+		deleted, err = DeleteMessage(ctx, db, 70, ids[name])
+		if err != nil || deleted {
+			t.Fatalf("second DeleteMessage %s deleted=%v err=%v", name, deleted, err)
+		}
+	}
+	rows, err := HistoryOfChat(ctx, db, 70, 10)
+	if err != nil || len(rows) != 1 || rows[0].ID != ids["system"] {
+		t.Fatalf("remaining rows=%+v err=%v", rows, err)
+	}
+	other, err := HistoryOfChat(ctx, db, 71, 10)
+	if err != nil || len(other) != 1 || other[0].ID != ids["foreign_user"] {
+		t.Fatalf("foreign rows=%+v err=%v", other, err)
+	}
+}
+
 func TestStreamExportMessagesStopsImmediatelyAndPreservesWindowOrder(t *testing.T) {
 	ctx := context.Background()
 	db, err := OpenMemory(ctx, "history_stream_"+t.Name())

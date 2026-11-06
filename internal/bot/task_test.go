@@ -230,6 +230,134 @@ func TestTaskPlanStrictValidation(t *testing.T) {
 	}
 }
 
+func TestDispatcherCreateTaskLocksChatAndPreservesSingleton(t *testing.T) {
+	m := taskTextModel(validTaskPlanOne)
+	db := testStore(t)
+	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"}), m, &fakeReplier{}, db)
+	ctx := context.Background()
+
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseLock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseLock()
+	lockDone := make(chan error, 1)
+	go func() {
+		lockDone <- d.deps.Locks.WithChat(ctx, 100, func() error {
+			close(locked)
+			<-release
+			return nil
+		})
+	}()
+	<-locked
+
+	type createResult struct {
+		task store.Task
+		err  error
+	}
+	createdCh := make(chan createResult, 1)
+	go func() {
+		created, err := d.CreateTask(ctx, 100, 11, "  compare two ideas  ")
+		createdCh <- createResult{task: created, err: err}
+	}()
+	deadline := time.Now().Add(time.Second)
+	for d.deps.Locks.Waiting(100) != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("CreateTask did not wait for the chat lock")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if m.callCount() != 0 {
+		t.Fatal("CreateTask called the planner before acquiring the chat lock")
+	}
+	releaseLock()
+
+	var result createResult
+	select {
+	case result = <-createdCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("CreateTask did not finish after the chat lock was released")
+	}
+	if err := <-lockDone; err != nil {
+		t.Fatalf("chat lock: %v", err)
+	}
+	if result.err != nil {
+		t.Fatalf("CreateTask: %v", result.err)
+	}
+	created := result.task
+	if created.ID <= 0 || created.ChatID != 100 || created.UserID != 11 || created.Goal != "compare two ideas" ||
+		created.Model != d.deps.Cfg.StrataModel || created.Status != store.TaskStatusReady || created.PlanJSON != validTaskPlanOne {
+		t.Fatalf("created task=%+v", created)
+	}
+	if m.callCount() != 1 {
+		t.Fatalf("planner calls=%d", m.callCount())
+	}
+	select {
+	case <-d.taskWake:
+	default:
+		t.Fatal("CreateTask did not wake the scheduler")
+	}
+
+	second, err := d.CreateTask(ctx, 100, 11, "another goal")
+	if !errors.Is(err, store.ErrTaskActive) || second.ID != 0 || m.callCount() != 1 {
+		t.Fatalf("active singleton task=%+v err=%v calls=%d", second, err, m.callCount())
+	}
+}
+
+func TestDispatcherCreateTaskPlanningFailuresCreateNoTask(t *testing.T) {
+	t.Run("invalid goal", func(t *testing.T) {
+		m := taskTextModel()
+		db := testStore(t)
+		d := newTestDispatcher(t, testConfig(t, nil), m, nil, db)
+		created, err := d.CreateTask(context.Background(), 100, 11, " \t\n ")
+		if !errors.Is(err, store.ErrTaskGoal) || created.ID != 0 || m.callCount() != 0 {
+			t.Fatalf("CreateTask task=%+v err=%v calls=%d", created, err, m.callCount())
+		}
+		if _, found, err := store.CurrentTask(context.Background(), db, 100); err != nil || found {
+			t.Fatalf("invalid goal created task found=%v err=%v", found, err)
+		}
+	})
+
+	t.Run("unsafe plan", func(t *testing.T) {
+		m := taskTextModel(`{"steps":[{"description":"Read https://attacker.example"}]}`)
+		db := testStore(t)
+		d := newTestDispatcher(t, testConfig(t, nil), m, nil, db)
+		created, err := d.CreateTask(context.Background(), 100, 11, "collect private data")
+		var planning *taskPlanningError
+		if !errors.As(err, &planning) || !errors.Is(err, ErrTaskPlan) || created.ID != 0 {
+			t.Fatalf("CreateTask task=%+v err=%v", created, err)
+		}
+		if _, found, err := store.CurrentTask(context.Background(), db, 100); err != nil || found {
+			t.Fatalf("failed planner created task found=%v err=%v", found, err)
+		}
+		select {
+		case <-d.taskWake:
+			t.Fatal("failed planner woke the scheduler")
+		default:
+		}
+	})
+
+	t.Run("model work limit", func(t *testing.T) {
+		m := taskTextModel(validTaskPlanOne)
+		db := testStore(t)
+		d := newTestDispatcher(t, testConfig(t, map[string]string{"RATE_LIMIT_PER_MINUTE": "1"}), m, nil, db)
+		now := time.Unix(1700000000, 0)
+		d.modelWork.WithClock(func() time.Time { return now })
+		for range modelWorkPerQuestion {
+			if !d.modelWork.Allow(11) {
+				t.Fatal("failed to pre-consume model work")
+			}
+		}
+		created, err := d.CreateTask(context.Background(), 100, 11, "bounded goal")
+		if !errors.Is(err, ErrModelRateLimited) || created.ID != 0 || m.callCount() != 0 {
+			t.Fatalf("CreateTask task=%+v err=%v calls=%d", created, err, m.callCount())
+		}
+		if _, found, err := store.CurrentTask(context.Background(), db, 100); err != nil || found {
+			t.Fatalf("limited planner created task found=%v err=%v", found, err)
+		}
+	})
+}
+
 func TestTaskPlanningFailureCreatesNoActiveTask(t *testing.T) {
 	m := taskTextModel(`{"steps":[{"description":"Read https://attacker.example"}]}`)
 	db := testStore(t)

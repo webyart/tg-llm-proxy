@@ -285,6 +285,96 @@ func (a *App) exportHistory(w http.ResponseWriter, req *http.Request, current sc
 	_, _ = w.Write(data)
 }
 
+func deleteHistoryID(path string) (int64, bool) {
+	if !strings.HasPrefix(path, "/api/history/") || !strings.HasSuffix(path, "/delete") {
+		return 0, false
+	}
+	raw := strings.TrimSuffix(strings.TrimPrefix(path, "/api/history/"), "/delete")
+	if raw == "" || strings.Contains(raw, "/") {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 || strconv.FormatInt(id, 10) != raw {
+		return 0, false
+	}
+	return id, true
+}
+
+func historyBodyError(w http.ResponseWriter, status int) {
+	if status == http.StatusRequestEntityTooLarge {
+		writeError(w, status, "body_too_large", "Request body is too large.")
+		return
+	}
+	writeError(w, http.StatusBadRequest, "invalid_body", "History controls accept an empty request body.")
+}
+
+func (a *App) historyMutationFailed(w http.ResponseWriter, req *http.Request, operation string, err error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, req.Context().Err()) {
+		return
+	}
+	a.logger.Error("Mini App history mutation failed", "operation", operation, "error", err)
+	writeError(w, http.StatusInternalServerError, "history_mutation_failed", "The history could not be changed.")
+}
+
+func (a *App) clearHistory(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.Method != http.MethodPost {
+		methodAllowed(w, http.MethodPost)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_body", "History controls do not accept query parameters.")
+		return
+	}
+	if status, ok := emptySettingsBody(req); !ok {
+		historyBodyError(w, status)
+		return
+	}
+	deleted, err := store.DeleteChatHistory(req.Context(), a.db, current.ChatID)
+	if err != nil {
+		a.historyMutationFailed(w, req, "clear", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": deleted})
+}
+
+func (a *App) deleteHistory(w http.ResponseWriter, req *http.Request, current scope) {
+	messageID, valid := deleteHistoryID(req.URL.Path)
+	if !valid {
+		writeError(w, http.StatusNotFound, "not_found", "API endpoint not found.")
+		return
+	}
+	if req.Method != http.MethodPost {
+		methodAllowed(w, http.MethodPost)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_body", "History controls do not accept query parameters.")
+		return
+	}
+	if status, ok := emptySettingsBody(req); !ok {
+		historyBodyError(w, status)
+		return
+	}
+	deleted, err := store.DeleteMessage(req.Context(), a.db, current.ChatID, messageID)
+	if err != nil {
+		a.historyMutationFailed(w, req, "delete", err)
+		return
+	}
+	if !deleted {
+		writeError(w, http.StatusNotFound, "not_found", "Message not found.")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": messageID})
+}
+
+func (a *App) historyControl(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.URL.Path == "/api/history/clear" {
+		a.clearHistory(w, req, current)
+		return
+	}
+	a.deleteHistory(w, req, current)
+}
+
 type documentItem struct {
 	ID        int64  `json:"id"`
 	Name      string `json:"name"`
@@ -483,6 +573,91 @@ type linkItem struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
+func makeLinkItem(link store.SavedLink) linkItem {
+	item := linkItem{ID: link.ID, URL: link.CanonicalURL, UpdatedAt: reminderTime(link.UpdatedAt)}
+	item.Title, _ = boundedText(link.Title, store.SavedLinkMaxTitleRunes)
+	item.Content, item.Truncated = boundedText(link.Content, maxLinkRunes)
+	return item
+}
+
+func managementDecodeError(w http.ResponseWriter, status int) {
+	switch status {
+	case http.StatusUnsupportedMediaType:
+		writeError(w, status, "content_type", "Send a strict application/json body.")
+	case http.StatusRequestEntityTooLarge:
+		writeError(w, status, "body_too_large", "Request body is too large.")
+	default:
+		writeError(w, http.StatusBadRequest, "invalid_json", "Invalid JSON or unknown fields.")
+	}
+}
+
+func writeLifecycleUnavailable(w http.ResponseWriter) {
+	writeError(w, http.StatusServiceUnavailable, "lifecycle_unavailable", "This action is unavailable in the standalone Mini App.")
+}
+
+func (a *App) searchLinks(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.Method != http.MethodGet {
+		methodAllowed(w, http.MethodGet)
+		return
+	}
+	query, ok := strictQueryValue(req, "q")
+	if !ok || strings.TrimSpace(query) == "" || !utf8.ValidString(query) || len([]rune(query)) > store.SavedLinkSearchMaxRunes {
+		writeError(w, http.StatusBadRequest, "invalid_query", "Use exactly one nonempty q of at most 200 runes.")
+		return
+	}
+	links, err := store.SearchSavedLinks(req.Context(), a.db, current.ChatID, query, store.SavedLinkListLimit)
+	if err != nil {
+		a.queryFailed(w, "link search", err)
+		return
+	}
+	items := make([]linkItem, 0, len(links))
+	for _, link := range links {
+		items = append(items, makeLinkItem(link))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (a *App) createLink(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.Method != http.MethodPost {
+		methodAllowed(w, http.MethodPost)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Link creation does not accept query parameters.")
+		return
+	}
+	var input struct {
+		URL string `json:"url"`
+	}
+	if status, ok := decodeSettingsJSON(req, &input); !ok {
+		managementDecodeError(w, status)
+		return
+	}
+	rawURL := strings.TrimSpace(input.URL)
+	if rawURL == "" || !utf8.ValidString(rawURL) || len(rawURL) > store.SavedLinkMaxURLBytes || strings.ContainsRune(rawURL, '\x00') {
+		writeError(w, http.StatusBadRequest, "invalid_url", "Use one nonempty HTTPS URL of at most 2048 bytes.")
+		return
+	}
+	created, _, err := a.linkLifecycle.CreateLink(req.Context(), current.ChatID, current.UserID, rawURL)
+	if errors.Is(err, errLifecycleUnavailable) {
+		writeLifecycleUnavailable(w)
+		return
+	}
+	if errors.Is(err, store.ErrSavedLinkLimit) {
+		writeError(w, http.StatusConflict, "link_limit", "The saved link limit for this chat has been reached.")
+		return
+	}
+	if errors.Is(err, store.ErrSavedLinkInput) {
+		writeError(w, http.StatusBadRequest, "invalid_url", "The saved link is invalid.")
+		return
+	}
+	if err != nil {
+		a.linkMutationFailed(w, req, "create", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, makeLinkItem(created))
+}
+
 func (a *App) links(w http.ResponseWriter, req *http.Request, current scope) {
 	page, ok := readPage(req)
 	if !ok {
@@ -647,6 +822,47 @@ type taskItem struct {
 	UpdatedAt      string `json:"updated_at"`
 	Error          string `json:"error,omitempty"`
 	ErrorTruncated bool   `json:"error_truncated,omitempty"`
+}
+
+func (a *App) createTask(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.Method != http.MethodPost {
+		methodAllowed(w, http.MethodPost)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Task creation does not accept query parameters.")
+		return
+	}
+	var input struct {
+		Goal string `json:"goal"`
+	}
+	if status, ok := decodeSettingsJSON(req, &input); !ok {
+		managementDecodeError(w, status)
+		return
+	}
+	goal := strings.TrimSpace(input.Goal)
+	if goal == "" || !utf8.ValidString(goal) || len([]rune(goal)) > store.TaskMaxGoalRunes || strings.ContainsRune(goal, '\x00') {
+		writeError(w, http.StatusBadRequest, "invalid_goal", "Use a nonempty goal of at most 2000 runes without NUL characters.")
+		return
+	}
+	created, err := a.taskLifecycle.CreateTask(req.Context(), current.ChatID, current.UserID, goal)
+	if errors.Is(err, errLifecycleUnavailable) {
+		writeLifecycleUnavailable(w)
+		return
+	}
+	if errors.Is(err, store.ErrTaskActive) {
+		writeError(w, http.StatusConflict, "task_active", "An active task already exists in this chat.")
+		return
+	}
+	if errors.Is(err, store.ErrTaskGoal) {
+		writeError(w, http.StatusBadRequest, "invalid_goal", "The task goal is invalid.")
+		return
+	}
+	if err != nil {
+		a.taskMutationFailed(w, req, "create", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": created.ID, "status": created.Status})
 }
 
 func (a *App) tasks(w http.ResponseWriter, req *http.Request, current scope) {
@@ -899,6 +1115,86 @@ func makeReminderItem(reminder store.Reminder) reminderItem {
 		CreatedAt: reminderTime(reminder.CreatedAt), UpdatedAt: reminderTime(reminder.UpdatedAt),
 		LastSentAt: optionalReminderTime(reminder.LastSentAt), FinishedAt: optionalReminderTime(reminder.FinishedAt),
 	}
+}
+
+func (a *App) createReminder(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.Method != http.MethodPost {
+		methodAllowed(w, http.MethodPost)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Reminder creation does not accept query parameters.")
+		return
+	}
+	var input struct {
+		Text      string `json:"text"`
+		Cadence   string `json:"cadence"`
+		NextRun   string `json:"next_run"`
+		DailyTime string `json:"daily_time"`
+	}
+	if status, ok := decodeSettingsJSON(req, &input); !ok {
+		managementDecodeError(w, status)
+		return
+	}
+	text := strings.TrimSpace(input.Text)
+	if text == "" || !utf8.ValidString(text) || len([]rune(text)) > store.ReminderMaxTextRunes || strings.ContainsRune(text, '\x00') {
+		writeError(w, http.StatusBadRequest, "invalid_reminder", "Use nonempty reminder text of at most 500 runes without NUL characters.")
+		return
+	}
+	now := time.Now().UTC()
+	reminder := store.Reminder{
+		ChatID: current.ChatID, UserID: current.UserID, Text: text, Cadence: input.Cadence, CreatedAt: now,
+	}
+	switch input.Cadence {
+	case store.ReminderCadenceOnce:
+		if input.NextRun == "" || input.DailyTime != "" {
+			writeError(w, http.StatusBadRequest, "invalid_reminder", "A one-time reminder needs only next_run in RFC3339 format.")
+			return
+		}
+		next, err := time.Parse(time.RFC3339, input.NextRun)
+		if err != nil || !next.After(now) || next.After(now.Add(bot.MaxReminderDelay)) {
+			writeError(w, http.StatusBadRequest, "invalid_reminder", "A one-time reminder must be in the future and no more than 3650 days ahead.")
+			return
+		}
+		reminder.NextRunAt = next.UTC()
+	case store.ReminderCadenceDaily:
+		if input.DailyTime == "" || input.NextRun != "" {
+			writeError(w, http.StatusBadRequest, "invalid_reminder", "A daily reminder needs only daily_time in HH:MM format.")
+			return
+		}
+		location := a.cfg.ReminderLocation
+		if location == nil {
+			location = time.UTC
+		}
+		next, err := bot.NextDailyReminder(now, input.DailyTime, location)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_reminder", "Daily time must use HH:MM from 00:00 to 23:59.")
+			return
+		}
+		reminder.DailyTime = input.DailyTime
+		reminder.NextRunAt = next
+	default:
+		writeError(w, http.StatusBadRequest, "invalid_reminder", "Cadence must be once or daily.")
+		return
+	}
+	if err := store.EnsureChat(req.Context(), a.db, current.ChatID, current.UserID, ""); err != nil {
+		a.reminderMutationFailed(w, req, "create", err)
+		return
+	}
+	created, err := store.CreateReminder(req.Context(), a.db, reminder)
+	if errors.Is(err, store.ErrReminderLimit) {
+		writeError(w, http.StatusConflict, "reminder_limit", "The active reminder limit for this chat has been reached.")
+		return
+	}
+	if errors.Is(err, store.ErrReminderText) || errors.Is(err, store.ErrReminderCadence) || errors.Is(err, store.ErrReminderTime) {
+		writeError(w, http.StatusBadRequest, "invalid_reminder", "The reminder is invalid.")
+		return
+	}
+	if err != nil {
+		a.reminderMutationFailed(w, req, "create", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, makeReminderItem(created))
 }
 
 func (a *App) reminders(w http.ResponseWriter, req *http.Request, current scope) {

@@ -95,14 +95,31 @@ func (l *perUserRateLimiter) allow(userID int64, export bool) (bool, time.Durati
 	return true, 0
 }
 
+var errLifecycleUnavailable = errors.New("lifecycle unavailable")
+
 type TaskLifecycle interface {
+	CreateTask(ctx context.Context, chatID int64, userID int64, goal string) (store.Task, error)
 	CancelTask(ctx context.Context, chatID int64) (store.Task, bool, error)
 	ResumeTask(ctx context.Context, chatID int64, taskID int64) (store.Task, bool, error)
 	ClearTasks(ctx context.Context, chatID int64) (int64, error)
 }
 
+type LinkLifecycle interface {
+	CreateLink(ctx context.Context, chatID int64, userID int64, rawURL string) (store.SavedLink, bool, error)
+}
+
 type storeTaskLifecycle struct {
 	db *sql.DB
+}
+
+func (l storeTaskLifecycle) CreateTask(context.Context, int64, int64, string) (store.Task, error) {
+	return store.Task{}, errLifecycleUnavailable
+}
+
+type unavailableLinkLifecycle struct{}
+
+func (unavailableLinkLifecycle) CreateLink(context.Context, int64, int64, string) (store.SavedLink, bool, error) {
+	return store.SavedLink{}, false, errLifecycleUnavailable
 }
 
 func (l storeTaskLifecycle) CancelTask(ctx context.Context, chatID int64) (store.Task, bool, error) {
@@ -126,6 +143,7 @@ type App struct {
 	auth          *authenticator
 	handler       http.Handler
 	taskLifecycle TaskLifecycle
+	linkLifecycle LinkLifecycle
 	rateLimits    *perUserRateLimiter
 }
 
@@ -135,6 +153,7 @@ func New(cfg config.Config, db *sql.DB, client model.Client, logger *slog.Logger
 	}
 	app := &App{cfg: cfg, db: db, model: client, logger: logger}
 	app.taskLifecycle = storeTaskLifecycle{db: db}
+	app.linkLifecycle = unavailableLinkLifecycle{}
 	app.auth = newAuthenticator(cfg.BotToken, cfg.Allows)
 	app.rateLimits = newPerUserRateLimiter()
 	app.handler = securityHeaders(limitInFlight(http.HandlerFunc(app.route), maxInFlight))
@@ -146,6 +165,13 @@ func (a *App) SetTaskLifecycle(lifecycle TaskLifecycle) {
 		lifecycle = storeTaskLifecycle{db: a.db}
 	}
 	a.taskLifecycle = lifecycle
+}
+
+func (a *App) SetLinkLifecycle(lifecycle LinkLifecycle) {
+	if lifecycle == nil {
+		lifecycle = unavailableLinkLifecycle{}
+	}
+	a.linkLifecycle = lifecycle
 }
 
 func (a *App) Handler() http.Handler {
@@ -245,8 +271,20 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 		a.searchDocuments(w, req, current)
 		return
 	}
+	if strings.HasPrefix(req.URL.Path, "/api/history/") && req.URL.Path != "/api/history/search" &&
+		req.URL.Path != "/api/history/item" && req.URL.Path != "/api/history/export" {
+		a.historyControl(w, req, current)
+		return
+	}
 	if req.URL.Path == "/api/reminders" {
-		a.reminders(w, req, current)
+		switch req.Method {
+		case http.MethodGet:
+			a.reminders(w, req, current)
+		case http.MethodPost:
+			a.createReminder(w, req, current)
+		default:
+			methodAllowed(w, http.MethodGet, http.MethodPost)
+		}
 		return
 	}
 	if strings.HasPrefix(req.URL.Path, "/api/reminders/") {
@@ -255,6 +293,10 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 	}
 	if strings.HasPrefix(req.URL.Path, "/api/documents/") {
 		a.documentControl(w, req, current)
+		return
+	}
+	if req.URL.Path == "/api/links/search" {
+		a.searchLinks(w, req, current)
 		return
 	}
 	if req.URL.Path == "/api/links/item" {
@@ -272,6 +314,20 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 	if req.URL.Path == "/api/tasks/cancel" || strings.HasPrefix(req.URL.Path, "/api/tasks/") {
 		a.taskControl(w, req, current)
 		return
+	}
+	if req.URL.Path == "/api/links" || req.URL.Path == "/api/tasks" {
+		if req.Method == http.MethodPost {
+			if req.URL.Path == "/api/links" {
+				a.createLink(w, req, current)
+			} else {
+				a.createTask(w, req, current)
+			}
+			return
+		}
+		if req.Method != http.MethodGet {
+			methodAllowed(w, http.MethodGet, http.MethodPost)
+			return
+		}
 	}
 	switch req.URL.Path {
 	case "/api/settings":
@@ -349,12 +405,23 @@ func miniAppMutationOperation(req *http.Request) (string, bool) {
 		switch path {
 		case "/api/documents/clear":
 			return "documents.clear", true
+		case "/api/history/clear":
+			return "history.clear", true
+		case "/api/links":
+			return "links.add", true
 		case "/api/links/clear":
 			return "links.clear", true
+		case "/api/reminders":
+			return "reminders.create", true
+		case "/api/tasks":
+			return "tasks.create", true
 		case "/api/tasks/cancel":
 			return "tasks.cancel", true
 		case "/api/tasks/clear":
 			return "tasks.clear", true
+		}
+		if _, ok := deleteHistoryID(path); ok {
+			return "history.delete", true
 		}
 		if _, ok := deleteDocumentID(path); ok {
 			return "documents.delete", true

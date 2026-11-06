@@ -205,6 +205,18 @@ func scanSearchMessage(rows *sql.Rows) (Message, error) {
 	return row, nil
 }
 
+func DeleteMessage(ctx context.Context, db *sql.DB, chatID int64, id int64) (bool, error) {
+	if chatID == 0 || id <= 0 {
+		return false, nil
+	}
+	result, err := db.ExecContext(ctx, `DELETE FROM messages WHERE chat_id = ? AND id = ? AND role IN (?, ?)`, chatID, id, RoleUser, RoleAssistant)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
+}
+
 func DeleteChatHistory(ctx context.Context, db *sql.DB, chatID int64) (int64, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {

@@ -19,6 +19,27 @@
       task_ready: "готова", task_running: "выполняется", task_awaiting_approval: "ждёт разрешения",
       task_completed: "завершена", task_cancelled: "отменена", task_failed: "ошибка",
       expires: "истекает", taskError: "Причина", cancelTask: "Отменить", resumeTask: "Возобновить",
+      confirmAction: "Подтвердить", createAction: "Создать", addAction: "Добавить",
+      deleteHistory: "Удалить", clearHistory: "Очистить историю",
+      deleteHistoryWarning: "Удалить это сообщение? Это действие нельзя отменить.",
+      clearHistoryWarning: "Удалить всю историю этого чата? Это действие нельзя отменить.",
+      historyUpdated: "История обновлена.", historyMutationFailed: "Не удалось изменить историю.",
+      cancelTaskWarning: "Отменить активную задачу? Это действие нельзя отменить.",
+      cancelReminderWarning: "Отменить это напоминание? Это действие нельзя отменить.",
+      addLinkTitle: "Добавить ссылку", addLinkText: "Сохраните веб-страницу для поиска и работы ассистента.",
+      linkURL: "URL", linkURLPlaceholder: "https://example.com/page", linkCreated: "Ссылка добавлена.",
+      linkInvalidURL: "Введите корректный HTTPS URL длиной до 2048 байт.",
+      searchLinks: "Найти", linkSearchAria: "Поиск по ссылкам", linkSearchPlaceholder: "Поиск по сохранённым ссылкам",
+      linkSearchResults: "Результаты поиска", linkSearchEmpty: "По запросу ничего не найдено.",
+      linkSearchEmptyQuery: "Введите непустой поисковый запрос.", linkSearchInvalid: "Введите запрос длиной до 200 символов.", linkSearchFailed: "Не удалось выполнить поиск ссылок.",
+      createReminderTitle: "Новое напоминание", reminderText: "Текст напоминания", reminderTextPlaceholder: "Что нужно напомнить?",
+      reminderDateTime: "Дата и время", reminderDailyTime: "Время ежедневно", reminderCreated: "Напоминание создано.",
+      reminderTextInvalid: "Введите текст от 1 до 500 символов без NUL.",
+      reminderDateInvalid: "Выберите дату в будущем, не более чем через 3650 дней.", reminderTimeInvalid: "Выберите время в формате HH:MM.",
+      reminderInvalid: "Проверьте текст, периодичность и время напоминания.",
+      createTaskTitle: "Новая задача", createTaskText: "Опишите цель — план и выполнение создаются тем же обработчиком, что и в Telegram.",
+      taskGoal: "Цель задачи", taskGoalPlaceholder: "Например: подготовить краткий обзор проекта", taskCreated: "Задача создана.",
+      taskGoalInvalid: "Введите цель от 1 до 2000 символов без NUL.",
       deleteDocument: "Удалить", deleteDocumentConfirm: "Подтвердить", clearDocuments: "Очистить документы", clearDocumentsConfirm: "Подтвердить",
       deleteDocumentWarning: "Удалить этот документ и его фрагменты? Это действие нельзя отменить.",
       clearDocumentsWarning: "Удалить все документы этого чата и их фрагменты? Это действие нельзя отменить.",
@@ -107,6 +128,27 @@
       task_ready: "ready", task_running: "running", task_awaiting_approval: "awaiting approval",
       task_completed: "completed", task_cancelled: "cancelled", task_failed: "failed",
       expires: "expires", taskError: "Reason", cancelTask: "Cancel", resumeTask: "Resume",
+      confirmAction: "Confirm", createAction: "Create", addAction: "Add",
+      deleteHistory: "Delete", clearHistory: "Clear history",
+      deleteHistoryWarning: "Delete this message? This cannot be undone.",
+      clearHistoryWarning: "Delete the entire history of this chat? This cannot be undone.",
+      historyUpdated: "History updated.", historyMutationFailed: "The history could not be changed.",
+      cancelTaskWarning: "Cancel the active task? This cannot be undone.",
+      cancelReminderWarning: "Cancel this reminder? This cannot be undone.",
+      addLinkTitle: "Add a link", addLinkText: "Save a web page for search and assistant workflows.",
+      linkURL: "URL", linkURLPlaceholder: "https://example.com/page", linkCreated: "Link added.",
+      linkInvalidURL: "Enter a valid HTTPS URL of at most 2048 bytes.",
+      searchLinks: "Search", linkSearchAria: "Search links", linkSearchPlaceholder: "Search saved links",
+      linkSearchResults: "Search results", linkSearchEmpty: "No links matched the query.",
+      linkSearchEmptyQuery: "Enter a non-empty search query.", linkSearchInvalid: "Enter a query of at most 200 characters.", linkSearchFailed: "Link search failed.",
+      createReminderTitle: "New reminder", reminderText: "Reminder text", reminderTextPlaceholder: "What should we remind you about?",
+      reminderDateTime: "Date and time", reminderDailyTime: "Daily time", reminderCreated: "Reminder created.",
+      reminderTextInvalid: "Enter 1 to 500 characters without NUL.",
+      reminderDateInvalid: "Choose a future date no more than 3650 days ahead.", reminderTimeInvalid: "Choose a time in HH:MM format.",
+      reminderInvalid: "Check the reminder text, cadence, and time.",
+      createTaskTitle: "New task", createTaskText: "Describe the goal; the same handler as in Telegram creates the plan and runs it.",
+      taskGoal: "Task goal", taskGoalPlaceholder: "For example: prepare a concise project overview", taskCreated: "Task created.",
+      taskGoalInvalid: "Enter a goal of 1 to 2000 characters without NUL.",
       deleteDocument: "Delete", deleteDocumentConfirm: "Confirm", clearDocuments: "Clear documents", clearDocumentsConfirm: "Confirm",
       deleteDocumentWarning: "Delete this document and its chunks? This cannot be undone.",
       clearDocumentsWarning: "Delete every document in this chat and its chunks? This cannot be undone.",
@@ -191,6 +233,8 @@
     task_not_active: "taskNotActive", task_not_resumable: "taskNotResumable", task_mutation_failed: "taskMutationFailed",
     task_not_deletable: "taskNotDeletable", document_mutation_failed: "documentMutationFailed",
     link_mutation_failed: "linkMutationFailed", reminder_mutation_failed: "reminderMutationFailed",
+    history_mutation_failed: "historyMutationFailed", invalid_url: "linkInvalidURL", invalid_reminder: "reminderInvalid",
+    invalid_goal: "taskGoalInvalid",
   };
 
   function initialLanguage() {
@@ -228,30 +272,40 @@
   let activeTab = "status";
   let nextBefore = null;
   let loading = false;
+  let clearHistoryArmed = false;
   let clearDocumentsArmed = false;
   let clearLinksArmed = false;
   let clearTasksArmed = false;
+  let deleteHistoryArmed = null;
   let deleteDocumentArmed = null;
   let deleteLinkArmed = null;
   let deleteTaskArmed = null;
   let deleteReminderArmed = null;
+  let cancelTaskArmed = false;
+  let cancelReminderArmed = null;
   let documentSearch = { query: "", active: false, items: [], truncated: false };
   let historySearch = { query: "", active: false, items: [], truncated: false };
+  let linkSearch = { query: "", active: false, items: [] };
   let view = { tab: "status", data: null, items: [] };
 
   function resetArmedStates() {
+    clearHistoryArmed = false;
     clearDocumentsArmed = false;
     clearLinksArmed = false;
     clearTasksArmed = false;
+    deleteHistoryArmed = null;
     deleteDocumentArmed = null;
     deleteLinkArmed = null;
     deleteTaskArmed = null;
     deleteReminderArmed = null;
+    cancelTaskArmed = false;
+    cancelReminderArmed = null;
   }
 
   function resetSearchState() {
     documentSearch = { query: "", active: false, items: [], truncated: false };
     historySearch = { query: "", active: false, items: [], truncated: false };
+    linkSearch = { query: "", active: false, items: [] };
   }
 
   function syncBusyState() {
@@ -331,10 +385,6 @@
     return body;
   }
 
-  function renderEmpty(text) {
-    ui.content.replaceChildren(element("p", "empty", text));
-  }
-
   function itemShell(id, timestamp) {
     const wrapper = element("article", "item");
     wrapper.appendChild(element("div", "meta", `#${id}${timestamp ? ` · ${timestamp}` : ""}`));
@@ -357,6 +407,20 @@
       grid.appendChild(card);
     }
     ui.content.appendChild(grid);
+  }
+
+  function setHistoryClearArmed(armed, items) {
+    if (loading) return;
+    resetArmedStates();
+    clearHistoryArmed = armed;
+    renderItems("history", items);
+  }
+
+  function setHistoryDeleteArmed(id, items) {
+    if (loading) return;
+    resetArmedStates();
+    deleteHistoryArmed = id;
+    renderItems("history", items);
   }
 
   function setDocumentClearArmed(armed, items) {
@@ -387,6 +451,13 @@
     renderItems("tasks", items);
   }
 
+  function setTaskCancelArmed(armed, items) {
+    if (loading) return;
+    resetArmedStates();
+    cancelTaskArmed = armed;
+    renderItems("tasks", items);
+  }
+
   function setLinkDeleteArmed(id, items) {
     if (loading) return;
     resetArmedStates();
@@ -408,8 +479,23 @@
     renderReminders(data);
   }
 
+  function setReminderCancelArmed(id, data) {
+    if (loading) return;
+    resetArmedStates();
+    cancelReminderArmed = id;
+    renderReminders(data);
+  }
+
   function inlineConfirmation(warning, confirmLabel, onConfirm, onCancel) {
     const confirmation = element("div", "inline-confirm");
+    confirmation.setAttribute("role", "group");
+    confirmation.setAttribute("aria-label", warning);
+    confirmation.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCancel();
+      }
+    });
     confirmation.appendChild(element("p", "inline-confirm-warning", warning));
     const actions = element("div", "task-actions inline-confirm-actions");
     actions.appendChild(settingsButton(confirmLabel, onConfirm));
@@ -418,8 +504,43 @@
     return confirmation;
   }
 
+  function creationPanel(title, description) {
+    const section = element("section", "creation-panel");
+    section.appendChild(element("h3", "", title));
+    if (description) section.appendChild(element("p", "meta", description));
+    const form = element("form", "creation-form");
+    form.noValidate = true;
+    section.appendChild(form);
+    return { section, form };
+  }
+
+  function formField(labelText, control, wide = false) {
+    const label = element("label", wide ? "field field-wide" : "field");
+    label.appendChild(element("span", "", labelText));
+    label.appendChild(control);
+    return label;
+  }
+
+  function submitButton(label) {
+    const button = element("button", "", label);
+    button.type = "submit";
+    return button;
+  }
+
+  function invalidField(control, message) {
+    control.setAttribute("aria-invalid", "true");
+    showError(message);
+    if (typeof control.focus === "function") control.focus();
+  }
+
+  function clearFieldValidity(control) {
+    control.addEventListener("input", () => control.setAttribute("aria-invalid", "false"));
+  }
+
   function appendHistoryContent(wrapper, item) {
-    wrapper.appendChild(element("div", "role", item.role === "user" ? t("you") : t("assistant")));
+    const role = element("div", "role");
+    role.appendChild(element("span", item.role === "assistant" ? "badge badge-success" : "badge", item.role === "user" ? t("you") : t("assistant")));
+    wrapper.appendChild(role);
     wrapper.appendChild(element("div", "content", item.content));
     if (item.truncated) {
       const actions = element("div", "task-actions");
@@ -506,6 +627,149 @@
     return section;
   }
 
+  function renderLinkControls() {
+    const container = element("div", "link-controls");
+    const creation = creationPanel(t("addLinkTitle"), t("addLinkText"));
+    const urlInput = element("input");
+    urlInput.type = "url";
+    urlInput.maxLength = 2048;
+    urlInput.required = true;
+    urlInput.placeholder = t("linkURLPlaceholder");
+    urlInput.setAttribute("aria-label", t("linkURL"));
+    urlInput.setAttribute("autocomplete", "url");
+    clearFieldValidity(urlInput);
+    creation.form.appendChild(formField(t("linkURL"), urlInput, true));
+    const createActions = element("div", "form-actions");
+    createActions.appendChild(submitButton(t("addAction")));
+    creation.form.appendChild(createActions);
+    creation.form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      createLink(urlInput.value, urlInput);
+    });
+    container.appendChild(creation.section);
+
+    const search = element("section", "link-search");
+    const row = element("div", "link-search-row");
+    const input = element("input");
+    input.type = "search";
+    input.maxLength = 200;
+    input.value = linkSearch.query;
+    input.placeholder = t("linkSearchPlaceholder");
+    input.setAttribute("aria-label", t("linkSearchAria"));
+    input.addEventListener("input", () => { linkSearch.query = input.value; });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        searchLinks(input.value);
+      }
+    });
+    row.appendChild(input);
+    row.appendChild(settingsButton(t("searchLinks"), () => searchLinks(input.value)));
+    search.appendChild(row);
+    if (linkSearch.active) {
+      const results = element("div", "search-results");
+      results.appendChild(element("h3", "", t("linkSearchResults")));
+      if (!linkSearch.items.length) results.appendChild(element("p", "empty", t("linkSearchEmpty")));
+      for (const item of linkSearch.items.slice(0, 20)) {
+        const wrapper = itemShell(item.id, item.created_at || item.updated_at);
+        wrapper.appendChild(element("div", "content", item.title));
+        if (/^https:\/\//i.test(item.url)) {
+          const anchor = element("a", "", item.url);
+          anchor.href = item.url;
+          anchor.target = "_blank";
+          anchor.rel = "noopener noreferrer";
+          wrapper.appendChild(anchor);
+        } else {
+          wrapper.appendChild(element("div", "content", item.url));
+        }
+        wrapper.appendChild(element("div", "content", item.content));
+        results.appendChild(wrapper);
+      }
+      search.appendChild(results);
+    }
+    container.appendChild(search);
+    return container;
+  }
+
+  function renderTaskCreation() {
+    const creation = creationPanel(t("createTaskTitle"), t("createTaskText"));
+    const goalInput = element("textarea");
+    goalInput.maxLength = 2000;
+    goalInput.required = true;
+    goalInput.placeholder = t("taskGoalPlaceholder");
+    goalInput.setAttribute("aria-label", t("taskGoal"));
+    clearFieldValidity(goalInput);
+    creation.form.appendChild(formField(t("taskGoal"), goalInput, true));
+    const counter = element("div", "counter", "0 / 2000");
+    goalInput.addEventListener("input", () => { counter.textContent = `${Array.from(goalInput.value).length} / 2000`; });
+    creation.form.appendChild(counter);
+    const actions = element("div", "form-actions");
+    actions.appendChild(submitButton(t("createAction")));
+    creation.form.appendChild(actions);
+    creation.form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      createTask(goalInput.value, goalInput);
+    });
+    return creation.section;
+  }
+
+  function renderReminderCreation() {
+    const creation = creationPanel(t("createReminderTitle"), "");
+    const textInput = element("textarea");
+    textInput.maxLength = 500;
+    textInput.required = true;
+    textInput.placeholder = t("reminderTextPlaceholder");
+    textInput.setAttribute("aria-label", t("reminderText"));
+    clearFieldValidity(textInput);
+
+    const cadenceChoice = element("select");
+    cadenceChoice.setAttribute("aria-label", t("reminderCadence"));
+    for (const [value, label] of [["once", t("reminderOnce")], ["daily", t("reminderDaily")]]) {
+      const option = element("option", "", label);
+      option.value = value;
+      cadenceChoice.appendChild(option);
+    }
+    cadenceChoice.value = "once";
+
+    const nextRunInput = element("input");
+    nextRunInput.type = "datetime-local";
+    nextRunInput.required = true;
+    nextRunInput.setAttribute("aria-label", t("reminderDateTime"));
+    clearFieldValidity(nextRunInput);
+    const dailyTimeInput = element("input");
+    dailyTimeInput.type = "time";
+    dailyTimeInput.disabled = true;
+    dailyTimeInput.setAttribute("aria-label", t("reminderDailyTime"));
+    clearFieldValidity(dailyTimeInput);
+
+    const grid = element("div", "form-grid");
+    grid.appendChild(formField(t("reminderText"), textInput, true));
+    grid.appendChild(formField(t("reminderCadence"), cadenceChoice));
+    const nextRunField = formField(t("reminderDateTime"), nextRunInput);
+    const dailyTimeField = formField(t("reminderDailyTime"), dailyTimeInput);
+    dailyTimeField.hidden = true;
+    grid.appendChild(nextRunField);
+    grid.appendChild(dailyTimeField);
+    creation.form.appendChild(grid);
+    cadenceChoice.addEventListener("change", () => {
+      const daily = cadenceChoice.value === "daily";
+      nextRunField.hidden = daily;
+      nextRunInput.disabled = daily;
+      nextRunInput.required = !daily;
+      dailyTimeField.hidden = !daily;
+      dailyTimeInput.disabled = !daily;
+      dailyTimeInput.required = daily;
+    });
+    const actions = element("div", "form-actions");
+    actions.appendChild(submitButton(t("createAction")));
+    creation.form.appendChild(actions);
+    creation.form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      createReminder(textInput, cadenceChoice, nextRunInput, dailyTimeInput);
+    });
+    return creation.section;
+  }
+
   function renderReminderSection(title, emptyText, items, failed) {
     const section = element("section", "reminder-section");
     section.appendChild(element("h3", "", title));
@@ -529,8 +793,13 @@
         } else {
           actions.appendChild(settingsButton(t("deleteReminder"), () => setReminderDeleteArmed(item.id, view.data), true));
         }
+      } else if (cancelReminderArmed === item.id) {
+        wrapper.appendChild(inlineConfirmation(
+          t("cancelReminderWarning"), t("confirmAction"),
+          () => changeReminder(`/api/reminders/${item.id}/cancel`), () => setReminderCancelArmed(null, view.data),
+        ));
       } else {
-        actions.appendChild(settingsButton(t("cancelTask"), () => changeReminder(`/api/reminders/${item.id}/cancel`), true));
+        actions.appendChild(settingsButton(t("cancelTask"), () => setReminderCancelArmed(item.id, view.data), true));
       }
       if (actions.childNodes.length) wrapper.appendChild(actions);
       section.appendChild(wrapper);
@@ -540,6 +809,7 @@
 
   function renderReminders(data) {
     ui.content.replaceChildren();
+    ui.content.appendChild(renderReminderCreation());
     ui.content.appendChild(renderReminderSection(t("activeReminders"), t("emptyActiveReminders"), data.active || [], false));
     ui.content.appendChild(renderReminderSection(t("failedReminders"), t("emptyFailedReminders"), data.failed || [], true));
     syncBusyState();
@@ -549,12 +819,26 @@
     ui.content.replaceChildren();
     if (tab === "history") ui.content.appendChild(renderHistorySearch());
     if (tab === "documents") ui.content.appendChild(renderDocumentSearch());
+    if (tab === "links") ui.content.appendChild(renderLinkControls());
+    if (tab === "tasks") ui.content.appendChild(renderTaskCreation());
     if (!items.length) {
-      if (tab === "documents") ui.content.appendChild(element("p", "empty", t("emptyItems")));
-      else if (tab === "history") ui.content.appendChild(element("p", "empty", t("emptyHistory")));
-      else renderEmpty(t("emptyItems"));
+      if (tab === "history") ui.content.appendChild(element("p", "empty", t("emptyHistory")));
+      else ui.content.appendChild(element("p", "empty", t("emptyItems")));
       syncBusyState();
       return;
+    }
+    if (tab === "history") {
+      const clear = element("div", clearHistoryArmed ? "task-clear history-clear task-clear-confirm" : "task-clear history-clear");
+      if (clearHistoryArmed) {
+        clear.appendChild(element("p", "task-clear-warning", t("clearHistoryWarning")));
+        const actions = element("div", "task-actions task-clear-actions");
+        actions.appendChild(settingsButton(t("confirmAction"), () => changeHistory("/api/history/clear")));
+        actions.appendChild(settingsButton(t("cancelTask"), () => setHistoryClearArmed(false, items), true));
+        clear.appendChild(actions);
+      } else {
+        clear.appendChild(settingsButton(t("clearHistory"), () => setHistoryClearArmed(true, items)));
+      }
+      ui.content.appendChild(clear);
     }
     if (tab === "documents") {
       const clear = element("div", clearDocumentsArmed ? "task-clear document-clear task-clear-confirm" : "task-clear document-clear");
@@ -599,6 +883,18 @@
       const wrapper = itemShell(item.id, item.created_at || item.updated_at);
       if (tab === "history") {
         appendHistoryContent(wrapper, item);
+        if (["user", "assistant"].includes(item.role)) {
+          if (deleteHistoryArmed === item.id) {
+            wrapper.appendChild(inlineConfirmation(
+              t("deleteHistoryWarning"), t("confirmAction"),
+              () => changeHistory(`/api/history/${item.id}/delete`), () => setHistoryDeleteArmed(null, items),
+            ));
+          } else {
+            const actions = element("div", "task-actions");
+            actions.appendChild(settingsButton(t("deleteHistory"), () => setHistoryDeleteArmed(item.id, items), true));
+            wrapper.appendChild(actions);
+          }
+        }
       } else if (tab === "documents") {
         wrapper.appendChild(element("div", "content", item.name));
         wrapper.appendChild(element("div", "meta", `${item.size_bytes} ${t("bytes")} · ${item.chunks} ${t("chunks")}`));
@@ -636,15 +932,24 @@
           wrapper.appendChild(actions);
         }
       } else if (tab === "tasks") {
-        wrapper.appendChild(element("div", "content", item.goal));
         const status = maybe(`task_${item.status}`, item.status);
+        const statusClass = item.status === "completed" ? "badge badge-success" : ["failed", "cancelled"].includes(item.status) ? "badge badge-danger" : "badge";
+        wrapper.appendChild(element("span", statusClass, status));
+        wrapper.appendChild(element("div", "content", item.goal));
         wrapper.appendChild(element("div", "meta", `${status} · ${t("step")} ${item.next_step} · ${item.attempts} ${t("attempts")} · ${t("due")} ${item.due_at}`));
         wrapper.appendChild(element("div", "meta", `${t("expires")}: ${item.expires_at}`));
         if (item.error) wrapper.appendChild(element("div", "task-error", `${t("taskError")}: ${item.error}`));
         if (item.status === "awaiting_approval") wrapper.appendChild(element("p", "meta", t("networkApprovalTelegram")));
         const actions = element("div", "task-actions");
         if (["ready", "running", "awaiting_approval"].includes(item.status)) {
-          actions.appendChild(settingsButton(t("cancelTask"), () => changeTask("/api/tasks/cancel"), true));
+          if (cancelTaskArmed) {
+            wrapper.appendChild(inlineConfirmation(
+              t("cancelTaskWarning"), t("confirmAction"),
+              () => changeTask("/api/tasks/cancel"), () => setTaskCancelArmed(false, items),
+            ));
+          } else {
+            actions.appendChild(settingsButton(t("cancelTask"), () => setTaskCancelArmed(true, items), true));
+          }
         } else if (["completed", "failed", "cancelled"].includes(item.status)) {
           if (deleteTaskArmed === item.id) {
             wrapper.appendChild(inlineConfirmation(
@@ -704,6 +1009,35 @@
       renderItems("history", view.items);
     } catch (error) {
       showError(error.message || t("historySearchFailed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function searchLinks(query) {
+    if (loading || !session) return;
+    const normalized = query.trim();
+    if (!normalized) {
+      showError(t("linkSearchEmptyQuery"));
+      return;
+    }
+    if (Array.from(normalized).length > 200) {
+      showError(t("linkSearchInvalid"));
+      return;
+    }
+    setBusy(true);
+    resetArmedStates();
+    showError("");
+    try {
+      const data = await api(`/api/links/search?q=${encodeURIComponent(normalized)}`);
+      linkSearch = {
+        query: normalized,
+        active: true,
+        items: (Array.isArray(data.items) ? data.items : []).slice(0, 20),
+      };
+      renderItems("links", view.items);
+    } catch (error) {
+      showError(error.message || t("linkSearchFailed"));
     } finally {
       setBusy(false);
     }
@@ -806,6 +1140,88 @@
     }
   }
 
+  async function createResource(path, payload, successKey, failureKey) {
+    if (loading || !session) return;
+    setBusy(true);
+    showError("");
+    let created = false;
+    try {
+      await api(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      created = true;
+    } catch (error) {
+      showError(error.message || t(failureKey));
+    } finally {
+      setBusy(false);
+    }
+    if (created) {
+      resetArmedStates();
+      resetSearchState();
+      await load();
+      showNotice(t(successKey));
+    }
+  }
+
+  function createLink(value, control) {
+    if (loading || !session) return;
+    const normalized = value.trim();
+    let parsed;
+    try { parsed = new URL(normalized); } catch (_) { parsed = null; }
+    if (!parsed || parsed.protocol !== "https:" || new TextEncoder().encode(normalized).length > 2048 || normalized.includes("\0")) {
+      invalidField(control, t("linkInvalidURL"));
+      return;
+    }
+    control.setAttribute("aria-invalid", "false");
+    createResource("/api/links", { url: normalized }, "linkCreated", "linkMutationFailed");
+  }
+
+  function createTask(value, control) {
+    if (loading || !session) return;
+    const normalized = value.trim();
+    const length = Array.from(normalized).length;
+    if (!length || length > 2000 || normalized.includes("\0")) {
+      invalidField(control, t("taskGoalInvalid"));
+      return;
+    }
+    control.setAttribute("aria-invalid", "false");
+    createResource("/api/tasks", { goal: normalized }, "taskCreated", "taskMutationFailed");
+  }
+
+  function createReminder(textControl, cadenceControl, nextRunControl, dailyTimeControl) {
+    if (loading || !session) return;
+    const text = textControl.value.trim();
+    const textLength = Array.from(text).length;
+    if (!textLength || textLength > 500 || text.includes("\0")) {
+      invalidField(textControl, t("reminderTextInvalid"));
+      return;
+    }
+    textControl.setAttribute("aria-invalid", "false");
+    const cadence = cadenceControl.value === "daily" ? "daily" : "once";
+    const payload = { text, cadence };
+    if (cadence === "daily") {
+      const dailyTime = dailyTimeControl.value;
+      if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(dailyTime)) {
+        invalidField(dailyTimeControl, t("reminderTimeInvalid"));
+        return;
+      }
+      dailyTimeControl.setAttribute("aria-invalid", "false");
+      payload.daily_time = dailyTime;
+    } else {
+      const nextRun = new Date(nextRunControl.value);
+      const delay = nextRun.getTime() - Date.now();
+      if (!nextRunControl.value || Number.isNaN(nextRun.getTime()) || delay <= 0 || delay > 3650 * 24 * 60 * 60 * 1000) {
+        invalidField(nextRunControl, t("reminderDateInvalid"));
+        return;
+      }
+      nextRunControl.setAttribute("aria-invalid", "false");
+      payload.next_run = nextRun.toISOString();
+    }
+    createResource("/api/reminders", payload, "reminderCreated", "reminderMutationFailed");
+  }
+
   async function changeSettings(path, method, payload, successKey = "") {
     if (loading || !session) return;
     setBusy(true);
@@ -830,6 +1246,27 @@
       await load();
       if (successKey) showNotice(t(successKey));
       else showNotice(t("settingsSaved"));
+    }
+  }
+
+  async function changeHistory(path) {
+    if (loading || !session) return;
+    setBusy(true);
+    showError("");
+    let changed = false;
+    try {
+      await api(path, { method: "POST" });
+      changed = true;
+    } catch (error) {
+      showError(error.message || t("historyMutationFailed"));
+    } finally {
+      setBusy(false);
+    }
+    if (changed) {
+      resetArmedStates();
+      resetSearchState();
+      await load();
+      showNotice(t("historyUpdated"));
     }
   }
 
@@ -1056,6 +1493,18 @@
     else if (!["status", "settings", "usage", "reminders"].includes(activeTab)) renderItems(activeTab, view.items);
   }
 
+  function syncTabs(selected) {
+    ui.content.setAttribute("role", "tabpanel");
+    ui.content.tabIndex = 0;
+    for (const tab of document.querySelectorAll("button[data-tab]")) {
+      const active = tab === selected;
+      tab.classList.toggle("active", active);
+      tab.setAttribute("aria-selected", String(active));
+      tab.tabIndex = active ? 0 : -1;
+    }
+    ui.content.setAttribute("aria-labelledby", selected.id || `tab-${selected.dataset.tab}`);
+  }
+
   function applyTranslations() {
     document.documentElement.lang = language;
     document.title = t("documentTitle");
@@ -1063,6 +1512,8 @@
     for (const node of document.querySelectorAll("[data-i18n]")) node.textContent = t(node.dataset.i18n);
     for (const node of document.querySelectorAll("[data-i18n-aria]")) node.setAttribute("aria-label", t(node.dataset.i18nAria));
     ui.title.textContent = t(`tab${activeTab[0].toUpperCase()}${activeTab.slice(1)}`);
+    const selected = document.querySelector(`button[data-tab="${activeTab}"]`);
+    if (selected) syncTabs(selected);
     if (!loading) renderView();
   }
 
@@ -1138,9 +1589,24 @@
     view = { tab: activeTab, data: null, items: [] };
     ui.title.textContent = t(`tab${activeTab[0].toUpperCase()}${activeTab.slice(1)}`);
     ui.content.replaceChildren();
-    for (const tab of document.querySelectorAll("button[data-tab]")) tab.classList.toggle("active", tab === button);
+    syncTabs(button);
     ui.more.hidden = true;
     load();
+  });
+  document.getElementById("tabs").addEventListener("keydown", (event) => {
+    const current = event.target.closest("button[data-tab]");
+    if (!current || loading) return;
+    const tabs = document.querySelectorAll("button[data-tab]");
+    const index = tabs.indexOf(current);
+    let nextIndex = index;
+    if (event.key === "ArrowRight") nextIndex = (index + 1) % tabs.length;
+    else if (event.key === "ArrowLeft") nextIndex = (index - 1 + tabs.length) % tabs.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = tabs.length - 1;
+    else return;
+    event.preventDefault();
+    tabs[nextIndex].focus();
+    tabs[nextIndex].click();
   });
   ui.language.addEventListener("change", () => {
     language = ui.language.value === "en" ? "en" : "ru";

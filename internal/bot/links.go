@@ -90,19 +90,26 @@ func (d *Dispatcher) fetchSavedLink(ctx context.Context, userID int64, rawURL st
 	return store.SavedLink{Title: title, CanonicalURL: canonical, Content: page.text}, nil
 }
 
+func (d *Dispatcher) CreateLink(ctx context.Context, chatID int64, userID int64, rawURL string) (store.SavedLink, bool, error) {
+	link, err := d.fetchSavedLink(ctx, userID, rawURL)
+	if err != nil {
+		return store.SavedLink{}, false, err
+	}
+	link.ChatID = chatID
+	link.UserID = userID
+	return store.PutSavedLink(ctx, d.deps.DB, link)
+}
+
 func (d *Dispatcher) addLink(ctx context.Context, ev Event, rawURL string) error {
-	link, err := d.fetchSavedLink(ctx, ev.UserID, rawURL)
+	saved, replaced, err := d.CreateLink(ctx, ev.ChatID, ev.UserID, rawURL)
 	if err != nil {
+		if errors.Is(err, store.ErrSavedLinkLimit) {
+			return d.reply(ctx, ev.ChatID, fmt.Sprintf("В чате уже %d ссылок. Сначала удали одну через /links delete <id>.", store.SavedLinkMaxPerChat))
+		}
+		if errors.Is(err, store.ErrSavedLinkInput) {
+			return err
+		}
 		return d.reply(ctx, ev.ChatID, "Не удалось сохранить ссылку: "+Sanitize(err, d.deps.Token))
-	}
-	link.ChatID = ev.ChatID
-	link.UserID = ev.UserID
-	saved, replaced, err := store.PutSavedLink(ctx, d.deps.DB, link)
-	if errors.Is(err, store.ErrSavedLinkLimit) {
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf("В чате уже %d ссылок. Сначала удали одну через /links delete <id>.", store.SavedLinkMaxPerChat))
-	}
-	if err != nil {
-		return err
 	}
 	action := "сохранена"
 	if replaced {

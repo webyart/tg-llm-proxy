@@ -2,11 +2,13 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"bot/internal/model"
@@ -82,6 +84,84 @@ func TestLinksAddCanonicalizesAndStoresOnlySuccessfulReads(t *testing.T) {
 	}
 	if !strings.Contains(r.joined(), "unexpected HTTP status 500") || !strings.Contains(r.joined(), "не содержит читаемого текста") {
 		t.Fatalf("reader errors were not explained: %q", r.joined())
+	}
+}
+
+func TestDispatcherCreateLinkReturnsReplacementAndScopesChats(t *testing.T) {
+	fixture := newSavedLinkTestServer(t)
+	m := &fakeModel{response: model.Response{Content: "не нужен"}}
+	db := testStore(t)
+	d := newTestDispatcher(t, testConfig(t, nil), m, nil, db)
+	d.deps.URLReader = fixture.client
+	ctx := context.Background()
+
+	first, replaced, err := d.CreateLink(ctx, 100, 11, "HTTPS://EXAMPLE.COM.:443/refresh#fragment")
+	if err != nil || replaced || first.ID <= 0 || first.ChatID != 100 || first.UserID != 11 || first.CanonicalURL != "https://example.com/refresh" {
+		t.Fatalf("first link=%+v replaced=%v err=%v", first, replaced, err)
+	}
+	second, replaced, err := d.CreateLink(ctx, 100, 11, "https://example.com/refresh#other")
+	if err != nil || !replaced || second.ID != first.ID {
+		t.Fatalf("replacement link=%+v replaced=%v err=%v", second, replaced, err)
+	}
+	other, replaced, err := d.CreateLink(ctx, 101, 12, "https://example.com/refresh")
+	if err != nil || replaced || other.ID == first.ID || other.ChatID != 101 || other.UserID != 12 {
+		t.Fatalf("other chat link=%+v replaced=%v err=%v", other, replaced, err)
+	}
+	if _, _, err := d.CreateLink(ctx, 100, 11, "https://127.0.0.1/private"); err == nil {
+		t.Fatal("CreateLink accepted a private address")
+	}
+	rows, err := store.ListSavedLinks(ctx, db, 100, 20)
+	if err != nil || len(rows) != 1 || rows[0].ID != first.ID {
+		t.Fatalf("chat rows=%+v err=%v", rows, err)
+	}
+	otherRows, err := store.ListSavedLinks(ctx, db, 101, 20)
+	if err != nil || len(otherRows) != 1 || otherRows[0].ID != other.ID {
+		t.Fatalf("other chat rows=%+v err=%v", otherRows, err)
+	}
+	if m.callCount() != 0 {
+		t.Fatalf("CreateLink called the model %d times", m.callCount())
+	}
+}
+
+func TestDispatcherCreateLinkPreservesOutboundLimits(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		exhaust   func(*Dispatcher)
+		wantError error
+	}{
+		{name: "global concurrency", exhaust: func(d *Dispatcher) {
+			for range cap(d.outboundTools) {
+				d.outboundTools <- struct{}{}
+			}
+		}, wantError: errLinkNetworkBusy},
+		{name: "per user rate", exhaust: func(d *Dispatcher) {
+			now := time.Unix(1700000000, 0)
+			d.networkWork.WithClock(func() time.Time { return now })
+			for range networkWorkPerMinute {
+				if !d.networkWork.Allow(11) {
+					t.Fatal("failed to pre-consume network work")
+				}
+			}
+		}, wantError: errLinkNetworkLimit},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newSavedLinkTestServer(t)
+			db := testStore(t)
+			d := newTestDispatcher(t, testConfig(t, nil), &fakeModel{}, nil, db)
+			d.deps.URLReader = fixture.client
+			test.exhaust(d)
+			link, replaced, err := d.CreateLink(context.Background(), 100, 11, fixture.url+"/refresh")
+			if !errors.Is(err, test.wantError) || replaced || link.ID != 0 {
+				t.Fatalf("CreateLink link=%+v replaced=%v err=%v", link, replaced, err)
+			}
+			if fixture.resolver.calls != 0 {
+				t.Fatalf("limited CreateLink resolved DNS %d times", fixture.resolver.calls)
+			}
+			rows, err := store.ListSavedLinks(context.Background(), db, 100, 20)
+			if err != nil || len(rows) != 0 {
+				t.Fatalf("limited CreateLink stored rows=%+v err=%v", rows, err)
+			}
+		})
 	}
 }
 

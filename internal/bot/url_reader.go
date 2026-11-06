@@ -44,6 +44,14 @@ type urlReaderHooks struct {
 	tlsRootCAs *x509.CertPool
 }
 
+var errURLReaderCrossOriginRedirect = errors.New("cross-origin redirect requires a fresh read_url request and approval")
+
+type urlReaderApprovedOriginContextKey struct{}
+
+func withURLReaderApprovedOrigin(ctx context.Context, origin string) context.Context {
+	return context.WithValue(ctx, urlReaderApprovedOriginContextKey{}, origin)
+}
+
 func urlReaderTools(enabled bool) []model.ToolDefinition {
 	if !enabled {
 		return nil
@@ -131,8 +139,13 @@ func newURLReaderClient(hooks urlReaderHooks) *http.Client {
 			if len(via) > urlReaderMaxRedirects {
 				return errors.New("too many redirects")
 			}
-			_, err := parseURLReaderURL(req.URL.String())
-			return err
+			if _, err := parseURLReaderURL(req.URL.String()); err != nil {
+				return err
+			}
+			if approvedOrigin, ok := req.Context().Value(urlReaderApprovedOriginContextKey{}).(string); ok && canonicalNetworkOrigin(req.URL.String()) != approvedOrigin {
+				return errURLReaderCrossOriginRedirect
+			}
+			return nil
 		},
 	}
 }
@@ -266,6 +279,9 @@ func readURLPage(ctx context.Context, client *http.Client, rawURL string) (urlRe
 	defer client.CloseIdleConnections()
 	resp, err := client.Do(req)
 	if err != nil {
+		if errors.Is(err, errURLReaderCrossOriginRedirect) {
+			return urlReaderPage{}, errURLReaderCrossOriginRedirect
+		}
 		return urlReaderPage{}, errors.New("failed to read URL")
 	}
 	defer resp.Body.Close()

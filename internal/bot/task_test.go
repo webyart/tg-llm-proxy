@@ -68,6 +68,99 @@ func processTasks(t *testing.T, d *Dispatcher, passes int) {
 	}
 }
 
+func TestTaskCommandClassifiesOnlyNewGoalsAsModelWork(t *testing.T) {
+	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"}), nil, nil, testStore(t))
+	tests := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{name: "status", text: "/task"},
+		{name: "menu", text: "/task menu"},
+		{name: "menu cancel", text: "/task menu:cancel"},
+		{name: "menu resume", text: "/task menu:resume"},
+		{name: "menu clear", text: "/task menu:clear"},
+		{name: "menu new", text: "/task menu:new"},
+		{name: "clear", text: "/task clear"},
+		{name: "clear confirm", text: "/task clear confirm"},
+		{name: "cancel", text: "/task cancel"},
+		{name: "cancel case insensitive", text: "/task CANCEL"},
+		{name: "resume", text: "/task resume"},
+		{name: "resume id", text: "/task resume 12"},
+		{name: "resume case insensitive", text: "/task RESUME 12"},
+		{name: "resume invalid id", text: "/task resume invalid"},
+		{name: "resume extra args", text: "/task resume 12 extra"},
+		{name: "goal", text: "/task compare two ideas", want: true},
+		{name: "menu prefix goal", text: "/task menu plan", want: true},
+		{name: "unknown menu goal", text: "/task menu:unknown", want: true},
+		{name: "clear prefix goal", text: "/task clear later", want: true},
+		{name: "cancel prefix goal", text: "/task cancel culture", want: true},
+		{name: "resume prefix goal", text: "/task resumable goal", want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cmd, _ := d.commandFor(testEvent(100, 11, 700, test.text))
+			if cmd.Name != CommandTask || cmd.UsesModel != test.want {
+				t.Fatalf("command=%q UsesModel=%v, want task/%v", cmd.Name, cmd.UsesModel, test.want)
+			}
+		})
+	}
+}
+
+func TestTaskResumeAndClearDoNotCreateRecoverableQuestions(t *testing.T) {
+	tests := []struct {
+		name       string
+		action     string
+		wantTask   bool
+		wantStatus string
+	}{
+		{name: "resume", action: "resume 1", wantTask: true, wantStatus: store.TaskStatusReady},
+		{name: "clear", action: "clear", wantTask: true, wantStatus: store.TaskStatusCancelled},
+		{name: "clear confirm", action: "clear confirm"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			m := taskTextModel()
+			db := testStore(t)
+			d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"}), m, &fakeReplier{}, db)
+			if err := store.EnsureChat(ctx, db, 100, 11, ""); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().UTC()
+			if _, err := store.CreateTask(ctx, db, store.Task{ChatID: 100, UserID: 11, Goal: "preserved goal", Model: "m",
+				PlanJSON: validTaskPlanOne, DueAt: now, ExpiresAt: now.Add(TaskLifetime), CreatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok, err := store.CancelTask(ctx, db, 100, now); err != nil || !ok {
+				t.Fatalf("cancel ok=%v err=%v", ok, err)
+			}
+			if err := dispatch(t, d, testEvent(100, 11, 700, "/task "+test.action)); err != nil {
+				t.Fatal(err)
+			}
+			current, found, err := store.CurrentTask(ctx, db, 100)
+			if err != nil || found != test.wantTask || found && current.Status != test.wantStatus {
+				t.Fatalf("task=%+v found=%v err=%v, want found=%v status=%q", current, found, err, test.wantTask, test.wantStatus)
+			}
+			rows, err := store.HistoryOfChat(ctx, db, 100, 20)
+			if err != nil || len(rows) != 0 {
+				t.Fatalf("history rows=%+v err=%v", rows, err)
+			}
+			if d.deps.Limit.Count(11) != 0 || d.modelWork.Count(11) != 0 || m.callCount() != 0 {
+				t.Fatalf("control action consumed model resources: limit=%d work=%d calls=%d", d.deps.Limit.Count(11), d.modelWork.Count(11), m.callCount())
+			}
+			unanswered, err := store.UnansweredQuestions(ctx, db, ResumeScanLimit)
+			if err != nil || len(unanswered) != 0 {
+				t.Fatalf("unanswered questions=%+v err=%v", unanswered, err)
+			}
+			answered, pending, err := d.ResumeInterruptedQuestions(ctx)
+			if err != nil || answered != 0 || pending != 0 || m.callCount() != 0 {
+				t.Fatalf("startup recovery answered=%d pending=%d calls=%d err=%v", answered, pending, m.callCount(), err)
+			}
+		})
+	}
+}
+
 func TestTaskClearRequiresConfirmationAndDeletesAllTasks(t *testing.T) {
 	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
 	d := newTestDispatcher(t, cfg, nil, nil, testStore(t))
@@ -227,6 +320,56 @@ func TestTaskExecutionFailureIsTerminalAndClear(t *testing.T) {
 	skipped, suppressed, err := store.ResumeSkip(context.Background(), db, 100)
 	if err != nil || !suppressed || skipped != questionID {
 		t.Fatalf("task goal generic recovery skip=%d suppressed=%v question=%d err=%v", skipped, suppressed, questionID, err)
+	}
+}
+
+func TestTaskModelLimitExhaustionDoesNotCompleteStep(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		raw        map[string]string
+		want       string
+		preConsume bool
+	}{
+		{name: "per minute", raw: map[string]string{"RATE_LIMIT_PER_MINUTE": "1"}, want: modelWorkBudgetErrorText, preConsume: true},
+		{name: "daily", raw: map[string]string{"USER_DAILY_MODEL_LIMIT": "2"}, want: modelDailyLimitErrorText},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := map[string]string{"TELEGRAM_ALLOWED_USERS": "11"}
+			for key, value := range tc.raw {
+				raw[key] = value
+			}
+			m := taskTextModel(validTaskPlanTwo, "first result")
+			r := &fakeReplier{}
+			db := testStore(t)
+			d := newTestDispatcher(t, testConfig(t, raw), m, r, db)
+			now := time.Unix(1700000000, 0)
+			d.modelWork.WithClock(func() time.Time { return now })
+			if tc.preConsume && !d.modelWork.Allow(11) {
+				t.Fatal("failed to pre-consume model work")
+			}
+			if err := dispatch(t, d, testEvent(100, 11, 1008, "/task compare two ideas")); err != nil {
+				t.Fatal(err)
+			}
+			processTasks(t, d, 2)
+
+			current, found, err := store.CurrentTask(context.Background(), db, 100)
+			if err != nil || !found {
+				t.Fatalf("CurrentTask found=%v err=%v", found, err)
+			}
+			if current.Status != store.TaskStatusFailed || current.NextStep != 1 || current.ResultsJSON != `["first result"]` {
+				t.Fatalf("limit exhaustion changed step results: %+v", current)
+			}
+			if m.callCount() != 2 {
+				t.Fatalf("provider calls=%d, want planner and first step only", m.callCount())
+			}
+			if !strings.Contains(r.joined(), tc.want) {
+				t.Fatalf("user did not receive friendly limit notice %q: %q", tc.want, r.joined())
+			}
+			rows, err := store.HistoryOfChat(context.Background(), db, 100, 10)
+			if err != nil || len(rows) != 1 || rows[0].Role != store.RoleUser {
+				t.Fatalf("limit notice persisted in assistant history: rows=%+v err=%v", rows, err)
+			}
+		})
 	}
 }
 

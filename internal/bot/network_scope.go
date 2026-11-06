@@ -50,7 +50,11 @@ func networkCallOrigin(call model.ToolCall) string {
 	if json.Unmarshal([]byte(call.Arguments), &input) != nil {
 		return ""
 	}
-	canonical, err := canonicalHTTPSURL(input.URL)
+	return canonicalNetworkOrigin(input.URL)
+}
+
+func canonicalNetworkOrigin(raw string) string {
+	canonical, err := canonicalHTTPSURL(raw)
 	if err != nil {
 		return ""
 	}
@@ -127,4 +131,14 @@ func (d *Dispatcher) clearTaskNetworkScopes(chatID int64, taskID int64) {
 		}
 	}
 	set.mu.Unlock()
+}
+
+func (d *Dispatcher) networkToolContext(ctx context.Context, state *toolLoopContinuation, callIndex int, call model.ToolCall) context.Context {
+	if call.Name != "read_url" || state == nil {
+		return ctx
+	}
+	if !state.approvedCalls[callIndex] && !d.networkScopeAllows(ctx, state, call) {
+		return ctx
+	}
+	return withURLReaderApprovedOrigin(ctx, networkCallOrigin(call))
 }

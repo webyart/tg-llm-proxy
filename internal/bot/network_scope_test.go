@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -154,5 +155,56 @@ func TestNonTaskNetworkScopeLivesOnlyOnOneContinuation(t *testing.T) {
 	wrongUser.metadata.event.UserID = 12
 	if d.networkScopeAllows(context.Background(), &wrongUser, otherQuery) {
 		t.Fatal("non-task scope survived a user change")
+	}
+}
+
+func TestOneTimeApprovedURLReaderRejectsCrossOriginRedirect(t *testing.T) {
+	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "URL_READER_ENABLED": "true"}), nil, &networkMenuReplier{}, testStore(t))
+	state := &toolLoopContinuation{
+		userID: 11, metadata: toolLoopMetadata{event: Event{ChatID: 100, UserID: 11}},
+		approvedCalls: map[int]bool{0: true},
+	}
+	assertApprovedURLReaderRejectsCrossOriginRedirect(t, d, state)
+}
+
+func TestTaskScopedURLReaderRejectsCrossOriginRedirect(t *testing.T) {
+	ctx := context.Background()
+	db := testStore(t)
+	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "URL_READER_ENABLED": "true"}), nil, &networkMenuReplier{}, db)
+	if err := store.EnsureChat(ctx, db, 100, 11, ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	created, err := store.CreateTask(ctx, db, store.Task{ChatID: 100, UserID: 11, Goal: "bounded URL work", Model: d.deps.Cfg.StrataModel,
+		PlanJSON: validTaskPlanOne, DueAt: now, ExpiresAt: now.Add(time.Hour), CreatedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &toolLoopContinuation{userID: 11, metadata: toolLoopMetadata{event: Event{ChatID: 100, UserID: 11}, taskID: created.ID}, approvedCalls: map[int]bool{}}
+	assertApprovedURLReaderRejectsCrossOriginRedirect(t, d, state)
+}
+
+func assertApprovedURLReaderRejectsCrossOriginRedirect(t *testing.T, d *Dispatcher, state *toolLoopContinuation) {
+	t.Helper()
+	var initialRequests atomic.Int64
+	fixture := newURLReaderTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		initialRequests.Add(1)
+		w.Header().Set("Location", "https://other.example/private")
+		w.WriteHeader(http.StatusFound)
+	}), []net.IP{net.ParseIP("93.184.216.34")})
+	call := model.ToolCall{ID: "approved-redirect", Name: "read_url", Arguments: `{"url":"` + fixture.url + `/start"}`}
+	if state.metadata.taskID > 0 && !d.grantNetworkScope(state, call) {
+		t.Fatal("failed to grant task scope")
+	}
+	ctx := d.networkToolContext(context.Background(), state, 0, call)
+	payload, err := executeTestURLReader(ctx, fixture, fixture.url+"/start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload["error"] != errURLReaderCrossOriginRedirect.Error() || payload["result"] != "" {
+		t.Fatalf("cross-origin redirect payload=%v", payload)
+	}
+	if initialRequests.Load() != 1 || fixture.resolver.calls != 1 || len(fixture.dialAddresses) != 1 {
+		t.Fatalf("redirect origin was fetched: requests=%d DNS=%d dials=%v", initialRequests.Load(), fixture.resolver.calls, fixture.dialAddresses)
 	}
 }

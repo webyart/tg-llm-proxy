@@ -338,11 +338,24 @@ func TestToolLoopCallErrors(t *testing.T) {
 func TestToolLoopLimits(t *testing.T) {
 	t.Run("calls per round", func(t *testing.T) {
 		call := model.ToolCall{Name: "calculator", Arguments: `{"expression":"1+1"}`}
-		m := &scriptedToolModel{responses: []model.Response{{ToolCalls: []model.ToolCall{call, call, call}}}}
-		d := newTestDispatcher(t, testConfig(t, nil), m, nil, nil)
-		_, err := d.completeWithTools(context.Background(), 11, model.Request{}, nil, nil)
-		if err == nil || err.Error() != "model requested more than two tool calls in one round" {
-			t.Fatalf("completeWithTools error=%v", err)
+		m := &scriptedToolModel{responses: []model.Response{
+			{ToolCalls: []model.ToolCall{call, call, call}},
+			{Content: "Готово"},
+		}}
+		db := testStore(t)
+		d := newTestDispatcher(t, testConfig(t, nil), m, nil, db)
+		resp, err := d.completeWithTools(context.Background(), 11, model.Request{}, nil, nil)
+		if err != nil || resp.Content != "Готово" {
+			t.Fatalf("completeWithTools response=%+v error=%v", resp, err)
+		}
+		messages := m.requests[1].Messages
+		last := messages[len(messages)-1]
+		if last.Role != model.RoleTool || last.Content != toolRoundCallLimitErrorJSON {
+			t.Fatalf("skipped tool response=%+v", last)
+		}
+		uses, countErr := store.CountEvents(context.Background(), db, store.EventUsage)
+		if countErr != nil || uses != 2 {
+			t.Fatalf("executed tool usage=%d err=%v", uses, countErr)
 		}
 	})
 

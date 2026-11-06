@@ -1,3 +1,11 @@
+# tg-llm-proxy v1.26.2
+
+## Tool round resilience
+
+- Модель больше не завершает задачу ошибкой при более чем двух tool calls в одном round. Выполняются только первые два вызова, остальные получают `{\"error\":\"tool_round_call_limit\"}` без network/usage side effects и остаются в protocol history для финального ответа.
+- System instruction явно ограничивает модель двумя calls per round. Disabled/unknown tools и approvals по-прежнему проверяются до первого side effect.
+- Regression подтверждает два реальных calculator call, skipped third call с bounded JSON и успешный финальный ответ вместо `model requested more than two tool calls in one round`.
+
 # tg-llm-proxy v1.26.1
 
 ## Task recovery and scoped approvals

@@ -148,7 +148,7 @@ func TestNonStreamingToolRequestHasTypingButNoStageMessages(t *testing.T) {
 		"WEB_SEARCH_BASE_URL":    provider.URL,
 	})
 	d := newTestDispatcher(t, cfg, m, r, testStore(t))
-	if err := dispatch(t, d, testEvent(100, 11, 8001, "Найди в интернете информацию")); err != nil {
+	if err := dispatch(t, d, testEvent(100, 11, 8001, "Найди в интернете информацию: private-query-do-not-display")); err != nil {
 		t.Fatal(err)
 	}
 	if r.typingCount() == 0 {
@@ -217,7 +217,7 @@ func TestStreamingToolStagesArePrivateDeduplicatedAndFinalized(t *testing.T) {
 			}
 			cfg := streamConfig(t, raw)
 			d := newTestDispatcher(t, cfg, m, r, testStore(t))
-			question := "Найди в интернете информацию"
+			question := "Найди в интернете информацию: private-search-query"
 			if tc.call.Name == "read_url" {
 				question = "Прочитай https://127.0.0.1/private-path?token=do-not-display"
 			}

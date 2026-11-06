@@ -138,6 +138,7 @@
     overloaded: "errorOverloaded", not_found: "errorNotFound", invalid_body: "errorInvalidJSON", static_error: "errorRead",
     task_not_active: "taskNotActive", task_not_resumable: "taskNotResumable", task_mutation_failed: "taskMutationFailed",
     task_not_deletable: "taskNotDeletable", document_mutation_failed: "documentMutationFailed",
+    link_mutation_failed: "linkMutationFailed",
   };
 
   function initialLanguage() {
@@ -166,8 +167,8 @@
 
   const ui = {
     app: document.getElementById("app"), launch: document.getElementById("launch"),
-    error: document.getElementById("error"), content: document.getElementById("content"),
-    title: document.getElementById("section-title"), more: document.getElementById("more"),
+    error: document.getElementById("error"), notice: document.getElementById("notice"),
+    content: document.getElementById("content"), title: document.getElementById("section-title"), more: document.getElementById("more"),
     refresh: document.getElementById("refresh"), logout: document.getElementById("logout"),
     language: document.getElementById("language"),
   };
@@ -193,8 +194,17 @@
   }
 
   function showError(message) {
+    ui.notice.textContent = "";
+    ui.notice.hidden = true;
     ui.error.textContent = message;
     ui.error.hidden = !message;
+  }
+
+  function showNotice(message) {
+    ui.error.textContent = "";
+    ui.error.hidden = true;
+    ui.notice.textContent = message;
+    ui.notice.hidden = !message;
   }
 
   function expire(message) {
@@ -466,7 +476,7 @@
     }
     if (saved) {
       await load();
-      showError(t("settingsSaved"));
+      showNotice(t("settingsSaved"));
     }
   }
 
@@ -488,7 +498,7 @@
     if (changed) {
       resetArmedStates();
       await load();
-      showError(t("documentUpdated"));
+      showNotice(t("documentUpdated"));
     }
   }
 
@@ -510,7 +520,7 @@
     if (changed) {
       resetArmedStates();
       await load();
-      showError(t("linkUpdated"));
+      showNotice(t("linkUpdated"));
     }
   }
 
@@ -532,7 +542,7 @@
     if (changed) {
       resetArmedStates();
       await load();
-      showError(t("taskUpdated"));
+      showNotice(t("taskUpdated"));
     }
   }
 

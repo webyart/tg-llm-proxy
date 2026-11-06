@@ -169,10 +169,15 @@ func (d *Dispatcher) helpLines() []string {
 	for i < len(d.commands) {
 		var cmd = d.commands[i]
 		var usage = "/" + cmd.Name
-		if cmd.NeedsArgs {
+		if cmd.Name == CommandRemind {
+			usage += " <время> <текст>"
+		} else if cmd.NeedsArgs {
 			usage += " <текст>"
 		}
 		lines = append(lines, fmt.Sprintf("%s — %s", usage, cmd.Description))
+		if cmd.Name == CommandRemind {
+			lines = append(lines, "Пример: /remind через 1 минуту купить молоко")
+		}
 		i++
 	}
 	lines = append(lines, "Можно отправить альбом фото, текстовый документ, голосовое, аудио или видеосообщение.")

@@ -150,20 +150,59 @@ func SearchMessages(ctx context.Context, db *sql.DB, chatID int64, query string,
 	if limit <= 0 {
 		return []Message{}, nil
 	}
-	rows, err := ExportMessages(ctx, db, chatID, 10000)
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, chat_id, user_id, role, content, tokens_in, tokens_out, model, latency_ms, telegram_message_id, created_at
+		FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT 10000`, chatID)
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 	matches := make([]Message, 0, limit)
-	for i := len(rows) - 1; i >= 0 && len(matches) < limit; i-- {
-		if strings.Contains(strings.ToLower(rows[i].Content), needle) {
-			matches = append(matches, rows[i])
+	for len(matches) < limit && rows.Next() {
+		row, err := scanSearchMessage(rows)
+		if err != nil {
+			return nil, err
 		}
+		if strings.Contains(strings.ToLower(row.Content), needle) {
+			matches = append(matches, row)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	for i, j := 0, len(matches)-1; i < j; i, j = i+1, j-1 {
 		matches[i], matches[j] = matches[j], matches[i]
 	}
 	return matches, nil
+}
+
+func scanSearchMessage(rows *sql.Rows) (Message, error) {
+	var row Message
+	var model sql.NullString
+	var telegramID, tokensIn, tokensOut, latency sql.NullInt64
+	if err := rows.Scan(&row.ID, &row.ChatID, &row.UserID, &row.Role, &row.Content, &tokensIn, &tokensOut,
+		&model, &latency, &telegramID, &row.CreatedAt); err != nil {
+		return Message{}, err
+	}
+	if model.Valid {
+		row.Model = model.String
+	}
+	if tokensIn.Valid {
+		value := tokensIn.Int64
+		row.TokensIn = &value
+	}
+	if tokensOut.Valid {
+		value := tokensOut.Int64
+		row.TokensOut = &value
+	}
+	if latency.Valid {
+		row.LatencyMs = latency.Int64
+	}
+	if telegramID.Valid {
+		value := telegramID.Int64
+		row.TelegramMessageID = &value
+	}
+	return row, nil
 }
 
 func DeleteChatHistory(ctx context.Context, db *sql.DB, chatID int64) (int64, error) {

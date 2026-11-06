@@ -464,7 +464,7 @@ func TestWebSearchToolLoopDispatch(t *testing.T) {
 	}}
 	db := testStore(t)
 	d := newTestDispatcher(t, cfg, m, &fakeReplier{}, db)
-	if err := dispatch(t, d, testEvent(222, 11, 1702, "Найди в сети")); err != nil {
+	if err := dispatch(t, d, testEvent(222, 11, 1702, "Найди в сети погодa")); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	last := m.requests[1].Messages[len(m.requests[1].Messages)-1]

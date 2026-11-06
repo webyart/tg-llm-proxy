@@ -791,3 +791,210 @@ func TestTaskResumeRequiresFreshExactApproval(t *testing.T) {
 		t.Fatal("fresh approval was replayable")
 	}
 }
+
+type taskLifecycleFixture struct {
+	d                  *Dispatcher
+	r                  *networkMenuReplier
+	task               store.Task
+	other              store.Task
+	state              *toolLoopContinuation
+	call               model.ToolCall
+	scope              networkApprovalScope
+	otherScope         networkApprovalScope
+	otherApprovalToken string
+}
+
+func newTaskLifecycleFixture(t *testing.T, awaitingApproval bool) taskLifecycleFixture {
+	t.Helper()
+	ctx := context.Background()
+	r := &networkMenuReplier{}
+	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"}), nil, r, testStore(t))
+	for _, chatID := range []int64{100, 200} {
+		if err := store.EnsureChat(ctx, d.deps.DB, chatID, 11, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UTC()
+	created, err := store.CreateTask(ctx, d.deps.DB, store.Task{ChatID: 100, UserID: 11, Goal: "lifecycle", Model: "m",
+		PlanJSON: validTaskPlanOne, DueAt: now, ExpiresAt: now.Add(TaskLifetime), CreatedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := store.CreateTask(ctx, d.deps.DB, store.Task{ChatID: 200, UserID: 11, Goal: "unrelated", Model: "m",
+		PlanJSON: validTaskPlanOne, DueAt: now.Add(time.Hour), ExpiresAt: now.Add(2 * time.Hour), CreatedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := model.ToolCall{ID: "lifecycle-search", Name: "web_search", Arguments: `{"query":"lifecycle"}`}
+	state := &toolLoopContinuation{userID: 11, metadata: toolLoopMetadata{event: Event{ChatID: 100, UserID: 11}, taskID: created.ID}}
+	otherState := &toolLoopContinuation{userID: 11, metadata: toolLoopMetadata{event: Event{ChatID: 200, UserID: 11}, taskID: other.ID}}
+	if !d.grantNetworkScope(state, call) || !d.grantNetworkScope(otherState, call) {
+		t.Fatal("failed to seed network scopes")
+	}
+	scope, _ := scopeForNetworkCall(state, call)
+	otherScope, _ := scopeForNetworkCall(otherState, call)
+	token := "0123456789abcdef0123456789abcdef"
+	if awaitingApproval {
+		claimed, found, err := store.ClaimNextTask(ctx, d.deps.DB, now, time.Minute)
+		if err != nil || !found {
+			t.Fatalf("ClaimNextTask found=%v err=%v", found, err)
+		}
+		if saved, err := store.SaveTaskApproval(ctx, d.deps.DB, claimed, token, 700, now.Add(time.Minute), `{"request":{}}`, now); err != nil || !saved {
+			t.Fatalf("SaveTaskApproval saved=%v err=%v", saved, err)
+		}
+	} else {
+		if _, ok, err := store.CancelTask(ctx, d.deps.DB, 100, now); err != nil || !ok {
+			t.Fatalf("CancelTask ok=%v err=%v", ok, err)
+		}
+		if _, err := d.deps.DB.ExecContext(ctx, `UPDATE tasks SET approval_token = ?, approval_message_id = 700, continuation_json = '{"request":{}}' WHERE id = ?`, token, created.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	current, found, err := store.CurrentTask(ctx, d.deps.DB, 100)
+	if err != nil || !found {
+		t.Fatalf("CurrentTask found=%v err=%v", found, err)
+	}
+	otherToken := "fedcba9876543210fedcba9876543210"
+	set := networkConfirmationsFor(d)
+	set.mu.Lock()
+	set.pending[token] = networkConfirmation{ChatID: 100, UserID: 11, MessageID: 700, continuation: state}
+	set.pending[otherToken] = networkConfirmation{ChatID: 200, UserID: 11, MessageID: 900, continuation: otherState}
+	set.mu.Unlock()
+	return taskLifecycleFixture{d: d, r: r, task: current, other: other, state: state, call: call, scope: scope, otherScope: otherScope, otherApprovalToken: otherToken}
+}
+
+func taskLifecycleScopePresent(d *Dispatcher, scope networkApprovalScope) bool {
+	set := networkApprovalScopesFor(d)
+	set.mu.Lock()
+	defer set.mu.Unlock()
+	return set.scopes[scope]
+}
+
+func taskLifecycleConfirmationPresent(d *Dispatcher, token string) bool {
+	set := networkConfirmationsFor(d)
+	set.mu.Lock()
+	defer set.mu.Unlock()
+	_, found := set.pending[token]
+	return found
+}
+
+func TestDispatcherTaskLifecycleCleansOnlySuccessfulTransitions(t *testing.T) {
+	t.Run("cancel resume and clear", func(t *testing.T) {
+		fixture := newTaskLifecycleFixture(t, true)
+		d := fixture.d
+		cancelled, ok, err := d.CancelTask(context.Background(), 100)
+		if err != nil || !ok || cancelled.Status != store.TaskStatusCancelled {
+			t.Fatalf("CancelTask task=%+v ok=%v err=%v", cancelled, ok, err)
+		}
+		if taskLifecycleScopePresent(d, fixture.scope) || taskLifecycleConfirmationPresent(d, fixture.task.ApprovalToken) {
+			t.Fatal("cancel retained the target scope or pending continuation")
+		}
+		if !taskLifecycleScopePresent(d, fixture.otherScope) || !taskLifecycleConfirmationPresent(d, fixture.otherApprovalToken) {
+			t.Fatal("cancel cleared another chat")
+		}
+		if len(fixture.r.removed) != 1 || fixture.r.removed[0] != 700 {
+			t.Fatalf("cancel removed keyboards=%v", fixture.r.removed)
+		}
+		if !d.grantNetworkScope(fixture.state, fixture.call) {
+			t.Fatal("failed to seed a stale pre-resume grant")
+		}
+		resumed, ok, err := d.ResumeTask(context.Background(), 100, fixture.task.ID)
+		if err != nil || !ok || resumed.Status != store.TaskStatusReady {
+			t.Fatalf("ResumeTask task=%+v ok=%v err=%v", resumed, ok, err)
+		}
+		if taskLifecycleScopePresent(d, fixture.scope) {
+			t.Fatal("resume reactivated the stale scoped grant")
+		}
+		select {
+		case <-d.taskWake:
+		default:
+			t.Fatal("resume did not wake the task scheduler")
+		}
+	})
+
+	t.Run("clear", func(t *testing.T) {
+		fixture := newTaskLifecycleFixture(t, true)
+		deleted, err := fixture.d.ClearTasks(context.Background(), 100)
+		if err != nil || deleted != 1 {
+			t.Fatalf("ClearTasks deleted=%d err=%v", deleted, err)
+		}
+		if _, found, err := store.CurrentTask(context.Background(), fixture.d.deps.DB, 100); err != nil || found {
+			t.Fatalf("cleared task found=%v err=%v", found, err)
+		}
+		if taskLifecycleScopePresent(fixture.d, fixture.scope) || taskLifecycleConfirmationPresent(fixture.d, fixture.task.ApprovalToken) {
+			t.Fatal("clear retained task approval state")
+		}
+		if !taskLifecycleScopePresent(fixture.d, fixture.otherScope) || !taskLifecycleConfirmationPresent(fixture.d, fixture.otherApprovalToken) {
+			t.Fatal("clear changed another chat")
+		}
+		if len(fixture.r.removed) != 1 || fixture.r.removed[0] != 700 {
+			t.Fatalf("clear removed keyboards=%v", fixture.r.removed)
+		}
+		if current, found, err := store.CurrentTask(context.Background(), fixture.d.deps.DB, 200); err != nil || !found || current.ID != fixture.other.ID {
+			t.Fatalf("other task=%+v found=%v err=%v", current, found, err)
+		}
+	})
+}
+
+func TestDispatcherTaskLifecycleStoreFailuresPreserveUnrelatedState(t *testing.T) {
+	t.Run("cancel", func(t *testing.T) {
+		fixture := newTaskLifecycleFixture(t, true)
+		if _, err := fixture.d.deps.DB.ExecContext(context.Background(), fmt.Sprintf(`CREATE TRIGGER fail_task_cancel BEFORE UPDATE OF status ON tasks WHEN OLD.id = %d AND NEW.status = 'cancelled' BEGIN SELECT RAISE(FAIL, 'forced cancel failure'); END`, fixture.task.ID)); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok, err := fixture.d.CancelTask(context.Background(), 100); err == nil || ok {
+			t.Fatalf("CancelTask ok=%v err=%v", ok, err)
+		}
+		if !taskLifecycleScopePresent(fixture.d, fixture.scope) || !taskLifecycleScopePresent(fixture.d, fixture.otherScope) ||
+			!taskLifecycleConfirmationPresent(fixture.d, fixture.task.ApprovalToken) || !taskLifecycleConfirmationPresent(fixture.d, fixture.otherApprovalToken) {
+			t.Fatal("failed cancel cleared approval state")
+		}
+		if len(fixture.r.removed) != 0 {
+			t.Fatalf("failed cancel removed keyboards=%v", fixture.r.removed)
+		}
+	})
+
+	t.Run("resume clears only the target grant before the failed transition", func(t *testing.T) {
+		fixture := newTaskLifecycleFixture(t, false)
+		if _, err := fixture.d.deps.DB.ExecContext(context.Background(), fmt.Sprintf(`CREATE TRIGGER fail_task_resume BEFORE UPDATE OF status ON tasks WHEN OLD.id = %d AND NEW.status = 'ready' BEGIN SELECT RAISE(FAIL, 'forced resume failure'); END`, fixture.task.ID)); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok, err := fixture.d.ResumeTask(context.Background(), 100, fixture.task.ID); err == nil || ok {
+			t.Fatalf("ResumeTask ok=%v err=%v", ok, err)
+		}
+		if taskLifecycleScopePresent(fixture.d, fixture.scope) {
+			t.Fatal("failed resume retained the target scoped grant")
+		}
+		if !taskLifecycleScopePresent(fixture.d, fixture.otherScope) || !taskLifecycleConfirmationPresent(fixture.d, fixture.otherApprovalToken) {
+			t.Fatal("failed resume cleared another chat")
+		}
+		if !taskLifecycleConfirmationPresent(fixture.d, fixture.task.ApprovalToken) || len(fixture.r.removed) != 0 {
+			t.Fatal("failed resume discarded pending approval data or keyboard")
+		}
+		select {
+		case <-fixture.d.taskWake:
+			t.Fatal("failed resume woke the scheduler")
+		default:
+		}
+	})
+
+	t.Run("clear", func(t *testing.T) {
+		fixture := newTaskLifecycleFixture(t, true)
+		if _, err := fixture.d.deps.DB.ExecContext(context.Background(), `CREATE TRIGGER fail_task_clear BEFORE DELETE ON tasks WHEN OLD.chat_id = 100 BEGIN SELECT RAISE(FAIL, 'forced clear failure'); END`); err != nil {
+			t.Fatal(err)
+		}
+		if deleted, err := fixture.d.ClearTasks(context.Background(), 100); err == nil || deleted != 0 {
+			t.Fatalf("ClearTasks deleted=%d err=%v", deleted, err)
+		}
+		if !taskLifecycleScopePresent(fixture.d, fixture.scope) || !taskLifecycleScopePresent(fixture.d, fixture.otherScope) ||
+			!taskLifecycleConfirmationPresent(fixture.d, fixture.task.ApprovalToken) || !taskLifecycleConfirmationPresent(fixture.d, fixture.otherApprovalToken) {
+			t.Fatal("failed clear removed approval state")
+		}
+		if len(fixture.r.removed) != 0 {
+			t.Fatalf("failed clear removed keyboards=%v", fixture.r.removed)
+		}
+		if current, found, err := store.CurrentTask(context.Background(), fixture.d.deps.DB, 100); err != nil || !found || current.Status != store.TaskStatusAwaitingApproval {
+			t.Fatalf("task after failed clear=%+v found=%v err=%v", current, found, err)
+		}
+	})
+}

@@ -28,7 +28,9 @@ nav { display: flex; flex-wrap: wrap; gap: 5px; overflow-x: visible; margin: 0 0
 nav button { flex: 1 1 auto; min-width: 0; padding: 9px 11px; font-size: .88rem; color: var(--tg-theme-text-color, #17202a); background: var(--tg-theme-secondary-bg-color, white); }
 nav button.active { color: var(--tg-theme-button-text-color, white); background: var(--tg-theme-button-color, #2678c8); }
 .section-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: start; gap: 8px; }
-#error { white-space: pre-wrap; overflow-wrap: anywhere; background: #a82b2b; color: white; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+#error, #notice { white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+#error { background: #a82b2b; color: white; }
+#notice { color: var(--tg-theme-text-color, #17202a); background: var(--tg-theme-secondary-bg-color, white); border: 1px solid #7b899666; }
 .item { padding: 12px 0; border-top: 1px solid #7b899633; }
 .item:first-child { border-top: 0; padding-top: 0; }
 .item:last-child { padding-bottom: 0; }

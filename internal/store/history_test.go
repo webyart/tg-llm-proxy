@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 )
@@ -102,5 +103,170 @@ func TestStreamExportMessagesStopsImmediatelyAndPreservesWindowOrder(t *testing.
 		if want := int64(16 + index); id != want {
 			t.Fatalf("stream ids=%v", ids)
 		}
+	}
+}
+
+func TestSearchMessagesEarlyLateAndNoMatch(t *testing.T) {
+	ctx := context.Background()
+	db, err := OpenMemory(ctx, "history_search_positions_"+t.Name())
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	defer db.Close()
+	ids := make([]int64, 0, 4)
+	for _, content := range []string{"needle oldest", "filler", "needle middle", "needle newest"} {
+		id, err := Append(ctx, db, Message{ChatID: 73, UserID: 11, Role: RoleUser, Content: content})
+		if err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	if _, err := Append(ctx, db, Message{ChatID: 74, UserID: 12, Role: RoleUser, Content: "needle foreign chat"}); err != nil {
+		t.Fatalf("Append foreign chat: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		query string
+		limit int
+		want  []int64
+	}{
+		{name: "early match", query: "needle", limit: 1, want: []int64{ids[3]}},
+		{name: "late match", query: "oldest", limit: 10, want: []int64{ids[0]}},
+		{name: "chronological at limit", query: "needle", limit: 2, want: []int64{ids[2], ids[3]}},
+		{name: "no match", query: "absent", limit: 10},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			matches, err := SearchMessages(ctx, db, 73, test.query, test.limit)
+			if err != nil {
+				t.Fatalf("SearchMessages: %v", err)
+			}
+			if len(matches) != len(test.want) {
+				t.Fatalf("matches=%+v, want IDs %v", matches, test.want)
+			}
+			for index, id := range test.want {
+				if matches[index].ID != id || matches[index].ChatID != 73 {
+					t.Fatalf("matches=%+v, want IDs %v", matches, test.want)
+				}
+			}
+		})
+	}
+}
+
+func TestSearchMessagesNewest10000AndExactLimit(t *testing.T) {
+	ctx := context.Background()
+	db, err := OpenMemory(ctx, "history_search_window_"+t.Name())
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	defer db.Close()
+	seedHistoryMessages(t, ctx, db, 75, 10001, func(index int) string {
+		switch {
+		case index == 0:
+			return "outside newest window"
+		case index >= 9998:
+			return "needle"
+		default:
+			return "filler"
+		}
+	})
+
+	matches, err := SearchMessages(ctx, db, 75, "outside", 10)
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("oldest row escaped newest-10000 scope: matches=%+v err=%v", matches, err)
+	}
+	matches, err = SearchMessages(ctx, db, 75, "needle", 3)
+	if err != nil {
+		t.Fatalf("SearchMessages exact limit: %v", err)
+	}
+	if len(matches) != 3 {
+		t.Fatalf("matches=%d, want exactly limit 3", len(matches))
+	}
+	for index, match := range matches {
+		if want := int64(9999 + index); match.ID != want {
+			t.Fatalf("matches=%+v, want chronological IDs 9999..10001", matches)
+		}
+	}
+}
+
+func TestSearchMessagesScansAllMessageFields(t *testing.T) {
+	ctx := context.Background()
+	db, err := OpenMemory(ctx, "history_search_fields_"+t.Name())
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	defer db.Close()
+	tokensIn, tokensOut, telegramID := int64(12), int64(34), int64(56)
+	id, err := Append(ctx, db, Message{
+		ChatID: 76, UserID: 11, Role: RoleAssistant, Content: "all fields needle",
+		TokensIn: &tokensIn, TokensOut: &tokensOut, Model: "test-model", LatencyMs: 78,
+		TelegramMessageID: &telegramID,
+	})
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	matches, err := SearchMessages(ctx, db, 76, "FIELDS", 1)
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("matches=%+v err=%v", matches, err)
+	}
+	row := matches[0]
+	if row.ID != id || row.ChatID != 76 || row.UserID != 11 || row.Role != RoleAssistant ||
+		row.Content != "all fields needle" || row.TokensIn == nil || *row.TokensIn != tokensIn ||
+		row.TokensOut == nil || *row.TokensOut != tokensOut || row.Model != "test-model" ||
+		row.LatencyMs != 78 || row.TelegramMessageID == nil || *row.TelegramMessageID != telegramID || row.CreatedAt == "" {
+		t.Fatalf("scanned row lost fields: %+v", row)
+	}
+}
+
+func TestSearchMessagesEmptyInputsAndDatabaseError(t *testing.T) {
+	ctx := context.Background()
+	db, err := OpenMemory(ctx, "history_search_errors_"+t.Name())
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	for _, test := range []struct {
+		query string
+		limit int
+	}{
+		{query: " \t\n", limit: 10},
+		{query: "needle", limit: 0},
+		{query: "needle", limit: -1},
+	} {
+		matches, err := SearchMessages(ctx, db, 77, test.query, test.limit)
+		if err != nil || matches == nil || len(matches) != 0 {
+			t.Fatalf("query=%q limit=%d matches=%+v err=%v", test.query, test.limit, matches, err)
+		}
+	}
+	if matches, err := SearchMessages(ctx, db, 77, "needle", 1); err == nil || matches != nil {
+		t.Fatalf("closed database matches=%+v err=%v, want query error", matches, err)
+	}
+}
+
+func seedHistoryMessages(tb testing.TB, ctx context.Context, db *sql.DB, chatID int64, count int, content func(int) string) {
+	tb.Helper()
+	if err := EnsureChat(ctx, db, chatID, 11, ""); err != nil {
+		tb.Fatalf("EnsureChat: %v", err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		tb.Fatalf("BeginTx: %v", err)
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO messages (chat_id, user_id, role, content) VALUES (?, ?, ?, ?)`)
+	if err != nil {
+		tb.Fatalf("PrepareContext: %v", err)
+	}
+	defer stmt.Close()
+	for index := 0; index < count; index++ {
+		if _, err := stmt.ExecContext(ctx, chatID, 11, RoleUser, content(index)); err != nil {
+			tb.Fatalf("insert message %d: %v", index, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		tb.Fatalf("Commit: %v", err)
 	}
 }

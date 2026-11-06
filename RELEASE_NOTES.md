@@ -1,3 +1,17 @@
+# tg-llm-proxy v1.33.1
+
+## Security and reliability patch
+
+- Telegram и Mini App task cancel/resume/clear используют общий `TaskLifecycle`. Mini App в production подключается к Dispatcher до запуска listener; standalone webapp сохраняет store-backed режим. Resume очищает scoped grants до повторной активации, pending continuations и Telegram approval keyboards удаляются, scheduler wake сохранён.
+- Добавлен end-to-end regression: scoped network grant → Mini App cancel → resume → fresh approval; clear удаляет task/continuation/keyboard, старый callback не выполняет network action. Production и integration lifecycle настраиваются до обслуживания HTTP requests.
+- `web_search` больше не авторизует произвольный model-generated query по общей фразе «найди в интернете». Automatic execution разрешён только для nonempty query, буквально присутствующего в исходном пользовательском тексте без учёта регистра; расширенный/переформулированный query требует approval. `read_url` не изменён.
+
+## Performance and UX
+
+- `SearchMessages` читает newest 10000 rows построчно и останавливается после нужного числа совпадений вместо материализации всей истории. Сохранены chronological output, Unicode matching и chat isolation. Добавлены 10001-row regressions и early/full-scan benchmarks.
+- Mini App success messages переведены из красного `role=alert` в отдельный `role=status`; добавлен missing `link_mutation_failed` translation mapping. Read-only API 405 теперь возвращает `Allow: GET`; `/help` содержит полный синтаксис и пример `/remind`.
+- Добавлены lifecycle security, exact search intent, history scope/order, HTTP headers, RU/EN catalog и notice/error regressions.
+
 # tg-llm-proxy v1.33.0
 
 ## Mini App document deletion and cleanup

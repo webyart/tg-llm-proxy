@@ -217,16 +217,6 @@ func main() {
 	}
 	if cfg.MiniAppEnabled {
 		miniApp = webapp.New(cfg, db, client, logger)
-		miniAppServer, listenErr := webapp.Listen(miniApp, cfg.MiniAppAddress())
-		if listenErr != nil {
-			fmt.Println("Mini App listener:", listenErr, "")
-			db.Close()
-			os.Exit(1)
-		}
-		defer miniAppServer.Close()
-		miniAppErr = make(chan error, 1)
-		go func() { miniAppErr <- miniAppServer.Run(ctx) }()
-		fmt.Println("Mini App is listening on", miniAppServer.URL(), "public URL", cfg.MiniAppPublicURL, "")
 	}
 	var synthesizer model.SpeechSynthesizer
 	if cfg.TTSEnabled {
@@ -261,6 +251,19 @@ func main() {
 			return store.SetLastUpdateID(writeCtx, db, updateID)
 		},
 	})
+	if miniApp != nil {
+		miniApp.SetTaskLifecycle(dispatcher)
+		miniAppServer, listenErr := webapp.Listen(miniApp, cfg.MiniAppAddress())
+		if listenErr != nil {
+			fmt.Println("Mini App listener:", listenErr, "")
+			db.Close()
+			os.Exit(1)
+		}
+		defer miniAppServer.Close()
+		miniAppErr = make(chan error, 1)
+		go func() { miniAppErr <- miniAppServer.Run(ctx) }()
+		fmt.Println("Mini App is listening on", miniAppServer.URL(), "public URL", cfg.MiniAppPublicURL, "")
+	}
 	// is what answers 401 on a wrong token. A process that cannot poll must not sit next to a healthz that
 	var tg, tgErr = dispatcher.NewTelegram(bot.Options{WebhookSecretToken: cfg.WebhookSecretToken})
 	if tgErr != nil {

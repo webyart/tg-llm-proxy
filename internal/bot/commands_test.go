@@ -60,6 +60,22 @@ func TestRegistryCoversTheTableOfSection6(t *testing.T) {
 	}
 }
 
+func TestHelpShowsReminderUsageAndExample(t *testing.T) {
+	var d = newTestDispatcher(t, testConfig(t, nil), nil, nil, testStore(t))
+	var help = strings.Join(d.helpLines(), "\n")
+	for _, want := range []string{
+		"/remind <время> <текст> —",
+		"Пример: /remind через 1 минуту купить молоко",
+	} {
+		if !strings.Contains(help, want) {
+			t.Errorf("/help must show %q, got %q", want, help)
+		}
+	}
+	if strings.Contains(help, "/remind <текст>") {
+		t.Errorf("/help retains the ambiguous generic /remind usage: %q", help)
+	}
+}
+
 func TestPingAndWhoami(t *testing.T) {
 	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
 	var r = &fakeReplier{}

@@ -116,6 +116,7 @@ func newClient(t *testing.T, cfg config.Config, strata *testutil.Strata) model.C
 type botRun struct {
 	d            *bot.Dispatcher
 	tg           *tgbot.Bot
+	miniApp      *webapp.App
 	cancel       context.CancelFunc
 	done         chan struct{}
 	reminderDone chan struct{}
@@ -172,12 +173,12 @@ func startBotWithURLReader(t *testing.T, ctx context.Context, cfg config.Config,
 		synthesizer = ttsClient
 	}
 	var miniApp *webapp.App
+	var miniAppHTTP *httptest.Server
 	miniAppURL := ""
 	if cfg.MiniAppEnabled {
 		miniApp = webapp.New(cfg, db, client, logger)
-		miniAppHTTP := httptest.NewServer(miniApp.Handler())
-		t.Cleanup(miniAppHTTP.Close)
-		miniAppURL = miniAppHTTP.URL
+		miniAppHTTP = httptest.NewUnstartedServer(miniApp.Handler())
+		miniAppURL = "http://" + miniAppHTTP.Listener.Addr().String()
 		cfg.MiniAppPublicURL = miniAppURL
 	}
 	var d = bot.New(bot.Deps{
@@ -192,6 +193,11 @@ func startBotWithURLReader(t *testing.T, ctx context.Context, cfg config.Config,
 		MiniAppTickets: miniApp,
 		Offset:         func(ctx context.Context, updateID int64) error { return store.SetLastUpdateID(ctx, db, updateID) },
 	})
+	if miniApp != nil {
+		miniApp.SetTaskLifecycle(d)
+		miniAppHTTP.Start()
+		t.Cleanup(miniAppHTTP.Close)
+	}
 	if cfg.WebhookEnabled && opts.WebhookSecretToken == "" {
 		opts.WebhookSecretToken = cfg.WebhookSecretToken
 	}
@@ -237,7 +243,7 @@ func startBotWithURLReader(t *testing.T, ctx context.Context, cfg config.Config,
 		}
 		close(done)
 	}()
-	var run = &botRun{d: d, tg: tg, cancel: cancel, done: done, reminderDone: reminderDone, taskDone: taskDone, logs: logs, offset: startOffset, miniAppURL: miniAppURL}
+	var run = &botRun{d: d, tg: tg, miniApp: miniApp, cancel: cancel, done: done, reminderDone: reminderDone, taskDone: taskDone, logs: logs, offset: startOffset, miniAppURL: miniAppURL}
 	if webhookServer != nil {
 		run.webhookURL = webhookServer.URL()
 	}

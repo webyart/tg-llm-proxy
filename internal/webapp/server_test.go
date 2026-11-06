@@ -270,6 +270,36 @@ func TestEndpointIsolationAndSessionRevocation(t *testing.T) {
 	}
 }
 
+func TestReadOnlyAPIRejectsMethodsWithAllowGet(t *testing.T) {
+	app, server := newTestApp(t)
+	bearer := launchSession(t, app, server)
+	for _, test := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/api/status"},
+		{http.MethodPut, "/api/history"},
+		{http.MethodPatch, "/api/documents"},
+		{http.MethodDelete, "/api/links"},
+		{http.MethodPost, "/api/tasks"},
+		{http.MethodPut, "/api/usage"},
+		{http.MethodDelete, "/api/settings"},
+	} {
+		status, body, headers := apiRequest(t, server, test.method, test.path, bearer)
+		if status != http.StatusMethodNotAllowed || headers.Get("Allow") != http.MethodGet {
+			t.Errorf("%s %s status=%d Allow=%q body=%s", test.method, test.path, status, headers.Get("Allow"), body)
+		}
+		var payload struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil || payload.Error.Code != "method_not_allowed" {
+			t.Errorf("%s %s returned an invalid error body: %q err=%v", test.method, test.path, body, err)
+		}
+	}
+}
+
 func TestBodyCapDoesNotLogInitData(t *testing.T) {
 	var logs bytes.Buffer
 	app, _ := newTestApp(t)

@@ -46,6 +46,56 @@ func currentWebappTask(t *testing.T, app *App, chatID int64) store.Task {
 	return current
 }
 
+type recordingTaskLifecycle struct {
+	base        TaskLifecycle
+	cancelCalls int
+	resumeCalls int
+	clearCalls  int
+}
+
+func (l *recordingTaskLifecycle) CancelTask(ctx context.Context, chatID int64) (store.Task, bool, error) {
+	l.cancelCalls++
+	return l.base.CancelTask(ctx, chatID)
+}
+
+func (l *recordingTaskLifecycle) ResumeTask(ctx context.Context, chatID int64, taskID int64) (store.Task, bool, error) {
+	l.resumeCalls++
+	return l.base.ResumeTask(ctx, chatID, taskID)
+}
+
+func (l *recordingTaskLifecycle) ClearTasks(ctx context.Context, chatID int64) (int64, error) {
+	l.clearCalls++
+	return l.base.ClearTasks(ctx, chatID)
+}
+
+func TestTaskControlsUseConfiguredLifecycle(t *testing.T) {
+	app, server := newTestApp(t)
+	bearer := launchSession(t, app, server)
+	lifecycle := &recordingTaskLifecycle{base: storeTaskLifecycle{db: app.db}}
+	app.SetTaskLifecycle(lifecycle)
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	created := createWebappTask(t, app, testChatID, now)
+
+	status, body := settingsRequest(t, server.URL, http.MethodPost, "/api/tasks/cancel", bearer, "", "")
+	if status != http.StatusOK {
+		t.Fatalf("cancel status=%d body=%s", status, body)
+	}
+	status, body = settingsRequest(t, server.URL, http.MethodPost, fmt.Sprintf("/api/tasks/%d/resume", created.ID), bearer, "", "")
+	if status != http.StatusOK {
+		t.Fatalf("resume status=%d body=%s", status, body)
+	}
+	status, body = settingsRequest(t, server.URL, http.MethodPost, "/api/tasks/clear", bearer, "", "")
+	if status != http.StatusOK {
+		t.Fatalf("clear status=%d body=%s", status, body)
+	}
+	if lifecycle.cancelCalls != 1 || lifecycle.resumeCalls != 1 || lifecycle.clearCalls != 1 {
+		t.Fatalf("lifecycle calls cancel=%d resume=%d clear=%d", lifecycle.cancelCalls, lifecycle.resumeCalls, lifecycle.clearCalls)
+	}
+	if got := webappTaskCount(t, app, testChatID); got != 0 {
+		t.Fatalf("configured lifecycle left %d tasks", got)
+	}
+}
+
 func TestTaskListShowsSanitizedFailureAndExpiry(t *testing.T) {
 	app, server := newTestApp(t)
 	app.cfg.StrataKey = "test-strata-key"

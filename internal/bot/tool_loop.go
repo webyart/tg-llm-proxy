@@ -415,7 +415,14 @@ func directNetworkIntent(originalRequest string, call model.ToolCall) bool {
 		}
 		return requestedHTTPSURLs(originalRequest)[input.URL]
 	case "web_search":
-		return explicitWebSearchIntent(originalRequest)
+		var input struct {
+			Query string `json:"query"`
+		}
+		if json.Unmarshal([]byte(call.Arguments), &input) != nil {
+			return false
+		}
+		query := strings.ToLower(strings.TrimSpace(input.Query))
+		return query != "" && explicitWebSearchIntent(originalRequest) && strings.Contains(strings.ToLower(originalRequest), query)
 	default:
 		return false
 	}

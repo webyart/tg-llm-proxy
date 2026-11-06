@@ -9,7 +9,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"bot/internal/bot"
 	"bot/internal/store"
 )
 
@@ -537,7 +536,7 @@ func (a *App) cancelTask(w http.ResponseWriter, req *http.Request, current scope
 		taskBodyError(w, status)
 		return
 	}
-	cancelled, changed, err := store.CancelTask(req.Context(), a.db, current.ChatID, time.Now().UTC())
+	cancelled, changed, err := a.taskLifecycle.CancelTask(req.Context(), current.ChatID)
 	if err != nil {
 		a.taskMutationFailed(w, req, "cancel", err)
 		return
@@ -582,7 +581,7 @@ func (a *App) resumeTask(w http.ResponseWriter, req *http.Request, current scope
 		taskBodyError(w, status)
 		return
 	}
-	resumed, changed, err := store.ResumeTask(req.Context(), a.db, current.ChatID, taskID, time.Now().UTC(), bot.TaskLifetime)
+	resumed, changed, err := a.taskLifecycle.ResumeTask(req.Context(), current.ChatID, taskID)
 	if err != nil {
 		a.taskMutationFailed(w, req, "resume", err)
 		return
@@ -652,7 +651,7 @@ func (a *App) clearTasks(w http.ResponseWriter, req *http.Request, current scope
 		taskBodyError(w, status)
 		return
 	}
-	deleted, err := store.ClearTasks(req.Context(), a.db, current.ChatID)
+	deleted, err := a.taskLifecycle.ClearTasks(req.Context(), current.ChatID)
 	if err != nil {
 		a.taskMutationFailed(w, req, "clear", err)
 		return

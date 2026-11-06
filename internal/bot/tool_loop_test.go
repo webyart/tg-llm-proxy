@@ -33,7 +33,7 @@ func (m *scriptedToolModel) Complete(ctx context.Context, req model.Request) (mo
 func (m *scriptedToolModel) Models(ctx context.Context) ([]string, error) { return nil, nil }
 
 func explicitSearchToolRequest() model.Request {
-	return model.Request{Messages: []model.Message{{Role: model.RoleUser, Content: "Найди в интернете актуальную информацию"}}}
+	return model.Request{Messages: []model.Message{{Role: model.RoleUser, Content: "Найди в интернете one, two и test"}}}
 }
 
 func TestCalculatorToolLoopStoresOnlyFinalAnswer(t *testing.T) {

@@ -328,3 +328,85 @@ func TestFrontendMutationGuardsAndConfirmationResets(t *testing.T) {
 		}
 	}
 }
+
+func TestFrontendSuccessNoticesAreSeparateFromErrors(t *testing.T) {
+	index := frontendAsset(t, "static/index.html")
+	script := frontendAsset(t, "static/app.js")
+	css := frontendAsset(t, "static/style.css")
+	for _, want := range []string{
+		`<div id="error" role="alert" hidden></div>`,
+		`<div id="notice" role="status" hidden></div>`,
+	} {
+		if !strings.Contains(index, want) {
+			t.Errorf("index misses notice regression %q", want)
+		}
+	}
+	for _, key := range []string{"settingsSaved", "documentUpdated", "linkUpdated", "taskUpdated"} {
+		if want := `showNotice(t("` + key + `"))`; !strings.Contains(script, want) {
+			t.Errorf("app.js misses success notice %q", want)
+		}
+		if rejected := `showError(t("` + key + `"))`; strings.Contains(script, rejected) {
+			t.Errorf("app.js still shows success as an error %q", rejected)
+		}
+	}
+	for _, test := range []struct {
+		function string
+		other    string
+	}{
+		{"showError", "notice"},
+		{"showNotice", "error"},
+	} {
+		body := regexp.MustCompile(`(?s)function ` + test.function + `\(message\) \{(.*?)\n  \}`).FindStringSubmatch(script)
+		if len(body) != 2 {
+			t.Fatalf("%s helper is missing", test.function)
+		}
+		for _, want := range []string{`ui.` + test.other + `.textContent = "";`, `ui.` + test.other + `.hidden = true;`} {
+			if !strings.Contains(body[1], want) {
+				t.Errorf("%s does not reset the other notice: %q", test.function, want)
+			}
+		}
+	}
+	for _, want := range []string{
+		`notice: document.getElementById("notice")`,
+		`link_mutation_failed: "linkMutationFailed"`,
+		`#error, #notice`,
+		`#notice { color: var(--tg-theme-text-color, #17202a); background: var(--tg-theme-secondary-bg-color, white);`,
+	} {
+		asset := script
+		if strings.HasPrefix(want, "#") {
+			asset = css
+		}
+		if !strings.Contains(asset, want) {
+			t.Errorf("frontend misses notice regression %q", want)
+		}
+	}
+}
+
+func TestFrontendLiteralTranslationAndErrorKeysHaveBothCatalogs(t *testing.T) {
+	script := frontendAsset(t, "static/app.js")
+	catalogs := regexp.MustCompile(`(?s)\n    ru: \{(.*?)\n    \},\n    en: \{(.*?)\n    \},\n  \};`).FindStringSubmatch(script)
+	if len(catalogs) != 3 {
+		t.Fatal("RU/EN translation catalogs were not found")
+	}
+	keys := map[string]bool{}
+	for _, match := range regexp.MustCompile(`\bt\("([a-zA-Z][a-zA-Z0-9_]*)"`).FindAllStringSubmatch(script, -1) {
+		keys[match[1]] = true
+	}
+	errorMap := regexp.MustCompile(`(?s)const errorKeys = \{(.*?)\n  \};`).FindStringSubmatch(script)
+	if len(errorMap) != 2 {
+		t.Fatal("frontend error key map was not found")
+	}
+	for _, match := range regexp.MustCompile(`:\s*"([a-zA-Z][a-zA-Z0-9_]*)"`).FindAllStringSubmatch(errorMap[1], -1) {
+		keys[match[1]] = true
+	}
+	if len(keys) < 50 {
+		t.Fatalf("only %d literal translation and error keys found", len(keys))
+	}
+	for index, language := range []string{"ru", "en"} {
+		for key := range keys {
+			if !strings.Contains(catalogs[index+1], key+":") {
+				t.Errorf("%s catalog misses literal t() or error key %q", language, key)
+			}
+		}
+	}
+}

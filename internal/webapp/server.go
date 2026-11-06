@@ -16,8 +16,10 @@ import (
 	"strings"
 	"time"
 
+	"bot/internal/bot"
 	"bot/internal/config"
 	"bot/internal/model"
+	"bot/internal/store"
 )
 
 const (
@@ -31,14 +33,37 @@ const (
 //go:embed static/index.html static/app.js static/style.css
 var staticFiles embed.FS
 
+type TaskLifecycle interface {
+	CancelTask(ctx context.Context, chatID int64) (store.Task, bool, error)
+	ResumeTask(ctx context.Context, chatID int64, taskID int64) (store.Task, bool, error)
+	ClearTasks(ctx context.Context, chatID int64) (int64, error)
+}
+
+type storeTaskLifecycle struct {
+	db *sql.DB
+}
+
+func (l storeTaskLifecycle) CancelTask(ctx context.Context, chatID int64) (store.Task, bool, error) {
+	return store.CancelTask(ctx, l.db, chatID, time.Now().UTC())
+}
+
+func (l storeTaskLifecycle) ResumeTask(ctx context.Context, chatID int64, taskID int64) (store.Task, bool, error) {
+	return store.ResumeTask(ctx, l.db, chatID, taskID, time.Now().UTC(), bot.TaskLifetime)
+}
+
+func (l storeTaskLifecycle) ClearTasks(ctx context.Context, chatID int64) (int64, error) {
+	return store.ClearTasks(ctx, l.db, chatID)
+}
+
 type App struct {
-	cfg        config.Config
-	db         *sql.DB
-	model      model.Client
-	modelCache modelListCache
-	logger     *slog.Logger
-	auth       *authenticator
-	handler    http.Handler
+	cfg           config.Config
+	db            *sql.DB
+	model         model.Client
+	modelCache    modelListCache
+	logger        *slog.Logger
+	auth          *authenticator
+	handler       http.Handler
+	taskLifecycle TaskLifecycle
 }
 
 func New(cfg config.Config, db *sql.DB, client model.Client, logger *slog.Logger) *App {
@@ -46,9 +71,17 @@ func New(cfg config.Config, db *sql.DB, client model.Client, logger *slog.Logger
 		logger = slog.Default()
 	}
 	app := &App{cfg: cfg, db: db, model: client, logger: logger}
+	app.taskLifecycle = storeTaskLifecycle{db: db}
 	app.auth = newAuthenticator(cfg.BotToken, cfg.Allows)
 	app.handler = securityHeaders(limitInFlight(http.HandlerFunc(app.route), maxInFlight))
 	return app
+}
+
+func (a *App) SetTaskLifecycle(lifecycle TaskLifecycle) {
+	if lifecycle == nil {
+		lifecycle = storeTaskLifecycle{db: a.db}
+	}
+	a.taskLifecycle = lifecycle
 }
 
 func (a *App) Handler() http.Handler {
@@ -156,7 +189,7 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if req.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
+		methodAllowed(w, http.MethodGet)
 		return
 	}
 	switch req.URL.Path {

@@ -202,15 +202,26 @@ func (d *Dispatcher) promptTaskClear(ctx context.Context, ev Event) error {
 }
 
 func (d *Dispatcher) clearTasks(ctx context.Context, ev Event) error {
-	current, found, err := store.CurrentTask(ctx, d.deps.DB, ev.ChatID)
-	if err == nil && found {
-		d.removeTaskApproval(ctx, current)
-	}
-	deleted, err := store.ClearTasks(ctx, d.deps.DB, ev.ChatID)
+	deleted, err := d.ClearTasks(ctx, ev.ChatID)
 	if err != nil {
 		return err
 	}
 	return d.showTaskMenu(ctx, ev, fmt.Sprintf("Удалено задач: %d.", deleted))
+}
+
+func (d *Dispatcher) ClearTasks(ctx context.Context, chatID int64) (int64, error) {
+	current, found, err := store.CurrentTask(ctx, d.deps.DB, chatID)
+	if err != nil {
+		return 0, err
+	}
+	deleted, err := store.ClearTasks(ctx, d.deps.DB, chatID)
+	if err != nil {
+		return 0, err
+	}
+	if found {
+		d.removeTaskApproval(ctx, current)
+	}
+	return deleted, nil
 }
 
 func (d *Dispatcher) planTask(ctx context.Context, userID int64, selectedModel string, goal string) (TaskPlan, error) {
@@ -238,16 +249,9 @@ func (d *Dispatcher) wakeTasks() {
 }
 
 func (d *Dispatcher) cancelTask(ctx context.Context, ev Event, menu bool) error {
-	current, found, err := store.CurrentTask(ctx, d.deps.DB, ev.ChatID)
+	cancelled, ok, err := d.CancelTask(ctx, ev.ChatID)
 	if err != nil {
 		return err
-	}
-	cancelled, ok, err := store.CancelTask(ctx, d.deps.DB, ev.ChatID, d.now())
-	if err != nil {
-		return err
-	}
-	if ok && found {
-		d.removeTaskApproval(ctx, current)
 	}
 	if !ok {
 		if menu {
@@ -261,18 +265,34 @@ func (d *Dispatcher) cancelTask(ctx context.Context, ev Event, menu bool) error 
 	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Задача #%d отменена. Будущие шаги и ожидающие подтверждения остановлены.", cancelled.ID))
 }
 
-func (d *Dispatcher) resumeTask(ctx context.Context, ev Event, taskID int64, menu bool) error {
-	current, found, err := store.CurrentTask(ctx, d.deps.DB, ev.ChatID)
+func (d *Dispatcher) CancelTask(ctx context.Context, chatID int64) (store.Task, bool, error) {
+	current, found, err := store.CurrentTask(ctx, d.deps.DB, chatID)
 	if err != nil {
-		return err
+		return store.Task{}, false, err
 	}
-	if menu && !found {
-		return d.showTaskMenu(ctx, ev, "Возобновить можно только последнюю отменённую или остановленную с ошибкой задачу.")
+	cancelled, ok, err := store.CancelTask(ctx, d.deps.DB, chatID, d.now())
+	if err != nil || !ok {
+		return cancelled, ok, err
 	}
+	d.clearTaskNetworkScopes(chatID, cancelled.ID)
+	if found && current.ID == cancelled.ID {
+		d.removeTaskApproval(ctx, current)
+	}
+	return cancelled, true, nil
+}
+
+func (d *Dispatcher) resumeTask(ctx context.Context, ev Event, taskID int64, menu bool) error {
 	if menu {
+		current, found, err := store.CurrentTask(ctx, d.deps.DB, ev.ChatID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return d.showTaskMenu(ctx, ev, "Возобновить можно только последнюю отменённую или остановленную с ошибкой задачу.")
+		}
 		taskID = current.ID
 	}
-	resumed, ok, err := store.ResumeTask(ctx, d.deps.DB, ev.ChatID, taskID, d.now().UTC(), TaskLifetime)
+	resumed, ok, err := d.ResumeTask(ctx, ev.ChatID, taskID)
 	if err != nil {
 		return err
 	}
@@ -283,15 +303,31 @@ func (d *Dispatcher) resumeTask(ctx context.Context, ev Event, taskID int64, men
 		}
 		return d.reply(ctx, ev.ChatID, message)
 	}
-	if found {
-		d.removeTaskApproval(ctx, current)
-	}
-	d.wakeTasks()
 	message := fmt.Sprintf("Задача #%d возобновлена. Завершённые шаги и результаты сохранены; сетевые действия потребуют нового подтверждения.", resumed.ID)
 	if menu {
 		return d.showTaskMenu(ctx, ev, message)
 	}
 	return d.reply(ctx, ev.ChatID, message)
+}
+
+func (d *Dispatcher) ResumeTask(ctx context.Context, chatID int64, taskID int64) (store.Task, bool, error) {
+	current, found, err := store.CurrentTask(ctx, d.deps.DB, chatID)
+	if err != nil {
+		return store.Task{}, false, err
+	}
+	resumable := found && current.ID == taskID && (current.Status == store.TaskStatusFailed || current.Status == store.TaskStatusCancelled)
+	if resumable {
+		d.clearTaskNetworkScopes(chatID, taskID)
+	}
+	resumed, ok, err := store.ResumeTask(ctx, d.deps.DB, chatID, taskID, d.now().UTC(), TaskLifetime)
+	if err != nil || !ok {
+		return resumed, ok, err
+	}
+	if resumable {
+		d.removeTaskApproval(ctx, current)
+	}
+	d.wakeTasks()
+	return resumed, true, nil
 }
 
 func (d *Dispatcher) removeTaskApproval(ctx context.Context, task store.Task) {

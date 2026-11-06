@@ -1,3 +1,15 @@
+# tg-llm-proxy v1.27.0
+
+## Read-only Telegram Mini App
+
+- More → Mini App открывает opt-in read-only companion со Status, History, Documents, Links и Tasks. Нет mutations, model calls или webhook dependency.
+- Raw `Telegram.WebApp.initData` проверяется через official sorted data-check string и `WebAppData` HMAC-SHA256, constant-time compare и `auth_date` freshness. `initDataUnsafe` и browser-supplied chat_id не доверяются.
+- Одноразовый launch ticket привязан к chat/user и действует 2 минуты. Session — random 256-bit bearer на 15 минут, hashed in memory; каждый request повторно проверяет allowlist, restart/revoke инвалидирует.
+- API ограничен 20 items/page с explicit before/next_before_id. Нет model keys, document bodies, task plans/results, approval/continuation tokens или tool arguments в ответах.
+- Frontend same-origin без CDN/framework, `textContent` вместо HTML injection, CSP, 16KiB headers/body, global in-flight 8 и strict JSON.
+- `MINIAPP_ENABLED=false` по умолчанию. Для включения нужны HTTPS `MINIAPP_PUBLIC_URL`, reverse proxy/tunnel и loopback-only порт 8084 на хосте. Внутри контейнера listener `0.0.0.0`, снаружи только `127.0.0.1`.
+- Добавлены official HMAC fixture, auth_date/ticket/session expiry, replay/wrong user/chat, allowlist removal, caps/isolation/pagination/CSP и fake Telegram end-to-end regressions. Внешний HTTPS acceptance не выполнялся.
+
 # tg-llm-proxy v1.26.3
 
 ## Task list cleanup

@@ -118,6 +118,10 @@ docker compose logs -f bot
 | `TTS_VOICE` | `ruslan` | voice для `/v1/audio/speech` |
 | `TTS_MAX_CHARS` | 1000 | максимум runes текста; 1..10000 |
 | `TTS_TIMEOUT_SECONDS` | 60 | timeout синтеза; 1..300 |
+| `MINIAPP_ENABLED` | false | opt-in read-only Telegram Mini App |
+| `MINIAPP_LISTEN_HOST` | `127.0.0.1`; в compose — `0.0.0.0` | listener Mini App |
+| `MINIAPP_PORT` | 8084 | loopback port Mini App |
+| `MINIAPP_PUBLIC_URL` | пусто | обязательный HTTPS URL при `MINIAPP_ENABLED=true` |
 | `MEDIA_MAX_MB` | 10 | лимит каждого media-файла и альбома целиком |
 | `SPEECH_MAX_SECONDS` | 300 | лимит voice/audio/video note |
 | `DB_PATH` | `./data/bot.db` | host SQLite; в compose — `/data/bot.db` |
@@ -282,6 +286,12 @@ Reverse proxy или туннель должен перенаправлять п
 `/start` и `/help` открывают секционное inline-меню: Ask/New context, History, Documents, Settings, Status, Help и More. History поддерживает последние сообщения, поиск, MD/JSON export и удаление; Documents — добавление, export, удаление документов и «Ссылки на потом» с list/search/summary/delete; Settings — Model, Persona и Stream. More содержит напоминания, многошаговые задачи и opt-in озвучку текста. Admin виден только администраторам.
 
 Ask, Search и Custom Persona принимают следующий текст через pending input с TTL 2 минуты и кнопкой Cancel. Состояние привязано к chat/user/menu message и инвалидируется при рестарте. Все текстовые команды остаются доступными. Обычные запросы показывают Telegram `typing`, а streaming tools — только общие стадии без URL и поисковых запросов.
+
+## Telegram Mini App (opt-in, read-only)
+
+More → Mini App открывает companion со Status, History, Documents, Links и Tasks. Для включения задайте `MINIAPP_ENABLED=true` и HTTPS `MINIAPP_PUBLIC_URL`, затем запустите Compose. Публичный URL должен вести через reverse proxy/tunnel на host `127.0.0.1:8084`; внутри контейнера listener `0.0.0.0`.
+
+Raw `initData` проверяется через Telegram HMAC и `auth_date`, launch ticket привязан к chat/user на 2 минуты, session — на 15 минут. Доступ проверяется при каждом запросе. Нет mutations, model calls, model keys, task plans/results или tool arguments. Внешний HTTPS acceptance не выполнялся; перед production использованием проверьте реальный Telegram client.
 
 ## Проверка проекта
 

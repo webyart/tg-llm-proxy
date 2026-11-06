@@ -42,6 +42,10 @@ var Env = []string{
 	"WEBHOOK_LISTEN_HOST",
 	"WEBHOOK_PORT",
 	"WEBHOOK_PATH",
+	"MINIAPP_ENABLED",
+	"MINIAPP_LISTEN_HOST",
+	"MINIAPP_PORT",
+	"MINIAPP_PUBLIC_URL",
 	"DB_PATH",
 	"REMINDER_TIMEZONE",
 	"CONTEXT_MESSAGES",
@@ -171,6 +175,10 @@ type Config struct {
 	WebhookHost             string
 	WebhookPort             int64
 	WebhookPath             string
+	MiniAppEnabled          bool
+	MiniAppPublicURL        string
+	MiniAppHost             string
+	MiniAppPort             int64
 	DBPath                  string
 	ReminderTimezone        string
 	ReminderLocation        *time.Location
@@ -596,6 +604,11 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	cfg.WebhookEnabled = webhookEnabled
 	problems = Push(problems, badWebhookEnabled)
 	problems = append(problems, loadWebhook(raw, &cfg)...)
+
+	miniAppEnabled, badMiniAppEnabled := Flag(raw, "MINIAPP_ENABLED", DefaultMiniAppEnabled)
+	cfg.MiniAppEnabled = miniAppEnabled
+	problems = Push(problems, badMiniAppEnabled)
+	problems = append(problems, loadMiniApp(raw, &cfg)...)
 
 	var dbPath = strings.TrimSpace(raw["DB_PATH"])
 	if dbPath == "" {

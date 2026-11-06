@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>Bot companion</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Bot companion</h1>
+      <p>Read-only view of this chat</p>
+    </div>
+    <button id="logout" class="secondary" type="button" hidden>Close session</button>
+  </header>
+  <main>
+    <div id="error" role="alert" hidden></div>
+    <section id="launch" class="panel">
+      <h2>Launch from Telegram</h2>
+      <p>Open this Mini App with <strong>More → Mini App</strong> in the bot menu. The launch link and Telegram signature are checked before any chat data is shown.</p>
+    </section>
+    <div id="app" hidden>
+      <nav id="tabs" aria-label="Chat sections">
+        <button type="button" data-tab="status" class="active">Status</button>
+        <button type="button" data-tab="history">History</button>
+        <button type="button" data-tab="documents">Documents</button>
+        <button type="button" data-tab="links">Links</button>
+        <button type="button" data-tab="tasks">Tasks</button>
+      </nav>
+      <section class="panel">
+        <div class="section-heading">
+          <h2 id="section-title">Status</h2>
+          <button id="refresh" class="secondary" type="button">Refresh</button>
+        </div>
+        <div id="content" aria-live="polite"></div>
+        <button id="more" type="button" hidden>Load older</button>
+      </section>
+    </div>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>

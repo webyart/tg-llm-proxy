@@ -479,6 +479,13 @@ func (d *Dispatcher) showMoreMenu(ctx context.Context, ev Event) error {
 	}
 	rows = append(rows, menuRow(menuButton("Напоминания", "menu:reminders")))
 	rows = append(rows, menuRow(menuButton("Задача", "menu:task")))
+	if d.deps.Cfg.MiniAppEnabled {
+		button, ticketErr := d.miniAppButton(ev)
+		if ticketErr != nil {
+			return ticketErr
+		}
+		rows = append(rows, menuRow(button))
+	}
 	if d.deps.Cfg.TTSEnabled {
 		rows = append(rows, menuRow(menuButton("Озвучить текст", "menu:tts")))
 	}

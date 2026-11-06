@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"bot/internal/model"
 	"bot/internal/store"
 	"bot/internal/testutil"
+	"bot/internal/webapp"
 )
 
 const (
@@ -121,6 +123,7 @@ type botRun struct {
 	logs         *syncLog
 	offset       int64 // bot_state value the run was seeded with
 	webhookURL   string
+	miniAppURL   string
 }
 
 // syncLog — the log sink of a run behind a mutex. The library answers every update in its own goroutine
@@ -168,16 +171,26 @@ func startBotWithURLReader(t *testing.T, ctx context.Context, cfg config.Config,
 		}
 		synthesizer = ttsClient
 	}
+	var miniApp *webapp.App
+	miniAppURL := ""
+	if cfg.MiniAppEnabled {
+		miniApp = webapp.New(cfg, db, logger)
+		miniAppHTTP := httptest.NewServer(miniApp.Handler())
+		t.Cleanup(miniAppHTTP.Close)
+		miniAppURL = miniAppHTTP.URL
+		cfg.MiniAppPublicURL = miniAppURL
+	}
 	var d = bot.New(bot.Deps{
-		Cfg:         cfg,
-		DB:          db,
-		Model:       client,
-		TTS:         synthesizer,
-		URLReader:   urlReader,
-		Logger:      logger,
-		Token:       cfg.BotToken,
-		StartOffset: startOffset,
-		Offset:      func(ctx context.Context, updateID int64) error { return store.SetLastUpdateID(ctx, db, updateID) },
+		Cfg:            cfg,
+		DB:             db,
+		Model:          client,
+		TTS:            synthesizer,
+		URLReader:      urlReader,
+		Logger:         logger,
+		Token:          cfg.BotToken,
+		StartOffset:    startOffset,
+		MiniAppTickets: miniApp,
+		Offset:         func(ctx context.Context, updateID int64) error { return store.SetLastUpdateID(ctx, db, updateID) },
 	})
 	if cfg.WebhookEnabled && opts.WebhookSecretToken == "" {
 		opts.WebhookSecretToken = cfg.WebhookSecretToken
@@ -224,7 +237,7 @@ func startBotWithURLReader(t *testing.T, ctx context.Context, cfg config.Config,
 		}
 		close(done)
 	}()
-	var run = &botRun{d: d, tg: tg, cancel: cancel, done: done, reminderDone: reminderDone, taskDone: taskDone, logs: logs, offset: startOffset}
+	var run = &botRun{d: d, tg: tg, cancel: cancel, done: done, reminderDone: reminderDone, taskDone: taskDone, logs: logs, offset: startOffset, miniAppURL: miniAppURL}
 	if webhookServer != nil {
 		run.webhookURL = webhookServer.URL()
 	}

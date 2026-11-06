@@ -46,6 +46,8 @@ services:
       HEALTH_PORT: ${HEALTH_PORT:-8080}
       WEBHOOK_LISTEN_HOST: ${WEBHOOK_LISTEN_HOST_CONTAINER:-0.0.0.0}
       WEBHOOK_PORT: ${WEBHOOK_PORT:-8082}
+      MINIAPP_LISTEN_HOST: ${MINIAPP_LISTEN_HOST_CONTAINER:-0.0.0.0}
+      MINIAPP_PORT: ${MINIAPP_PORT:-8084}
     # §9 scripts/smoke.ps1 and the DoD of §10 День 5 probe «GET http://localhost:8080/healthz у запущенного
     # контейнера» — that is a probe from the HOST, so the port of §7 has to be published. 127.0.0.1 only
     # (§12 security: /healthz never listens on a public interface of the machine), and the same port on
@@ -53,6 +55,7 @@ services:
     ports:
       - "127.0.0.1:${HEALTH_PORT:-8080}:${HEALTH_PORT:-8080}"
       - "127.0.0.1:${WEBHOOK_HOST_PORT:-8082}:${WEBHOOK_PORT:-8082}"
+      - "127.0.0.1:${MINIAPP_HOST_PORT:-8084}:${MINIAPP_PORT:-8084}"
     volumes:
       - bot-data:/data
     read_only: true

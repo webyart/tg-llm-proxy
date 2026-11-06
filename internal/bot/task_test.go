@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -454,6 +455,196 @@ func TestTaskRestartAfterConsumedApprovalRequiresFreshExactApproval(t *testing.T
 		t.Fatal(err)
 	}
 	if providerCalls.Load() != 1 || m.callCount() != 4 {
+		t.Fatal("fresh approval was replayable")
+	}
+}
+
+func TestTaskResumeCommandPreservesProgressAndRejectsWrongChatAndStatus(t *testing.T) {
+	m := taskTextModel("second result", "consolidated answer")
+	r := &fakeReplier{}
+	db := testStore(t)
+	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"}), m, r, db)
+	ctx := context.Background()
+	if err := store.EnsureChat(ctx, db, 100, 11, ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	created, err := store.CreateTask(ctx, db, store.Task{ChatID: 100, UserID: 11, Goal: "preserved goal", Model: "selected-model",
+		PlanJSON: validTaskPlanTwo, DueAt: now, ExpiresAt: now.Add(TaskLifetime), CreatedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumeCommand := fmt.Sprintf("/task resume %d", created.ID)
+	if err := dispatch(t, d, testEvent(100, 11, 1100, resumeCommand)); err != nil {
+		t.Fatal(err)
+	}
+	current, found, err := store.CurrentTask(ctx, db, 100)
+	if err != nil || !found || current.Status != store.TaskStatusReady || m.callCount() != 0 {
+		t.Fatalf("active task resume task=%+v found=%v err=%v calls=%d", current, found, err, m.callCount())
+	}
+	claimed, found, err := store.ClaimNextTask(ctx, db, now, time.Minute)
+	if err != nil || !found {
+		t.Fatalf("claim found=%v err=%v", found, err)
+	}
+	if ok, err := store.CompleteTaskStep(ctx, db, claimed, "first result", now); err != nil || !ok {
+		t.Fatalf("first step ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := store.CancelTask(ctx, db, 100, now); err != nil || !ok {
+		t.Fatalf("cancel ok=%v err=%v", ok, err)
+	}
+	if err := dispatch(t, d, testEvent(200, 11, 1101, resumeCommand)); err != nil {
+		t.Fatal(err)
+	}
+	current, _, _ = store.CurrentTask(ctx, db, 100)
+	if current.Status != store.TaskStatusCancelled {
+		t.Fatalf("wrong-chat resume changed task: %+v", current)
+	}
+	if err := dispatch(t, d, testEvent(100, 11, 1102, resumeCommand)); err != nil {
+		t.Fatal(err)
+	}
+	resumed, found, err := store.CurrentTask(ctx, db, 100)
+	if err != nil || !found || resumed.ID != created.ID || resumed.Status != store.TaskStatusReady || resumed.NextStep != 1 || resumed.ResultsJSON != `["first result"]` || resumed.Attempts != 0 {
+		t.Fatalf("resumed=%+v found=%v err=%v", resumed, found, err)
+	}
+	processTasks(t, d, 2)
+	current, found, err = store.CurrentTask(ctx, db, 100)
+	if err != nil || !found || current.Status != store.TaskStatusCompleted || current.NextStep != 2 || current.ResultsJSON != `["first result","second result"]` {
+		t.Fatalf("completed resumed task=%+v found=%v err=%v", current, found, err)
+	}
+	if m.callCount() != 2 || !strings.Contains(m.requests[0].Messages[len(m.requests[0].Messages)-1].Content, "Current step 2/2") {
+		t.Fatalf("resume did not start at unfinished step: calls=%d requests=%+v", m.callCount(), m.requests)
+	}
+	if err := dispatch(t, d, testEvent(100, 11, 1103, resumeCommand)); err != nil {
+		t.Fatal(err)
+	}
+	processTasks(t, d, 2)
+	if m.callCount() != 2 {
+		t.Fatalf("completed task was resumed or duplicated: calls=%d", m.callCount())
+	}
+	rows, err := store.HistoryOfChat(ctx, db, 100, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assistants := 0
+	for _, row := range rows {
+		if row.Role == store.RoleAssistant {
+			assistants++
+			if row.Content != "consolidated answer" {
+				t.Fatalf("assistant row=%+v", row)
+			}
+		}
+	}
+	if assistants != 1 {
+		t.Fatalf("assistant rows=%d history=%+v", assistants, rows)
+	}
+}
+
+func TestTaskResumeMenuIsLimitedToRetryableTerminalTasks(t *testing.T) {
+	for _, status := range []string{store.TaskStatusCompleted, store.TaskStatusFailed, store.TaskStatusCancelled} {
+		markup := taskMenuMarkup(store.Task{ID: 9, Status: status})
+		resumable := status != store.TaskStatusCompleted
+		if hasMenuCallback(markup, "menu:task:resume") != resumable {
+			t.Errorf("terminal %s resume markup=%+v", status, markup)
+		}
+	}
+	if text, ok := menuCallbackText("menu:task:resume"); !ok || text != "/task menu:resume" {
+		t.Fatalf("resume callback text=%q ok=%v", text, ok)
+	}
+	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"}), nil, &menuEditReplier{}, testStore(t))
+	if _, ok := d.callbackText("menu:task:resume:9"); ok {
+		t.Fatal("callback with an arbitrary task id was accepted")
+	}
+	ctx := context.Background()
+	if err := store.EnsureChat(ctx, d.deps.DB, 100, 11, ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	created, err := store.CreateTask(ctx, d.deps.DB, store.Task{ChatID: 100, UserID: 11, Goal: "menu resume", Model: "m",
+		PlanJSON: validTaskPlanOne, DueAt: now, ExpiresAt: now.Add(TaskLifetime), CreatedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.CancelTask(ctx, d.deps.DB, 100, now); err != nil || !ok {
+		t.Fatalf("cancel ok=%v err=%v", ok, err)
+	}
+	if err := dispatchMenuData(t, d, 100, 11, 700, "menu:task:resume"); err != nil {
+		t.Fatal(err)
+	}
+	current, found, err := store.CurrentTask(ctx, d.deps.DB, 100)
+	if err != nil || !found || current.ID != created.ID || current.Status != store.TaskStatusReady {
+		t.Fatalf("menu resumed task=%+v found=%v err=%v", current, found, err)
+	}
+}
+
+func TestTaskResumeRequiresFreshExactApproval(t *testing.T) {
+	var providerCalls atomic.Int64
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		providerCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer provider.Close()
+	call := model.ToolCall{ID: "resume-task-search", Name: "web_search", Arguments: `{"query":"fresh approval required"}`}
+	m := &taskScriptModel{results: []taskModelResult{
+		{response: model.Response{Content: validTaskPlanOne}},
+		{response: model.Response{ToolCalls: []model.ToolCall{call}}},
+		{response: model.Response{ToolCalls: []model.ToolCall{call}}},
+		{response: model.Response{Content: "approved step result"}},
+		{response: model.Response{Content: "approved final answer"}},
+	}}
+	r := &networkMenuReplier{}
+	db := testStore(t)
+	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "WEB_SEARCH_ENABLED": "true", "WEB_SEARCH_BASE_URL": provider.URL})
+	d := newTestDispatcher(t, cfg, m, r, db)
+	if err := dispatch(t, d, testEvent(100, 11, 1104, "/task network step needs approval")); err != nil {
+		t.Fatal(err)
+	}
+	processTasks(t, d, 1)
+	pending, found, err := store.CurrentTask(context.Background(), db, 100)
+	if err != nil || !found || pending.Status != store.TaskStatusAwaitingApproval {
+		t.Fatalf("pending=%+v found=%v err=%v", pending, found, err)
+	}
+	oldToken := pending.ApprovalToken
+	if err := dispatch(t, d, testEvent(100, 11, 1105, "/task cancel")); err != nil {
+		t.Fatal(err)
+	}
+	if err := dispatch(t, d, testEvent(100, 11, 1106, fmt.Sprintf("/task resume %d", pending.ID))); err != nil {
+		t.Fatal(err)
+	}
+	resumed, _, _ := store.CurrentTask(context.Background(), db, 100)
+	if resumed.Status != store.TaskStatusReady || resumed.ContinuationJSON != "" || resumed.ApprovalToken != "" {
+		t.Fatalf("resume retained approval state: %+v", resumed)
+	}
+	processTasks(t, d, 1)
+	fresh, found, err := store.CurrentTask(context.Background(), db, 100)
+	if err != nil || !found || fresh.Status != store.TaskStatusAwaitingApproval || fresh.ApprovalToken == "" || fresh.ApprovalToken == oldToken || fresh.ContinuationJSON == "" {
+		t.Fatalf("fresh approval task=%+v found=%v err=%v", fresh, found, err)
+	}
+	if providerCalls.Load() != 0 || m.callCount() != 3 {
+		t.Fatalf("resume replayed network action provider=%d calls=%d", providerCalls.Load(), m.callCount())
+	}
+	if err := dispatchMenuData(t, d, 100, 11, 700, "menu:network:confirm:"+oldToken); err != nil {
+		t.Fatal(err)
+	}
+	if providerCalls.Load() != 0 || m.callCount() != 3 {
+		t.Fatal("old approval executed after resume")
+	}
+	freshConfirm, _ := latestNetworkCallbacks(t, r)
+	if strings.TrimPrefix(freshConfirm, "menu:network:confirm:") != fresh.ApprovalToken {
+		t.Fatal("fresh prompt does not match the new exact-action token")
+	}
+	if err := dispatchMenuData(t, d, 100, 11, 700, freshConfirm); err != nil {
+		t.Fatal(err)
+	}
+	processTasks(t, d, 2)
+	if providerCalls.Load() != 1 || m.callCount() != 5 || !strings.Contains(r.joined(), "approved final answer") {
+		t.Fatalf("fresh approval did not finish provider=%d calls=%d replies=%q", providerCalls.Load(), m.callCount(), r.joined())
+	}
+	if err := dispatchMenuData(t, d, 100, 11, 700, freshConfirm); err != nil {
+		t.Fatal(err)
+	}
+	processTasks(t, d, 1)
+	if providerCalls.Load() != 1 || m.callCount() != 5 {
 		t.Fatal("fresh approval was replayable")
 	}
 }

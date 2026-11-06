@@ -1,3 +1,13 @@
+# tg-llm-proxy v1.28.0
+
+## TTS monitoring and task resume
+
+- Production TTS включён: `TTS_ENABLED=true`. Реальный Speaches `/v1/audio/speech` возвращает русский MP3, HTTP 200 и корректный `audio/mp3`.
+- Mini App получил unauthenticated `GET /healthz` с минимальным `{\"status\":\"ok\"}` без DB/secrets. `watch_container.ps1` при `MINIAPP_ENABLED=true` проверяет его через bot container, включая failure/suppression/recovery и отсутствие автоматического restart.
+- `/task resume <id>` возобновляет последнюю failed/cancelled задачу текущего чата с тем же ID, goal/model/plan и сохранёнными `next_step`/results. Completed/active/other-chat запросы отклоняются.
+- Resume сбрасывает attempts, claim/lease, approval/continuation/error/finished timestamps и продлевает lifetime. Старые network approvals не replayаются: требуется fresh exact-action confirmation. Меню terminal tasks получило Resume.
+- Добавлены health endpoint/method/CSP, monitor disabled/failure/suppression/recovery, store transition, progress preservation и fresh-approval regressions.
+
 # tg-llm-proxy v1.27.0
 
 ## Read-only Telegram Mini App

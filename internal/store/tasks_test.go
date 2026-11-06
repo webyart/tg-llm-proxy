@@ -292,3 +292,148 @@ func TestTaskRestartDoesNotDuplicateCompletedStepOrAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestResumeTaskPreservesProgressAndClearsTransientState(t *testing.T) {
+	for _, status := range []string{TaskStatusFailed, TaskStatusCancelled} {
+		t.Run(status, func(t *testing.T) {
+			ctx := context.Background()
+			db := taskTestDB(t)
+			now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+			started := now.Add(-2 * time.Hour)
+			if err := EnsureChat(ctx, db, 100, 11, ""); err != nil {
+				t.Fatal(err)
+			}
+			created, err := CreateTask(ctx, db, Task{ChatID: 100, UserID: 11, Goal: "preserve this goal", Model: "preserved-model",
+				PlanJSON: `{"steps":[{"description":"First"},{"description":"Second"}]}`, DueAt: started, ExpiresAt: started.Add(time.Hour), CreatedAt: started})
+			if err != nil {
+				t.Fatal(err)
+			}
+			firstClaim, found, err := ClaimNextTask(ctx, db, started, time.Minute)
+			if err != nil || !found {
+				t.Fatalf("first claim found=%v err=%v", found, err)
+			}
+			if ok, err := CompleteTaskStep(ctx, db, firstClaim, "first result", started); err != nil || !ok {
+				t.Fatalf("first step ok=%v err=%v", ok, err)
+			}
+			interrupted, found, err := ClaimNextTask(ctx, db, started, time.Minute)
+			if err != nil || !found || interrupted.NextStep != 1 {
+				t.Fatalf("interrupted claim=%+v found=%v err=%v", interrupted, found, err)
+			}
+			oldToken := "0123456789abcdef0123456789abcdef"
+			if status == TaskStatusFailed {
+				if saved, err := SaveTaskApproval(ctx, db, interrupted, oldToken, 700, started.Add(5*time.Minute), `{"request":{}}`, started); err != nil || !saved {
+					t.Fatalf("SaveTaskApproval saved=%v err=%v", saved, err)
+				}
+				if ok, err := FailTask(ctx, db, interrupted, "interrupted", started.Add(time.Minute)); err != nil || !ok {
+					t.Fatalf("FailTask ok=%v err=%v", ok, err)
+				}
+			} else if _, ok, err := CancelTask(ctx, db, 100, started.Add(time.Minute)); err != nil || !ok {
+				t.Fatalf("CancelTask ok=%v err=%v", ok, err)
+			}
+			staleTime := formatReminderTime(started.Add(time.Minute))
+			if _, err := db.ExecContext(ctx, `UPDATE tasks SET attempts = 7, due_at = ?, claim_token = 'stale-claim', lease_until = ?,
+				continuation_json = '{"request":{}}', approval_token = ?, approval_message_id = 700,
+				approval_expires_at = ?, error = 'stale error' WHERE id = ?`, staleTime, staleTime, oldToken, staleTime, created.ID); err != nil {
+				t.Fatal(err)
+			}
+			resumed, ok, err := ResumeTask(ctx, db, 100, created.ID, now, time.Hour)
+			if err != nil || !ok {
+				t.Fatalf("ResumeTask ok=%v err=%v", ok, err)
+			}
+			if resumed.ID != created.ID || resumed.ChatID != created.ChatID || resumed.UserID != created.UserID ||
+				resumed.Goal != created.Goal || resumed.Model != created.Model || resumed.PlanJSON != created.PlanJSON ||
+				resumed.ResultsJSON != `["first result"]` || resumed.NextStep != 1 || resumed.Status != TaskStatusReady || resumed.Attempts != 0 {
+				t.Fatalf("resumed task did not preserve progress: %+v", resumed)
+			}
+			if !resumed.DueAt.Equal(now) || !resumed.ExpiresAt.Equal(now.Add(time.Hour)) || !resumed.UpdatedAt.Equal(now) || !resumed.CreatedAt.Equal(created.CreatedAt) {
+				t.Fatalf("resumed timestamps=%+v", resumed)
+			}
+			if resumed.ClaimToken != "" || resumed.LeaseUntil != nil || resumed.ContinuationJSON != "" || resumed.ApprovalToken != "" ||
+				resumed.ApprovalMessageID != 0 || resumed.ApprovalExpiresAt != nil || resumed.Error != "" || resumed.FinishedAt != nil {
+				t.Fatalf("resumed transient state was not cleared: %+v", resumed)
+			}
+			if _, ok, err := ConsumeTaskApproval(ctx, db, created.ID, 100, 11, 700, oldToken, now, time.Minute); err != nil || ok {
+				t.Fatalf("stale approval consumed ok=%v err=%v", ok, err)
+			}
+			if ok, err := CompleteTaskStep(ctx, db, interrupted, "must not duplicate", now); err != nil || ok {
+				t.Fatalf("stale claim completed a step ok=%v err=%v", ok, err)
+			}
+			secondClaim, found, err := ClaimNextTask(ctx, db, now, time.Minute)
+			if err != nil || !found || secondClaim.NextStep != 1 || secondClaim.ResultsJSON != `["first result"]` || secondClaim.Attempts != 1 {
+				t.Fatalf("second claim=%+v found=%v err=%v", secondClaim, found, err)
+			}
+			if ok, err := CompleteTaskStep(ctx, db, secondClaim, "second result", now); err != nil || !ok {
+				t.Fatalf("second step ok=%v err=%v", ok, err)
+			}
+			finalClaim, found, err := ClaimNextTask(ctx, db, now, time.Minute)
+			if err != nil || !found {
+				t.Fatalf("final claim found=%v err=%v", found, err)
+			}
+			if ok, err := CompleteTask(ctx, db, finalClaim, Message{ChatID: 100, Role: RoleAssistant, Content: "final answer"}, now); err != nil || !ok {
+				t.Fatalf("CompleteTask ok=%v err=%v", ok, err)
+			}
+			current, found, err := CurrentTask(ctx, db, 100)
+			if err != nil || !found || current.ResultsJSON != `["first result","second result"]` || current.NextStep != 2 {
+				t.Fatalf("completed task=%+v found=%v err=%v", current, found, err)
+			}
+			rows, err := HistoryOfChat(ctx, db, 100, 10)
+			if err != nil || len(rows) != 1 || rows[0].Content != "final answer" {
+				t.Fatalf("history=%+v err=%v", rows, err)
+			}
+			if _, ok, err := ResumeTask(ctx, db, 100, created.ID, now, time.Hour); err != nil || ok {
+				t.Fatalf("completed task resumed ok=%v err=%v", ok, err)
+			}
+		})
+	}
+}
+
+func TestResumeTaskRejectsWrongChatNonLatestAndActiveTasks(t *testing.T) {
+	ctx := context.Background()
+	db := taskTestDB(t)
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	for _, chatID := range []int64{100, 101} {
+		if err := EnsureChat(ctx, db, chatID, 11, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	older, err := CreateTask(ctx, db, newStoreTask(100, now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := CancelTask(ctx, db, 100, now); err != nil || !ok {
+		t.Fatalf("cancel older ok=%v err=%v", ok, err)
+	}
+	latest, err := CreateTask(ctx, db, newStoreTask(100, now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := CancelTask(ctx, db, 100, now); err != nil || !ok {
+		t.Fatalf("cancel latest ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := ResumeTask(ctx, db, 100, older.ID, now, time.Hour); err != nil || ok {
+		t.Fatalf("non-latest task resumed ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := ResumeTask(ctx, db, 101, latest.ID, now, time.Hour); err != nil || ok {
+		t.Fatalf("wrong chat resumed task ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := ResumeTask(ctx, db, 100, latest.ID, now, time.Hour); err != nil || !ok {
+		t.Fatalf("latest task did not resume ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := ResumeTask(ctx, db, 100, latest.ID, now, time.Hour); err != nil || ok {
+		t.Fatalf("ready task resumed ok=%v err=%v", ok, err)
+	}
+	claimed, found, err := ClaimNextTask(ctx, db, now, time.Minute)
+	if err != nil || !found {
+		t.Fatalf("claim found=%v err=%v", found, err)
+	}
+	if _, ok, err := ResumeTask(ctx, db, 100, latest.ID, now, time.Hour); err != nil || ok {
+		t.Fatalf("running task resumed ok=%v err=%v", ok, err)
+	}
+	token := "fedcba9876543210fedcba9876543210"
+	if saved, err := SaveTaskApproval(ctx, db, claimed, token, 700, now.Add(time.Minute), `{"request":{}}`, now); err != nil || !saved {
+		t.Fatalf("SaveTaskApproval saved=%v err=%v", saved, err)
+	}
+	if _, ok, err := ResumeTask(ctx, db, 100, latest.ID, now, time.Hour); err != nil || ok {
+		t.Fatalf("awaiting task resumed ok=%v err=%v", ok, err)
+	}
+}

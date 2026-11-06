@@ -1,11 +1,12 @@
 #Requires -Version 7
 <#
-watch_container.ps1 — inspect bot and Whisper health, maintenance leases, backup freshness and repeated runtime errors.
+watch_container.ps1 — inspect bot, Whisper and Mini App health, maintenance leases, backup freshness and runtime errors.
 
 The script never restarts the container. It skips checks only for a fresh maintenance lease whose PID is still active.
 A stale, dead or malformed lease is removed and alerted instead of suppressing monitoring forever. State lives outside
 Git in data/monitoring/container-alert.json. A changed failure alerts immediately; an unchanged failure repeats only
-after -RepeatAlertHours. -ContainerId supports an isolated fixture instead of the compose bot.
+after -RepeatAlertHours. -ContainerId supports an isolated fixture instead of the compose bot. When the running bot has
+MINIAPP_ENABLED=true, its loopback /healthz endpoint is queried inside that container; otherwise the probe is skipped.
 
 Backup freshness uses the atomic data/monitoring/backup-verified.json receipt written after verified volume maintenance.
 Before the first receipt exists, timestamped bot-YYYYMMDD-HHMMSS.db files are accepted as legacy verified backups because
@@ -275,10 +276,32 @@ $healthy = $status -in @('healthy', 'running')
 $now = [DateTime]::UtcNow
 
 if ($healthy) {
+    $miniAppSetting = (docker inspect --format '{{range .Config.Env}}{{if eq . "MINIAPP_ENABLED=true"}}true{{end}}{{end}}' $cid 2>&1 | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) {
+        $status = 'miniapp-config-inspect-failed'
+    }
+    elseif ($miniAppSetting -eq 'true') {
+        if ($ContainerId) {
+            $null = docker exec $cid wget --proxy off -qO- http://127.0.0.1:8084/healthz 2>&1 | Out-String
+        }
+        else {
+            $null = docker compose exec -T bot wget --proxy off -qO- http://127.0.0.1:8084/healthz 2>&1 | Out-String
+        }
+        if ($LASTEXITCODE -ne 0) { $status = 'miniapp-probe-failed' }
+        else { Write-Output 'watch_container: Mini App OK — GET /healthz' }
+    }
+    else {
+        Write-Output 'watch_container: Mini App monitoring disabled'
+    }
+    $healthy = $status -in @('healthy', 'running')
+}
+
+if ($healthy) {
     $recovered = $previous -and $previous.status -notin @('healthy', 'running')
     if ($recovered) {
-        if (-not (Send-Alert "tg-llm-proxy container recovered: state=$status")) {
-            Write-Output 'watch_container: container is healthy, but recovery notification failed'
+        $recoverySubject = if ($previous -and ([string]$previous.status).StartsWith('miniapp-')) { 'Mini App' } else { 'container' }
+        if (-not (Send-Alert "tg-llm-proxy $recoverySubject recovered: state=$status")) {
+            Write-Output "watch_container: $recoverySubject is healthy, but recovery notification failed"
             exit 1
         }
         Write-Output "watch_container: recovered state=$status; notification sent"
@@ -297,8 +320,9 @@ $alertDue = $true
 if ($previous -and $previous.status -eq $status -and $previous.alerted_at) {
     $alertDue = Test-Due $previous.alerted_at $now
 }
+$alertSubject = if ($status.StartsWith('miniapp-')) { 'Mini App' } else { 'container' }
 if ($alertDue) {
-    if (-not (Send-Alert "tg-llm-proxy container failure: state=$status; inspect Docker logs")) {
+    if (-not (Send-Alert "tg-llm-proxy $alertSubject failure: state=$status; inspect Docker logs")) {
         Write-Output "watch_container: FAIL — state=$status and failure notification was not delivered"
         exit 1
     }

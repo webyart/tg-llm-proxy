@@ -129,6 +129,10 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusUnauthorized, "session_expired", "Session expired. Reopen the Mini App from Telegram.")
 		return
 	}
+	if req.URL.Path == "/api/tasks/cancel" || strings.HasPrefix(req.URL.Path, "/api/tasks/") {
+		a.taskControl(w, req, current)
+		return
+	}
 	switch req.URL.Path {
 	case "/api/settings":
 		a.settings(w, req, current)
@@ -158,6 +162,8 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 		a.links(w, req, current)
 	case "/api/tasks":
 		a.tasks(w, req, current)
+	case "/api/usage":
+		a.usage(w, req, current)
 	default:
 		writeError(w, http.StatusNotFound, "not_found", "API endpoint not found.")
 	}

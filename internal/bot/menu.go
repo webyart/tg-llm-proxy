@@ -23,50 +23,61 @@ const (
 )
 
 var menuCommandCallbacks = map[string]string{
-	"menu:ask":            "/help menu:ask",
-	"menu:reset":          "/reset",
-	"menu:history":        "/history menu",
-	"menu:history:5":      "/history 5",
-	"menu:history:20":     "/history 20",
-	"menu:search":         "/help menu:search",
-	"menu:export:md":      "/export md",
-	"menu:export:json":    "/export json",
-	"menu:delete":         "/delete",
-	"menu:docs":           "/docs menu",
-	"menu:docs:add":       "/docs menu:add",
-	"menu:docs:export":    "/docs export",
-	"menu:docs:clear":     "/docs menu:clear",
-	"menu:links":          "/links menu",
-	"menu:links:search":   "/links menu:search",
-	"menu:reminders":      "/reminders menu",
-	"menu:task":           "/task menu",
-	"menu:task:cancel":    "/task menu:cancel",
-	"menu:task:resume":    "/task menu:resume",
-	"menu:task:clear":     "/task menu:clear",
-	"menu:task:new":       "/task menu:new",
-	"menu:tts":            "/help menu:tts",
-	"menu:settings":       "/help menu:settings",
-	"menu:model":          "/model menu",
-	"menu:model:check":    "/model menu:check",
-	"menu:model:reset":    "/model menu:reset",
-	"menu:persona":        "/persona menu",
-	"menu:persona:custom": "/persona menu:custom",
-	"menu:persona:reset":  "/persona menu:reset",
-	"menu:stream":         "/stream menu",
-	"menu:stream:on":      "/stream menu:on",
-	"menu:stream:off":     "/stream menu:off",
-	"menu:stream:reset":   "/stream menu:reset",
-	"menu:status":         "/status menu",
-	"menu:stats":          "/stats",
-	"menu:usage":          "/usage menu",
-	"menu:ping":           "/ping",
-	"menu:help":           "/help menu:help",
-	"menu:more":           "/help menu:more",
-	"menu:skip":           "/skip",
-	"menu:unskip":         "/unskip",
-	"menu:whoami":         "/whoami",
-	"menu:admin":          "/admin",
-	"menu:root":           "/help menu:root",
+	"menu:ask":                   "/help menu:ask",
+	"menu:reset":                 "/reset",
+	"menu:history":               "/history menu",
+	"menu:history:5":             "/history 5",
+	"menu:history:20":            "/history 20",
+	"menu:search":                "/help menu:search",
+	"menu:export:md":             "/export md",
+	"menu:export:json":           "/export json",
+	"menu:delete":                "/delete",
+	"menu:docs":                  "/docs menu",
+	"menu:docs:add":              "/docs menu:add",
+	"menu:docs:export":           "/docs export",
+	"menu:docs:clear":            "/docs menu:clear",
+	"menu:links":                 "/links menu",
+	"menu:links:search":          "/links menu:search",
+	"menu:reminders":             "/reminders menu",
+	"menu:reminder:new":          "/reminders menu:new",
+	"menu:reminder:new:10m":      "/reminders menu:new:10m",
+	"menu:reminder:new:1h":       "/reminders menu:new:1h",
+	"menu:reminder:new:tomorrow": "/reminders menu:new:tomorrow",
+	"menu:reminder:failed":       "/reminders menu:failed",
+	"menu:task":                  "/task menu",
+	"menu:task:cancel":           "/task menu:cancel",
+	"menu:task:resume":           "/task menu:resume",
+	"menu:task:clear":            "/task menu:clear",
+	"menu:task:new":              "/task menu:new",
+	"menu:tts":                   "/help menu:tts",
+	"menu:tts:last":              "/tts last",
+	"menu:tts:speed":             "/help menu:tts:speed",
+	"menu:tts:speed:0.75":        "/help menu:tts:speed:0.75",
+	"menu:tts:speed:1":           "/help menu:tts:speed:1",
+	"menu:tts:speed:1.25":        "/help menu:tts:speed:1.25",
+	"menu:tts:speed:1.5":         "/help menu:tts:speed:1.5",
+	"menu:settings":              "/help menu:settings",
+	"menu:model":                 "/model menu",
+	"menu:model:check":           "/model menu:check",
+	"menu:model:reset":           "/model menu:reset",
+	"menu:persona":               "/persona menu",
+	"menu:persona:custom":        "/persona menu:custom",
+	"menu:persona:reset":         "/persona menu:reset",
+	"menu:stream":                "/stream menu",
+	"menu:stream:on":             "/stream menu:on",
+	"menu:stream:off":            "/stream menu:off",
+	"menu:stream:reset":          "/stream menu:reset",
+	"menu:status":                "/status menu",
+	"menu:stats":                 "/stats",
+	"menu:usage":                 "/usage menu",
+	"menu:ping":                  "/ping",
+	"menu:help":                  "/help menu:help",
+	"menu:more":                  "/help menu:more",
+	"menu:skip":                  "/skip",
+	"menu:unskip":                "/unskip",
+	"menu:whoami":                "/whoami",
+	"menu:admin":                 "/admin",
+	"menu:root":                  "/help menu:root",
 }
 
 func menuButton(text string, data string) models.InlineKeyboardButton {
@@ -327,11 +338,13 @@ func menuCallbackText(data string) (string, bool) {
 			return "", false
 		}
 	}
-	if value, ok := strings.CutPrefix(data, "menu:reminder:cancel:"); ok {
-		if validMenuNumber(value, int64(^uint64(0)>>1)) && value != "0" {
-			return "/reminders menu:cancel:" + value, true
+	for _, action := range []string{"cancel", "retry", "delete"} {
+		if value, ok := strings.CutPrefix(data, "menu:reminder:"+action+":"); ok {
+			if validMenuNumber(value, int64(^uint64(0)>>1)) && value != "0" {
+				return "/reminders menu:" + action + ":" + value, true
+			}
+			return "", false
 		}
-		return "", false
 	}
 	for _, action := range []string{"confirm", "cancel"} {
 		if token, ok := strings.CutPrefix(data, "menu:doc:"+action+":"); ok {
@@ -497,7 +510,12 @@ func (d *Dispatcher) showMoreMenu(ctx context.Context, ev Event) error {
 		rows = append(rows, menuRow(button))
 	}
 	if d.deps.Cfg.TTSEnabled {
-		rows = append(rows, menuRow(menuButton("Озвучить текст", "menu:tts")))
+		rows = append(rows, menuRow(menuButton("Озвучить текст", "menu:tts"), menuButton("Последний ответ", "menu:tts:last")))
+		speed, speedErr := d.ttsSpeed(ctx, ev.ChatID)
+		if speedErr != nil {
+			return speedErr
+		}
+		rows = append(rows, menuRow(menuButton("Скорость TTS: "+formatTTSSpeed(speed)+"×", "menu:tts:speed")))
 	}
 	rows = append(rows, menuRow(menuButton("Кто я", "menu:whoami")))
 	if d.deps.Cfg.IsAdmin(ev.UserID) {
@@ -523,7 +541,12 @@ func (d *Dispatcher) helpMenu(ctx context.Context, ev Event, action string) erro
 		return d.beginPendingInput(ctx, ev, CommandSearch, "menu:history", "Отправь текст для поиска по истории. Ввод действует 2 минуты.")
 	case "menu:tts":
 		return d.synthesizeSpeech(ctx, ev, "")
+	case "menu:tts:speed":
+		return d.showTTSSpeedMenu(ctx, ev)
 	default:
+		if strings.HasPrefix(action, "menu:tts:speed:") {
+			return d.ttsSpeedMenuControl(ctx, ev, action)
+		}
 		if token, ok := strings.CutPrefix(action, "menu:input:cancel:"); ok && validMenuToken(token) {
 			return d.cancelPendingInputMenu(ctx, ev, token)
 		}
@@ -609,6 +632,10 @@ func (d *Dispatcher) pendingEvent(ev Event) (Event, bool) {
 			return ev, false
 		}
 		text := strings.TrimSpace(ev.Text)
+		if choice, ok := strings.CutPrefix(key.Action, pendingReminderActionPrefix); ok {
+			ev.Text = "/reminders menu:create:" + choice + " " + text
+			return ev, true
+		}
 		switch key.Action {
 		case CommandAsk:
 			ev.Text = "/ask " + text
@@ -659,6 +686,8 @@ func (d *Dispatcher) cancelPendingInputMenu(ctx context.Context, ev Event, token
 			return d.showLinksMenu(ctx, ev, "Поиск отменён.")
 		case "menu:persona":
 			return d.showPersonaMenu(ctx, ev, "Ввод отменён.")
+		case "menu:reminders":
+			return d.showReminderMenu(ctx, ev, "Ввод напоминания отменён.")
 		case "menu:task":
 			return d.showTaskMenu(ctx, ev, "Ввод новой задачи отменён.")
 		case "menu:more":

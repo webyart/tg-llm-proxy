@@ -44,11 +44,11 @@ func TestTTSSpeechRequestAndMP3Response(t *testing.T) {
 	if client.client.Timeout != time.Second {
 		t.Fatalf("dedicated HTTP timeout = %s", client.client.Timeout)
 	}
-	audio, err := client.Synthesize(context.Background(), input)
+	audio, err := client.Synthesize(context.Background(), input, 1.25)
 	if err != nil || string(audio) != "ID3-test-audio" {
 		t.Fatalf("audio = %q, err = %v", audio, err)
 	}
-	if request.Model != "speaches-ai/piper-ru_RU-ruslan-medium" || request.Input != input || request.Voice != "ruslan" || request.ResponseFormat != "mp3" || request.Speed != 1 || request.SampleRate != 22050 {
+	if request.Model != "speaches-ai/piper-ru_RU-ruslan-medium" || request.Input != input || request.Voice != "ruslan" || request.ResponseFormat != "mp3" || request.Speed != 1.25 || request.SampleRate != 22050 {
 		t.Fatalf("request = %+v", request)
 	}
 }
@@ -64,7 +64,7 @@ func TestTTSBoundsInputBeforeHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, input := range []string{"", "   ", "four", "🙂🙂🙂🙂"} {
-		if _, err := client.Synthesize(context.Background(), input); !errors.Is(err, ErrTTSInput) {
+		if _, err := client.Synthesize(context.Background(), input, 1); !errors.Is(err, ErrTTSInput) {
 			t.Errorf("input %q: err = %v", input, err)
 		}
 	}
@@ -85,7 +85,7 @@ func TestTTSTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.Synthesize(context.Background(), "text")
+	_, err = client.Synthesize(context.Background(), "text", 1)
 	if !errors.Is(err, ErrTTSTimeout) {
 		t.Fatalf("err = %v, want ErrTTSTimeout", err)
 	}
@@ -120,7 +120,7 @@ func TestTTSRejectsWrongContentTypeOversizeAndRedactsFailures(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = client.Synthesize(context.Background(), input)
+			_, err = client.Synthesize(context.Background(), input, 1)
 			if err == nil {
 				t.Fatal("expected an error")
 			}
@@ -149,7 +149,27 @@ func TestTTSRejectsEmptyAudio(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Synthesize(context.Background(), "text"); !errors.Is(err, ErrTTSEmpty) {
+	if _, err := client.Synthesize(context.Background(), "text", 1); !errors.Is(err, ErrTTSEmpty) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestTTSRejectsUnsupportedSpeedBeforeHTTP(t *testing.T) {
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+	}))
+	defer server.Close()
+	client, err := NewTTS(TTSOptions{URL: server.URL, Model: "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, speed := range []float64{0, 0.5, 1.1, 2, -1} {
+		if _, err := client.Synthesize(context.Background(), "text", speed); !errors.Is(err, ErrTTSSpeed) {
+			t.Errorf("speed %v: err = %v, want ErrTTSSpeed", speed, err)
+		}
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("invalid speed reached HTTP %d times", calls.Load())
 	}
 }

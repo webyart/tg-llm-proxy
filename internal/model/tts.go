@@ -18,6 +18,7 @@ const TTSMaxResponseBytes = 20 << 20
 
 var (
 	ErrTTSInput       = errors.New("speech synthesis input is empty or exceeds the character limit")
+	ErrTTSSpeed       = errors.New("speech synthesis speed must be one of 0.75, 1, 1.25, 1.5")
 	ErrTTSTimeout     = errors.New("speech synthesis timed out")
 	ErrTTSUnavailable = errors.New("speech synthesis endpoint is unavailable")
 	ErrTTSContentType = errors.New("speech synthesis endpoint did not return MP3 audio")
@@ -34,7 +35,7 @@ func (e *TTSUpstreamError) Error() string {
 }
 
 type SpeechSynthesizer interface {
-	Synthesize(ctx context.Context, text string) ([]byte, error)
+	Synthesize(ctx context.Context, text string, speed float64) ([]byte, error)
 }
 
 type TTSOptions struct {
@@ -79,9 +80,14 @@ func NewTTS(opts TTSOptions) (*TTS, error) {
 	return &TTS{url: parsed.String(), model: model, voice: strings.TrimSpace(opts.Voice), maxChars: maxChars, client: client}, nil
 }
 
-func (c *TTS) Synthesize(ctx context.Context, text string) ([]byte, error) {
+func (c *TTS) Synthesize(ctx context.Context, text string, speed float64) ([]byte, error) {
 	if strings.TrimSpace(text) == "" || len([]rune(text)) > c.maxChars {
 		return nil, ErrTTSInput
+	}
+	switch speed {
+	case 0.75, 1, 1.25, 1.5:
+	default:
+		return nil, ErrTTSSpeed
 	}
 	payload, err := json.Marshal(struct {
 		Model          string  `json:"model"`
@@ -90,7 +96,7 @@ func (c *TTS) Synthesize(ctx context.Context, text string) ([]byte, error) {
 		ResponseFormat string  `json:"response_format"`
 		Speed          float64 `json:"speed"`
 		SampleRate     int     `json:"sample_rate"`
-	}{Model: c.model, Input: text, Voice: c.voice, ResponseFormat: "mp3", Speed: 1, SampleRate: 22050})
+	}{Model: c.model, Input: text, Voice: c.voice, ResponseFormat: "mp3", Speed: speed, SampleRate: 22050})
 	if err != nil {
 		return nil, errors.New("speech synthesis request could not be encoded")
 	}

@@ -271,3 +271,216 @@ func rowsNextRetryAt(t *testing.T, db *sql.DB, id int64) time.Time {
 	}
 	return parsed
 }
+
+type terminalFailureReplier struct {
+	fakeReplier
+	calls int
+}
+
+func (r *terminalFailureReplier) Send(ctx context.Context, chatID int64, text string) error {
+	r.mu.Lock()
+	r.calls++
+	failed := r.calls <= ReminderMaxSendAttempts
+	r.mu.Unlock()
+	if failed {
+		return errors.New("offline")
+	}
+	return r.fakeReplier.Send(ctx, chatID, text)
+}
+
+func TestReminderTerminalFailureNotificationIsBestEffortAndSingle(t *testing.T) {
+	r := &terminalFailureReplier{}
+	m := &fakeModel{}
+	db := testStore(t)
+	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"}), m, r, db)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := store.EnsureChat(context.Background(), db, 100, 11, ""); err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.CreateReminder(context.Background(), db, store.Reminder{ChatID: 100, UserID: 11, Text: "terminal", Cadence: store.ReminderCadenceOnce, NextRunAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < ReminderMaxSendAttempts; attempt++ {
+		at := now
+		if attempt > 0 {
+			at = rowsNextRetryAt(t, db, created.ID)
+		}
+		if _, err := d.ProcessDueReminders(context.Background(), at, ReminderBatchLimit); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r.count() != 1 || !strings.Contains(r.joined(), fmt.Sprintf("Напоминание #%d не доставлено после 5 попыток", created.ID)) || strings.Contains(r.joined(), "Напоминание: terminal") {
+		t.Fatalf("terminal deliveries=%q", r.joined())
+	}
+	failed, err := store.ListFailedReminders(context.Background(), db, 100, reminderFailedListLimit)
+	if err != nil || len(failed) != 1 || failed[0].ID != created.ID || failed[0].Attempts != ReminderMaxSendAttempts {
+		t.Fatalf("failed rows=%+v err=%v", failed, err)
+	}
+	if processed, err := d.ProcessDueReminders(context.Background(), now.Add(time.Hour), ReminderBatchLimit); err != nil || processed != 0 || r.count() != 1 || m.callCount() != 0 {
+		t.Fatalf("terminal duplicate processed=%d sends=%d model=%d err=%v", processed, r.count(), m.callCount(), err)
+	}
+}
+
+func TestReminderMenuQuickCreationUsesTimezoneAndSkipsModel(t *testing.T) {
+	r := &menuEditReplier{}
+	m := &fakeModel{}
+	db := testStore(t)
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "REMINDER_TIMEZONE": "America/New_York"}), m, r, db)
+	now := time.Date(2026, 3, 7, 12, 0, 0, 0, location)
+	d.now = func() time.Time { return now }
+	for i, test := range []struct {
+		choice string
+		want   time.Time
+	}{
+		{"10m", now.Add(10 * time.Minute).UTC()},
+		{"1h", now.Add(time.Hour).UTC()},
+		{"tomorrow", time.Date(2026, 3, 8, 9, 0, 0, 0, location).UTC()},
+	} {
+		if err := dispatchMenuData(t, d, 100, 11, 700, "menu:reminders"); err != nil {
+			t.Fatal(err)
+		}
+		if !hasMenuCallback(r.lastEdit().markup, "menu:reminder:new") || !hasMenuCallback(r.lastEdit().markup, "menu:reminder:failed") {
+			t.Fatalf("reminder discovery markup=%+v", r.lastEdit().markup)
+		}
+		if err := dispatchMenuData(t, d, 100, 11, 700, "menu:reminder:new"); err != nil {
+			t.Fatal(err)
+		}
+		for _, choice := range []string{"10m", "1h", "tomorrow"} {
+			if !hasMenuCallback(r.lastEdit().markup, "menu:reminder:new:"+choice) {
+				t.Fatalf("quick choice %s missing from %+v", choice, r.lastEdit().markup)
+			}
+		}
+		if !strings.Contains(r.lastEdit().text, "America/New_York") {
+			t.Fatalf("creation timezone=%q", r.lastEdit().text)
+		}
+		if err := dispatchMenuData(t, d, 100, 11, 700, "menu:reminder:new:"+test.choice); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(r.lastEdit().text, "America/New_York") {
+			t.Fatalf("input timezone=%q", r.lastEdit().text)
+		}
+		text := "quick " + test.choice
+		pending, consumed := d.pendingEvent(testEvent(100, 11, int64(510+i), text))
+		if !consumed {
+			t.Fatalf("quick %s text was not consumed as reminder input", test.choice)
+		}
+		if err := dispatch(t, d, pending); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := store.ListReminders(context.Background(), db, 100, store.ReminderListLimit)
+		if err != nil || len(rows) != i+1 {
+			t.Fatalf("quick %s rows=%+v err=%v", test.choice, rows, err)
+		}
+		found := false
+		for _, reminder := range rows {
+			if reminder.Text == text {
+				found = true
+				if !reminder.NextRunAt.Equal(test.want) {
+					t.Errorf("quick %s next=%s want=%s", test.choice, reminder.NextRunAt, test.want)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("quick %s reminder was not created", test.choice)
+		}
+		if !strings.Contains(r.joined(), "(America/New_York)") {
+			t.Fatalf("confirmation timezone=%q", r.joined())
+		}
+	}
+	if m.callCount() != 0 {
+		t.Fatal("menu reminder creation called the model")
+	}
+}
+
+func TestFailedReminderMenuRetryDeleteIsolationAndBound(t *testing.T) {
+	r := &menuEditReplier{}
+	m := &fakeModel{}
+	db := testStore(t)
+	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "REMINDER_TIMEZONE": "UTC"}), m, r, db)
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	d.now = func() time.Time { return now }
+	for _, chatID := range []int64{100, 101} {
+		if err := store.EnsureChat(context.Background(), db, chatID, 11, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < reminderFailedListLimit+1; i++ {
+		created, err := store.CreateReminder(context.Background(), db, store.Reminder{ChatID: 100, UserID: 11, Text: fmt.Sprintf("failed %d", i), Cadence: store.ReminderCadenceOnce, NextRunAt: now})
+		if err != nil {
+			t.Fatal(err)
+		}
+		finishedAt := now.Add(time.Duration(i) * time.Minute).UTC().Format("2006-01-02T15:04:05.000000000Z")
+		if _, err := db.ExecContext(context.Background(), `UPDATE reminders SET status = 'failed', attempts = 5, finished_at = ?, updated_at = ? WHERE id = ?`, finishedAt, finishedAt, created.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other, err := store.CreateReminder(context.Background(), db, store.Reminder{ChatID: 101, UserID: 11, Text: "other", Cadence: store.ReminderCadenceOnce, NextRunAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finishedAt := now.UTC().Format("2006-01-02T15:04:05.000000000Z")
+	if _, err := db.ExecContext(context.Background(), `UPDATE reminders SET status = 'failed', attempts = 5, finished_at = ?, updated_at = ? WHERE id = ?`, finishedAt, finishedAt, other.ID); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := store.ListFailedReminders(context.Background(), db, 100, reminderFailedListLimit)
+	if err != nil || len(failed) != reminderFailedListLimit {
+		t.Fatalf("failed rows=%+v err=%v", failed, err)
+	}
+	if err := dispatchMenuData(t, d, 100, 11, 700, "menu:reminder:failed"); err != nil {
+		t.Fatal(err)
+	}
+	oldest, err := store.CreateReminder(context.Background(), db, store.Reminder{ChatID: 100, UserID: 11, Text: "active control", Cadence: store.ReminderCadenceOnce, NextRunAt: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	markup := r.lastEdit().markup
+	if !hasMenuCallback(markup, fmt.Sprintf("menu:reminder:retry:%d", failed[0].ID)) || !hasMenuCallback(markup, fmt.Sprintf("menu:reminder:delete:%d", failed[0].ID)) || !hasMenuCallback(markup, "menu:reminders") {
+		t.Fatalf("failed markup=%+v", markup)
+	}
+	if err := dispatchMenuData(t, d, 101, 11, 700, fmt.Sprintf("menu:reminder:retry:%d", failed[0].ID)); err != nil {
+		t.Fatal(err)
+	}
+	crossChat, _ := store.ListFailedReminders(context.Background(), db, 100, reminderFailedListLimit)
+	if len(crossChat) != reminderFailedListLimit {
+		t.Fatal("cross-chat retry changed failed reminders")
+	}
+	if err := dispatchMenuData(t, d, 100, 11, 700, fmt.Sprintf("menu:reminder:retry:%d", failed[0].ID)); err != nil {
+		t.Fatal(err)
+	}
+	active, _ := store.ListReminders(context.Background(), db, 100, store.ReminderListLimit)
+	if len(active) != 2 {
+		t.Fatalf("retry active rows=%+v", active)
+	}
+	if err := dispatchMenuData(t, d, 100, 11, 700, fmt.Sprintf("menu:reminder:delete:%d", failed[0].ID)); err != nil {
+		t.Fatal(err)
+	}
+	active, _ = store.ListReminders(context.Background(), db, 100, store.ReminderListLimit)
+	if len(active) != 2 {
+		t.Fatal("failed delete removed an active reminder")
+	}
+	if err := dispatchMenuData(t, d, 100, 11, 700, fmt.Sprintf("menu:reminder:delete:%d", failed[1].ID)); err != nil {
+		t.Fatal(err)
+	}
+	left, _ := store.ListFailedReminders(context.Background(), db, 100, reminderFailedListLimit)
+	for _, reminder := range left {
+		if reminder.ID == failed[1].ID || reminder.ID == failed[0].ID || reminder.ID == oldest.ID {
+			t.Fatalf("delete isolation rows=%+v", left)
+		}
+	}
+	otherRows, _ := store.ListFailedReminders(context.Background(), db, 101, reminderFailedListLimit)
+	if len(otherRows) != 1 || otherRows[0].ID != other.ID || m.callCount() != 0 {
+		t.Fatalf("other rows=%+v model=%d", otherRows, m.callCount())
+	}
+	for _, action := range []string{"retry", "delete"} {
+		for _, invalid := range []string{"0", "-1", "text", "999999999999999999999999"} {
+			if _, ok := d.callbackText("menu:reminder:" + action + ":" + invalid); ok {
+				t.Errorf("unsafe %s callback accepted %q", action, invalid)
+			}
+		}
+	}
+}

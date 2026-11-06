@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"bot/internal/bot"
+	"bot/internal/store"
 	"bot/internal/testutil"
 )
 
@@ -113,18 +114,23 @@ func TestTTSOverFakeTelegramAndSpeaches(t *testing.T) {
 		"TTS_TIMEOUT_SECONDS":    "2",
 	})
 	db := openStore(t, path)
+	if _, err := store.Append(context.Background(), db, store.Message{ChatID: chatID, UserID: userID, Role: store.RoleAssistant, Content: input}); err != nil {
+		t.Fatal(err)
+	}
 	run := startBot(t, context.Background(), cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{ServerURL: proxy.URL, PollTimeout: 2 * time.Second}, 0)
-	tgAPI.PushText(501, chatID, userID, "/tts "+input)
+	tgAPI.PushText(501, chatID, userID, "/tts speed 1.25")
+	waitFor(t, "TTS speed confirmation", func() bool { return tgAPI.Calls("sendMessage") == 1 })
+	tgAPI.PushText(502, chatID, userID, "/tts last")
 	waitFor(t, "TTS sendAudio", func() bool { return len(capture.all()) == 1 })
 
 	audio := capture.all()[0]
 	if audio.chatID != chatID || audio.filename != "speech.mp3" || string(audio.data) != "ID3-integration-audio" {
 		t.Fatalf("audio = %+v", audio)
 	}
-	if speechRequest.Model != "speaches-ai/piper-ru_RU-ruslan-medium" || speechRequest.Input != input || speechRequest.Voice != "ruslan" || speechRequest.ResponseFormat != "mp3" || speechRequest.Speed != 1 || speechRequest.SampleRate != 22050 {
+	if speechRequest.Model != "speaches-ai/piper-ru_RU-ruslan-medium" || speechRequest.Input != input || speechRequest.Voice != "ruslan" || speechRequest.ResponseFormat != "mp3" || speechRequest.Speed != 1.25 || speechRequest.SampleRate != 22050 {
 		t.Fatalf("speech request = %+v", speechRequest)
 	}
-	if speechCalls.Load() != 1 || strata.ChatCalls() != 0 || tgAPI.Calls("sendDocument") != 0 || tgAPI.Calls("sendMessage") != 0 {
+	if speechCalls.Load() != 1 || strata.ChatCalls() != 0 || tgAPI.Calls("sendDocument") != 0 || tgAPI.Calls("sendMessage") != 1 {
 		t.Fatalf("speech = %d, chat = %d, documents = %d, messages = %d", speechCalls.Load(), strata.ChatCalls(), tgAPI.Calls("sendDocument"), tgAPI.Calls("sendMessage"))
 	}
 	for _, output := range []string{tgAPI.Joined(), run.logs.String()} {

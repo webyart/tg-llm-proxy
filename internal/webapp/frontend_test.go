@@ -94,3 +94,23 @@ func TestFrontendShowsDegradedModelsAndRecoverySuppression(t *testing.T) {
 		}
 	}
 }
+
+func TestFrontendTaskControlsAndUsageAreScopedToAllowedActions(t *testing.T) {
+	index := frontendAsset(t, "static/index.html")
+	script := frontendAsset(t, "static/app.js")
+	if !strings.Contains(index, `data-tab="usage"`) || !strings.Contains(index, `data-i18n="tabUsage"`) {
+		t.Fatal("Usage tab is missing")
+	}
+	for _, want := range []string{
+		`item.expires_at`, `item.error`, `changeTask("/api/tasks/cancel")`,
+		"index === 0", "changeTask(`/api/tasks/${item.id}/resume`)", `renderUsage(view.data)`,
+		`api("/api/usage")`, `networkApprovalTelegram`, `data.limits.model`, `data.limits.network_tools`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js misses %q", want)
+		}
+	}
+	if strings.Contains(script, "/approve") {
+		t.Fatal("Mini App exposes a network approval action")
+	}
+}

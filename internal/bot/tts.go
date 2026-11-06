@@ -3,18 +3,26 @@ package bot
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"path"
+	"strconv"
 	"strings"
 
 	tgbot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
 	"bot/internal/model"
+	"bot/internal/store"
 )
 
-const msgTTSDisabled = "Озвучивание отключено. Включи TTS_ENABLED=true и перезапусти бота."
+const (
+	msgTTSDisabled    = "Озвучивание отключено. Включи TTS_ENABLED=true и перезапусти бота."
+	msgTTSNoAssistant = "В этом чате ещё нет ответа ассистента для озвучивания."
+	msgTTSSpeedUsage  = "Использование: /tts speed — текущая скорость; /tts speed 0.75|1|1.25|1.5 — изменить."
+	ttsDefaultSpeed   = 1.0
+)
 
 type Audio struct {
 	Name string
@@ -48,11 +56,141 @@ func (r *telegramReplier) SendAudio(ctx context.Context, chatID int64, audio Aud
 	return err
 }
 
+func parseTTSSpeed(value string) (float64, bool) {
+	switch value {
+	case "0.75":
+		return 0.75, true
+	case "1":
+		return 1, true
+	case "1.25":
+		return 1.25, true
+	case "1.5":
+		return 1.5, true
+	default:
+		return 0, false
+	}
+}
+
+func formatTTSSpeed(speed float64) string {
+	return strconv.FormatFloat(speed, 'f', -1, 64)
+}
+
+func ttsSpeedStateKey(chatID int64) string {
+	return "tts_speed:" + strconv.FormatInt(chatID, 10)
+}
+
+func (d *Dispatcher) ttsSpeed(ctx context.Context, chatID int64) (float64, error) {
+	value, found, err := store.GetState(ctx, d.deps.DB, ttsSpeedStateKey(chatID))
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		return ttsDefaultSpeed, nil
+	}
+	speed, ok := parseTTSSpeed(value)
+	if !ok {
+		return 0, fmt.Errorf("bot_state %s contains an unsupported TTS speed", ttsSpeedStateKey(chatID))
+	}
+	return speed, nil
+}
+
+func (d *Dispatcher) setTTSSpeed(ctx context.Context, chatID int64, value string) (float64, error) {
+	speed, ok := parseTTSSpeed(value)
+	if !ok {
+		return 0, model.ErrTTSSpeed
+	}
+	if err := store.SetState(ctx, d.deps.DB, ttsSpeedStateKey(chatID), value); err != nil {
+		return 0, err
+	}
+	return speed, nil
+}
+
+func (d *Dispatcher) ttsSpeedControl(ctx context.Context, ev Event, arg string) error {
+	requested := strings.TrimSpace(arg)
+	if requested != "" {
+		speed, err := d.setTTSSpeed(ctx, ev.ChatID, requested)
+		if err != nil {
+			if errors.Is(err, model.ErrTTSSpeed) {
+				return d.reply(ctx, ev.ChatID, msgTTSSpeedUsage)
+			}
+			return err
+		}
+		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Скорость озвучивания для этого чата: %s×. Настройка сохранена.", formatTTSSpeed(speed)))
+	}
+	speed, err := d.ttsSpeed(ctx, ev.ChatID)
+	if err != nil {
+		return err
+	}
+	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Текущая скорость озвучивания для этого чата: %s×.\n%s", formatTTSSpeed(speed), msgTTSSpeedUsage))
+}
+
+func (d *Dispatcher) latestAssistantAnswer(ctx context.Context, chatID int64) (string, error) {
+	var content string
+	err := d.deps.DB.QueryRowContext(ctx, `
+		SELECT content FROM messages
+		WHERE chat_id = ? AND role = ?
+		ORDER BY id DESC LIMIT 1`, chatID, store.RoleAssistant).Scan(&content)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(content), nil
+}
+
+func (d *Dispatcher) showTTSSpeedMenu(ctx context.Context, ev Event, note ...string) error {
+	speed, err := d.ttsSpeed(ctx, ev.ChatID)
+	if err != nil {
+		return err
+	}
+	rows := make([][]models.InlineKeyboardButton, 0, 3)
+	for _, value := range []string{"0.75", "1", "1.25", "1.5"} {
+		label := value + "×"
+		parsed, _ := parseTTSSpeed(value)
+		if parsed == speed {
+			label = "• " + label
+		}
+		rows = append(rows, menuRow(menuButton(label, "menu:tts:speed:"+value)))
+	}
+	rows = append(rows, menuRow(backButton("menu:more")))
+	text := menuText(fmt.Sprintf("Скорость озвучивания для этого чата: %s×.", formatTTSSpeed(speed)), note)
+	return d.renderMenu(ctx, ev, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func (d *Dispatcher) ttsSpeedMenuControl(ctx context.Context, ev Event, action string) error {
+	value, ok := strings.CutPrefix(action, "menu:tts:speed:")
+	if !ok {
+		return d.showTTSSpeedMenu(ctx, ev, menuExpiredText)
+	}
+	if _, valid := parseTTSSpeed(value); !valid {
+		return d.showTTSSpeedMenu(ctx, ev, menuExpiredText)
+	}
+	speed, err := d.setTTSSpeed(ctx, ev.ChatID, value)
+	if err != nil {
+		return err
+	}
+	return d.showTTSSpeedMenu(ctx, ev, fmt.Sprintf("Скорость сохранена: %s×.", formatTTSSpeed(speed)))
+}
+
 func (d *Dispatcher) synthesizeSpeech(ctx context.Context, ev Event, arg string) error {
 	if !d.deps.Cfg.TTSEnabled {
 		return d.reply(ctx, ev.ChatID, msgTTSDisabled)
 	}
 	text := strings.TrimSpace(arg)
+	if fields := strings.Fields(text); len(fields) > 0 && strings.EqualFold(fields[0], "speed") {
+		return d.ttsSpeedControl(ctx, ev, strings.TrimSpace(text[len(fields[0]):]))
+	}
+	if strings.EqualFold(text, "last") {
+		answer, err := d.latestAssistantAnswer(ctx, ev.ChatID)
+		if err != nil {
+			return err
+		}
+		if answer == "" {
+			return d.reply(ctx, ev.ChatID, msgTTSNoAssistant)
+		}
+		text = answer
+	}
 	if text == "" {
 		return d.beginPendingInput(ctx, ev, CommandTTS, "menu:more", fmt.Sprintf("Отправь текст для озвучивания одним сообщением (до %d символов). Ввод действует 2 минуты.", d.deps.Cfg.TTSMaxChars))
 	}
@@ -70,7 +208,11 @@ func (d *Dispatcher) synthesizeSpeech(ctx context.Context, ev Event, arg string)
 	if d.deps.TTS == nil {
 		return d.reply(ctx, ev.ChatID, "Озвучивание не настроено в этом клиенте.")
 	}
-	audio, err := d.deps.TTS.Synthesize(ctx, text)
+	speed, err := d.ttsSpeed(ctx, ev.ChatID)
+	if err != nil {
+		return err
+	}
+	audio, err := d.deps.TTS.Synthesize(ctx, text, speed)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return err

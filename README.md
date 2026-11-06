@@ -112,7 +112,7 @@ docker compose logs -f bot
 | `STRATA_TIMEOUT_SECONDS` | 60 | таймаут одной попытки модели |
 | `TG_REPLY_DEADLINE_SECONDS` | 90 | общий бюджет ответа; должен быть больше timeout |
 | `RECOVERY_MAX_AGE_HOURS` | 24 | максимальный возраст unanswered-вопроса для автоматического recovery; `0` отключает лимит |
-| `REMINDER_TIMEZONE` | `UTC` | IANA timezone для ежедневных напоминаний, например `Europe/Moscow` |
+| `REMINDER_TIMEZONE` | `UTC` | IANA timezone для напоминаний, например `Europe/Moscow` |
 | `TTS_ENABLED` | false | opt-in `/tts` через существующий Speaches |
 | `TTS_MODEL` | `speaches-ai/piper-ru_RU-ruslan-medium` | русская Piper-модель |
 | `TTS_VOICE` | `ruslan` | voice для `/v1/audio/speech` |
@@ -121,7 +121,7 @@ docker compose logs -f bot
 | `USER_DAILY_MODEL_LIMIT` | 0 = без ограничений | дневной лимит model calls пользователя по UTC |
 | `USER_DAILY_NETWORK_TOOL_LIMIT` | 0 = без ограничений | дневной лимит read_url/web_search пользователя по UTC |
 | `USER_LIMITS_JSON` | `{}` | per-user overrides: `{"id":{"model":N,"network_tools":N}}` |
-| `MINIAPP_ENABLED` | false | opt-in read-only Telegram Mini App |
+| `MINIAPP_ENABLED` | false | opt-in Telegram Mini App |
 | `MINIAPP_LISTEN_HOST` | `127.0.0.1`; в compose — `0.0.0.0` | listener Mini App |
 | `MINIAPP_PORT` | 8084 | loopback port Mini App |
 | `MINIAPP_PUBLIC_URL` | пусто | обязательный HTTPS URL при `MINIAPP_ENABLED=true` |
@@ -227,7 +227,7 @@ TTS_MAX_CHARS=1000
 TTS_TIMEOUT_SECONDS=60
 ```
 
-Запускайте `docker compose -f docker-compose.yml -f compose.tts.yaml up -d`: override предзагружает Whisper и одноразово скачивает Piper через `/v1/models`. `/tts <текст>` возвращает MP3 через `sendAudio`, без вызова LLM. More → Озвучить текст появляется только при включённом TTS. Изолированная и production acceptance подтвердили скачивание модели и русскую речь в Telegram.
+Запускайте `docker compose -f docker-compose.yml -f compose.tts.yaml up -d`: override предзагружает Whisper и одноразово скачивает Piper через `/v1/models`. `/tts <текст>` возвращает MP3 через `sendAudio`, без вызова LLM. `/tts last` так же без вызова модели озвучивает последний ответ ассистента текущего чата. `/tts speed` показывает текущую скорость, а `/tts speed 0.75|1|1.25|1.5` сохраняет её для чата в `bot_state`; выбранное значение используется при запросах к Speaches, по умолчанию — `1`. More → Озвучить текст появляется только при включённом TTS. Изолированная и production acceptance подтвердили скачивание модели и русскую речь в Telegram.
 
 ### Webhook (experimental)
 
@@ -266,11 +266,11 @@ Reverse proxy или туннель должен перенаправлять п
 | `/skip` | запретить recovery текущего unanswered-вопроса |
 | `/unskip` | снять suppression без немедленного вызова модели |
 | `/history [N]` | последние N сообщений, по умолчанию 5 |
-| `/remind <время> <текст>` | `через 1 минуту`, `через 2 часа` или `каждый день 09:00`; текст до 500 runes |
-| `/reminders` | список активных напоминаний чата; `cancel <id>` или `delete <id>` отменяет свою запись |
+| `/remind <время> <текст>` | `через 1 минуту`, `через 2 часа` или `каждый день 09:00` по `REMINDER_TIMEZONE`; текст до 500 runes |
+| `/reminders` | список и inline-меню активных напоминаний; `cancel <id>` или `delete <id>` отменяет активную запись; в меню есть создание и до 5 недоставленных с Retry/Delete |
 | `/links` | сохранённые ссылки; `add <url>`, `search <текст>`, `summary <id>`, `delete <id>` |
-| `/task <цель>` | read-only задача из 1–3 шагов с прогрессом; без аргумента — статус, `/task cancel` — отмена, `/task resume <id>` — возобновление failed/cancelled, `/task clear` — очистка списка с подтверждением |
-| `/tts <текст>` | opt-in озвучка текста через Speaches и `sendAudio`; по умолчанию выключено |
+| `/task <цель>` | read-only задача из 1–3 шагов с прогрессом; без аргумента — статус, `/task cancel` — отмена, `/task resume <id>` — возобновление только последней failed/cancelled текущего чата с сохранением прогресса, `/task clear` — очистка списка с подтверждением |
+| `/tts <текст>` | opt-in озвучка через Speaches и `sendAudio`; `/tts last` — последний ответ ассистента, `/tts speed [0.75\|1\|1.25\|1.5]` — скорость чата; по умолчанию выключено |
 | `/docs` | RAG-база; `/docs add`, `export`, `delete <id>` и `clear` |
 | `/export [md\|json]` | экспорт последних 10000 сообщений с явным truncation warning и ID/time window |
 | `/search <текст>` | до 20 совпадений среди последних 10000 сообщений; область указана в ответе |
@@ -289,13 +289,17 @@ Reverse proxy или туннель должен перенаправлять п
 
 `/start` и `/help` открывают секционное inline-меню: Ask/New context, History, Documents, Settings, Status, Help и More. History поддерживает последние сообщения, поиск, MD/JSON export и удаление; Documents — добавление, export, удаление документов и «Ссылки на потом» с list/search/summary/delete; Settings — Model, Persona и Stream. More содержит напоминания, многошаговые задачи, opt-in озвучку текста и `/usage` с дневной статистикой. Admin виден только администраторам.
 
-Ask, Search и Custom Persona принимают следующий текст через pending input с TTL 2 минуты и кнопкой Cancel. Состояние привязано к chat/user/menu message и инвалидируется при рестарте. Все текстовые команды остаются доступными. Обычные запросы показывают Telegram `typing`, а streaming tools — только общие стадии без URL и поисковых запросов.
+Меню напоминаний создаёт одноразовые записи через 10 минут, 1 час или завтра в 09:00 по `REMINDER_TIMEZONE`. Раздел «Недоставленные» показывает до 5 последних failed текущего чата: Retry снова активирует запись с нулевым `attempts`, Delete удаляет только failed текущего чата. Для одноразового напоминания после пятой ошибки доставки бот пытается отправить финальное уведомление (best-effort). Atomic claims, backoff и расчёт daily-времени с учётом DST не изменились.
+
+Ask, Search, Custom Persona и создание напоминания принимают следующий текст через pending input с TTL 2 минуты и кнопкой Cancel. Состояние привязано к chat/user/menu message и инвалидируется при рестарте. Все текстовые команды остаются доступными. Обычные запросы показывают Telegram `typing`, а streaming tools — только общие стадии без URL и поисковых запросов.
 
 ## Telegram Mini App (opt-in)
 
-More → Mini App открывает companion со Status, History, Documents, Links, Tasks и Settings. Для включения задайте `MINIAPP_ENABLED=true` и HTTPS `MINIAPP_PUBLIC_URL`, затем запустите Compose. Публичный URL должен вести через reverse proxy/tunnel на host `127.0.0.1:8084`; внутри контейнера listener `0.0.0.0`.
+More → Mini App открывает companion со Status, History, Documents, Links, Tasks, Usage и Settings. Для включения задайте `MINIAPP_ENABLED=true` и HTTPS `MINIAPP_PUBLIC_URL`, затем запустите Compose. Публичный URL должен вести через reverse proxy/tunnel на host `127.0.0.1:8084`; внутри контейнера listener `0.0.0.0`.
 
 Raw `initData` проверяется через Telegram HMAC и `auth_date`, launch ticket привязан к chat/user на 2 минуты, session — на 15 минут. Доступ проверяется при каждом запросе. Нет model keys, task plans/results или tool arguments. Настройки Model/Persona/Stream работают через те же store-операции и проверку allowlist, без прямых обращений браузера к STRATA. Интерфейс по умолчанию русский, есть переключатель RU/EN и адаптивная мобильная вёрстка без горизонтального скролла. Внешний HTTPS acceptance выполнен через Tailscale Funnel: локальный и публичный endpoint отвечают 200, `/api/history` без авторизации возвращает 401, запуск в Telegram client подтверждён. `watch_container.ps1` дополнительно проверяет `/healthz` при включённом Mini App.
+
+Tasks показывает для failed sanitized error и expiry. Cancel отменяет active, Resume возобновляет последнюю failed/cancelled через `store.ResumeTask`, как `/task resume <id>`; network approvals остаются только в Telegram. Вкладка Usage получает данные через `GET /api/usage` и показывает за UTC-сутки model calls и tokens по моделям, вызовы calculator/RAG/read_url/web_search, дневные limits/remaining; для unlimited `remaining` равен `null`. Вкладка не содержит текстов запросов, целей задач и event detail.
 
 ## Проверка проекта
 

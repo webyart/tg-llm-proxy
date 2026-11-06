@@ -78,11 +78,16 @@ func newTestApp(t *testing.T) (*App, *httptest.Server) {
 
 func launchSession(t *testing.T, app *App, server *httptest.Server) string {
 	t.Helper()
-	ticket, err := app.NewLaunchTicket(testChatID, testUserID)
+	return launchSessionFor(t, app, server, testChatID, testUserID)
+}
+
+func launchSessionFor(t *testing.T, app *App, server *httptest.Server, chatID int64, userID int64) string {
+	t.Helper()
+	ticket, err := app.NewLaunchTicket(chatID, userID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw := signedInitData(t, app.cfg.BotToken, testUserID, app.auth.now())
+	raw := signedInitData(t, app.cfg.BotToken, userID, app.auth.now())
 	req := httptest.NewRequest(http.MethodPost, "/api/session", strings.NewReader(raw))
 	req.Header.Set("Content-Type", "text/plain")
 	req.Header.Set("X-Launch-Ticket", ticket)

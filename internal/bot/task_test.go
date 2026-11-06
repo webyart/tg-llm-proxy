@@ -67,6 +67,41 @@ func processTasks(t *testing.T, d *Dispatcher, passes int) {
 	}
 }
 
+func TestTaskClearRequiresConfirmationAndDeletesAllTasks(t *testing.T) {
+	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	d := newTestDispatcher(t, cfg, nil, nil, testStore(t))
+	ev := testEvent(100, 11, 700, "")
+	now := time.Now().UTC()
+	if err := store.EnsureChat(context.Background(), d.deps.DB, 100, 11, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateTask(context.Background(), d.deps.DB, store.Task{ChatID: 100, UserID: 11, Goal: "goal", Model: "m", PlanJSON: validTaskPlanOne, DueAt: now, ExpiresAt: now.Add(time.Hour), CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.promptTaskClear(context.Background(), ev); err != nil {
+		t.Fatalf("promptTaskClear: %v", err)
+	}
+	if _, found, _ := store.CurrentTask(context.Background(), d.deps.DB, 100); !found {
+		t.Fatal("task was deleted before confirmation")
+	}
+	set := documentConfirmationsFor(d)
+	set.mu.Lock()
+	var token string
+	for key := range set.pending {
+		token = key
+	}
+	set.mu.Unlock()
+	if token == "" {
+		t.Fatal("confirmation token is missing")
+	}
+	if err := d.documentMenuControl(context.Background(), ev, "menu:confirm:"+token); err != nil {
+		t.Fatalf("confirm clear: %v", err)
+	}
+	if _, found, _ := store.CurrentTask(context.Background(), d.deps.DB, 100); found {
+		t.Fatal("task remains after confirmed clear")
+	}
+}
+
 func TestTaskPlanStrictValidation(t *testing.T) {
 	valid := []string{
 		validTaskPlanOne,

@@ -206,6 +206,42 @@ func TestTaskApprovalConsumptionIsExactAndSingleUse(t *testing.T) {
 	}
 }
 
+func TestClearTasksDeletesOnlyCurrentChat(t *testing.T) {
+	ctx := context.Background()
+	db := taskTestDB(t)
+	now := time.Now().UTC()
+	if err := EnsureChat(ctx, db, 100, 11, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureChat(ctx, db, 101, 11, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CreateTask(ctx, db, newStoreTask(100, now)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := CancelTask(ctx, db, 100, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CreateTask(ctx, db, newStoreTask(100, now)); err != nil {
+		t.Fatal(err)
+	}
+	other, err := CreateTask(ctx, db, newStoreTask(101, now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := ClearTasks(ctx, db, 100)
+	if err != nil || deleted != 2 {
+		t.Fatalf("deleted=%d err=%v", deleted, err)
+	}
+	current, found, err := CurrentTask(ctx, db, 100)
+	if err != nil || found {
+		t.Fatalf("current chat tasks remain: %+v found=%v err=%v", current, found, err)
+	}
+	if _, found, err := CurrentTask(ctx, db, 101); err != nil || !found {
+		t.Fatalf("other chat task %d was deleted: found=%v err=%v", other.ID, found, err)
+	}
+}
+
 func TestTaskRestartDoesNotDuplicateCompletedStepOrAnswer(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "tasks.db")

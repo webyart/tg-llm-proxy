@@ -219,3 +219,157 @@ func TestTaskNetworkApprovalRemainsTelegramOnly(t *testing.T) {
 		t.Fatalf("cancelled approval task=%+v", current)
 	}
 }
+
+func webappTaskCount(t *testing.T, app *App, chatID int64) int {
+	t.Helper()
+	var count int
+	if err := app.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM tasks WHERE chat_id = ?`, chatID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
+}
+
+func TestTaskClearDeletesAllCurrentChatTasksOnly(t *testing.T) {
+	app, server := newTestApp(t)
+	bearer := launchSession(t, app, server)
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+
+	createWebappTask(t, app, testChatID, now)
+	claimed := claimWebappTask(t, app, now)
+	if changed, err := store.CompleteTaskStep(ctx, app.db, claimed, "step result", now); err != nil || !changed {
+		t.Fatalf("CompleteTaskStep changed=%v err=%v", changed, err)
+	}
+	claimed = claimWebappTask(t, app, now)
+	answer := store.Message{ChatID: testChatID, UserID: testUserID, Role: store.RoleAssistant, Content: "completed result"}
+	if changed, err := store.CompleteTask(ctx, app.db, claimed, answer, now); err != nil || !changed {
+		t.Fatalf("CompleteTask changed=%v err=%v", changed, err)
+	}
+	createWebappTask(t, app, testChatID, now.Add(time.Second))
+	if _, changed, err := store.CancelTask(ctx, app.db, testChatID, now.Add(time.Second)); err != nil || !changed {
+		t.Fatalf("CancelTask changed=%v err=%v", changed, err)
+	}
+	createWebappTask(t, app, testChatID, now.Add(2*time.Second))
+	claimed = claimWebappTask(t, app, now.Add(2*time.Second))
+	if changed, err := store.FailTask(ctx, app.db, claimed, "terminal failure", now.Add(2*time.Second)); err != nil || !changed {
+		t.Fatalf("FailTask changed=%v err=%v", changed, err)
+	}
+	createWebappTask(t, app, testChatID, now.Add(3*time.Second))
+	claimed = claimWebappTask(t, app, now.Add(3*time.Second))
+	approvalToken := "fedcba9876543210fedcba9876543210"
+	if saved, err := store.SaveTaskApproval(ctx, app.db, claimed, approvalToken, 700, now.Add(time.Minute), `{"request":{}}`, now); err != nil || !saved {
+		t.Fatalf("SaveTaskApproval saved=%v err=%v", saved, err)
+	}
+	other := createWebappTask(t, app, testChatID+1, now)
+	if got := webappTaskCount(t, app, testChatID); got != 4 {
+		t.Fatalf("current chat fixture has %d tasks, want 4", got)
+	}
+
+	status, body := settingsRequest(t, server.URL, http.MethodPost, "/api/tasks/clear", bearer, "", "")
+	if status != http.StatusOK {
+		t.Fatalf("clear status=%d body=%s", status, body)
+	}
+	var decoded struct {
+		OK      bool  `json:"ok"`
+		Deleted int64 `json:"deleted"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil || !decoded.OK || decoded.Deleted != 4 {
+		t.Fatalf("clear response=%s err=%v", body, err)
+	}
+	if got := webappTaskCount(t, app, testChatID); got != 0 {
+		t.Fatalf("clear left %d current chat tasks", got)
+	}
+	if got := webappTaskCount(t, app, testChatID+1); got != 1 {
+		t.Fatalf("clear changed other chat task count to %d", got)
+	}
+	if current := currentWebappTask(t, app, testChatID+1); current.ID != other.ID || current.Status != store.TaskStatusReady {
+		t.Fatalf("other chat task changed: %+v", current)
+	}
+	if _, found, err := store.TaskByApprovalToken(ctx, app.db, approvalToken); err != nil || found {
+		t.Fatalf("cleared approval remains restorable: found=%v err=%v", found, err)
+	}
+
+	status, body = settingsRequest(t, server.URL, http.MethodPost, "/api/tasks/clear", bearer, "", "")
+	if status != http.StatusOK || !strings.Contains(string(body), `"deleted":0`) {
+		t.Fatalf("empty clear status=%d body=%s", status, body)
+	}
+	if got := webappTaskCount(t, app, testChatID+1); got != 1 {
+		t.Fatalf("empty clear changed other chat task count to %d", got)
+	}
+}
+
+func TestTaskClearStrictMethodBodyAndQuery(t *testing.T) {
+	app, server := newTestApp(t)
+	bearer := launchSession(t, app, server)
+	createWebappTask(t, app, testChatID, time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC))
+
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		status, body, headers := apiRequest(t, server, method, "/api/tasks/clear", bearer)
+		if status != http.StatusMethodNotAllowed || headers.Get("Allow") != http.MethodPost {
+			t.Errorf("%s clear status=%d Allow=%q body=%s", method, status, headers.Get("Allow"), body)
+		}
+	}
+	for _, test := range []struct {
+		name string
+		path string
+		body string
+	}{
+		{"JSON body", "/api/tasks/clear", `{}`},
+		{"invalid body", "/api/tasks/clear", `{`},
+		{"whitespace body", "/api/tasks/clear", " \n"},
+		{"query", "/api/tasks/clear?chat_id=4242", ""},
+	} {
+		status, body := settingsRequest(t, server.URL, http.MethodPost, test.path, bearer, test.body, "")
+		if status != http.StatusBadRequest || !strings.Contains(string(body), `"code":"invalid_body"`) {
+			t.Errorf("%s status=%d body=%s", test.name, status, body)
+		}
+	}
+	status, body := settingsRequest(t, server.URL, http.MethodPost, "/api/tasks/clear", bearer, strings.Repeat("x", maxBodyBytes+1), "")
+	if status != http.StatusRequestEntityTooLarge || !strings.Contains(string(body), `"code":"body_too_large"`) {
+		t.Fatalf("oversized clear status=%d body=%s", status, body)
+	}
+	if got := webappTaskCount(t, app, testChatID); got != 1 {
+		t.Fatalf("rejected clear requests deleted tasks: count=%d", got)
+	}
+}
+
+func TestTaskClearRejectsWrongSessionAndRemovedAllowlist(t *testing.T) {
+	app, server := newTestApp(t)
+	bearer := launchSession(t, app, server)
+	createWebappTask(t, app, testChatID, time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC))
+	for _, wrongBearer := range []string{"", "not-a-session"} {
+		status, body := settingsRequest(t, server.URL, http.MethodPost, "/api/tasks/clear", wrongBearer, "", "")
+		if status != http.StatusUnauthorized || !strings.Contains(string(body), `"code":"session_expired"`) {
+			t.Errorf("wrong session status=%d body=%s", status, body)
+		}
+	}
+	if got := webappTaskCount(t, app, testChatID); got != 1 {
+		t.Fatalf("wrong sessions deleted tasks: count=%d", got)
+	}
+
+	app, server = newTestApp(t)
+	allowed := true
+	app.auth.authorize = func(int64) bool { return allowed }
+	bearer = launchSession(t, app, server)
+	createWebappTask(t, app, testChatID, time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC))
+	allowed = false
+	status, body := settingsRequest(t, server.URL, http.MethodPost, "/api/tasks/clear", bearer, "", "")
+	if status != http.StatusUnauthorized || !strings.Contains(string(body), `"code":"session_expired"`) {
+		t.Fatalf("removed allowlist status=%d body=%s", status, body)
+	}
+	if got := webappTaskCount(t, app, testChatID); got != 1 {
+		t.Fatalf("removed allowlist request deleted tasks: count=%d", got)
+	}
+}
+
+func TestTaskClearReportsStoreFailure(t *testing.T) {
+	app, server := newTestApp(t)
+	bearer := launchSession(t, app, server)
+	if err := app.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	status, body := settingsRequest(t, server.URL, http.MethodPost, "/api/tasks/clear", bearer, "", "")
+	if status != http.StatusInternalServerError || !strings.Contains(string(body), `"code":"task_mutation_failed"`) {
+		t.Fatalf("store failure status=%d body=%s", status, body)
+	}
+}

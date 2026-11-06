@@ -114,3 +114,41 @@ func TestFrontendTaskControlsAndUsageAreScopedToAllowedActions(t *testing.T) {
 		t.Fatal("Mini App exposes a network approval action")
 	}
 }
+
+func TestFrontendTaskClearRequiresInlineConfirmation(t *testing.T) {
+	script := frontendAsset(t, "static/app.js")
+	for _, want := range []string{
+		`clearTasks: "Очистить задачи"`, `clearTasksConfirm: "Подтвердить"`,
+		`clearTasks: "Clear tasks"`, `clearTasksConfirm: "Confirm"`,
+		`clearTasksWarning: "Удалить все задачи этого чата, включая активные и завершённые? Это действие нельзя отменить."`,
+		`clearTasksWarning: "Delete every task in this chat, including active and completed tasks? This cannot be undone."`,
+		`settingsButton(t("clearTasks"), () => setTaskClearArmed(true, items))`,
+		`settingsButton(t("clearTasksConfirm"), () => changeTask("/api/tasks/clear"))`,
+		`settingsButton(t("cancelTask"), () => setTaskClearArmed(false, items), true)`,
+		"if (changed) {\n      clearTasksArmed = false;",
+		"if (!button || loading) return;\n    clearTasksArmed = false;",
+		`ui.refresh.addEventListener("click", () => { clearTasksArmed = false; nextBefore = null; load(); });`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js misses task clear regression %q", want)
+		}
+	}
+	if got := strings.Count(script, `changeTask("/api/tasks/clear")`); got != 1 {
+		t.Errorf("task clear exact endpoint call count = %d, want 1", got)
+	}
+
+	armBody := regexp.MustCompile(`(?s)function setTaskClearArmed\(armed, items\) \{(.*?)\n  \}`).FindStringSubmatch(script)
+	if len(armBody) != 2 {
+		t.Fatal("task clear armed-state helper is missing")
+	}
+	for _, rejected := range []string{`changeTask(`, `api(`, `fetch(`} {
+		if strings.Contains(armBody[1], rejected) {
+			t.Errorf("showing or cancelling task clear confirmation unexpectedly calls %q", rejected)
+		}
+	}
+	for _, rejected := range []string{`window.confirm`, `confirm(`, `innerHTML`} {
+		if strings.Contains(script, rejected) {
+			t.Errorf("task clear uses forbidden browser or HTML API %q", rejected)
+		}
+	}
+}

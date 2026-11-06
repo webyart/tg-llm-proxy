@@ -1,3 +1,12 @@
+# tg-llm-proxy v1.31.1
+
+## Mini App task cleanup and acceptance
+
+- Tasks теперь всегда показывает «Очистить задачи» для непустого списка, включая списки только из completed. Первый click открывает inline Confirm/Cancel с предупреждением; API вызывается только после Confirm.
+- `POST /api/tasks/clear` принимает только пустой body без query params и вызывает `store.ClearTasks` для текущего чата. Удаляются active/terminal задачи и связанные approval state; другие чаты не затрагиваются. Ответ содержит только `ok` и `deleted`.
+- Добавлены success/empty/method/body/query/session/allowlist/cross-chat/store-error и frontend two-step confirmation regressions.
+- Живой read-only acceptance подтвердил корректность retrieval: по существующему термину `history` найдены все 3 фрагмента; `crashpad` отсутствует в текущем документе даже как substring. `/tts` подтверждён пользователем. Отсутствие Cancel/Resume для completed task было ожидаемым состоянием, а не ошибкой рендеринга.
+
 # tg-llm-proxy v1.31.0
 
 ## RAG precision and inspection

@@ -19,6 +19,8 @@
       task_ready: "готова", task_running: "выполняется", task_awaiting_approval: "ждёт разрешения",
       task_completed: "завершена", task_cancelled: "отменена", task_failed: "ошибка",
       expires: "истекает", taskError: "Причина", cancelTask: "Отменить", resumeTask: "Возобновить",
+      clearTasks: "Очистить задачи", clearTasksConfirm: "Подтвердить",
+      clearTasksWarning: "Удалить все задачи этого чата, включая активные и завершённые? Это действие нельзя отменить.",
       taskUpdated: "Задача обновлена.", taskNotActive: "Активной задачи для отмены нет.",
       taskNotResumable: "Возобновить можно только последнюю задачу с ошибкой или отменённую задачу.",
       taskMutationFailed: "Не удалось изменить задачу.", networkApprovalTelegram: "Сетевое действие подтверждается только в Telegram.",
@@ -69,6 +71,8 @@
       task_ready: "ready", task_running: "running", task_awaiting_approval: "awaiting approval",
       task_completed: "completed", task_cancelled: "cancelled", task_failed: "failed",
       expires: "expires", taskError: "Reason", cancelTask: "Cancel", resumeTask: "Resume",
+      clearTasks: "Clear tasks", clearTasksConfirm: "Confirm",
+      clearTasksWarning: "Delete every task in this chat, including active and completed tasks? This cannot be undone.",
       taskUpdated: "Task updated.", taskNotActive: "There is no active task to cancel.",
       taskNotResumable: "Only the latest failed or cancelled task can be resumed.",
       taskMutationFailed: "The task could not be changed.", networkApprovalTelegram: "Approve network actions only in Telegram.",
@@ -148,6 +152,7 @@
   let activeTab = "status";
   let nextBefore = null;
   let loading = false;
+  let clearTasksArmed = false;
   let view = { tab: "status", data: null, items: [] };
 
   function showError(message) {
@@ -222,11 +227,29 @@
     ui.content.appendChild(grid);
   }
 
+  function setTaskClearArmed(armed, items) {
+    clearTasksArmed = armed;
+    renderItems("tasks", items);
+  }
+
   function renderItems(tab, items) {
     ui.content.replaceChildren();
     if (!items.length) {
       renderEmpty(t(tab === "history" ? "emptyHistory" : "emptyItems"));
       return;
+    }
+    if (tab === "tasks") {
+      const clear = element("div", clearTasksArmed ? "task-clear task-clear-confirm" : "task-clear");
+      if (clearTasksArmed) {
+        clear.appendChild(element("p", "task-clear-warning", t("clearTasksWarning")));
+        const actions = element("div", "task-actions task-clear-actions");
+        actions.appendChild(settingsButton(t("clearTasksConfirm"), () => changeTask("/api/tasks/clear")));
+        actions.appendChild(settingsButton(t("cancelTask"), () => setTaskClearArmed(false, items), true));
+        clear.appendChild(actions);
+      } else {
+        clear.appendChild(settingsButton(t("clearTasks"), () => setTaskClearArmed(true, items)));
+      }
+      ui.content.appendChild(clear);
     }
     for (const [index, item] of items.entries()) {
       const wrapper = itemShell(item.id, item.created_at || item.updated_at);
@@ -324,6 +347,7 @@
       ui.refresh.disabled = false;
     }
     if (changed) {
+      clearTasksArmed = false;
       await load();
       showError(t("taskUpdated"));
     }
@@ -520,6 +544,7 @@
   document.getElementById("tabs").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-tab]");
     if (!button || loading) return;
+    clearTasksArmed = false;
     activeTab = button.dataset.tab;
     nextBefore = null;
     view = { tab: activeTab, data: null, items: [] };
@@ -535,7 +560,7 @@
     showError("");
     applyTranslations();
   });
-  ui.refresh.addEventListener("click", () => { nextBefore = null; load(); });
+  ui.refresh.addEventListener("click", () => { clearTasksArmed = false; nextBefore = null; load(); });
   ui.more.addEventListener("click", () => load(true));
   ui.logout.addEventListener("click", async () => {
     try { await api("/api/session", { method: "DELETE" }); } catch (_) { /* local close still applies */ }

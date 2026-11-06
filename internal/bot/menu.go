@@ -34,6 +34,7 @@ var menuCommandCallbacks = map[string]string{
 	"menu:delete":                "/delete",
 	"menu:docs":                  "/docs menu",
 	"menu:docs:add":              "/docs menu:add",
+	"menu:docs:search":           "/docs menu:search",
 	"menu:docs:export":           "/docs export",
 	"menu:docs:clear":            "/docs menu:clear",
 	"menu:links":                 "/links menu",
@@ -643,6 +644,8 @@ func (d *Dispatcher) pendingEvent(ev Event) (Event, bool) {
 			ev.Text = "/search " + text
 		case pendingLinkSearch:
 			ev.Text = "/links search " + text
+		case pendingDocumentSearch:
+			ev.Text = "/docs search " + text
 		case CommandPersona:
 			ev.Text = "/persona custom " + text
 		case CommandTTS:
@@ -684,6 +687,8 @@ func (d *Dispatcher) cancelPendingInputMenu(ctx context.Context, ev Event, token
 			return d.showHistoryMenu(ctx, ev, "Ввод отменён.")
 		case "menu:links":
 			return d.showLinksMenu(ctx, ev, "Поиск отменён.")
+		case "menu:docs":
+			return d.showDocumentsMenu(ctx, ev, "Поиск отменён.")
 		case "menu:persona":
 			return d.showPersonaMenu(ctx, ev, "Ввод отменён.")
 		case "menu:reminders":

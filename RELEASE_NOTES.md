@@ -1,3 +1,18 @@
+# tg-llm-proxy v1.34.0
+
+## Documents search and TTS feedback
+
+- Telegram Documents menu получило «Поиск по документам» через существующий pending input с TTL/Cancel и chat/user binding. Введённый текст выполняет `/docs search <query>` без model call.
+- Mini App Documents получил query input и `GET /api/documents/search?q=...`: до трёх chat-scoped результатов с name/document_id/score/content и corpus truncation metadata. Сохранены query/result caps и отсутствие model calls.
+- TTS запускает существующий typing heartbeat только на время synthesis и гарантированно останавливает его. Ошибка `SendAudio` теперь даёт sanitized пользовательское сообщение и логируется без upstream error/body/URL.
+
+## Mini App Reminders, busy UX and audit
+
+- Новая вкладка Reminders показывает до 20 active и 5 failed с cadence/next run/attempts/timestamps, без claim/lease. Active поддерживает Cancel, failed — Retry/Delete через chat-scoped store transitions и inline Confirm/Cancel.
+- Loading/mutation отображает localized indicator, `aria-busy` и реально блокирует action/tab controls с восстановлением исходных disabled states. Search и armed states сбрасываются при tab/refresh/pagination/success.
+- Успешные Documents/Links/Tasks/Settings/Reminders mutations создают best-effort `miniapp_mutation` audit events. Detail содержит только operation, chat_id и numeric id/count; reads/failures не аудируются, logging failure не откатывает mutation.
+- Добавлены API validation/isolation/caps/truncation, reminder transitions, audit best-effort/content-free, Telegram menu/TTS heartbeat/send failure и frontend RU/EN/busy/confirmation regressions. JS runtime smoke-test на host не выполнялся: Node отсутствует.
+
 # tg-llm-proxy v1.33.2
 
 ## RAG and scheduler performance

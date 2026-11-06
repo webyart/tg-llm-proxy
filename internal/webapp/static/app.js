@@ -13,7 +13,7 @@
       verifyLaunch: "Проверяем запуск из Telegram…", launchFailed: "Не удалось проверить запуск. Откройте Mini App заново из Telegram.",
       sessionClosed: "Сессия закрыта. Откройте Mini App из Telegram, чтобы начать новую.",
       lastActivity: "Последняя активность", messages: "Сообщения", documents: "Документы", savedLinks: "Ссылки",
-      tasks: "Задачи", activeTasks: "Активные задачи", awaitingAnswer: "Ожидает ответа", yes: "Да", no: "Нет",
+      tasks: "Задачи", activeTasks: "Активные задачи", awaitingAnswer: "Ожидает ответа", recoverySuppressed: "Автовосстановление отключено", yes: "Да", no: "Нет",
       emptyHistory: "Сообщений пока нет.", emptyItems: "Здесь пока пусто.", you: "Вы", assistant: "Ассистент",
       bytes: "байт", chunks: "фрагментов", step: "шаг", attempts: "попыток", due: "срок",
       task_ready: "готова", task_running: "выполняется", task_awaiting_approval: "ждёт разрешения",
@@ -55,7 +55,7 @@
       verifyLaunch: "Verifying Telegram launch…", launchFailed: "Launch verification failed. Reopen the Mini App from Telegram.",
       sessionClosed: "Session closed. Reopen the Mini App from Telegram to start a new one.",
       lastActivity: "Last activity", messages: "Messages", documents: "Documents", savedLinks: "Saved links",
-      tasks: "Tasks", activeTasks: "Active tasks", awaitingAnswer: "Awaiting answer", yes: "Yes", no: "No",
+      tasks: "Tasks", activeTasks: "Active tasks", awaitingAnswer: "Awaiting answer", recoverySuppressed: "Recovery suppressed", yes: "Yes", no: "No",
       emptyHistory: "No messages yet.", emptyItems: "Nothing here yet.", you: "You", assistant: "Assistant",
       bytes: "bytes", chunks: "chunks", step: "step", attempts: "attempts", due: "due",
       task_ready: "ready", task_running: "running", task_awaiting_approval: "awaiting approval",
@@ -194,6 +194,7 @@
     const values = [
       [t("messages"), data.messages], [t("documents"), data.documents], [t("savedLinks"), data.links],
       [t("tasks"), data.tasks], [t("activeTasks"), data.active_tasks], [t("awaitingAnswer"), data.pending ? t("yes") : t("no")],
+      [t("recoverySuppressed"), data.recovery_suppressed ? t("yes") : t("no")],
     ];
     for (const [label, value] of values) {
       const card = element("div", "stat");
@@ -283,10 +284,13 @@
     ui.content.replaceChildren();
     const source = (value) => t(value === "chat" ? "sourceChat" : "sourceGlobal");
     const personaName = (value) => maybe(`persona_${value}`, value);
+    const modelsUnavailable = data.warning === "models_unavailable";
+    if (modelsUnavailable) showError(responseError(data.warning, 200));
 
     const model = settingsSection(t("modelTitle"), `${t("current")}: ${data.model.current} · ${source(data.model.source)} · ${t("globalDefault")}: ${data.model.default}`);
     const modelChoice = element("select");
     modelChoice.setAttribute("aria-label", t("availableModels"));
+    modelChoice.disabled = modelsUnavailable;
     for (const name of data.model.available) {
       const option = element("option", "", name);
       option.value = name;
@@ -299,8 +303,10 @@
       modelChoice.appendChild(option);
     }
     const modelRow = element("div", "settings-row");
+    const useModel = settingsButton(t("useModel"), () => changeSettings("/api/settings/model", "PUT", { model: modelChoice.value }));
+    useModel.disabled = modelsUnavailable;
     modelRow.appendChild(modelChoice);
-    modelRow.appendChild(settingsButton(t("useModel"), () => changeSettings("/api/settings/model", "PUT", { model: modelChoice.value })));
+    modelRow.appendChild(useModel);
     modelRow.appendChild(settingsButton(t("resetDefault"), () => changeSettings("/api/settings/model", "DELETE"), true));
     model.appendChild(modelRow);
     if (data.model.available_truncated) model.appendChild(element("p", "meta", t("modelsTruncated")));

@@ -32,12 +32,13 @@ const (
 var staticFiles embed.FS
 
 type App struct {
-	cfg     config.Config
-	db      *sql.DB
-	model   model.Client
-	logger  *slog.Logger
-	auth    *authenticator
-	handler http.Handler
+	cfg        config.Config
+	db         *sql.DB
+	model      model.Client
+	modelCache modelListCache
+	logger     *slog.Logger
+	auth       *authenticator
+	handler    http.Handler
 }
 
 func New(cfg config.Config, db *sql.DB, client model.Client, logger *slog.Logger) *App {

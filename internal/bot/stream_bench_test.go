@@ -17,7 +17,9 @@ func BenchmarkStreamRefreshNotDue(b *testing.B) {
 	}}}
 	s := d.newStreamSession(context.Background(), 106, r)
 	s.interval = time.Hour
-	s.answer.WriteString(strings.Repeat("**жирный** текст со [ссылкой](https://example.com) и `кодом`. ", 100))
+	answer := strings.Repeat("**жирный** текст со [ссылкой](https://example.com) и `кодом`. ", 100)
+	s.answer.WriteString(answer)
+	s.answerRunes = Runes(answer)
 	s.post()
 	s.rotate()
 
@@ -39,7 +41,7 @@ func (s *benchStreamSender) EditStreamMessage(context.Context, int64, int64, str
 	return nil
 }
 
-func BenchmarkStreamRefreshDue(b *testing.B) {
+func BenchmarkStreamRefreshDueUnchanged(b *testing.B) {
 	r := &benchStreamSender{}
 	d := &Dispatcher{deps: Deps{Cfg: config.Config{
 		ParseMode:       ParseMarkdownV2,
@@ -47,7 +49,9 @@ func BenchmarkStreamRefreshDue(b *testing.B) {
 	}}}
 	s := d.newStreamSession(context.Background(), 106, r)
 	s.interval = 0
-	s.answer.WriteString(strings.Repeat("**жирный** текст со [ссылкой](https://example.com) и `кодом`. ", 100))
+	answer := strings.Repeat("**жирный** текст со [ссылкой](https://example.com) и `кодом`. ", 100)
+	s.answer.WriteString(answer)
+	s.answerRunes = Runes(answer)
 	s.post()
 	s.rotate()
 

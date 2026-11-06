@@ -82,3 +82,15 @@ func TestFrontendMobileRulesWrapAndCapWidths(t *testing.T) {
 		t.Error("responsive CSS contains a fixed pixel width that can overflow mobile viewports")
 	}
 }
+
+func TestFrontendShowsDegradedModelsAndRecoverySuppression(t *testing.T) {
+	script := frontendAsset(t, "static/app.js")
+	for _, want := range []string{
+		`data.warning === "models_unavailable"`, `useModel.disabled = modelsUnavailable`,
+		`data.recovery_suppressed`, `recoverySuppressed: "Recovery suppressed"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js misses %q", want)
+		}
+	}
+}

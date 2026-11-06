@@ -588,7 +588,9 @@ func TestStreamViewsFitOneMessage(t *testing.T) {
 			var cfg = streamConfig(t, map[string]string{"MAX_MESSAGE_CHUNK": tc.chunk})
 			var d = newTestDispatcher(t, cfg, nil, nil, nil)
 			var s = d.newStreamSession(context.Background(), 106, &streamReplier{})
-			s.answer.WriteString(strings.Repeat("Кириллица и пробелы. ", 30))
+			answer := strings.Repeat("Кириллица и пробелы. ", 30)
+			s.answer.WriteString(answer)
+			s.answerRunes = Runes(answer)
 
 			var view = s.partialView()
 			if Runes(view) > int(cfg.MaxMessageChunk) {
@@ -621,7 +623,9 @@ func TestStreamRotatesToNextMessageOnCadenceTick(t *testing.T) {
 	r := &streamReplier{}
 	d := newTestDispatcher(t, cfg, nil, r, testStore(t))
 	s := d.newStreamSession(context.Background(), 106, r)
-	s.answer.WriteString(strings.Repeat("слово ", 30))
+	answer := strings.Repeat("слово ", 30)
+	s.answer.WriteString(answer)
+	s.answerRunes = Runes(answer)
 
 	s.refresh()
 	posted := r.postCount()

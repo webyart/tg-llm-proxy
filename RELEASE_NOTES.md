@@ -1,3 +1,13 @@
+# tg-llm-proxy v1.30.3
+
+## Reliability improvements
+
+- Model list кэшируется на 45 секунд с single-flight refresh и provider deadline 5 секунд. `GET /api/settings` возвращает 200 с `models_unavailable`, Persona/Stream продолжают работать; expired list для mutation отклоняется, model reset доступен.
+- Mini App pending использует `store.LastVisibleMessage` и `store.ResumeSkip`, разделяя `pending` и `recovery_suppressed` после reset/skip и при новом вопросе.
+- Task batches используют до четырёх workers, не блокируя scheduler на ожидании chat lock. После получения lock повторно проверяются task identity/status/claim_token/lease/expiry. Reminders получили четыре bounded workers с progressive claim handoff.
+- Streaming кэширует chunks по exact answer string, пересчитывает их только при изменении ответа и повторно использует `answerRunes` вместо полного подсчёта.
+- Добавлены hanging provider/concurrent refresh, degraded reset, pending suppression, blocked lock/stale lease/cancel, slow reminders и changed/unchanged streaming regressions. Integration повторён 5 раз, включая lifecycle исправление passDone per pass.
+
 # tg-llm-proxy v1.30.2
 
 ## Atomic accounting and immutable token attribution

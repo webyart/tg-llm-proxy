@@ -1,21 +1,109 @@
 package webapp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"mime"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"bot/internal/bot"
 	"bot/internal/store"
 )
 
-const settingsModelLimit = 50
+const (
+	settingsModelLimit           = 50
+	settingsModelCacheTTL        = 45 * time.Second
+	settingsModelProviderTimeout = 5 * time.Second
+)
+
+var errSettingsModelsUnavailable = errors.New("provider model list unavailable")
+
+type modelListCache struct {
+	mu              sync.Mutex
+	available       []string
+	fetchedAt       time.Time
+	valid           bool
+	refreshing      bool
+	done            chan struct{}
+	resultErr       error
+	providerTimeout time.Duration
+}
+
+func cloneModelList(models []string) []string {
+	return append([]string{}, models...)
+}
+
+func (a *App) providerModels(ctx context.Context) ([]string, error) {
+	if a.model == nil {
+		return nil, errSettingsModelsUnavailable
+	}
+	cache := &a.modelCache
+	cache.mu.Lock()
+	if cache.valid && time.Since(cache.fetchedAt) < settingsModelCacheTTL {
+		available := cloneModelList(cache.available)
+		cache.mu.Unlock()
+		return available, nil
+	}
+	if cache.refreshing {
+		done := cache.done
+		cache.mu.Unlock()
+		select {
+		case <-done:
+			cache.mu.Lock()
+			available := cloneModelList(cache.available)
+			valid := cache.valid
+			err := cache.resultErr
+			cache.mu.Unlock()
+			if err != nil && !valid {
+				return nil, err
+			}
+			return available, err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	cache.refreshing = true
+	cache.done = make(chan struct{})
+	done := cache.done
+	stale := cloneModelList(cache.available)
+	hadStale := cache.valid
+	timeout := cache.providerTimeout
+	cache.mu.Unlock()
+	if timeout <= 0 {
+		timeout = settingsModelProviderTimeout
+	}
+
+	providerCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	available, err := a.model.Models(providerCtx)
+	cancel()
+
+	cache.mu.Lock()
+	cache.resultErr = err
+	if err == nil {
+		cache.available = cloneModelList(available)
+		cache.fetchedAt = time.Now()
+		cache.valid = true
+	}
+	cache.refreshing = false
+	close(done)
+	cache.mu.Unlock()
+	if err != nil {
+		if hadStale {
+			return stale, err
+		}
+		return nil, err
+	}
+	return cloneModelList(available), nil
+}
 
 type settingsResponse struct {
-	Model struct {
+	Warning string `json:"warning,omitempty"`
+	Model   struct {
 		Current            string   `json:"current"`
 		Default            string   `json:"default"`
 		Source             string   `json:"source"`
@@ -47,20 +135,12 @@ func (a *App) settings(w http.ResponseWriter, req *http.Request, current scope) 
 		methodAllowed(w, http.MethodGet)
 		return
 	}
-	if a.model == nil {
-		writeError(w, http.StatusServiceUnavailable, "models_unavailable", "The provider model list is unavailable.")
-		return
-	}
 	selected, found, err := store.ChatModel(req.Context(), a.db, current.ChatID)
 	if err != nil {
 		a.queryFailed(w, "settings model", err)
 		return
 	}
-	available, err := a.model.Models(req.Context())
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "models_unavailable", "The current provider model list could not be read.")
-		return
-	}
+	available, modelsErr := a.providerModels(req.Context())
 	personaPrompt, personaFound, err := store.ChatPersona(req.Context(), a.db, current.ChatID)
 	if err != nil {
 		a.queryFailed(w, "settings persona", err)
@@ -73,6 +153,9 @@ func (a *App) settings(w http.ResponseWriter, req *http.Request, current scope) 
 	}
 
 	var response settingsResponse
+	if modelsErr != nil {
+		response.Warning = "models_unavailable"
+	}
 	response.Model.Current = a.cfg.StrataModel
 	response.Model.Default = a.cfg.StrataModel
 	response.Model.Source = "global"
@@ -170,12 +253,12 @@ func (a *App) settingsModel(w http.ResponseWriter, req *http.Request, current sc
 			settingsDecodeError(w, status)
 			return
 		}
-		if input.Model == nil || a.model == nil {
+		if input.Model == nil || strings.TrimSpace(*input.Model) == "" {
 			writeError(w, http.StatusBadRequest, "invalid_model", "Choose a model from the current provider list.")
 			return
 		}
 		requested := strings.TrimSpace(*input.Model)
-		available, err := a.model.Models(req.Context())
+		available, err := a.providerModels(req.Context())
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "models_unavailable", "The current provider model list could not be read.")
 			return

@@ -6,7 +6,7 @@
 - Mini App получил unauthenticated `GET /healthz` с минимальным `{\"status\":\"ok\"}` без DB/secrets. `watch_container.ps1` при `MINIAPP_ENABLED=true` проверяет его через bot container, включая failure/suppression/recovery и отсутствие автоматического restart.
 - `/task resume <id>` возобновляет последнюю failed/cancelled задачу текущего чата с тем же ID, goal/model/plan и сохранёнными `next_step`/results. Completed/active/other-chat запросы отклоняются.
 - Resume сбрасывает attempts, claim/lease, approval/continuation/error/finished timestamps и продлевает lifetime. Старые network approvals не replayаются: требуется fresh exact-action confirmation. Меню terminal tasks получило Resume.
-- Добавлены health endpoint/method/CSP, monitor disabled/failure/suppression/recovery, store transition, progress preservation и fresh-approval regressions.
+- Добавлены health endpoint/method/CSP, monitor disabled/failure/suppression/recovery, store transition, progress preservation и fresh-approval regressions. Живой acceptance подтверждён: русский `/tts` работает, после сбоя на втором шаге `/task resume` привёл к успешному завершению задачи.
 
 # tg-llm-proxy v1.27.0
 

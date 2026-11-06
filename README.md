@@ -224,7 +224,7 @@ TTS_MAX_CHARS=1000
 TTS_TIMEOUT_SECONDS=60
 ```
 
-Запускайте `docker compose -f docker-compose.yml -f compose.tts.yaml up -d`: override предзагружает Whisper и одноразово скачивает Piper через `/v1/models`. `/tts <текст>` возвращает MP3 через `sendAudio`, без вызова LLM. More → Озвучить текст появляется только при включённом TTS. Изолированная acceptance подтвердила скачивание модели и русский MP3.
+Запускайте `docker compose -f docker-compose.yml -f compose.tts.yaml up -d`: override предзагружает Whisper и одноразово скачивает Piper через `/v1/models`. `/tts <текст>` возвращает MP3 через `sendAudio`, без вызова LLM. More → Озвучить текст появляется только при включённом TTS. Изолированная и production acceptance подтвердили скачивание модели и русскую речь в Telegram.
 
 ### Webhook (experimental)
 

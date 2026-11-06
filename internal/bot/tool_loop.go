@@ -48,16 +48,19 @@ func withToolLoopMetadata(ctx context.Context, metadata toolLoopMetadata) contex
 }
 
 type toolLoopContinuation struct {
-	userID        int64
-	request       model.Request
-	response      model.Response
-	allowedTools  map[string]bool
-	round         int
-	approvedCall  int
-	approvedCalls map[int]bool
-	metadata      toolLoopMetadata
-	streamer      model.Streamer
-	session       *streamSession
+	userID                int64
+	request               model.Request
+	response              model.Response
+	allowedTools          map[string]bool
+	round                 int
+	approvedCall          int
+	approvedCalls         map[int]bool
+	metadata              toolLoopMetadata
+	streamer              model.Streamer
+	session               *streamSession
+	approvalScope         *networkApprovalScope
+	suppressApprovalScope bool
+	recoveredApproval     bool
 }
 
 type networkConfirmation struct {
@@ -317,9 +320,9 @@ func (d *Dispatcher) promptNetworkApproval(ctx context.Context, state *toolLoopC
 	if err != nil {
 		return model.Response{}, err
 	}
-	text := fmt.Sprintf("Модель запросила новое сетевое действие.\n%s: %s\n\nРазрешить именно это действие один раз? Кнопки действуют 5 минут.", call.Name, networkApprovalTarget(call))
+	text := fmt.Sprintf("Модель запросила новое сетевое действие.\n%s: %s\n\nРазрешить один раз — только с этими аргументами. Разрешить для задачи — только этот инструмент%s и только в текущем продолжении запроса, без сохранения после перезапуска. Кнопки действуют 5 минут.", call.Name, networkApprovalTarget(call), networkScopeExplanation(call))
 	markup := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		menuRow(menuButton("Разрешить один раз", "menu:network:confirm:"+token), menuButton("Отмена", "menu:network:cancel:"+token)),
+		menuRow(menuButton("Разрешить один раз", "menu:network:confirm:"+token), menuButton("Разрешить для задачи", "menu:network:scope:"+token), menuButton("Отмена", "menu:network:cancel:"+token)),
 	}}
 	sender, ok := d.deps.Replier.(interface {
 		SendMenuWithID(context.Context, int64, string, models.InlineKeyboardMarkup) (int64, error)
@@ -374,7 +377,7 @@ func (d *Dispatcher) removeNetworkApprovalMenu(ctx context.Context, chatID int64
 
 func (d *Dispatcher) networkApprovalControl(ctx context.Context, ev Event, action string) error {
 	operation, token, ok := strings.Cut(strings.TrimPrefix(action, "menu:network:"), ":")
-	if !ok || operation != "confirm" && operation != "cancel" || !validMenuToken(token) {
+	if !ok || operation != "confirm" && operation != "scope" && operation != "cancel" || !validMenuToken(token) {
 		return d.reply(ctx, ev.ChatID, "Это подтверждение сетевого действия истекло или уже использовано.")
 	}
 	pending, status := consumeNetworkConfirmation(d, token, ev)
@@ -418,6 +421,9 @@ func (d *Dispatcher) networkApprovalControl(ctx context.Context, ev Event, actio
 	approved := continuation.response.ToolCalls[continuation.approvedCall]
 	if approved.Name != pending.ToolName || approved.Arguments != pending.Arguments {
 		return d.reply(ctx, ev.ChatID, "Подтверждение не совпадает с сетевым действием. Запрос не выполнен.")
+	}
+	if operation == "scope" && !d.grantNetworkScope(continuation, approved) {
+		return d.reply(ctx, ev.ChatID, "Не удалось ограничить разрешение текущим запросом. Сетевое действие не выполнено.")
 	}
 	if continuation.session != nil {
 		continuation.session.ctx = ctx
@@ -495,13 +501,14 @@ func (d *Dispatcher) runToolLoop(ctx context.Context, state *toolLoopContinuatio
 		resp.ToolCalls = normalized
 		state.response = resp
 		for index, call := range normalized {
-			if (call.Name == "read_url" || call.Name == "web_search") && !state.approvedCalls[index] && !directNetworkIntent(state.metadata.originalRequest, call) {
+			if (call.Name == "read_url" || call.Name == "web_search") && !state.approvedCalls[index] &&
+				!d.networkScopeAllows(ctx, state, call) && !directNetworkIntent(state.metadata.originalRequest, call) {
 				return d.promptNetworkApproval(ctx, state, index)
 			}
 		}
 		messages := append([]model.Message(nil), state.request.Messages...)
 		messages = append(messages, model.Message{Role: model.RoleAssistant, Content: resp.Content, ToolCalls: resp.ToolCalls})
-		for _, call := range resp.ToolCalls {
+		for index, call := range resp.ToolCalls {
 			var result string
 			var executed = true
 			var err error
@@ -509,6 +516,9 @@ func (d *Dispatcher) runToolLoop(ctx context.Context, state *toolLoopContinuatio
 			case "calculator":
 				result, err = executeCalculator(call)
 			case "read_url", "web_search":
+				if !state.approvedCalls[index] && !d.networkScopeAllows(ctx, state, call) && !directNetworkIntent(state.metadata.originalRequest, call) {
+					return model.Response{}, errors.New("network approval is no longer valid")
+				}
 				if state.session != nil {
 					if call.Name == "read_url" {
 						state.session.stage(streamStageReadURL)

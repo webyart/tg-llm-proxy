@@ -41,6 +41,7 @@ var menuCommandCallbacks = map[string]string{
 	"menu:reminders":      "/reminders menu",
 	"menu:task":           "/task menu",
 	"menu:task:cancel":    "/task menu:cancel",
+	"menu:task:new":       "/task menu:new",
 	"menu:tts":            "/help menu:tts",
 	"menu:settings":       "/help menu:settings",
 	"menu:model":          "/model menu",
@@ -332,7 +333,7 @@ func menuCallbackText(data string) (string, bool) {
 	if token, ok := strings.CutPrefix(data, "menu:input:cancel:"); ok && validMenuToken(token) {
 		return "/help menu:input:cancel:" + token, true
 	}
-	for _, action := range []string{"confirm", "cancel"} {
+	for _, action := range []string{"confirm", "scope", "cancel"} {
 		if token, ok := strings.CutPrefix(data, "menu:network:"+action+":"); ok {
 			if validMenuToken(token) {
 				return "/help menu:network:" + action + ":" + token, true
@@ -601,6 +602,8 @@ func (d *Dispatcher) pendingEvent(ev Event) (Event, bool) {
 			ev.Text = "/persona custom " + text
 		case CommandTTS:
 			ev.Text = "/tts " + text
+		case CommandTask:
+			ev.Text = "/task " + text
 		default:
 			return ev, false
 		}
@@ -638,6 +641,8 @@ func (d *Dispatcher) cancelPendingInputMenu(ctx context.Context, ev Event, token
 			return d.showLinksMenu(ctx, ev, "Поиск отменён.")
 		case "menu:persona":
 			return d.showPersonaMenu(ctx, ev, "Ввод отменён.")
+		case "menu:task":
+			return d.showTaskMenu(ctx, ev, "Ввод новой задачи отменён.")
 		case "menu:more":
 			return d.showMoreMenu(ctx, ev)
 		default:

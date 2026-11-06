@@ -1,3 +1,13 @@
+# tg-llm-proxy v1.26.1
+
+## Task recovery and scoped approvals
+
+- Если restart произошёл после consumed approval, но до завершения шага, задача больше не получает `failed`: старый token и grants инвалидируются, выдаётся новый exact-action approval. Прежнее действие не повторяется автоматически.
+- Меню active tasks всегда содержит Cancel; completed/failed/cancelled задачи показывают `Новая задача` через pending input и Back/More.
+- Добавлена кнопка `Разрешить для задачи`: область только текущая task/tool-loop, chat/user/task ID, не persistence и не restart. Для `read_url` разрешён только тот же canonical origin; для `web_search` — только тот же tool. Новый origin требует нового подтверждения.
+- One-time exact-argument approval и Cancel сохранены. Scoped grants проверяются preflight и непосредственно перед каждым network execution, удаляются при cancel/failure/completion/expiry/restart.
+- Production task #1 ранее останавливалась после consumed approval; recovery теперь покрыт fresh-approval и replay-prevention regressions. Добавлены same-origin/tool scope, new-origin, wrong user/chat/task, restart expiration и terminal menu tests.
+
 # tg-llm-proxy v1.26.0
 
 ## Opt-in text-to-speech

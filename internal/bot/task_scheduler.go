@@ -213,7 +213,22 @@ func (d *Dispatcher) executeClaimedTask(ctx context.Context, task store.Task) er
 	defer cancel()
 	var response model.Response
 	if task.ContinuationJSON != "" {
-		return errors.New("task stopped after a consumed approval; restart will not replay the exact network action")
+		continuation, restoreErr := restoreTaskContinuation(task, d.currentTaskTools())
+		if restoreErr != nil {
+			return restoreErr
+		}
+		pendingCall := continuation.approvedCall
+		d.clearTaskNetworkScopes(task.ChatID, task.ID)
+		continuation.approvedCall = -1
+		continuation.approvedCalls = map[int]bool{}
+		continuation.approvalScope = nil
+		continuation.suppressApprovalScope = true
+		continuation.recoveredApproval = true
+		_, err = d.promptTaskNetworkApproval(stepCtx, continuation, pendingCall)
+		if errors.Is(err, errNetworkApprovalPending) {
+			return nil
+		}
+		return err
 	} else if task.NextStep < len(plan.Steps) {
 		step := plan.Steps[task.NextStep]
 		if err := d.reply(stepCtx, task.ChatID, fmt.Sprintf("Задача #%d · %d/%d\n%s", task.ID, task.NextStep+1, len(plan.Steps), step.Description)); err != nil {
@@ -289,6 +304,7 @@ func (d *Dispatcher) synthesizeAndCompleteTask(ctx context.Context, task store.T
 	if !completed {
 		return errTaskStale
 	}
+	d.clearTaskNetworkScopes(task.ChatID, task.ID)
 	return d.reply(ctx, task.ChatID, fmt.Sprintf("Задача #%d завершена (%d/%d).\n\n%s\n\n%s", task.ID, len(results), len(results), response.Content, latencyLine(response, task.Model)))
 }
 
@@ -323,9 +339,13 @@ func (d *Dispatcher) promptTaskNetworkApproval(ctx context.Context, state *toolL
 	if err != nil {
 		return model.Response{}, err
 	}
-	text := fmt.Sprintf("Задача #%d запросила новое сетевое действие.\n%s: %s\n\nРазрешить именно это действие один раз? Кнопки действуют 5 минут. Отмена остановит задачу.", task.ID, call.Name, networkApprovalTarget(call))
+	recoveryNotice := ""
+	if state.recoveredApproval {
+		recoveryNotice = "После перезапуска прежнее разрешение недействительно. Требуется новое подтверждение; старое действие не выполнялось повторно.\n"
+	}
+	text := fmt.Sprintf("Задача #%d запросила новое сетевое действие.\n%s: %s\n\n%sРазрешить один раз — только с этими аргументами. Разрешить для задачи — только этот инструмент%s, до завершения/отмены задачи или перезапуска. Кнопки действуют 5 минут. Отмена остановит задачу.", task.ID, call.Name, networkApprovalTarget(call), recoveryNotice, networkScopeExplanation(call))
 	markup := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		menuRow(menuButton("Разрешить один раз", "menu:network:confirm:"+token), menuButton("Отмена", "menu:network:cancel:"+token)),
+		menuRow(menuButton("Разрешить один раз", "menu:network:confirm:"+token), menuButton("Разрешить для задачи", "menu:network:scope:"+token), menuButton("Отмена", "menu:network:cancel:"+token)),
 	}}
 	sender, ok := d.deps.Replier.(interface {
 		SendMenuWithID(context.Context, int64, string, models.InlineKeyboardMarkup) (int64, error)
@@ -405,6 +425,7 @@ func (d *Dispatcher) taskNetworkApprovalControl(ctx context.Context, ev Event, o
 		if !ok || cancelled.ID != taskID {
 			return d.reply(ctx, ev.ChatID, "Это подтверждение сетевого действия истекло или уже использовано.")
 		}
+		d.clearTaskNetworkScopes(ev.ChatID, taskID)
 		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Задача #%d отменена. Сетевое действие и будущие шаги не выполнены.", taskID))
 	}
 	claimed, ok, err := store.ConsumeTaskApproval(ctx, d.deps.DB, taskID, ev.ChatID, ev.UserID, ev.TelegramMessageID, token, d.now(), d.taskLease())
@@ -413,6 +434,12 @@ func (d *Dispatcher) taskNetworkApprovalControl(ctx context.Context, ev Event, o
 	}
 	if !ok {
 		return d.reply(ctx, ev.ChatID, "Это подтверждение сетевого действия истекло или уже использовано.")
+	}
+	if operation == "scope" {
+		approved := pending.continuation.response.ToolCalls[pending.continuation.approvedCall]
+		if !d.grantNetworkScope(pending.continuation, approved) {
+			return d.failClaimedTask(ctx, claimed, errors.New("scoped approval does not match the task and tool"))
+		}
 	}
 	stepCtx, cancel := d.taskStepTimeout(ctx)
 	defer cancel()

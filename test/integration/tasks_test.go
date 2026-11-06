@@ -4,9 +4,15 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/go-telegram/bot/models"
 
 	"bot/internal/bot"
 	"bot/internal/store"
@@ -58,4 +64,75 @@ func TestTaskFakeTelegramSequentialAnswerStatusAndRestart(t *testing.T) {
 	secretLeak(t, "task fake Telegram", tgAPI.Joined())
 	secretLeak(t, "task run log", second.logs.String())
 	second.stop()
+}
+
+func TestTaskScopedApprovalThroughFakeTelegram(t *testing.T) {
+	path := dbFile(t)
+	tgAPI := testutil.NewTelegram(t, secretToken)
+	var providerCalls atomic.Int64
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		providerCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[{"title":"Scoped","url":"https://example.com","content":"Content"}]}`))
+	}))
+	t.Cleanup(provider.Close)
+	strata := testutil.NewStrata(t, secretStrataKey,
+		testutil.StrataReply{Content: `{"steps":[{"description":"Gather bounded evidence"}]}`, Model: "fake-model"},
+		testutil.StrataReply{ToolCallID: "scope-one", ToolName: "web_search", ToolArguments: `{"query":"first scoped query"}`, Model: "fake-model"},
+		testutil.StrataReply{ToolCallID: "scope-two", ToolName: "web_search", ToolArguments: `{"query":"second scoped query"}`, Model: "fake-model"},
+		testutil.StrataReply{Content: "two scoped results", Model: "fake-model"},
+		testutil.StrataReply{Content: "scoped Telegram final", Model: "fake-model"},
+	)
+	cfg := integrationEnv(t, path, strata.BaseURL(), map[string]string{"WEB_SEARCH_ENABLED": "true", "WEB_SEARCH_BASE_URL": provider.URL})
+	db := openStore(t, path)
+	run := startBot(t, t.Context(), cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second}, storedOffset(t, db))
+	tgAPI.PushText(810, chatID, userID, "/task prepare a scoped overview")
+	waitFor(t, "task scoped approval prompt", func() bool { return strings.Contains(tgAPI.Joined(), "Разрешить для задачи") })
+	scopeCallback := ""
+	menuMessageID := 0
+	for _, message := range tgAPI.Sent() {
+		if !strings.Contains(message.Text, "Разрешить для задачи") {
+			continue
+		}
+		var markup models.InlineKeyboardMarkup
+		if err := json.Unmarshal([]byte(message.ReplyMarkup), &markup); err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range markup.InlineKeyboard {
+			for _, button := range row {
+				if strings.HasPrefix(button.CallbackData, "menu:network:scope:") {
+					scopeCallback = button.CallbackData
+					menuMessageID = message.MessageID
+				}
+			}
+		}
+	}
+	if scopeCallback == "" || menuMessageID == 0 || providerCalls.Load() != 0 {
+		t.Fatalf("scope callback=%q message=%d provider=%d", scopeCallback, menuMessageID, providerCalls.Load())
+	}
+	tgAPI.Push(models.Update{ID: 811, CallbackQuery: &models.CallbackQuery{
+		ID: "task-scope", Data: scopeCallback, From: models.User{ID: userID, Username: "tester"},
+		Message: models.MaybeInaccessibleMessage{Message: &models.Message{ID: menuMessageID, Date: int(time.Now().Unix()), Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate}}},
+	}})
+	waitFor(t, "scoped task final", func() bool { return strings.Contains(tgAPI.Joined(), "scoped Telegram final") })
+	quiet()
+	if providerCalls.Load() != 2 || strata.ChatCalls() != 5 {
+		t.Fatalf("scoped flow provider=%d model=%d", providerCalls.Load(), strata.ChatCalls())
+	}
+	prompts := 0
+	for _, text := range tgAPI.Texts() {
+		if strings.Contains(text, "Разрешить для задачи") {
+			prompts++
+		}
+	}
+	if prompts != 1 {
+		t.Fatalf("second same-tool action required another prompt: %q", tgAPI.Joined())
+	}
+	rows := rowsOf(t, db)
+	if len(rows) != 2 || rows[1].Content != "scoped Telegram final" {
+		t.Fatalf("scoped task rows=%+v", rows)
+	}
+	secretLeak(t, "scoped task Telegram", tgAPI.Joined())
+	secretLeak(t, "scoped task log", run.logs.String())
+	run.stop()
 }

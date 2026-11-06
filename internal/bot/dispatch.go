@@ -72,6 +72,7 @@ type Deps struct {
 	Cfg         config.Config
 	DB          *sql.DB
 	Model       model.Client
+	TTS         model.SpeechSynthesizer
 	Replier     Replier
 	Attachments AttachmentDownloader
 	URLReader   *http.Client

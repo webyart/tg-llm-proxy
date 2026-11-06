@@ -1,3 +1,14 @@
+# tg-llm-proxy v1.26.0
+
+## Opt-in text-to-speech
+
+- `/tts <text>` отправляет текст до 1000 runes в существующий Speaches `/v1/audio/speech` и возвращает MP3 через Telegram `sendAudio`. LLM, shell и произвольный код не используются.
+- По умолчанию `TTS_ENABLED=false`. Настраиваются `TTS_MODEL=speaches-ai/piper-ru_RU-ruslan-medium`, `TTS_VOICE=ruslan`, `TTS_MAX_CHARS=1000`, `TTS_TIMEOUT_SECONDS=60`.
+- HTTP client ограничивает timeout, redirects запрещены, ответ ограничен 20 МиБ и MP3 content type. Текст, URL и upstream bodies не попадают в ошибки или логи.
+- More → Озвучить текст появляется только при включённом TTS и использует pending input с TTL 2 минуты. Pending state очищается после completion/cancel/restart.
+- `compose.tts.yaml` предзагружает Whisper и одноразово скачивает Piper через `/v1/models` после healthy sidecar. Production без override остаётся прежним.
+- Изолированная acceptance: `speaches-ai/piper-ru_RU-ruslan-medium` скачан, русский текст синтезирован в MP3 (24 428 байт, MPEG audio). Добавлены config/timeout/content-type/oversize/redaction/pending-input и fake Telegram `sendAudio` regressions.
+
 # tg-llm-proxy v1.25.0
 
 ## Bounded multi-step tasks

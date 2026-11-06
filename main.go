@@ -43,6 +43,10 @@ func PrintConfig(cfg config.Config) {
 	fmt.Println("RECOVERY_MAX_AGE_HOURS", cfg.RecoveryMaxAgeHours, "")
 	fmt.Println("MEDIA_MAX_MB", cfg.MediaMaxBytes/(1<<20), "")
 	fmt.Println("SPEECH_MAX_SECONDS", cfg.SpeechMaxSeconds, "")
+	fmt.Println("TTS_ENABLED", cfg.TTSEnabled, "")
+	fmt.Println("TTS_MODEL", cfg.TTSModel, "")
+	fmt.Println("TTS_MAX_CHARS", cfg.TTSMaxChars, "")
+	fmt.Println("TTS_TIMEOUT_SECONDS", cfg.TTSTimeoutSeconds, "")
 	fmt.Println("TOOLS_ENABLED", cfg.ToolsEnabled, "")
 	fmt.Println("URL_READER_ENABLED", cfg.URLReaderEnabled, "")
 	fmt.Println("WEB_SEARCH_ENABLED", cfg.WebSearchEnabled, "")
@@ -203,6 +207,19 @@ func main() {
 		db.Close()
 		os.Exit(1)
 	}
+	var synthesizer model.SpeechSynthesizer
+	if cfg.TTSEnabled {
+		ttsClient, ttsErr := model.NewTTS(model.TTSOptions{
+			URL: cfg.TTSURL, Model: cfg.TTSModel, Voice: cfg.TTSVoice,
+			Timeout: time.Duration(cfg.TTSTimeoutSeconds) * time.Second, MaxChars: int(cfg.TTSMaxChars),
+		})
+		if ttsErr != nil {
+			fmt.Println("model.NewTTS:", ttsErr, "")
+			db.Close()
+			os.Exit(1)
+		}
+		synthesizer = ttsClient
+	}
 	var startOffset, offsetFound, offsetErr = store.LastUpdateID(ctx, db)
 	if offsetErr != nil {
 		fmt.Println("store.LastUpdateID:", offsetErr, "")
@@ -213,6 +230,7 @@ func main() {
 		Cfg:         cfg,
 		DB:          db,
 		Model:       client,
+		TTS:         synthesizer,
 		Logger:      logger,
 		Token:       cfg.BotToken,
 		StartOffset: startOffset,

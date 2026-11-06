@@ -294,8 +294,8 @@ func TestOldNameOfTheRowIsRefusedByName(t *testing.T) {
 }
 
 func TestEnvIsTheRowsOfTheTable(t *testing.T) {
-	if len(Env) != 45 {
-		t.Errorf("Env holds %d names, want 45 including reminders", len(Env))
+	if len(Env) != 50 {
+		t.Errorf("Env holds %d names, want 50 including opt-in TTS", len(Env))
 	}
 	var seen = map[string]bool{}
 	var i = 0
@@ -310,7 +310,7 @@ func TestEnvIsTheRowsOfTheTable(t *testing.T) {
 		t.Error("TELEGRAM_ALLOWED_USERS is not in Env, so the allowlist of has no row ")
 	}
 	// name must not refuse them.
-	for _, name := range []string{"STREAMING_ENABLED", "STREAM_EDIT_INTERVAL_MS", "STREAM_IDLE_TIMEOUT_SECONDS", "STREAM_TOTAL_DEADLINE_SECONDS", "MEDIA_MAX_MB", "SPEECH_MAX_SECONDS"} {
+	for _, name := range []string{"STREAMING_ENABLED", "STREAM_EDIT_INTERVAL_MS", "STREAM_IDLE_TIMEOUT_SECONDS", "STREAM_TOTAL_DEADLINE_SECONDS", "MEDIA_MAX_MB", "SPEECH_MAX_SECONDS", "TTS_ENABLED", "TTS_MODEL", "TTS_VOICE", "TTS_MAX_CHARS", "TTS_TIMEOUT_SECONDS"} {
 		if !seen[name] || !HasRow(name) {
 			t.Errorf("%s is not a row of Env", name)
 		}

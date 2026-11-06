@@ -7,7 +7,7 @@ Telegram-бот-прокси между пользователями и лока
 
 ## Возможности
 
-- 23 команды: `/start`, `/help`, `/ping`, `/status`, `/ask`, `/reset`, `/skip`, `/unskip`, `/history`, `/docs`, `/export`, `/search`, `/delete`, `/model`, `/stream`, `/persona`, `/stats`, `/whoami`, `/admin`, `/remind`, `/reminders`, `/links`, `/task`.
+- 24 команды: `/start`, `/help`, `/ping`, `/status`, `/ask`, `/reset`, `/skip`, `/unskip`, `/history`, `/docs`, `/export`, `/search`, `/delete`, `/model`, `/stream`, `/persona`, `/stats`, `/whoami`, `/admin`, `/remind`, `/reminders`, `/links`, `/task`, `/tts`.
 - `/start` и `/help` открывают секционное inline-меню с Back-навигацией; callbacks проходят через тот же Dispatcher и allowlist.
 - Альбомы до 10 фото JPEG/PNG, текстовые документы UTF-8 до 64 КиБ, voice, аудиофайлы и video notes через Whisper. Лимиты настраиваются `MEDIA_MAX_MB` и `SPEECH_MAX_SECONDS`.
 - История и независимый контекст каждого чата в SQLite/WAL.
@@ -17,6 +17,7 @@ Telegram-бот-прокси между пользователями и лока
 - Persistent one-shot и ежедневные напоминания с управлением списком и plain-text доставкой без вызова модели.
 - «Ссылки на потом»: сохранение страниц, поиск и резюме без повторной загрузки.
 - Многошаговые read-only задачи с планом, прогрессом и подтверждениями сетевых действий.
+- Opt-in `/tts` для русской речи через существующий Speaches sidecar и Telegram `sendAudio`.
 - Версионированные миграции через `schema_migrations` (текущая схема — версия 9).
 - Backup/restore, ротация копий и age-based retention с dry-run по умолчанию.
 - Безопасное восстановление Docker named volume.
@@ -112,6 +113,11 @@ docker compose logs -f bot
 | `TG_REPLY_DEADLINE_SECONDS` | 90 | общий бюджет ответа; должен быть больше timeout |
 | `RECOVERY_MAX_AGE_HOURS` | 24 | максимальный возраст unanswered-вопроса для автоматического recovery; `0` отключает лимит |
 | `REMINDER_TIMEZONE` | `UTC` | IANA timezone для ежедневных напоминаний, например `Europe/Moscow` |
+| `TTS_ENABLED` | false | opt-in `/tts` через существующий Speaches |
+| `TTS_MODEL` | `speaches-ai/piper-ru_RU-ruslan-medium` | русская Piper-модель |
+| `TTS_VOICE` | `ruslan` | voice для `/v1/audio/speech` |
+| `TTS_MAX_CHARS` | 1000 | максимум runes текста; 1..10000 |
+| `TTS_TIMEOUT_SECONDS` | 60 | timeout синтеза; 1..300 |
 | `MEDIA_MAX_MB` | 10 | лимит каждого media-файла и альбома целиком |
 | `SPEECH_MAX_SECONDS` | 300 | лимит voice/audio/video note |
 | `DB_PATH` | `./data/bot.db` | host SQLite; в compose — `/data/bot.db` |
@@ -204,6 +210,18 @@ STREAM_TOTAL_DEADLINE_SECONDS=900
 
 Стриминг переписывает одно сообщение по мере генерации. По умолчанию выключен. `/stream on` включает его только для текущего чата, `/stream off` выключает, `/stream reset` возвращает общий `STREAMING_ENABLED`; override хранится в SQLite и переживает рестарт. `/status` показывает эффективное значение. `TG_REPLY_DEADLINE_SECONDS` не обрезает общий stream deadline.
 
+### Озвучка текста (opt-in)
+
+```env
+TTS_ENABLED=true
+TTS_MODEL=speaches-ai/piper-ru_RU-ruslan-medium
+TTS_VOICE=ruslan
+TTS_MAX_CHARS=1000
+TTS_TIMEOUT_SECONDS=60
+```
+
+Запускайте `docker compose -f docker-compose.yml -f compose.tts.yaml up -d`: override предзагружает Whisper и одноразово скачивает Piper через `/v1/models`. `/tts <текст>` возвращает MP3 через `sendAudio`, без вызова LLM. More → Озвучить текст появляется только при включённом TTS. Изолированная acceptance подтвердила скачивание модели и русский MP3.
+
 ### Webhook (experimental)
 
 ```env
@@ -245,6 +263,7 @@ Reverse proxy или туннель должен перенаправлять п
 | `/reminders` | список активных напоминаний чата; `cancel <id>` или `delete <id>` отменяет свою запись |
 | `/links` | сохранённые ссылки; `add <url>`, `search <текст>`, `summary <id>`, `delete <id>` |
 | `/task <цель>` | read-only задача из 1–3 шагов с прогрессом; без аргумента — статус, `/task cancel` — отмена |
+| `/tts <текст>` | opt-in озвучка текста через Speaches и `sendAudio`; по умолчанию выключено |
 | `/docs` | RAG-база; `/docs add`, `export`, `delete <id>` и `clear` |
 | `/export [md\|json]` | экспорт последних 10000 сообщений с явным truncation warning и ID/time window |
 | `/search <текст>` | до 20 совпадений среди последних 10000 сообщений; область указана в ответе |
@@ -260,7 +279,7 @@ Reverse proxy или туннель должен перенаправлять п
 
 ## Интерактивное меню
 
-`/start` и `/help` открывают секционное inline-меню: Ask/New context, History, Documents, Settings, Status, Help и More. History поддерживает последние сообщения, поиск, MD/JSON export и удаление; Documents — добавление, export, удаление документов и «Ссылки на потом» с list/search/summary/delete; Settings — Model, Persona и Stream. More содержит напоминания и многошаговые задачи с Refresh/Cancel. Admin виден только администраторам.
+`/start` и `/help` открывают секционное inline-меню: Ask/New context, History, Documents, Settings, Status, Help и More. History поддерживает последние сообщения, поиск, MD/JSON export и удаление; Documents — добавление, export, удаление документов и «Ссылки на потом» с list/search/summary/delete; Settings — Model, Persona и Stream. More содержит напоминания, многошаговые задачи и opt-in озвучку текста. Admin виден только администраторам.
 
 Ask, Search и Custom Persona принимают следующий текст через pending input с TTL 2 минуты и кнопкой Cancel. Состояние привязано к chat/user/menu message и инвалидируется при рестарте. Все текстовые команды остаются доступными. Обычные запросы показывают Telegram `typing`, а streaming tools — только общие стадии без URL и поисковых запросов.
 

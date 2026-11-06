@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -203,6 +204,142 @@ func TestTaskApprovalConsumptionIsExactAndSingleUse(t *testing.T) {
 	}
 	if _, found, err := TaskByApprovalToken(ctx, db, token); err != nil || found {
 		t.Fatalf("consumed token remained restorable found=%v err=%v", found, err)
+	}
+}
+
+func TestDeleteTaskDeletesTerminalTasksOnlyForCurrentChat(t *testing.T) {
+	for _, status := range []string{TaskStatusCompleted, TaskStatusFailed, TaskStatusCancelled} {
+		t.Run(status, func(t *testing.T) {
+			ctx := context.Background()
+			db := taskTestDB(t)
+			now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+			for _, chatID := range []int64{100, 101} {
+				if err := EnsureChat(ctx, db, chatID, 11, ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			created, err := CreateTask(ctx, db, newStoreTask(100, now))
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch status {
+			case TaskStatusCompleted:
+				claimed, found, err := ClaimNextTask(ctx, db, now, time.Minute)
+				if err != nil || !found {
+					t.Fatalf("claim found=%v err=%v", found, err)
+				}
+				if ok, err := CompleteTaskStep(ctx, db, claimed, "step result", now); err != nil || !ok {
+					t.Fatalf("CompleteTaskStep ok=%v err=%v", ok, err)
+				}
+				finalClaim, found, err := ClaimNextTask(ctx, db, now, time.Minute)
+				if err != nil || !found {
+					t.Fatalf("final claim found=%v err=%v", found, err)
+				}
+				answer := Message{ChatID: 100, UserID: 11, Role: RoleAssistant, Content: "done"}
+				if ok, err := CompleteTask(ctx, db, finalClaim, answer, now); err != nil || !ok {
+					t.Fatalf("CompleteTask ok=%v err=%v", ok, err)
+				}
+			case TaskStatusFailed:
+				claimed, found, err := ClaimNextTask(ctx, db, now, time.Minute)
+				if err != nil || !found {
+					t.Fatalf("claim found=%v err=%v", found, err)
+				}
+				if ok, err := FailTask(ctx, db, claimed, "failed", now); err != nil || !ok {
+					t.Fatalf("FailTask ok=%v err=%v", ok, err)
+				}
+			case TaskStatusCancelled:
+				if _, ok, err := CancelTask(ctx, db, 100, now); err != nil || !ok {
+					t.Fatalf("CancelTask ok=%v err=%v", ok, err)
+				}
+			}
+			other, err := CreateTask(ctx, db, newStoreTask(101, now))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, test := range []struct {
+				name   string
+				chatID int64
+				taskID int64
+			}{
+				{"zero chat", 0, created.ID},
+				{"zero task", 100, 0},
+				{"negative task", 100, -1},
+				{"missing", 100, created.ID + 1000},
+				{"wrong chat", 101, created.ID},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					if deleted, err := DeleteTask(ctx, db, test.chatID, test.taskID); err != nil || deleted {
+						t.Fatalf("deleted=%v err=%v", deleted, err)
+					}
+				})
+			}
+			current, found, err := CurrentTask(ctx, db, 100)
+			if err != nil || !found || current.Status != status {
+				t.Fatalf("task after rejected deletes=%+v found=%v err=%v", current, found, err)
+			}
+			if deleted, err := DeleteTask(ctx, db, 100, created.ID); err != nil || !deleted {
+				t.Fatalf("owner delete deleted=%v err=%v", deleted, err)
+			}
+			if deleted, err := DeleteTask(ctx, db, 100, created.ID); err != nil || deleted {
+				t.Fatalf("stale delete deleted=%v err=%v", deleted, err)
+			}
+			if _, found, err := CurrentTask(ctx, db, 100); err != nil || found {
+				t.Fatalf("deleted task remains found=%v err=%v", found, err)
+			}
+			if current, found, err := CurrentTask(ctx, db, 101); err != nil || !found || current.ID != other.ID {
+				t.Fatalf("other chat task=%+v found=%v err=%v", current, found, err)
+			}
+		})
+	}
+}
+
+func TestDeleteTaskPreservesActiveTasksAndTransientState(t *testing.T) {
+	for _, status := range []string{TaskStatusReady, TaskStatusRunning, TaskStatusAwaitingApproval} {
+		t.Run(status, func(t *testing.T) {
+			ctx := context.Background()
+			db := taskTestDB(t)
+			now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+			if err := EnsureChat(ctx, db, 100, 11, ""); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := CreateTask(ctx, db, newStoreTask(100, now)); err != nil {
+				t.Fatal(err)
+			}
+			var claimed Task
+			if status != TaskStatusReady {
+				var found bool
+				var err error
+				claimed, found, err = ClaimNextTask(ctx, db, now, time.Minute)
+				if err != nil || !found {
+					t.Fatalf("claim found=%v err=%v", found, err)
+				}
+			}
+			if status == TaskStatusAwaitingApproval {
+				token := "0123456789abcdef0123456789abcdef"
+				saved, err := SaveTaskApproval(ctx, db, claimed, token, 700, now.Add(5*time.Minute), `{"request":{}}`, now)
+				if err != nil || !saved {
+					t.Fatalf("SaveTaskApproval saved=%v err=%v", saved, err)
+				}
+			}
+			before, found, err := CurrentTask(ctx, db, 100)
+			if err != nil || !found || before.Status != status {
+				t.Fatalf("before=%+v found=%v err=%v", before, found, err)
+			}
+			if status == TaskStatusRunning && (before.ClaimToken == "" || before.LeaseUntil == nil) {
+				t.Fatalf("running fixture has no claim: %+v", before)
+			}
+			if status == TaskStatusAwaitingApproval && (before.ClaimToken == "" || before.ContinuationJSON == "" ||
+				before.ApprovalToken == "" || before.ApprovalMessageID == 0 || before.ApprovalExpiresAt == nil) {
+				t.Fatalf("approval fixture is incomplete: %+v", before)
+			}
+			if deleted, err := DeleteTask(ctx, db, 100, before.ID); err != nil || deleted {
+				t.Fatalf("active delete deleted=%v err=%v", deleted, err)
+			}
+			after, found, err := CurrentTask(ctx, db, 100)
+			if err != nil || !found || !reflect.DeepEqual(after, before) {
+				t.Fatalf("after=%+v before=%+v found=%v err=%v", after, before, found, err)
+			}
+		})
 	}
 }
 

@@ -170,6 +170,18 @@ func DeleteSavedLink(ctx context.Context, db *sql.DB, chatID int64, id int64) (b
 	return affected == 1, err
 }
 
+func ClearSavedLinks(ctx context.Context, db *sql.DB, chatID int64) (int64, error) {
+	result, err := db.ExecContext(ctx, `DELETE FROM saved_links WHERE chat_id = ?`, chatID)
+	if err != nil {
+		return 0, err
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}
+
 func SearchSavedLinks(ctx context.Context, db *sql.DB, chatID int64, query string, limit int) ([]SavedLink, error) {
 	query = strings.TrimSpace(query)
 	if query == "" || utf8.RuneCountInString(query) > SavedLinkSearchMaxRunes {

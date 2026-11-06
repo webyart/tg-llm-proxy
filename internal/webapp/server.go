@@ -129,6 +129,10 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusUnauthorized, "session_expired", "Session expired. Reopen the Mini App from Telegram.")
 		return
 	}
+	if strings.HasPrefix(req.URL.Path, "/api/links/") {
+		a.linkControl(w, req, current)
+		return
+	}
 	if req.URL.Path == "/api/tasks/cancel" || strings.HasPrefix(req.URL.Path, "/api/tasks/") {
 		a.taskControl(w, req, current)
 		return

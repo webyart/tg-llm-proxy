@@ -447,6 +447,19 @@ func ExpireTasks(ctx context.Context, db *sql.DB, now time.Time, limit int) ([]T
 	return expired, rows.Err()
 }
 
+func DeleteTask(ctx context.Context, db *sql.DB, chatID int64, taskID int64) (bool, error) {
+	if chatID == 0 || taskID <= 0 {
+		return false, nil
+	}
+	result, err := db.ExecContext(ctx, `DELETE FROM tasks
+		WHERE chat_id = ? AND id = ? AND status IN ('completed', 'failed', 'cancelled')`, chatID, taskID)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
+}
+
 func ClearTasks(ctx context.Context, db *sql.DB, chatID int64) (int64, error) {
 	result, err := db.ExecContext(ctx, `DELETE FROM tasks WHERE chat_id = ?`, chatID)
 	if err != nil {

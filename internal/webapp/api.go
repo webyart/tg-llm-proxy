@@ -414,12 +414,36 @@ func (a *App) resumeTask(w http.ResponseWriter, req *http.Request, current scope
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "task_id": resumed.ID, "status": resumed.Status})
 }
 
-func (a *App) taskControl(w http.ResponseWriter, req *http.Request, current scope) {
-	if req.URL.Path == "/api/tasks/cancel" {
-		a.cancelTask(w, req, current)
+func (a *App) clearTasks(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.Method != http.MethodPost {
+		methodAllowed(w, http.MethodPost)
 		return
 	}
-	a.resumeTask(w, req, current)
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Task controls do not accept query parameters.")
+		return
+	}
+	if status, ok := emptySettingsBody(req); !ok {
+		taskBodyError(w, status)
+		return
+	}
+	deleted, err := store.ClearTasks(req.Context(), a.db, current.ChatID)
+	if err != nil {
+		a.taskMutationFailed(w, req, "clear", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": deleted})
+}
+
+func (a *App) taskControl(w http.ResponseWriter, req *http.Request, current scope) {
+	switch req.URL.Path {
+	case "/api/tasks/cancel":
+		a.cancelTask(w, req, current)
+	case "/api/tasks/clear":
+		a.clearTasks(w, req, current)
+	default:
+		a.resumeTask(w, req, current)
+	}
 }
 
 type usageModel struct {

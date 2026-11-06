@@ -48,6 +48,11 @@ a { color: var(--tg-theme-link-color, #2678c8); overflow-wrap: anywhere; word-br
 .settings-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; max-width: 100%; margin-top: 9px; }
 .settings-row > * { min-width: 0; max-width: 100%; }
 .task-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.task-clear { padding: 12px; margin-bottom: 4px; border: 1px solid #a82b2b55; border-radius: 10px; background: #a82b2b0d; }
+.task-clear > button { width: 100%; color: white; background: var(--tg-theme-destructive-text-color, #a82b2b); }
+.task-clear-warning { margin: 0; color: var(--tg-theme-destructive-text-color, #a82b2b); font-weight: 600; overflow-wrap: anywhere; }
+.task-clear-actions { margin-top: 10px; }
+.task-clear-actions button { flex: 1 1 auto; }
 .task-error { white-space: pre-wrap; overflow-wrap: anywhere; color: #a82b2b; margin-top: 6px; }
 .usage-row { padding: 8px 0; border-top: 1px solid #7b899633; }
 select, textarea {

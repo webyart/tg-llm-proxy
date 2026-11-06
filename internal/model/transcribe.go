@@ -48,9 +48,13 @@ func (c *OpenAI) Transcribe(ctx context.Context, req TranscriptionRequest) (stri
 	}
 	attemptCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
+	body, contentType, err := c.transcriptionRequestBody(req)
+	if err != nil {
+		return "", err
+	}
 	var lastErr error
 	for attempt := 1; attempt <= c.attempts; attempt++ {
-		text, err := c.transcribeAttempt(attemptCtx, req)
+		text, err := c.transcribeAttempt(attemptCtx, body, contentType)
 		if err == nil {
 			return text, nil
 		}
@@ -68,7 +72,7 @@ func (c *OpenAI) Transcribe(ctx context.Context, req TranscriptionRequest) (stri
 	return "", fmt.Errorf("transcription failed: %w", lastErr)
 }
 
-func (c *OpenAI) transcribeAttempt(ctx context.Context, req TranscriptionRequest) (string, error) {
+func (c *OpenAI) transcriptionRequestBody(req TranscriptionRequest) ([]byte, string, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	modelName := strings.TrimSpace(req.Model)
@@ -79,7 +83,7 @@ func (c *OpenAI) transcribeAttempt(ctx context.Context, req TranscriptionRequest
 		modelName = c.model
 	}
 	if err := writer.WriteField("model", modelName); err != nil {
-		return "", err
+		return nil, "", err
 	}
 	fileName := strings.TrimSpace(req.FileName)
 	if fileName == "" {
@@ -90,7 +94,7 @@ func (c *OpenAI) transcribeAttempt(ctx context.Context, req TranscriptionRequest
 		"filename": fileName,
 	})
 	if contentDisposition == "" {
-		return "", errors.New("invalid transcription file name")
+		return nil, "", errors.New("invalid transcription file name")
 	}
 	contentType := strings.TrimSpace(req.MIME)
 	if contentType == "" {
@@ -98,30 +102,34 @@ func (c *OpenAI) transcribeAttempt(ctx context.Context, req TranscriptionRequest
 	}
 	contentType = mime.FormatMediaType(contentType, nil)
 	if contentType == "" {
-		return "", errors.New("invalid transcription MIME type")
+		return nil, "", errors.New("invalid transcription MIME type")
 	}
 	part, err := writer.CreatePart(map[string][]string{
 		"Content-Disposition": {contentDisposition},
 		"Content-Type":        {contentType},
 	})
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	if _, err := part.Write(req.Data); err != nil {
-		return "", err
+		return nil, "", err
 	}
 	if err := writer.Close(); err != nil {
-		return "", err
+		return nil, "", err
 	}
+	return body.Bytes(), writer.FormDataContentType(), nil
+}
+
+func (c *OpenAI) transcribeAttempt(ctx context.Context, body []byte, contentType string) (string, error) {
 	url := c.transcriptionURL
 	if url == "" {
 		url = strings.Replace(c.chatURL, "/chat/completions", "/audio/transcriptions", 1)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body.Bytes()))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
-	httpReq.Header.Set("Content-Type", writer.FormDataContentType())
+	httpReq.Header.Set("Content-Type", contentType)
 	httpReq.Header.Set("Accept", "application/json")
 	if c.apiKey != "" && !c.transcriptionNoAuth {
 		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)

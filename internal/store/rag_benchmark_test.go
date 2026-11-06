@@ -99,6 +99,92 @@ func BenchmarkSearchRAGChunksManyTermTranscript(b *testing.B) {
 	}
 }
 
+func BenchmarkSearchRAGChunksAllMatch10000(b *testing.B) {
+	ctx := context.Background()
+	db, err := OpenMemory(ctx, "rag_benchmark_all_match")
+	if err != nil {
+		b.Fatalf("OpenMemory: %v", err)
+	}
+	defer db.Close()
+	if _, _, err := PutRAGDocument(ctx, db, 903, 11, "all-match.txt", "needle seed chunk"); err != nil {
+		b.Fatalf("PutRAGDocument: %v", err)
+	}
+	chunks := make([]string, ragSearchChunkScanLimit)
+	for index := range chunks {
+		chunks[index] = fmt.Sprintf("needle all match transcript %d", index)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM rag_chunks WHERE document_id = 1`); err != nil {
+		b.Fatalf("clear seed chunk: %v", err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		b.Fatalf("BeginTx: %v", err)
+	}
+	if err := insertRAGChunks(ctx, tx, 1, 903, chunks); err != nil {
+		tx.Rollback()
+		b.Fatalf("insert chunks: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		b.Fatalf("Commit: %v", err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		result, err := SearchRAGChunksDetailed(ctx, db, 903, "needle", 5, 2000)
+		if err != nil {
+			b.Fatalf("SearchRAGChunksDetailed: %v", err)
+		}
+		if result.TotalChunks != ragSearchChunkScanLimit || len(result.Chunks) != 5 || result.Chunks[0].Content != "needle all match transcript 9999" {
+			b.Fatalf("unexpected result: %+v", result)
+		}
+	}
+}
+
+func BenchmarkSearchRAGChunksCyrillicHeavy(b *testing.B) {
+	ctx := context.Background()
+	db, err := OpenMemory(ctx, "rag_benchmark_cyrillic_heavy")
+	if err != nil {
+		b.Fatalf("OpenMemory: %v", err)
+	}
+	defer db.Close()
+	if _, _, err := PutRAGDocument(ctx, db, 904, 11, "кириллица.txt", "ИГОЛКА в нужном фрагменте"); err != nil {
+		b.Fatalf("PutRAGDocument: %v", err)
+	}
+	chunks := make([]string, ragSearchChunkScanLimit)
+	chunks[0] = "ИГОЛКА в нужном фрагменте"
+	content := strings.Repeat("Обычная совершенно посторонняя лексика ", 20)
+	for index := 1; index < len(chunks); index++ {
+		chunks[index] = fmt.Sprintf("%s %d", content, index)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM rag_chunks WHERE document_id = 1`); err != nil {
+		b.Fatalf("clear seed chunk: %v", err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		b.Fatalf("BeginTx: %v", err)
+	}
+	if err := insertRAGChunks(ctx, tx, 1, 904, chunks); err != nil {
+		tx.Rollback()
+		b.Fatalf("insert chunks: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		b.Fatalf("Commit: %v", err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		chunks, err := SearchRAGChunks(ctx, db, 904, "иголка", 5, 2000)
+		if err != nil {
+			b.Fatalf("SearchRAGChunks: %v", err)
+		}
+		if len(chunks) != 1 || chunks[0].Content != "ИГОЛКА в нужном фрагменте" {
+			b.Fatalf("unexpected result: %+v", chunks)
+		}
+	}
+}
+
 func BenchmarkPutRAGDocumentBatchedChunks(b *testing.B) {
 	ctx := context.Background()
 	db, err := OpenMemory(ctx, "rag_benchmark_batched_insert")

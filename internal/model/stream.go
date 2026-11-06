@@ -12,6 +12,7 @@ package model
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -123,10 +124,14 @@ func (c *OpenAI) Stream(ctx context.Context, req Request, h StreamHandler) (Resp
 	}
 	var answerCtx, cancelAnswer = context.WithTimeout(ctx, total)
 	defer cancelAnswer()
+	var body, model, err = c.marshalChatRequest(req, true, 1)
+	if err != nil {
+		return Response{}, err
+	}
 
 	var lastErr error
 	for attempt := 1; attempt <= c.attempts; attempt++ {
-		var resp, delivered, err = c.streamAttempt(answerCtx, req, attempt, h)
+		var resp, delivered, err = c.streamAttempt(answerCtx, body, model, attempt, h)
 		if err == nil {
 			resp.Latency = time.Since(start)
 			resp.Attempts = attempt
@@ -195,20 +200,7 @@ type chatChunk struct {
 }
 
 // streamAttempt — one SSE round trip. The bool it returns says whether any answer text reached the handler:
-func (c *OpenAI) streamAttempt(ctx context.Context, req Request, attempt int, h StreamHandler) (Response, bool, error) {
-	var model = req.Model
-	if model == "" {
-		model = c.model
-	}
-	if model == "" {
-		return Response{}, false, fmt.Errorf("the model of (STRATA_MODEL) is not set, attempt %d", attempt)
-	}
-
-	var body, err = json.Marshal(chatRequest{Model: model, Messages: toWire(req.Messages), Stream: true, Tools: toWireTools(req.Tools)})
-	if err != nil {
-		return Response{}, false, err
-	}
-
+func (c *OpenAI) streamAttempt(ctx context.Context, body []byte, model string, attempt int, h StreamHandler) (Response, bool, error) {
 	// this client may set, so the deadline lives in a context that a watchdog goroutine cancels, and every
 	// fires only on a real stall — and then it costs the answer, not the budget of the next one.
 	var stallCtx, cancelStall = context.WithCancel(ctx)
@@ -238,7 +230,7 @@ func (c *OpenAI) streamAttempt(ctx context.Context, req Request, attempt int, h 
 		}
 	}()
 
-	var httpReq, buildErr = http.NewRequestWithContext(stallCtx, http.MethodPost, c.chatURL, strings.NewReader(string(body)))
+	var httpReq, buildErr = http.NewRequestWithContext(stallCtx, http.MethodPost, c.chatURL, bytes.NewReader(body))
 	if buildErr != nil {
 		return Response{}, false, buildErr
 	}

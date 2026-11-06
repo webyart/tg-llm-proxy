@@ -1,42 +1,49 @@
 <!doctype html>
-<html lang="en">
+<html lang="ru">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
-  <title>Bot companion</title>
+  <title>Бот — компаньон</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <header>
-    <div>
-      <h1>Bot companion</h1>
-      <p>Chat data and per-chat settings</p>
+    <div class="header-title">
+      <h1 data-i18n="headerTitle">Бот — компаньон</h1>
+      <p data-i18n="headerSubtitle">Данные чата и его настройки</p>
     </div>
-    <button id="logout" class="secondary" type="button" hidden>Close session</button>
+    <div class="header-actions">
+      <label class="language-label" for="language" data-i18n="languageLabel">Язык</label>
+      <select id="language" data-i18n-aria="languageLabel" aria-label="Язык">
+        <option value="ru">RU</option>
+        <option value="en">EN</option>
+      </select>
+      <button id="logout" class="secondary" type="button" data-i18n="closeSession" hidden>Закрыть сессию</button>
+    </div>
   </header>
   <main>
     <div id="error" role="alert" hidden></div>
     <section id="launch" class="panel">
-      <h2>Launch from Telegram</h2>
-      <p>Open this Mini App with <strong>More → Mini App</strong> in the bot menu. The launch link and Telegram signature are checked before any chat data is shown.</p>
+      <h2 data-i18n="launchTitle">Запуск из Telegram</h2>
+      <p data-i18n="launchText">Откройте Mini App через «Ещё → Mini App» в меню бота. Ссылка запуска и подпись Telegram проверяются до показа данных чата.</p>
     </section>
     <div id="app" hidden>
-      <nav id="tabs" aria-label="Chat sections">
-        <button type="button" data-tab="status" class="active">Status</button>
-        <button type="button" data-tab="history">History</button>
-        <button type="button" data-tab="documents">Documents</button>
-        <button type="button" data-tab="links">Links</button>
-        <button type="button" data-tab="tasks">Tasks</button>
-        <button type="button" data-tab="settings">Settings</button>
+      <nav id="tabs" data-i18n-aria="navLabel" aria-label="Разделы чата">
+        <button type="button" data-tab="status" class="active" data-i18n="tabStatus">Статус</button>
+        <button type="button" data-tab="history" data-i18n="tabHistory">История</button>
+        <button type="button" data-tab="documents" data-i18n="tabDocuments">Документы</button>
+        <button type="button" data-tab="links" data-i18n="tabLinks">Ссылки</button>
+        <button type="button" data-tab="tasks" data-i18n="tabTasks">Задачи</button>
+        <button type="button" data-tab="settings" data-i18n="tabSettings">Настройки</button>
       </nav>
       <section class="panel">
         <div class="section-heading">
-          <h2 id="section-title">Status</h2>
-          <button id="refresh" class="secondary" type="button">Refresh</button>
+          <h2 id="section-title">Статус</h2>
+          <button id="refresh" class="secondary" type="button" data-i18n="refresh">Обновить</button>
         </div>
         <div id="content" aria-live="polite"></div>
-        <button id="more" type="button" hidden>Load older</button>
+        <button id="more" type="button" data-i18n="loadOlder" hidden>Показать ранее</button>
       </section>
     </div>
   </main>

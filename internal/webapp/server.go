@@ -87,6 +87,15 @@ func limitInFlight(next http.Handler, capacity int) http.Handler {
 
 func (a *App) route(w http.ResponseWriter, req *http.Request) {
 	path := req.URL.Path
+	if path == "/healthz" {
+		if req.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
 	if strings.HasPrefix(path, "/api/") {
 		a.routeAPI(w, req)
 		return

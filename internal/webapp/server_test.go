@@ -274,6 +274,50 @@ func TestGlobalInFlightCap(t *testing.T) {
 	<-done
 }
 
+func TestHealthzIsPublicMinimalJSONWithSecurityHeaders(t *testing.T) {
+	app, server := newTestApp(t)
+	seedChatData(t, app)
+
+	status, body, headers := apiRequest(t, server, http.MethodGet, "/healthz", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET /healthz status=%d body=%s", status, body)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("GET /healthz returned invalid JSON: %v", err)
+	}
+	if len(payload) != 1 || payload["status"] != "ok" {
+		t.Fatalf("GET /healthz body=%s", body)
+	}
+	for _, forbidden := range []string{"123:test", "other-chat-secret", "private document body", "private-tool-arguments", "private-result", "private-error", "STRATA_API_KEY"} {
+		if strings.Contains(string(body), forbidden) {
+			t.Errorf("GET /healthz contains %q", forbidden)
+		}
+	}
+	if got := headers.Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Errorf("GET /healthz Content-Type=%q", got)
+	}
+	for name, want := range map[string]string{
+		"X-Content-Type-Options": "nosniff",
+		"Referrer-Policy":        "no-referrer",
+		"Cache-Control":          "no-store",
+	} {
+		if got := headers.Get(name); got != want {
+			t.Errorf("GET /healthz %s=%q want=%q", name, got, want)
+		}
+	}
+	if csp := headers.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'none'") {
+		t.Errorf("GET /healthz CSP=%q", csp)
+	}
+
+	for _, method := range []string{http.MethodHead, http.MethodPost, http.MethodPut, http.MethodDelete} {
+		status, body, headers = apiRequest(t, server, method, "/healthz", "")
+		if status != http.StatusMethodNotAllowed || headers.Get("Allow") != http.MethodGet {
+			t.Errorf("%s /healthz status=%d Allow=%q body=%s", method, status, headers.Get("Allow"), body)
+		}
+	}
+}
+
 func TestStaticCSPAndNoExternalScriptsOrSecrets(t *testing.T) {
 	_, server := newTestApp(t)
 	for _, path := range []string{"/", "/app.js", "/style.css"} {

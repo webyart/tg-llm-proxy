@@ -396,6 +396,28 @@ func CancelTask(ctx context.Context, db *sql.DB, chatID int64, now time.Time) (T
 	return task, true, nil
 }
 
+func ResumeTask(ctx context.Context, db *sql.DB, chatID int64, taskID int64, now time.Time, lifetime time.Duration) (Task, bool, error) {
+	if chatID == 0 || taskID <= 0 || lifetime <= 0 {
+		return Task{}, false, fmt.Errorf("%w: resume needs a chat, task id, and positive lifetime", ErrTaskInvalid)
+	}
+	nowText := formatReminderTime(now)
+	row := db.QueryRowContext(ctx, `UPDATE tasks
+		SET status = 'ready', attempts = 0, due_at = ?, claim_token = NULL, lease_until = NULL,
+			continuation_json = NULL, approval_token = NULL, approval_message_id = NULL,
+			approval_expires_at = NULL, expires_at = ?, error = NULL, finished_at = NULL, updated_at = ?
+		WHERE id = (SELECT id FROM tasks WHERE chat_id = ? ORDER BY id DESC LIMIT 1)
+			AND id = ? AND chat_id = ? AND status IN ('failed', 'cancelled')
+		RETURNING `+taskColumns, nowText, formatReminderTime(now.Add(lifetime)), nowText, chatID, taskID, chatID)
+	task, err := scanTask(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Task{}, false, nil
+	}
+	if err != nil {
+		return Task{}, false, err
+	}
+	return task, true, nil
+}
+
 func ExpireTasks(ctx context.Context, db *sql.DB, now time.Time, limit int) ([]Task, error) {
 	if limit <= 0 || limit > 20 {
 		limit = 20

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -17,7 +18,7 @@ import (
 )
 
 const (
-	TaskUsage            = "Использование: /task <цель>, /task для статуса или /task cancel. Задача содержит от 1 до 3 безопасных шагов."
+	TaskUsage            = "Использование: /task <цель>, /task для статуса, /task cancel или /task resume <id>. Задача содержит от 1 до 3 безопасных шагов."
 	TaskMaxDescription   = 240
 	TaskLifetime         = time.Hour
 	taskPlannerMaxRunes  = 8192
@@ -101,6 +102,9 @@ func (d *Dispatcher) task(ctx context.Context, ev Event, arg string) error {
 	if action == "menu:cancel" {
 		return d.cancelTask(ctx, ev, true)
 	}
+	if action == "menu:resume" {
+		return d.resumeTask(ctx, ev, 0, true)
+	}
 	if action == "menu:clear" {
 		return d.promptTaskClear(ctx, ev)
 	}
@@ -115,6 +119,17 @@ func (d *Dispatcher) task(ctx context.Context, ev Event, arg string) error {
 	}
 	if strings.EqualFold(action, "cancel") {
 		return d.cancelTask(ctx, ev, false)
+	}
+	fields := strings.Fields(action)
+	if len(fields) > 0 && strings.EqualFold(fields[0], "resume") {
+		if len(fields) != 2 {
+			return d.reply(ctx, ev.ChatID, TaskUsage)
+		}
+		taskID, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil || taskID <= 0 {
+			return d.reply(ctx, ev.ChatID, TaskUsage)
+		}
+		return d.resumeTask(ctx, ev, taskID, false)
 	}
 	if len([]rune(action)) > store.TaskMaxGoalRunes || strings.ContainsRune(action, '\x00') {
 		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Цель задачи должна быть непустой и не длиннее %d символов.", store.TaskMaxGoalRunes))
@@ -242,6 +257,39 @@ func (d *Dispatcher) cancelTask(ctx context.Context, ev Event, menu bool) error 
 	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Задача #%d отменена. Будущие шаги и ожидающие подтверждения остановлены.", cancelled.ID))
 }
 
+func (d *Dispatcher) resumeTask(ctx context.Context, ev Event, taskID int64, menu bool) error {
+	current, found, err := store.CurrentTask(ctx, d.deps.DB, ev.ChatID)
+	if err != nil {
+		return err
+	}
+	if menu && !found {
+		return d.showTaskMenu(ctx, ev, "Возобновить можно только последнюю отменённую или остановленную с ошибкой задачу.")
+	}
+	if menu {
+		taskID = current.ID
+	}
+	resumed, ok, err := store.ResumeTask(ctx, d.deps.DB, ev.ChatID, taskID, d.now().UTC(), TaskLifetime)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		message := fmt.Sprintf("Задачу #%d нельзя возобновить: возобновляется только последняя отменённая или остановленная с ошибкой задача этого чата.", taskID)
+		if menu {
+			return d.showTaskMenu(ctx, ev, "Возобновить можно только последнюю отменённую или остановленную с ошибкой задачу.")
+		}
+		return d.reply(ctx, ev.ChatID, message)
+	}
+	if found {
+		d.removeTaskApproval(ctx, current)
+	}
+	d.wakeTasks()
+	message := fmt.Sprintf("Задача #%d возобновлена. Завершённые шаги и результаты сохранены; сетевые действия потребуют нового подтверждения.", resumed.ID)
+	if menu {
+		return d.showTaskMenu(ctx, ev, message)
+	}
+	return d.reply(ctx, ev.ChatID, message)
+}
+
 func (d *Dispatcher) removeTaskApproval(ctx context.Context, task store.Task) {
 	d.clearTaskNetworkScopes(task.ChatID, task.ID)
 	if task.ApprovalToken != "" {
@@ -288,6 +336,9 @@ func (d *Dispatcher) taskStatusText(ctx context.Context, ev Event) (string, stor
 	if store.ActiveTaskStatus(task.Status) {
 		lines = append(lines, "/task cancel — отменить.")
 	} else {
+		if task.Status == store.TaskStatusFailed || task.Status == store.TaskStatusCancelled {
+			lines = append(lines, fmt.Sprintf("/task resume %d — возобновить с сохранением прогресса.", task.ID))
+		}
 		lines = append(lines, "/task <новая цель> — создать другую задачу.")
 	}
 	return strings.Join(lines, "\n"), task, nil
@@ -299,6 +350,9 @@ func taskMenuMarkup(task store.Task) models.InlineKeyboardMarkup {
 		rows = append(rows, menuRow(menuButton("Отменить задачу", "menu:task:cancel")))
 	} else {
 		rows = append(rows, menuRow(menuButton("Новая задача", "menu:task:new")))
+	}
+	if task.ID > 0 && (task.Status == store.TaskStatusFailed || task.Status == store.TaskStatusCancelled) {
+		rows = append(rows, menuRow(menuButton("Возобновить задачу", "menu:task:resume")))
 	}
 	if task.ID > 0 {
 		rows = append(rows, menuRow(menuButton("Очистить задачи", "menu:task:clear")))

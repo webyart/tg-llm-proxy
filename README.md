@@ -266,7 +266,7 @@ Reverse proxy или туннель должен перенаправлять п
 | `/remind <время> <текст>` | `через 1 минуту`, `через 2 часа` или `каждый день 09:00`; текст до 500 runes |
 | `/reminders` | список активных напоминаний чата; `cancel <id>` или `delete <id>` отменяет свою запись |
 | `/links` | сохранённые ссылки; `add <url>`, `search <текст>`, `summary <id>`, `delete <id>` |
-| `/task <цель>` | read-only задача из 1–3 шагов с прогрессом; без аргумента — статус, `/task cancel` — отмена, `/task clear` — очистка списка с подтверждением |
+| `/task <цель>` | read-only задача из 1–3 шагов с прогрессом; без аргумента — статус, `/task cancel` — отмена, `/task resume <id>` — возобновление failed/cancelled, `/task clear` — очистка списка с подтверждением |
 | `/tts <текст>` | opt-in озвучка текста через Speaches и `sendAudio`; по умолчанию выключено |
 | `/docs` | RAG-база; `/docs add`, `export`, `delete <id>` и `clear` |
 | `/export [md\|json]` | экспорт последних 10000 сообщений с явным truncation warning и ID/time window |
@@ -291,7 +291,7 @@ Ask, Search и Custom Persona принимают следующий текст �
 
 More → Mini App открывает companion со Status, History, Documents, Links и Tasks. Для включения задайте `MINIAPP_ENABLED=true` и HTTPS `MINIAPP_PUBLIC_URL`, затем запустите Compose. Публичный URL должен вести через reverse proxy/tunnel на host `127.0.0.1:8084`; внутри контейнера listener `0.0.0.0`.
 
-Raw `initData` проверяется через Telegram HMAC и `auth_date`, launch ticket привязан к chat/user на 2 минуты, session — на 15 минут. Доступ проверяется при каждом запросе. Нет mutations, model calls, model keys, task plans/results или tool arguments. Внешний HTTPS acceptance выполнен через Tailscale Funnel: локальный и публичный endpoint отвечают 200, `/api/history` без авторизации возвращает 401, запуск в Telegram client подтверждён.
+Raw `initData` проверяется через Telegram HMAC и `auth_date`, launch ticket привязан к chat/user на 2 минуты, session — на 15 минут. Доступ проверяется при каждом запросе. Нет mutations, model calls, model keys, task plans/results или tool arguments. Внешний HTTPS acceptance выполнен через Tailscale Funnel: локальный и публичный endpoint отвечают 200, `/api/history` без авторизации возвращает 401, запуск в Telegram client подтверждён. `watch_container.ps1` дополнительно проверяет `/healthz` при включённом Mini App.
 
 ## Проверка проекта
 

@@ -2,8 +2,8 @@
 <#
 test-container-monitor.ps1 — isolated Docker acceptance for health, maintenance lease and backup freshness monitoring.
 
-Covers failure, suppression and recovery plus fresh/stale/dead-PID leases and legacy/receipt backup age checks.
-No alerts leave the host. The test refuses to run over an existing production maintenance lease.
+Covers failure, suppression and recovery plus fresh/stale/dead-PID leases, legacy/receipt backup age checks and
+Mini App disabled/enabled probes. No alerts leave the host. The test refuses to run over an existing production maintenance lease.
 #>
 
 [CmdletBinding()]
@@ -19,6 +19,7 @@ $verification = Join-Path $work 'backup-verified.json'
 $backupState = Join-Path $work 'backup-alert.json'
 $backup = Join-Path $backups 'bot-20000101-000000.db'
 $name = "tg-llm-proxy-monitor-fixture-$([Guid]::NewGuid().ToString('N'))"
+$miniAppName = "$name-miniapp"
 $failure = $null
 
 function Write-Lease([datetime]$StartedAt, [int]$LeasePid) {
@@ -113,14 +114,58 @@ try {
         throw 'legacy timestamped backup fallback did not remain supported'
     }
 
-    $recovery = & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'watch_container.ps1') -StatePath $state @monitorArgs
-    if ($LASTEXITCODE -ne 0) { throw 'healthy production container must produce monitor exit 0' }
-    if (($recovery | Out-String) -notmatch 'recovered state=healthy') { throw 'failure-to-healthy transition was not recognized' }
-
     $whisperState = Join-Path $work 'whisper-state.json'
     $whisperFailure = & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'watch_container.ps1') -WhisperContainerId $name -StatePath $whisperState @monitorArgs
     if ($LASTEXITCODE -ne 1) { throw 'created Whisper fixture must produce monitor exit 1' }
     if (($whisperFailure | Out-String) -notmatch 'state=whisper-created') { throw 'Whisper failure was not attributed to its service' }
+
+    $miniAppState = Join-Path $work 'miniapp-state.json'
+    docker create --name $miniAppName --env MINIAPP_ENABLED=false --no-healthcheck --entrypoint sleep tg-llm-proxy-bot:latest 3600 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'docker create disabled Mini App fixture failed' }
+    docker start $miniAppName | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'docker start disabled Mini App fixture failed' }
+    $miniAppDisabled = & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'watch_container.ps1') -ContainerId $miniAppName -StatePath $miniAppState @monitorArgs
+    if ($LASTEXITCODE -ne 0 -or ($miniAppDisabled | Out-String) -notmatch 'Mini App monitoring disabled') {
+        throw "disabled Mini App was probed or changed container health: $($miniAppDisabled | Out-String)"
+    }
+
+    docker rm --force $miniAppName | Out-Null
+    docker create --name $miniAppName --env MINIAPP_ENABLED=true --no-healthcheck --entrypoint sleep tg-llm-proxy-bot:latest 3600 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'docker create enabled Mini App fixture failed' }
+    docker start $miniAppName | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'docker start enabled Mini App fixture failed' }
+    $miniAppFailure = & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'watch_container.ps1') -ContainerId $miniAppName -StatePath $miniAppState @monitorArgs
+    if ($LASTEXITCODE -ne 1 -or ($miniAppFailure | Out-String) -notmatch 'state=miniapp-probe-failed') {
+        throw 'enabled Mini App probe failure was not detected'
+    }
+    $miniAppSuppressed = & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'watch_container.ps1') -ContainerId $miniAppName -StatePath $miniAppState @monitorArgs
+    if ($LASTEXITCODE -ne 1 -or ($miniAppSuppressed | Out-String) -notmatch 'repeated alert suppressed') {
+        throw 'repeated Mini App failure alert was not suppressed'
+    }
+
+    $healthResponse = @'
+#!/bin/sh
+printf 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 16\r\nConnection: close\r\n\r\n{"status":"ok"}\n'
+'@
+    $healthResponse = $healthResponse.Replace("`r`n", "`n")
+    $healthResponseBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($healthResponse))
+    docker exec $miniAppName sh -c "printf %s $healthResponseBase64 | base64 -d > /tmp/miniapp-health-response && chmod +x /tmp/miniapp-health-response"
+    if ($LASTEXITCODE -ne 0) { throw 'could not create Mini App health fixture' }
+    docker exec -d $miniAppName nc -lk -p 8084 -e /tmp/miniapp-health-response
+    if ($LASTEXITCODE -ne 0) { throw 'could not start Mini App health fixture' }
+    $fixtureHealth = (docker exec $miniAppName wget --proxy off -qO- http://127.0.0.1:8084/healthz 2>&1 | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $fixtureHealth -ne '{"status":"ok"}') { throw "Mini App health fixture did not answer: $fixtureHealth" }
+    $miniAppRecovery = & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'watch_container.ps1') -ContainerId $miniAppName -StatePath $miniAppState @monitorArgs
+    if ($LASTEXITCODE -ne 0 -or ($miniAppRecovery | Out-String) -notmatch 'Mini App OK') {
+        throw "Mini App health recovery was not detected: $($miniAppRecovery | Out-String)"
+    }
+    if (($miniAppRecovery | Out-String) -notmatch 'recovered state=running') { throw 'Mini App recovery notification was not recognized' }
+    $recovery = & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'watch_container.ps1') -ContainerId $miniAppName -StatePath $state @monitorArgs
+    if ($LASTEXITCODE -ne 0) { throw 'healthy isolated container must produce monitor exit 0' }
+    if (($recovery | Out-String) -notmatch 'recovered state=running') { throw 'failure-to-healthy transition was not recognized' }
+    $restartCount = (docker inspect --format '{{.RestartCount}}' $miniAppName | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $restartCount -ne '0') { throw 'Mini App monitoring restarted its container' }
+    Write-Output 'test-container-monitor: Mini App disabled, failure, suppression and recovery verified without restart'
     Write-Output 'test-container-monitor: GREEN — health, lease, backup freshness and suppression verified; no notifications sent'
 }
 catch {
@@ -128,7 +173,7 @@ catch {
     Write-Output "test-container-monitor: FAIL — $($_.Exception.Message)"
 }
 finally {
-    docker rm --force $name 2>&1 | Out-Null
+    docker rm --force $name $miniAppName 2>&1 | Out-Null
     Remove-TestLease
     if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
     Pop-Location

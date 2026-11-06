@@ -101,6 +101,9 @@ func (d *Dispatcher) task(ctx context.Context, ev Event, arg string) error {
 	if action == "menu:cancel" {
 		return d.cancelTask(ctx, ev, true)
 	}
+	if action == "menu:new" {
+		return d.beginPendingInput(ctx, ev, CommandTask, "menu:task", "Отправь цель новой задачи одним сообщением. Будет создан новый безопасный план из 1–3 шагов. Ввод действует 2 минуты.")
+	}
 	if strings.EqualFold(action, "cancel") {
 		return d.cancelTask(ctx, ev, false)
 	}
@@ -207,6 +210,7 @@ func (d *Dispatcher) cancelTask(ctx context.Context, ev Event, menu bool) error 
 }
 
 func (d *Dispatcher) removeTaskApproval(ctx context.Context, task store.Task) {
+	d.clearTaskNetworkScopes(task.ChatID, task.ID)
 	if task.ApprovalToken != "" {
 		set := networkConfirmationsFor(d)
 		set.mu.Lock()
@@ -260,6 +264,8 @@ func taskMenuMarkup(task store.Task) models.InlineKeyboardMarkup {
 	rows := [][]models.InlineKeyboardButton{menuRow(menuButton("Обновить", "menu:task"))}
 	if task.ID > 0 && store.ActiveTaskStatus(task.Status) {
 		rows = append(rows, menuRow(menuButton("Отменить задачу", "menu:task:cancel")))
+	} else {
+		rows = append(rows, menuRow(menuButton("Новая задача", "menu:task:new")))
 	}
 	rows = append(rows, menuRow(backButton("menu:more")))
 	return models.InlineKeyboardMarkup{InlineKeyboard: rows}

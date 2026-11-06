@@ -278,7 +278,7 @@ func TestTaskNetworkApprovalResumeAfterRestartAndCancellation(t *testing.T) {
 }
 
 func TestTaskMenuShowsProgressCancelAndBack(t *testing.T) {
-	m := taskTextModel(validTaskPlanOne)
+	m := taskTextModel(validTaskPlanOne, validTaskPlanOne)
 	r := &menuEditReplier{}
 	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"}), m, r, testStore(t))
 	if err := dispatch(t, d, testEvent(100, 11, 1007, "/task menu goal")); err != nil {
@@ -288,14 +288,37 @@ func TestTaskMenuShowsProgressCancelAndBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	edit := r.lastEdit()
-	if !strings.Contains(edit.text, "0/1") || !hasMenuCallback(edit.markup, "menu:task:cancel") || !hasMenuCallback(edit.markup, "menu:more") {
-		t.Fatalf("task menu=%+v", edit)
+	if !strings.Contains(edit.text, "0/1") || !hasMenuCallback(edit.markup, "menu:task:cancel") || hasMenuCallback(edit.markup, "menu:task:new") || !hasMenuCallback(edit.markup, "menu:more") {
+		t.Fatalf("active task menu=%+v", edit)
 	}
 	if err := dispatchMenuData(t, d, 100, 11, 700, "menu:task:cancel"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(r.lastEdit().text, "отменена") || hasMenuCallback(r.lastEdit().markup, "menu:task:cancel") {
+	if !strings.Contains(r.lastEdit().text, "отменена") || hasMenuCallback(r.lastEdit().markup, "menu:task:cancel") || !hasMenuCallback(r.lastEdit().markup, "menu:task:new") || !hasMenuCallback(r.lastEdit().markup, "menu:more") {
 		t.Fatalf("cancelled task menu=%+v", r.lastEdit())
+	}
+	if err := dispatchMenuData(t, d, 100, 11, 700, "menu:task:new"); err != nil {
+		t.Fatal(err)
+	}
+	pending, consumed := d.pendingEvent(testEvent(100, 11, 1009, "fresh menu goal"))
+	if !consumed || pending.Text != "/task fresh menu goal" {
+		t.Fatalf("new task input=%q consumed=%v", pending.Text, consumed)
+	}
+	if err := dispatch(t, d, pending); err != nil {
+		t.Fatal(err)
+	}
+	current, found, err := store.CurrentTask(context.Background(), d.deps.DB, 100)
+	if err != nil || !found || current.Status != store.TaskStatusReady || current.Goal != "fresh menu goal" || current.ID == 1 {
+		t.Fatalf("new menu task=%+v found=%v err=%v", current, found, err)
+	}
+}
+
+func TestTaskTerminalMenusOfferNewTaskWithoutCancel(t *testing.T) {
+	for _, status := range []string{store.TaskStatusCompleted, store.TaskStatusFailed, store.TaskStatusCancelled} {
+		markup := taskMenuMarkup(store.Task{ID: 9, Status: status})
+		if !hasMenuCallback(markup, "menu:task:new") || hasMenuCallback(markup, "menu:task:cancel") || !hasMenuCallback(markup, "menu:more") {
+			t.Errorf("terminal %s markup=%+v", status, markup)
+		}
 	}
 }
 
@@ -329,10 +352,13 @@ func TestTaskInvalidPersistedApprovalFailsClosed(t *testing.T) {
 	}
 }
 
-func TestTaskRestartAfterConsumedApprovalFailsWithoutReplay(t *testing.T) {
+func TestTaskRestartAfterConsumedApprovalRequiresFreshExactApproval(t *testing.T) {
 	var providerCalls atomic.Int64
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		providerCalls.Add(1)
+		if got := req.URL.Query().Get("q"); got != "never replay" {
+			t.Errorf("provider query=%q", got)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"results":[]}`))
 	}))
@@ -341,6 +367,8 @@ func TestTaskRestartAfterConsumedApprovalFailsWithoutReplay(t *testing.T) {
 	m := &taskScriptModel{results: []taskModelResult{
 		{response: model.Response{Content: validTaskPlanOne}},
 		{response: model.Response{ToolCalls: []model.ToolCall{call}}},
+		{response: model.Response{Content: "freshly approved step"}},
+		{response: model.Response{Content: "freshly approved final"}},
 	}}
 	r := &networkMenuReplier{}
 	db := testStore(t)
@@ -354,7 +382,8 @@ func TestTaskRestartAfterConsumedApprovalFailsWithoutReplay(t *testing.T) {
 	if err != nil || !found || pending.Status != store.TaskStatusAwaitingApproval {
 		t.Fatalf("pending=%+v found=%v err=%v", pending, found, err)
 	}
-	claimed, ok, err := store.ConsumeTaskApproval(context.Background(), db, pending.ID, 100, 11, pending.ApprovalMessageID, pending.ApprovalToken, time.Now(), first.taskLease())
+	oldToken := pending.ApprovalToken
+	claimed, ok, err := store.ConsumeTaskApproval(context.Background(), db, pending.ID, 100, 11, pending.ApprovalMessageID, oldToken, time.Now(), first.taskLease())
 	if err != nil || !ok {
 		t.Fatalf("ConsumeTaskApproval ok=%v err=%v", ok, err)
 	}
@@ -363,10 +392,33 @@ func TestTaskRestartAfterConsumedApprovalFailsWithoutReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	current, found, err := store.CurrentTask(context.Background(), db, 100)
-	if err != nil || !found || current.Status != store.TaskStatusFailed || providerCalls.Load() != 0 || m.callCount() != 2 {
+	if err != nil || !found || current.Status != store.TaskStatusAwaitingApproval || current.ApprovalToken == "" || current.ApprovalToken == oldToken || providerCalls.Load() != 0 || m.callCount() != 2 {
 		t.Fatalf("recovered task=%+v found=%v err=%v provider=%d calls=%d", current, found, err, providerCalls.Load(), m.callCount())
 	}
-	if claimed.ContinuationJSON == "" || !strings.Contains(r.joined(), "will not replay") {
-		t.Fatalf("missing continuation or fail-closed notice: %q", r.joined())
+	if claimed.ContinuationJSON == "" || !strings.Contains(r.joined(), "Требуется новое подтверждение") {
+		t.Fatalf("missing continuation or fresh approval notice: %q", r.joined())
+	}
+	freshConfirm, _ := latestNetworkCallbacks(t, r)
+	if strings.TrimPrefix(freshConfirm, "menu:network:confirm:") != current.ApprovalToken {
+		t.Fatal("fresh prompt does not match the persisted exact-action token")
+	}
+	if err := dispatchMenuData(t, second, 100, 11, 700, "menu:network:confirm:"+oldToken); err != nil {
+		t.Fatal(err)
+	}
+	if providerCalls.Load() != 0 || m.callCount() != 2 {
+		t.Fatal("consumed pre-restart approval executed after recovery")
+	}
+	if err := dispatchMenuData(t, second, 100, 11, 700, freshConfirm); err != nil {
+		t.Fatal(err)
+	}
+	processTasks(t, second, 1)
+	if providerCalls.Load() != 1 || m.callCount() != 4 || !strings.Contains(r.joined(), "freshly approved final") {
+		t.Fatalf("fresh approval did not resume provider=%d calls=%d replies=%q", providerCalls.Load(), m.callCount(), r.joined())
+	}
+	if err := dispatchMenuData(t, second, 100, 11, 700, freshConfirm); err != nil {
+		t.Fatal(err)
+	}
+	if providerCalls.Load() != 1 || m.callCount() != 4 {
+		t.Fatal("fresh approval was replayable")
 	}
 }

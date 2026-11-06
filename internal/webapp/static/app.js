@@ -19,6 +19,10 @@
       task_ready: "готова", task_running: "выполняется", task_awaiting_approval: "ждёт разрешения",
       task_completed: "завершена", task_cancelled: "отменена", task_failed: "ошибка",
       expires: "истекает", taskError: "Причина", cancelTask: "Отменить", resumeTask: "Возобновить",
+      deleteDocument: "Удалить", deleteDocumentConfirm: "Подтвердить", clearDocuments: "Очистить документы", clearDocumentsConfirm: "Подтвердить",
+      deleteDocumentWarning: "Удалить этот документ и его фрагменты? Это действие нельзя отменить.",
+      clearDocumentsWarning: "Удалить все документы этого чата и их фрагменты? Это действие нельзя отменить.",
+      documentUpdated: "Документы удалены.", documentMutationFailed: "Не удалось удалить документы.",
       deleteLink: "Удалить", deleteLinkConfirm: "Подтвердить", clearLinks: "Очистить ссылки", clearLinksConfirm: "Подтвердить",
       deleteLinkWarning: "Удалить эту сохранённую ссылку? Это действие нельзя отменить.",
       clearLinksWarning: "Удалить все сохранённые ссылки этого чата? Это действие нельзя отменить.",
@@ -78,6 +82,10 @@
       task_ready: "ready", task_running: "running", task_awaiting_approval: "awaiting approval",
       task_completed: "completed", task_cancelled: "cancelled", task_failed: "failed",
       expires: "expires", taskError: "Reason", cancelTask: "Cancel", resumeTask: "Resume",
+      deleteDocument: "Delete", deleteDocumentConfirm: "Confirm", clearDocuments: "Clear documents", clearDocumentsConfirm: "Confirm",
+      deleteDocumentWarning: "Delete this document and its chunks? This cannot be undone.",
+      clearDocumentsWarning: "Delete every document in this chat and its chunks? This cannot be undone.",
+      documentUpdated: "Documents deleted.", documentMutationFailed: "The documents could not be deleted.",
       deleteLink: "Delete", deleteLinkConfirm: "Confirm", clearLinks: "Clear links", clearLinksConfirm: "Confirm",
       deleteLinkWarning: "Delete this saved link? This cannot be undone.",
       clearLinksWarning: "Delete every saved link in this chat? This cannot be undone.",
@@ -129,7 +137,7 @@
     method_not_allowed: "errorMethod", invalid_pagination: "errorPagination", read_failed: "errorRead",
     overloaded: "errorOverloaded", not_found: "errorNotFound", invalid_body: "errorInvalidJSON", static_error: "errorRead",
     task_not_active: "taskNotActive", task_not_resumable: "taskNotResumable", task_mutation_failed: "taskMutationFailed",
-    task_not_deletable: "taskNotDeletable",
+    task_not_deletable: "taskNotDeletable", document_mutation_failed: "documentMutationFailed",
   };
 
   function initialLanguage() {
@@ -167,15 +175,19 @@
   let activeTab = "status";
   let nextBefore = null;
   let loading = false;
+  let clearDocumentsArmed = false;
   let clearLinksArmed = false;
   let clearTasksArmed = false;
+  let deleteDocumentArmed = null;
   let deleteLinkArmed = null;
   let deleteTaskArmed = null;
   let view = { tab: "status", data: null, items: [] };
 
   function resetArmedStates() {
+    clearDocumentsArmed = false;
     clearLinksArmed = false;
     clearTasksArmed = false;
+    deleteDocumentArmed = null;
     deleteLinkArmed = null;
     deleteTaskArmed = null;
   }
@@ -252,6 +264,20 @@
     ui.content.appendChild(grid);
   }
 
+  function setDocumentClearArmed(armed, items) {
+    if (loading) return;
+    resetArmedStates();
+    clearDocumentsArmed = armed;
+    renderItems("documents", items);
+  }
+
+  function setDocumentDeleteArmed(id, items) {
+    if (loading) return;
+    resetArmedStates();
+    deleteDocumentArmed = id;
+    renderItems("documents", items);
+  }
+
   function setLinkClearArmed(armed, items) {
     if (loading) return;
     resetArmedStates();
@@ -296,6 +322,19 @@
       renderEmpty(t(tab === "history" ? "emptyHistory" : "emptyItems"));
       return;
     }
+    if (tab === "documents") {
+      const clear = element("div", clearDocumentsArmed ? "task-clear document-clear task-clear-confirm" : "task-clear document-clear");
+      if (clearDocumentsArmed) {
+        clear.appendChild(element("p", "task-clear-warning", t("clearDocumentsWarning")));
+        const actions = element("div", "task-actions task-clear-actions");
+        actions.appendChild(settingsButton(t("clearDocumentsConfirm"), () => changeDocument("/api/documents/clear")));
+        actions.appendChild(settingsButton(t("cancelTask"), () => setDocumentClearArmed(false, items), true));
+        clear.appendChild(actions);
+      } else {
+        clear.appendChild(settingsButton(t("clearDocuments"), () => setDocumentClearArmed(true, items)));
+      }
+      ui.content.appendChild(clear);
+    }
     if (tab === "links") {
       const clear = element("div", clearLinksArmed ? "task-clear link-clear task-clear-confirm" : "task-clear link-clear");
       if (clearLinksArmed) {
@@ -330,6 +369,16 @@
       } else if (tab === "documents") {
         wrapper.appendChild(element("div", "content", item.name));
         wrapper.appendChild(element("div", "meta", `${item.size_bytes} ${t("bytes")} · ${item.chunks} ${t("chunks")}`));
+        if (deleteDocumentArmed === item.id) {
+          wrapper.appendChild(inlineConfirmation(
+            t("deleteDocumentWarning"), t("deleteDocumentConfirm"),
+            () => changeDocument(`/api/documents/${item.id}/delete`), () => setDocumentDeleteArmed(null, items),
+          ));
+        } else {
+          const actions = element("div", "task-actions");
+          actions.appendChild(settingsButton(t("deleteDocument"), () => setDocumentDeleteArmed(item.id, items), true));
+          wrapper.appendChild(actions);
+        }
       } else if (tab === "links") {
         wrapper.appendChild(element("div", "content", item.title));
         if (/^https:\/\//i.test(item.url)) {
@@ -418,6 +467,28 @@
     if (saved) {
       await load();
       showError(t("settingsSaved"));
+    }
+  }
+
+  async function changeDocument(path) {
+    if (loading || !session) return;
+    loading = true;
+    ui.refresh.disabled = true;
+    showError("");
+    let changed = false;
+    try {
+      await api(path, { method: "POST" });
+      changed = true;
+    } catch (error) {
+      showError(error.message || t("documentMutationFailed"));
+    } finally {
+      loading = false;
+      ui.refresh.disabled = false;
+    }
+    if (changed) {
+      resetArmedStates();
+      await load();
+      showError(t("documentUpdated"));
     }
   }
 

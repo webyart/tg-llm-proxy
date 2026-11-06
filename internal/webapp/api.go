@@ -216,6 +216,96 @@ func (a *App) documents(w http.ResponseWriter, req *http.Request, current scope)
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_before_id": next})
 }
 
+func documentBodyError(w http.ResponseWriter, status int) {
+	if status == http.StatusRequestEntityTooLarge {
+		writeError(w, status, "body_too_large", "Request body is too large.")
+		return
+	}
+	writeError(w, http.StatusBadRequest, "invalid_body", "Document controls accept an empty request body.")
+}
+
+func (a *App) documentMutationFailed(w http.ResponseWriter, req *http.Request, operation string, err error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, req.Context().Err()) {
+		return
+	}
+	a.logger.Error("Mini App document mutation failed", "operation", operation, "error", err)
+	writeError(w, http.StatusInternalServerError, "document_mutation_failed", "The documents could not be changed.")
+}
+
+func (a *App) clearDocuments(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.Method != http.MethodPost {
+		methodAllowed(w, http.MethodPost)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Document controls do not accept query parameters.")
+		return
+	}
+	if status, ok := emptySettingsBody(req); !ok {
+		documentBodyError(w, status)
+		return
+	}
+	deleted, err := store.ClearRAGDocuments(req.Context(), a.db, current.ChatID)
+	if err != nil {
+		a.documentMutationFailed(w, req, "clear", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": deleted})
+}
+
+func deleteDocumentID(path string) (int64, bool) {
+	if !strings.HasPrefix(path, "/api/documents/") || !strings.HasSuffix(path, "/delete") {
+		return 0, false
+	}
+	raw := strings.TrimSuffix(strings.TrimPrefix(path, "/api/documents/"), "/delete")
+	if raw == "" || strings.Contains(raw, "/") {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 || strconv.FormatInt(id, 10) != raw {
+		return 0, false
+	}
+	return id, true
+}
+
+func (a *App) deleteDocument(w http.ResponseWriter, req *http.Request, current scope) {
+	documentID, valid := deleteDocumentID(req.URL.Path)
+	if !valid {
+		writeError(w, http.StatusNotFound, "not_found", "API endpoint not found.")
+		return
+	}
+	if req.Method != http.MethodPost {
+		methodAllowed(w, http.MethodPost)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Document controls do not accept query parameters.")
+		return
+	}
+	if status, ok := emptySettingsBody(req); !ok {
+		documentBodyError(w, status)
+		return
+	}
+	deleted, err := store.DeleteRAGDocument(req.Context(), a.db, current.ChatID, documentID)
+	if err != nil {
+		a.documentMutationFailed(w, req, "delete", err)
+		return
+	}
+	if !deleted {
+		writeError(w, http.StatusNotFound, "not_found", "Document not found.")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": documentID})
+}
+
+func (a *App) documentControl(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.URL.Path == "/api/documents/clear" {
+		a.clearDocuments(w, req, current)
+		return
+	}
+	a.deleteDocument(w, req, current)
+}
+
 type linkItem struct {
 	ID        int64  `json:"id"`
 	Title     string `json:"title"`

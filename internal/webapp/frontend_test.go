@@ -188,6 +188,56 @@ func TestFrontendLinkDeleteAndClearRequireInlineConfirmation(t *testing.T) {
 	}
 }
 
+func TestFrontendDocumentDeleteAndClearRequireInlineConfirmation(t *testing.T) {
+	script := frontendAsset(t, "static/app.js")
+	for _, want := range []string{
+		`deleteDocument: "Удалить"`, `deleteDocument: "Delete"`,
+		`deleteDocumentConfirm: "Подтвердить"`, `deleteDocumentConfirm: "Confirm"`,
+		`clearDocuments: "Очистить документы"`, `clearDocuments: "Clear documents"`,
+		`clearDocumentsConfirm: "Подтвердить"`, `clearDocumentsConfirm: "Confirm"`,
+		`deleteDocumentWarning: "Удалить этот документ и его фрагменты? Это действие нельзя отменить."`,
+		`deleteDocumentWarning: "Delete this document and its chunks? This cannot be undone."`,
+		`clearDocumentsWarning: "Удалить все документы этого чата и их фрагменты? Это действие нельзя отменить."`,
+		`clearDocumentsWarning: "Delete every document in this chat and its chunks? This cannot be undone."`,
+		`settingsButton(t("deleteDocument"), () => setDocumentDeleteArmed(item.id, items), true)`,
+		`() => changeDocument(` + "`/api/documents/${item.id}/delete`" + `)`,
+		`() => setDocumentDeleteArmed(null, items)`,
+		`settingsButton(t("clearDocuments"), () => setDocumentClearArmed(true, items))`,
+		`settingsButton(t("clearDocumentsConfirm"), () => changeDocument("/api/documents/clear"))`,
+		`settingsButton(t("cancelTask"), () => setDocumentClearArmed(false, items), true)`,
+		`document_mutation_failed: "documentMutationFailed"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js misses document deletion regression %q", want)
+		}
+	}
+	for _, endpoint := range []string{`changeDocument("/api/documents/clear")`, "changeDocument(`/api/documents/${item.id}/delete`)"} {
+		if got := strings.Count(script, endpoint); got != 1 {
+			t.Errorf("document exact endpoint call count for %q = %d, want 1", endpoint, got)
+		}
+	}
+	for _, functionName := range []string{"setDocumentClearArmed", "setDocumentDeleteArmed"} {
+		body := regexp.MustCompile(`(?s)function ` + functionName + `\([^\n]*\) \{(.*?)\n  \}`).FindStringSubmatch(script)
+		if len(body) != 2 {
+			t.Fatalf("document armed-state helper %s is missing", functionName)
+		}
+		for _, rejected := range []string{`changeDocument(`, `api(`, `fetch(`} {
+			if strings.Contains(body[1], rejected) {
+				t.Errorf("showing or cancelling document confirmation unexpectedly calls %q", rejected)
+			}
+		}
+	}
+	clearBlock := regexp.MustCompile(`(?s)if \(!items\.length\) \{(.*?)\n    \}\n    if \(tab === "documents"\) \{(.*?)\n    \}`).FindStringSubmatch(script)
+	if len(clearBlock) != 3 || !strings.Contains(clearBlock[1], "return;") || !strings.Contains(clearBlock[2], `t("clearDocuments")`) {
+		t.Error("Clear documents must be rendered only for a non-empty document list")
+	}
+	for _, rejected := range []string{`window.confirm`, `confirm(`, `innerHTML`} {
+		if strings.Contains(script, rejected) {
+			t.Errorf("document deletion uses forbidden browser or HTML API %q", rejected)
+		}
+	}
+}
+
 func TestFrontendOnlyTerminalTasksHaveDeleteAndKeepResume(t *testing.T) {
 	script := frontendAsset(t, "static/app.js")
 	for _, want := range []string{
@@ -234,7 +284,7 @@ func TestFrontendOnlyTerminalTasksHaveDeleteAndKeepResume(t *testing.T) {
 
 func TestFrontendMutationGuardsAndConfirmationResets(t *testing.T) {
 	script := frontendAsset(t, "static/app.js")
-	for _, functionName := range []string{"changeLink", "changeTask"} {
+	for _, functionName := range []string{"changeDocument", "changeLink", "changeTask"} {
 		body := regexp.MustCompile(`(?s)async function ` + functionName + `\(path\) \{(.*?)\n  \}`).FindStringSubmatch(script)
 		if len(body) != 2 {
 			t.Fatalf("mutation helper %s is missing", functionName)
@@ -252,7 +302,7 @@ func TestFrontendMutationGuardsAndConfirmationResets(t *testing.T) {
 			t.Errorf("%s does not use a strictly empty POST body without query parameters", functionName)
 		}
 	}
-	for _, functionName := range []string{"setLinkClearArmed", "setTaskClearArmed", "setLinkDeleteArmed", "setTaskDeleteArmed"} {
+	for _, functionName := range []string{"setDocumentClearArmed", "setLinkClearArmed", "setTaskClearArmed", "setDocumentDeleteArmed", "setLinkDeleteArmed", "setTaskDeleteArmed"} {
 		body := regexp.MustCompile(`(?s)function ` + functionName + `\([^\n]*\) \{(.*?)\n  \}`).FindStringSubmatch(script)
 		if len(body) != 2 || !strings.Contains(body[1], "if (loading) return;") {
 			t.Errorf("%s does not block stale confirmations while loading", functionName)
@@ -272,7 +322,7 @@ func TestFrontendMutationGuardsAndConfirmationResets(t *testing.T) {
 	if len(resetBody) != 2 {
 		t.Fatal("shared confirmation reset helper is missing")
 	}
-	for _, variable := range []string{"clearLinksArmed", "clearTasksArmed", "deleteLinkArmed", "deleteTaskArmed"} {
+	for _, variable := range []string{"clearDocumentsArmed", "clearLinksArmed", "clearTasksArmed", "deleteDocumentArmed", "deleteLinkArmed", "deleteTaskArmed"} {
 		if !strings.Contains(resetBody[1], variable) {
 			t.Errorf("confirmation reset misses %s", variable)
 		}

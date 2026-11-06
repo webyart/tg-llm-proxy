@@ -41,6 +41,7 @@ var menuCommandCallbacks = map[string]string{
 	"menu:reminders":      "/reminders menu",
 	"menu:task":           "/task menu",
 	"menu:task:cancel":    "/task menu:cancel",
+	"menu:task:clear":     "/task menu:clear",
 	"menu:task:new":       "/task menu:new",
 	"menu:tts":            "/help menu:tts",
 	"menu:settings":       "/help menu:settings",

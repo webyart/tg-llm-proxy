@@ -101,6 +101,15 @@ func (d *Dispatcher) task(ctx context.Context, ev Event, arg string) error {
 	if action == "menu:cancel" {
 		return d.cancelTask(ctx, ev, true)
 	}
+	if action == "menu:clear" {
+		return d.promptTaskClear(ctx, ev)
+	}
+	if action == "clear" {
+		return d.promptTaskClear(ctx, ev)
+	}
+	if action == "clear confirm" {
+		return d.clearTasks(ctx, ev)
+	}
 	if action == "menu:new" {
 		return d.beginPendingInput(ctx, ev, CommandTask, "menu:task", "Отправь цель новой задачи одним сообщением. Будет создан новый безопасный план из 1–3 шагов. Ввод действует 2 минуты.")
 	}
@@ -159,6 +168,30 @@ func (d *Dispatcher) task(ctx context.Context, ev Event, arg string) error {
 	}
 	lines = append(lines, "Шаги выполняются последовательно. /task — прогресс, /task cancel — отмена.")
 	return d.reply(ctx, ev.ChatID, strings.Join(lines, "\n"))
+}
+
+func (d *Dispatcher) promptTaskClear(ctx context.Context, ev Event) error {
+	token, err := newDeleteConfirmationToken()
+	if err != nil {
+		return err
+	}
+	d.rememberDocumentConfirmation(token, ev, "task_clear", 0)
+	markup := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+		menuRow(menuButton("Подтвердить очистку", "menu:doc:confirm:"+token), menuButton("Отмена", "menu:doc:cancel:"+token)),
+	}}
+	return d.renderMenu(ctx, ev, "Удалить все задачи этого чата? Кнопки действуют 5 минут.", markup)
+}
+
+func (d *Dispatcher) clearTasks(ctx context.Context, ev Event) error {
+	current, found, err := store.CurrentTask(ctx, d.deps.DB, ev.ChatID)
+	if err == nil && found {
+		d.removeTaskApproval(ctx, current)
+	}
+	deleted, err := store.ClearTasks(ctx, d.deps.DB, ev.ChatID)
+	if err != nil {
+		return err
+	}
+	return d.showTaskMenu(ctx, ev, fmt.Sprintf("Удалено задач: %d.", deleted))
 }
 
 func (d *Dispatcher) planTask(ctx context.Context, userID int64, selectedModel string, goal string) (TaskPlan, error) {
@@ -266,6 +299,9 @@ func taskMenuMarkup(task store.Task) models.InlineKeyboardMarkup {
 		rows = append(rows, menuRow(menuButton("Отменить задачу", "menu:task:cancel")))
 	} else {
 		rows = append(rows, menuRow(menuButton("Новая задача", "menu:task:new")))
+	}
+	if task.ID > 0 {
+		rows = append(rows, menuRow(menuButton("Очистить задачи", "menu:task:clear")))
 	}
 	rows = append(rows, menuRow(backButton("menu:more")))
 	return models.InlineKeyboardMarkup{InlineKeyboard: rows}

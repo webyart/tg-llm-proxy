@@ -1,3 +1,12 @@
+# tg-llm-proxy v1.26.3
+
+## Task list cleanup
+
+- `/task clear` и кнопка «Очистить задачи» удаляют все задачи текущего чата после single-use confirmation. Активные network approvals и scoped grants останавливаются, повторное выполнение невозможно.
+- `/task clear confirm` остаётся текстовым fallback. Другие чаты и их задачи не затрагиваются.
+- Production tasks #1–#3 находились в terminal `failed`, поэтому Cancel для них скрывался. Теперь список можно полностью очистить, после чего создать новую задачу.
+- Store/bot regressions подтверждают обязательное подтверждение, изоляцию чатов и отсутствие удаления до Confirm.
+
 # tg-llm-proxy v1.26.2
 
 ## Tool round resilience

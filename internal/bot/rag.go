@@ -177,6 +177,9 @@ func (d *Dispatcher) documentMenuControl(ctx context.Context, ev Event, action s
 		if operation == "cancel" {
 			return d.showDocumentsMenu(ctx, ev, "Удаление документов отменено.")
 		}
+		if pending.Action == "task_clear" {
+			return d.clearTasks(ctx, ev)
+		}
 		if pending.Action == "clear" {
 			deleted, err := store.ClearRAGDocuments(ctx, d.deps.DB, ev.ChatID)
 			if err != nil {

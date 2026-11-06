@@ -1,10 +1,11 @@
 #Requires -Version 7
 <#
 
-
+The default tidy check is read-only: -diff reports required module edits without writing go.mod/go.sum.
+Use -SkipTidy only when the module graph is already resolved and checked.
 
 Usage:
-  .\scripts\build.ps1 -SkipTidy     # the module graph is already resolved
+  .\scripts\build.ps1 -SkipTidy     # skip the read-only module graph check
 
 #>
 
@@ -18,10 +19,10 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Push-Location $repoRoot
 try {
     if (-not $SkipTidy) {
-        # network problem, and the message says so instead of pointing at the code.
-        $tidyOut = (go mod tidy 2>&1 | Out-String)
+        # A diff is a failed release check, never an invitation to mutate the checkout during a build.
+        $tidyOut = (go mod tidy -diff 2>&1 | Out-String)
         if ($LASTEXITCODE -ne 0) {
-            Write-Output "go mod tidy exit $LASTEXITCODE —: check GOPROXY "
+            Write-Output 'go mod tidy -diff failed: run go mod tidy locally and commit go.mod/go.sum, or rerun with -SkipTidy to bypass this check; for download errors check GOPROXY/network'
             Write-Output $tidyOut.Trim()
             exit 1
         }

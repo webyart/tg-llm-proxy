@@ -312,7 +312,9 @@ Documents поддерживает поиск через `GET /api/documents/sea
 .\scripts\test-maintenance.ps1 -WithVolumeRestore
 ```
 
-Pipeline включает gofmt/vet, PowerShell parser, unit/store, fixture backup/restore/external-copy/rotate/prune/migration, loopback Telegram alerts, fake Telegram + fake STRATA, build, secret leak scan и Docker race. `-WithVolumeRestore` добавляет volume restore и container-monitor acceptance.
+Pipeline включает gofmt/vet, PowerShell parser, unit/store, fixture backup/restore/external-copy/rotate/prune/migration, loopback Telegram alerts, fake Telegram + fake STRATA, build, secret leak scan и Docker race. `-WithVolumeRestore` добавляет volume restore и container-monitor acceptance. Host tests/vet используют явные package roots без `zzscratch`; `go mod tidy -diff` проверяет module files без изменений. Docker base images и CI images/tools закреплены по digest/версии.
+
+GitLab `frontend` job дополнительно выполняет `node --check internal/webapp/static/app.js` и `node --test internal/webapp/frontendjs/*.test.js` в pinned Node 22 image. Это 11 executable DOM/fetch-сценариев фактического `app.js` без npm-зависимостей. При локальном Node 22 команды можно запустить теми же аргументами; на host без Node используется контейнерный вариант.
 
 Release CI — `.gitlab-ci.yml`: Linux host checks, race и `govulncheck`. Shared GitLab pipeline запускается только для `main` или вручную; `develop` и tags не расходуют shared minutes. Локальный `verify` остаётся обязательным перед push. Для опционального self-hosted CI без Docker socket и production secrets см. `docs/gitlab-runner-wsl.md`. GitHub Actions не требуется.
 

@@ -14,7 +14,7 @@ variables:
 
 host-checks:
   stage: test
-  image: golang:1.27-bookworm
+  image: golang:1.27-bookworm@sha256:dc0963f32053e4bc451d24d87e3892d42d01021b61f093e98eb95c0352bb84b0
   before_script:
     - |
       if ! command -v pwsh >/dev/null 2>&1; then
@@ -32,7 +32,7 @@ host-checks:
 
 docker-race:
   stage: test
-  image: golang:1.27-alpine
+  image: golang:1.27-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18
   before_script:
     - |
       if ! command -v gcc >/dev/null 2>&1; then
@@ -52,6 +52,13 @@ docker-race:
 
 govulncheck:
   stage: test
-  image: golang:1.27-alpine
+  image: golang:1.27-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18
   script:
-    - go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+    - go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+frontend:
+  stage: test
+  image: node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d
+  script:
+    - node --check internal/webapp/static/app.js
+    - node --test internal/webapp/frontendjs/*.test.js

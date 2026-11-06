@@ -22,10 +22,10 @@ param(
     [switch]$Rebuild
 )
 
+. (Join-Path $PSScriptRoot 'MaintenancePaths.ps1')
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $exe = Join-Path $repoRoot 'bin\dbrestore.exe'
 $scratchRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot 'zzscratch'))
-$scratchPrefix = $scratchRoot + [System.IO.Path]::DirectorySeparatorChar
 
 if (-not [System.IO.Path]::IsPathRooted($Source)) { $Source = Join-Path $repoRoot $Source }
 $Source = [System.IO.Path]::GetFullPath($Source)
@@ -42,7 +42,7 @@ elseif (-not [System.IO.Path]::IsPathRooted($Dest)) {
     $Dest = Join-Path $repoRoot $Dest
 }
 $Dest = [System.IO.Path]::GetFullPath($Dest)
-if (-not $Dest.StartsWith($scratchPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+if (-not (Test-MaintenancePathWithinRoot $Dest $scratchRoot)) {
     Write-Output "db_restore: destination $Dest is outside $scratchRoot — scratch restore never targets a live database"
     exit 1
 }

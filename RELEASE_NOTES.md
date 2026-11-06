@@ -1,3 +1,12 @@
+# tg-llm-proxy v1.33.0
+
+## Mini App document deletion and cleanup
+
+- Documents получил Delete для каждого документа и Clear documents для непустого списка. `POST /api/documents/{id}/delete` использует `store.DeleteRAGDocument`, `POST /api/documents/clear` — `store.ClearRAGDocuments`; связанные chunks удаляются вместе с документами текущего чата.
+- Обе операции требуют bearer session/current allowlist, canonical positive id для item delete, POST со строго пустым body и без query params. Missing/wrong-chat документ возвращает 404, success responses содержат только id/count.
+- Каждое individual delete и clear имеет отдельное inline Confirm/Cancel на RU/EN. Armed states сбрасываются при tab switch/refresh/pagination/success; loading блокирует повторные mutations. Dynamic content использует `textContent`.
+- Добавлены success/empty/chunk-cascade/method/body/query/canonical-id/session/allowlist/cross-chat/store-error и frontend confirmation regressions. `node --check` для frontend прошёл.
+
 # tg-llm-proxy v1.32.0
 
 ## Mini App Links and per-item task deletion

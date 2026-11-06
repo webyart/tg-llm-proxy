@@ -563,3 +563,150 @@ func TestFrontendLiteralTranslationAndErrorKeysHaveBothCatalogs(t *testing.T) {
 		}
 	}
 }
+
+func TestFrontendHistorySearchAndFullContent(t *testing.T) {
+	script := frontendAsset(t, "static/app.js")
+	for _, want := range []string{
+		`searchHistory: "Найти"`, `searchHistory: "Search"`,
+		`historySearchAria: "Поиск по истории"`, `historySearchAria: "Search history"`,
+		`historySearchEmpty: "По запросу ничего не найдено."`, `historySearchEmpty: "No messages matched the query."`,
+		`historySearchTruncated: "Поиск охватил только последние 10000 сообщений; более старые сообщения не проверялись."`,
+		`historySearchTruncated: "Search covered only the latest 10000 messages; older messages were not checked."`,
+		`input.type = "search"`, `input.maxLength = 4000`, `Array.from(normalized).length > 4000`,
+		"api(`/api/history/search?q=${encodeURIComponent(normalized)}`)",
+		`.slice(0, 20)`, `historySearch.items.slice(0, 20)`,
+		`.filter((item) => item.role === "user" || item.role === "assistant")`,
+		`data.truncated || (data.corpus && data.corpus.truncated)`,
+		`!["user", "assistant"].includes(full.role)`,
+		`showFullContent: "Показать полностью"`, `showFullContent: "Show full text"`,
+		`if (item.truncated)`, `loadFullContent("history", item.id)`,
+		"api(`/api/${tab}/item?id=${encodeURIComponent(id)}`)",
+		`const full = data.item || data`, `update(historySearch.items)`, `item.truncated = false`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js misses history regression %q", want)
+		}
+	}
+	if got := strings.Count(script, "/api/history/search"); got != 1 {
+		t.Errorf("history search endpoint count = %d, want 1", got)
+	}
+	for _, functionName := range []string{"searchHistory", "loadFullContent"} {
+		body := regexp.MustCompile(`(?s)async function ` + functionName + `\([^\n]*\) \{(.*?)\n  \}`).FindStringSubmatch(script)
+		if len(body) != 2 {
+			t.Fatalf("%s helper is missing", functionName)
+		}
+		for _, want := range []string{`if (loading || !session`, `setBusy(true);`, `finally {`, `setBusy(false);`} {
+			if !strings.Contains(body[1], want) {
+				t.Errorf("%s misses loading/double-click guard %q", functionName, want)
+			}
+		}
+	}
+	for _, rejected := range []string{"/api/tasks/item", "/api/tasks/search", "/api/tasks/export", "item.plan", "item.result"} {
+		if strings.Contains(script, rejected) {
+			t.Errorf("Mini App unexpectedly exposes task plans/results through %q", rejected)
+		}
+	}
+}
+
+func TestFrontendHistoryExportUsesAuthenticatedBlobDownload(t *testing.T) {
+	script := frontendAsset(t, "static/app.js")
+	for _, want := range []string{
+		`historyExportMD: "Скачать Markdown"`, `historyExportMD: "Download Markdown"`,
+		`historyExportJSON: "Скачать JSON"`, `historyExportJSON: "Download JSON"`,
+		`historyExportReady: "Экспорт истории подготовлен."`, `historyExportReady: "History export is ready."`,
+		`historyExportEmpty: "Нет сообщений для экспорта."`, `historyExportEmpty: "There are no messages to export."`,
+		`history_empty: "historyExportEmpty"`, `exportHistory("md")`, `exportHistory("json")`,
+		"fetch(`/api/history/export?format=${format}`",
+		`new Headers({ "Authorization": ` + "`Bearer ${session}`" + ` })`,
+		`const blob = await response.blob()`, `blob.size > 5 * 1024 * 1024`,
+		`URL.createObjectURL(blob)`, "anchor.download = `history.${format}`", `anchor.click()`,
+		`URL.revokeObjectURL(objectURL)`, `showNotice(t("historyExportReady"))`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js misses history export regression %q", want)
+		}
+	}
+	if got := strings.Count(script, "/api/history/export"); got != 1 {
+		t.Errorf("history export endpoint count = %d, want 1", got)
+	}
+	body := regexp.MustCompile(`(?s)async function exportHistory\(format\) \{(.*?)\n  \}`).FindStringSubmatch(script)
+	if len(body) != 2 {
+		t.Fatal("history export helper is missing")
+	}
+	for _, want := range []string{`if (loading || !session) return;`, `setBusy(true);`, `showError("");`, `setBusy(false);`} {
+		if !strings.Contains(body[1], want) {
+			t.Errorf("history export misses busy/error handling %q", want)
+		}
+	}
+	errorAt := strings.Index(body[1], `if (!response.ok)`)
+	blobAt := strings.Index(body[1], `await response.blob()`)
+	createAt := strings.Index(body[1], `URL.createObjectURL(blob)`)
+	if errorAt < 0 || blobAt < 0 || createAt < 0 || !(errorAt < blobAt && blobAt < createAt) {
+		t.Error("history export must reject HTTP errors before creating a Blob download")
+	}
+	revoke := regexp.MustCompile(`(?s)finally \{(.*?)\n      \}`).FindStringSubmatch(body[1])
+	if len(revoke) != 2 || !strings.Contains(revoke[1], `URL.revokeObjectURL(objectURL)`) || !strings.Contains(revoke[1], `anchor.remove()`) {
+		t.Error("history export must remove the temporary anchor and revoke its object URL in finally")
+	}
+}
+
+func TestFrontendLinkFullContentIsLimitedToTruncatedItems(t *testing.T) {
+	script := frontendAsset(t, "static/app.js")
+	for _, want := range []string{
+		`if (item.truncated) actions.appendChild(settingsButton(t("showFullContent"), () => loadFullContent("links", item.id)))`,
+		`!["history", "links"].includes(tab)`, `typeof full.content !== "string"`,
+		`fullContentFailed: "Не удалось загрузить полный текст."`, `fullContentFailed: "The full text could not be loaded."`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js misses link full-content regression %q", want)
+		}
+	}
+	if strings.Contains(script, `loadFullContent("documents"`) || strings.Contains(script, `loadFullContent("tasks"`) {
+		t.Error("full-content reads must be limited to history and links")
+	}
+}
+
+func TestFrontendTTSSettingsAreConditionalAndLocalized(t *testing.T) {
+	script := frontendAsset(t, "static/app.js")
+	for _, want := range []string{
+		`if (data.tts && data.tts.enabled)`,
+		`ttsTitle: "Озвучивание (TTS)"`, `ttsTitle: "Speech synthesis (TTS)"`,
+		`ttsSpeedAria: "Скорость озвучивания"`, `ttsSpeedAria: "Speech synthesis speed"`,
+		`["0.75", "1", "1.25", "1.5"]`, `String(data.tts.current) === value`,
+		`changeSettings("/api/settings/tts-speed", "PUT", { speed: speedChoice.value }, "ttsSpeedSaved")`,
+		`changeSettings("/api/settings/tts-speed", "DELETE", undefined, "ttsSpeedReset")`,
+		`ttsSpeedSaved: "Скорость озвучивания сохранена."`, `ttsSpeedSaved: "Speech synthesis speed saved."`,
+		`ttsSpeedReset: "Скорость озвучивания сброшена."`, `ttsSpeedReset: "Speech synthesis speed reset."`,
+		`invalid_tts_speed: "errorInvalidTTSSpeed"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js misses TTS settings regression %q", want)
+		}
+	}
+	if got := strings.Count(script, `"/api/settings/tts-speed"`); got != 2 {
+		t.Errorf("TTS speed endpoint count = %d, want PUT and DELETE only", got)
+	}
+	body := regexp.MustCompile(`(?s)async function changeSettings\([^\n]*\) \{(.*?)\n  \}`).FindStringSubmatch(script)
+	if len(body) != 2 {
+		t.Fatal("settings mutation helper is missing")
+	}
+	for _, want := range []string{`if (loading || !session) return;`, `setBusy(true);`, `setBusy(false);`, `showNotice(t(successKey))`} {
+		if !strings.Contains(body[1], want) {
+			t.Errorf("TTS settings mutation misses %q", want)
+		}
+	}
+}
+
+func TestFrontendRateLimitedErrorsAreLocalized(t *testing.T) {
+	script := frontendAsset(t, "static/app.js")
+	for _, want := range []string{
+		`rate_limited: "errorRateLimited"`,
+		`errorRateLimited: "Слишком много запросов. Повторите попытку позже."`,
+		`errorRateLimited: "Too many requests. Try again later."`,
+		`status === 429 ? "errorRateLimited"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js misses localized 429 regression %q", want)
+		}
+	}
+}

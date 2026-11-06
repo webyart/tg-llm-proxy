@@ -79,8 +79,8 @@ func ttsSpeedStateKey(chatID int64) string {
 	return "tts_speed:" + strconv.FormatInt(chatID, 10)
 }
 
-func (d *Dispatcher) ttsSpeed(ctx context.Context, chatID int64) (float64, error) {
-	value, found, err := store.GetState(ctx, d.deps.DB, ttsSpeedStateKey(chatID))
+func TTSSpeed(ctx context.Context, db *sql.DB, chatID int64) (float64, error) {
+	value, found, err := store.GetState(ctx, db, ttsSpeedStateKey(chatID))
 	if err != nil {
 		return 0, err
 	}
@@ -94,15 +94,23 @@ func (d *Dispatcher) ttsSpeed(ctx context.Context, chatID int64) (float64, error
 	return speed, nil
 }
 
-func (d *Dispatcher) setTTSSpeed(ctx context.Context, chatID int64, value string) (float64, error) {
+func SetTTSSpeed(ctx context.Context, db *sql.DB, chatID int64, value string) (float64, error) {
 	speed, ok := parseTTSSpeed(value)
 	if !ok {
 		return 0, model.ErrTTSSpeed
 	}
-	if err := store.SetState(ctx, d.deps.DB, ttsSpeedStateKey(chatID), value); err != nil {
+	if err := store.SetState(ctx, db, ttsSpeedStateKey(chatID), value); err != nil {
 		return 0, err
 	}
 	return speed, nil
+}
+
+func (d *Dispatcher) ttsSpeed(ctx context.Context, chatID int64) (float64, error) {
+	return TTSSpeed(ctx, d.deps.DB, chatID)
+}
+
+func (d *Dispatcher) setTTSSpeed(ctx context.Context, chatID int64, value string) (float64, error) {
+	return SetTTSSpeed(ctx, d.deps.DB, chatID, value)
 }
 
 func (d *Dispatcher) ttsSpeedControl(ctx context.Context, ev Event, arg string) error {

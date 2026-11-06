@@ -1,3 +1,17 @@
+# tg-llm-proxy v1.35.0
+
+## Mini App History and full content
+
+- History получил search через `GET /api/history/search?q=...` с до 20 результатами, `GET /api/history/item?id=N` для полного текста и MD/JSON export через общий `bot.ExportHistoryData`. Telegram `/export` использует тот же serializer и прежние 10000-row/5MiB limits.
+- Links получил `GET /api/links/item?id=N` для полного сохранённого текста. Wrong-chat/missing IDs отклоняются; task plans/results/tool arguments не добавлялись.
+- Frontend выполняет export через bearer fetch и Blob/objectURL, обрабатывает ошибки до скачивания и освобождает object URLs. Truncated History/Links получили полный просмотр без раскрытия других чатов.
+
+## TTS speed and per-user limits
+
+- Settings показывает TTS только при включённом сервисе. `PUT /api/settings/tts-speed` принимает strict JSON со значениями 0.75/1/1.25/1.5, `DELETE` удаляет per-chat override и возвращает 1. Telegram и Mini App используют общие bot helpers и `bot_state`.
+- Bearer-авторизованные mutations ограничены 30/min/user, History export — независимыми 5/min/user. Используется mutex-protected bounded map до4096 principals с window pruning, HTTP 429 и `Retry-After`; обычные reads и global maxInFlight сохранены.
+- Добавлены full-content/isolation/export bytes/5MiB, rate window/pruning/concurrency, TTS strict JSON/reset/audit и frontend bearer Blob/revoke/429 regressions. JS runtime smoke на host не выполнялся: Node отсутствует.
+
 # tg-llm-proxy v1.34.0
 
 ## Documents search and TTS feedback

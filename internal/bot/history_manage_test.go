@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"runtime"
 	"strings"
@@ -229,6 +230,71 @@ func TestIncrementalHistoryExportsRemainValid(t *testing.T) {
 			if !strings.Contains(markdown, "включено: 2") || !strings.Contains(markdown, "строка \"json\" <tag>\nновая") || !strings.Contains(markdown, "## assistant") {
 				t.Fatalf("invalid incremental Markdown: %.500s", markdown)
 			}
+		}
+	}
+}
+
+func TestExportHistoryDataFormatsValidationAndChatIsolation(t *testing.T) {
+	ctx := context.Background()
+	db := testStore(t)
+	for _, row := range []store.Message{
+		{ChatID: 300, UserID: 11, Role: store.RoleUser, Content: "вопрос"},
+		{ChatID: 300, UserID: 11, Role: store.RoleAssistant, Content: "ответ"},
+		{ChatID: 301, UserID: 11, Role: store.RoleUser, Content: "другой чат"},
+	} {
+		if _, err := store.Append(ctx, db, row); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	data, err := ExportHistoryData(ctx, db, 300, " JSON ")
+	if err != nil {
+		t.Fatalf("ExportHistoryData JSON: %v", err)
+	}
+	var payload historyExport
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("export JSON: %v", err)
+	}
+	if payload.ChatID != 300 || len(payload.Messages) != 2 || payload.Messages[0].Content != "вопрос" || payload.Messages[1].Content != "ответ" {
+		t.Fatalf("export payload = %+v", payload)
+	}
+	for _, message := range payload.Messages {
+		if message.Content == "другой чат" {
+			t.Fatal("export included another chat")
+		}
+	}
+	data, err = ExportHistoryData(ctx, db, 300, "")
+	if err != nil {
+		t.Fatalf("ExportHistoryData Markdown: %v", err)
+	}
+	markdown := string(data)
+	if !strings.Contains(markdown, "# История чата 300") || !strings.Contains(markdown, "вопрос") || !strings.Contains(markdown, "ответ") || strings.Contains(markdown, "другой чат") {
+		t.Fatalf("Markdown export = %.500s", markdown)
+	}
+	data, err = ExportHistoryData(ctx, db, 302, "json")
+	if err != nil || len(data) != 0 {
+		t.Fatalf("empty export data = %d bytes, err = %v", len(data), err)
+	}
+	data, err = ExportHistoryData(ctx, db, 300, "csv")
+	if len(data) != 0 || !errors.Is(err, ErrHistoryExportFormat) {
+		t.Fatalf("invalid format data = %d bytes, err = %v", len(data), err)
+	}
+}
+
+func TestExportHistoryDataTooLargeSentinel(t *testing.T) {
+	ctx := context.Background()
+	db := testStore(t)
+	if err := store.EnsureChat(ctx, db, 303, 11, ""); err != nil {
+		t.Fatalf("EnsureChat: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO messages (chat_id, role, content, created_at)
+		VALUES (?, 'user', hex(zeroblob(?)), '2026-01-01T00:00:00Z')`, 303, ExportMaxBytes/2); err != nil {
+		t.Fatalf("seed oversized export: %v", err)
+	}
+	for _, format := range []string{"json", "md"} {
+		data, err := ExportHistoryData(ctx, db, 303, format)
+		if len(data) != 0 || !errors.Is(err, ErrHistoryExportTooLarge) {
+			t.Fatalf("%s oversized export data = %d bytes, err = %v", format, len(data), err)
 		}
 	}
 }

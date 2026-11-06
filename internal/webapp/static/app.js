@@ -28,6 +28,14 @@
       documentSearchEmptyQuery: "Введите непустой поисковый запрос.", documentSearchFailed: "Не удалось выполнить поиск документов.",
       documentSearchId: "id документа", documentSearchScore: "оценка",
       documentSearchTruncated: "Поиск охватил только часть фрагментов документов; более старые фрагменты не проверялись.",
+      searchHistory: "Найти", historySearchAria: "Поиск по истории", historySearchPlaceholder: "Поисковый запрос",
+      historySearchResults: "Результаты поиска", historySearchEmpty: "По запросу ничего не найдено.",
+      historySearchEmptyQuery: "Введите непустой поисковый запрос.", historySearchFailed: "Не удалось выполнить поиск по истории.",
+      historySearchTruncated: "Поиск охватил только последние 10000 сообщений; более старые сообщения не проверялись.",
+      historyExportMD: "Скачать Markdown", historyExportJSON: "Скачать JSON",
+      historyExportReady: "Экспорт истории подготовлен.", historyExportFailed: "Не удалось экспортировать историю.",
+      historyExportEmpty: "Нет сообщений для экспорта.", historyExportTooLarge: "Экспорт истории превышает 5 МиБ.",
+      showFullContent: "Показать полностью", fullContentFailed: "Не удалось загрузить полный текст.",
       activeReminders: "Активные напоминания", failedReminders: "Недоставленные напоминания",
       emptyActiveReminders: "Активных напоминаний нет.", emptyFailedReminders: "Недоставленных напоминаний нет.",
       reminderCadence: "Периодичность", reminderOnce: "один раз", reminderDaily: "ежедневно", reminderNextRun: "Следующий запуск",
@@ -61,6 +69,8 @@
       errorMethod: "Этот метод не разрешён.", errorPagination: "Некорректные параметры страницы.",
       errorInvalidQuery: "Введите один непустой запрос длиной до 4000 символов.", reminderNotMutable: "Напоминание отсутствует или его нельзя изменить в текущем состоянии.",
       errorRead: "Не удалось прочитать данные.", errorOverloaded: "Mini App перегружен. Повторите попытку позже.",
+      errorRateLimited: "Слишком много запросов. Повторите попытку позже.",
+      errorInvalidTTSSpeed: "Выберите скорость 0,75×, 1×, 1,25× или 1,5×.",
       errorNotFound: "Страница или API не найдены.",
       sourceChat: "настройка этого чата", sourceGlobal: "общая настройка", current: "Текущее",
       globalDefault: "Глобальное значение", customText: "пользовательский текст", modelTitle: "Модель",
@@ -72,6 +82,9 @@
       customAria: "Пользовательский текст роли", saveCustom: "Сохранить свою роль",
       streamTitle: "Стриминг ответов", streamAria: "Стриминг ответов", on: "Включён", off: "Выключен",
       saveStream: "Сохранить стриминг", resetGlobal: "Сбросить к общей",
+      ttsTitle: "Озвучивание (TTS)", ttsSpeedAria: "Скорость озвучивания",
+      saveTTSSpeed: "Сохранить скорость", resetTTSSpeed: "Сбросить скорость",
+      ttsSpeedSaved: "Скорость озвучивания сохранена.", ttsSpeedReset: "Скорость озвучивания сброшена.",
       persona_default: "по умолчанию", persona_custom: "пользовательская", persona_assistant: "ассистент",
       persona_coder: "программист", persona_writer: "писатель", persona_translator: "переводчик",
       preset_assistant_desc: "универсальный помощник", preset_coder_desc: "программирование, код и архитектура",
@@ -103,6 +116,14 @@
       documentSearchEmptyQuery: "Enter a non-empty search query.", documentSearchFailed: "Document search failed.",
       documentSearchId: "document id", documentSearchScore: "score",
       documentSearchTruncated: "Search covered only part of the document chunks; older chunks were not checked.",
+      searchHistory: "Search", historySearchAria: "Search history", historySearchPlaceholder: "Search query",
+      historySearchResults: "Search results", historySearchEmpty: "No messages matched the query.",
+      historySearchEmptyQuery: "Enter a non-empty search query.", historySearchFailed: "History search failed.",
+      historySearchTruncated: "Search covered only the latest 10000 messages; older messages were not checked.",
+      historyExportMD: "Download Markdown", historyExportJSON: "Download JSON",
+      historyExportReady: "History export is ready.", historyExportFailed: "History export failed.",
+      historyExportEmpty: "There are no messages to export.", historyExportTooLarge: "History export exceeds 5 MiB.",
+      showFullContent: "Show full text", fullContentFailed: "The full text could not be loaded.",
       activeReminders: "Active reminders", failedReminders: "Failed reminders",
       emptyActiveReminders: "No active reminders.", emptyFailedReminders: "No failed reminders.",
       reminderCadence: "Cadence", reminderOnce: "once", reminderDaily: "daily", reminderNextRun: "Next run",
@@ -136,6 +157,8 @@
       errorMethod: "Method not allowed.", errorPagination: "Invalid pagination parameters.",
       errorInvalidQuery: "Enter one nonempty query of at most 4000 characters.", reminderNotMutable: "The reminder is missing or cannot be changed in its current state.",
       errorRead: "The data could not be read.", errorOverloaded: "The Mini App is busy. Try again shortly.",
+      errorRateLimited: "Too many requests. Try again later.",
+      errorInvalidTTSSpeed: "Choose a speed of 0.75×, 1×, 1.25×, or 1.5×.",
       errorNotFound: "Page or API endpoint not found.",
       sourceChat: "this chat override", sourceGlobal: "global default", current: "Current",
       globalDefault: "Global default", customText: "custom text", modelTitle: "Model",
@@ -147,6 +170,9 @@
       customAria: "Custom persona text", saveCustom: "Save custom persona",
       streamTitle: "Stream responses", streamAria: "Stream responses", on: "On", off: "Off",
       saveStream: "Save stream setting", resetGlobal: "Reset to global",
+      ttsTitle: "Speech synthesis (TTS)", ttsSpeedAria: "Speech synthesis speed",
+      saveTTSSpeed: "Save speed", resetTTSSpeed: "Reset speed",
+      ttsSpeedSaved: "Speech synthesis speed saved.", ttsSpeedReset: "Speech synthesis speed reset.",
       persona_default: "default", persona_custom: "custom", persona_assistant: "assistant",
       persona_coder: "coder", persona_writer: "writer", persona_translator: "translator",
       preset_assistant_desc: "general assistant", preset_coder_desc: "programming, code and architecture",
@@ -159,7 +185,9 @@
     invalid_model: "errorInvalidModel", invalid_persona: "errorInvalidPersona", invalid_stream: "errorInvalidStream",
     invalid_json: "errorInvalidJSON", content_type: "errorContentType", body_too_large: "errorBodyLarge",
     method_not_allowed: "errorMethod", invalid_pagination: "errorPagination", invalid_query: "errorInvalidQuery", read_failed: "errorRead",
-    overloaded: "errorOverloaded", not_found: "errorNotFound", invalid_body: "errorInvalidJSON", static_error: "errorRead", reminder_not_mutable: "reminderNotMutable",
+    overloaded: "errorOverloaded", rate_limited: "errorRateLimited", invalid_tts_speed: "errorInvalidTTSSpeed",
+    export_failed: "historyExportFailed", export_too_large: "historyExportTooLarge", history_empty: "historyExportEmpty",
+    not_found: "errorNotFound", invalid_body: "errorInvalidJSON", static_error: "errorRead", reminder_not_mutable: "reminderNotMutable",
     task_not_active: "taskNotActive", task_not_resumable: "taskNotResumable", task_mutation_failed: "taskMutationFailed",
     task_not_deletable: "taskNotDeletable", document_mutation_failed: "documentMutationFailed",
     link_mutation_failed: "linkMutationFailed", reminder_mutation_failed: "reminderMutationFailed",
@@ -208,6 +236,7 @@
   let deleteTaskArmed = null;
   let deleteReminderArmed = null;
   let documentSearch = { query: "", active: false, items: [], truncated: false };
+  let historySearch = { query: "", active: false, items: [], truncated: false };
   let view = { tab: "status", data: null, items: [] };
 
   function resetArmedStates() {
@@ -222,6 +251,7 @@
 
   function resetSearchState() {
     documentSearch = { query: "", active: false, items: [], truncated: false };
+    historySearch = { query: "", active: false, items: [], truncated: false };
   }
 
   function syncBusyState() {
@@ -277,7 +307,8 @@
   }
 
   function responseError(code, status) {
-    return t(errorKeys[code] || "requestFailed", { status });
+    const key = status === 429 ? "errorRateLimited" : errorKeys[code] || "requestFailed";
+    return t(key, { status });
   }
 
   async function api(path, options = {}) {
@@ -387,6 +418,56 @@
     return confirmation;
   }
 
+  function appendHistoryContent(wrapper, item) {
+    wrapper.appendChild(element("div", "role", item.role === "user" ? t("you") : t("assistant")));
+    wrapper.appendChild(element("div", "content", item.content));
+    if (item.truncated) {
+      const actions = element("div", "task-actions");
+      actions.appendChild(settingsButton(t("showFullContent"), () => loadFullContent("history", item.id)));
+      wrapper.appendChild(actions);
+    }
+  }
+
+  function renderHistorySearch() {
+    const section = element("section", "history-search");
+    const row = element("div", "history-search-row");
+    const input = element("input");
+    input.type = "search";
+    input.maxLength = 4000;
+    input.value = historySearch.query;
+    input.placeholder = t("historySearchPlaceholder");
+    input.setAttribute("aria-label", t("historySearchAria"));
+    input.addEventListener("input", () => { historySearch.query = input.value; });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        searchHistory(input.value);
+      }
+    });
+    row.appendChild(input);
+    row.appendChild(settingsButton(t("searchHistory"), () => searchHistory(input.value)));
+    section.appendChild(row);
+    const exportRow = element("div", "history-export");
+    exportRow.appendChild(settingsButton(t("historyExportMD"), () => exportHistory("md"), true));
+    exportRow.appendChild(settingsButton(t("historyExportJSON"), () => exportHistory("json"), true));
+    section.appendChild(exportRow);
+    if (historySearch.active) {
+      const results = element("div", "search-results");
+      results.appendChild(element("h3", "", t("historySearchResults")));
+      if (historySearch.truncated) results.appendChild(element("p", "task-clear-warning", t("historySearchTruncated")));
+      if (!historySearch.items.length) {
+        results.appendChild(element("p", "empty", t("historySearchEmpty")));
+      }
+      for (const item of historySearch.items.slice(0, 20)) {
+        const wrapper = itemShell(item.id, item.created_at);
+        appendHistoryContent(wrapper, item);
+        results.appendChild(wrapper);
+      }
+      section.appendChild(results);
+    }
+    return section;
+  }
+
   function renderDocumentSearch() {
     const section = element("section", "document-search");
     const row = element("div", "document-search-row");
@@ -466,10 +547,12 @@
 
   function renderItems(tab, items) {
     ui.content.replaceChildren();
+    if (tab === "history") ui.content.appendChild(renderHistorySearch());
     if (tab === "documents") ui.content.appendChild(renderDocumentSearch());
     if (!items.length) {
       if (tab === "documents") ui.content.appendChild(element("p", "empty", t("emptyItems")));
-      else renderEmpty(t(tab === "history" ? "emptyHistory" : "emptyItems"));
+      else if (tab === "history") ui.content.appendChild(element("p", "empty", t("emptyHistory")));
+      else renderEmpty(t("emptyItems"));
       syncBusyState();
       return;
     }
@@ -515,8 +598,7 @@
     for (const [index, item] of items.entries()) {
       const wrapper = itemShell(item.id, item.created_at || item.updated_at);
       if (tab === "history") {
-        wrapper.appendChild(element("div", "role", item.role === "user" ? t("you") : t("assistant")));
-        wrapper.appendChild(element("div", "content", item.content));
+        appendHistoryContent(wrapper, item);
       } else if (tab === "documents") {
         wrapper.appendChild(element("div", "content", item.name));
         wrapper.appendChild(element("div", "meta", `${item.size_bytes} ${t("bytes")} · ${item.chunks} ${t("chunks")}`));
@@ -549,6 +631,7 @@
           ));
         } else {
           const actions = element("div", "task-actions");
+          if (item.truncated) actions.appendChild(settingsButton(t("showFullContent"), () => loadFullContent("links", item.id)));
           actions.appendChild(settingsButton(t("deleteLink"), () => setLinkDeleteArmed(item.id, items), true));
           wrapper.appendChild(actions);
         }
@@ -596,6 +679,106 @@
     return section;
   }
 
+  async function searchHistory(query) {
+    if (loading || !session) return;
+    const normalized = query.trim();
+    if (!normalized) {
+      showError(t("historySearchEmptyQuery"));
+      return;
+    }
+    if (Array.from(normalized).length > 4000) {
+      showError(t("errorInvalidQuery"));
+      return;
+    }
+    setBusy(true);
+    resetArmedStates();
+    showError("");
+    try {
+      const data = await api(`/api/history/search?q=${encodeURIComponent(normalized)}`);
+      historySearch = {
+        query: normalized,
+        active: true,
+        items: (Array.isArray(data.items) ? data.items : []).filter((item) => item.role === "user" || item.role === "assistant").slice(0, 20),
+        truncated: Boolean(data.truncated || (data.corpus && data.corpus.truncated)),
+      };
+      renderItems("history", view.items);
+    } catch (error) {
+      showError(error.message || t("historySearchFailed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function exportHistory(format) {
+    if (loading || !session) return;
+    setBusy(true);
+    showError("");
+    try {
+      const headers = new Headers({ "Authorization": `Bearer ${session}` });
+      let response;
+      try {
+        response = await fetch(`/api/history/export?format=${format}`, { headers, cache: "no-store" });
+      } catch (_) {
+        throw new Error(t("networkError"));
+      }
+      if (!response.ok) {
+        let body = null;
+        try { body = await response.json(); } catch (_) { body = null; }
+        if (response.status === 401) expire(t("sessionExpired"));
+        const code = body && body.error && body.error.code;
+        throw new Error(responseError(code, response.status));
+      }
+      const blob = await response.blob();
+      if (blob.size > 5 * 1024 * 1024) throw new Error(t("historyExportTooLarge"));
+      let objectURL = "";
+      let anchor = null;
+      try {
+        objectURL = URL.createObjectURL(blob);
+        anchor = element("a");
+        anchor.href = objectURL;
+        anchor.download = `history.${format}`;
+        anchor.hidden = true;
+        document.body.appendChild(anchor);
+        anchor.click();
+      } finally {
+        if (anchor) anchor.remove();
+        if (objectURL) URL.revokeObjectURL(objectURL);
+      }
+      showNotice(t("historyExportReady"));
+    } catch (error) {
+      showError(error.message || t("historyExportFailed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function loadFullContent(tab, id) {
+    if (loading || !session || !["history", "links"].includes(tab)) return;
+    setBusy(true);
+    showError("");
+    try {
+      const data = await api(`/api/${tab}/item?id=${encodeURIComponent(id)}`);
+      const full = data.item || data;
+      if (!full || typeof full.content !== "string") throw new Error(t("invalidResponse"));
+      if (tab === "history" && !["user", "assistant"].includes(full.role)) throw new Error(t("invalidResponse"));
+      const update = (items) => {
+        for (const item of items) {
+          if (item.id === id) {
+            item.content = full.content;
+            item.truncated = false;
+          }
+        }
+      };
+      update(view.items);
+      if (tab === "history") update(historySearch.items);
+      renderItems(tab, view.items);
+    } catch (error) {
+      showError(error.message || t("fullContentFailed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function searchDocuments(query) {
     if (loading || !session) return;
     const normalized = query.trim();
@@ -623,7 +806,7 @@
     }
   }
 
-  async function changeSettings(path, method, payload) {
+  async function changeSettings(path, method, payload, successKey = "") {
     if (loading || !session) return;
     setBusy(true);
     showError("");
@@ -645,7 +828,8 @@
       resetArmedStates();
       resetSearchState();
       await load();
-      showNotice(t("settingsSaved"));
+      if (successKey) showNotice(t(successKey));
+      else showNotice(t("settingsSaved"));
     }
   }
 
@@ -809,6 +993,24 @@
     streamRow.appendChild(settingsButton(t("resetGlobal"), () => changeSettings("/api/settings/stream", "DELETE"), true));
     stream.appendChild(streamRow);
     ui.content.appendChild(stream);
+
+    if (data.tts && data.tts.enabled) {
+      const tts = settingsSection(t("ttsTitle"), `${t("current")}: ${data.tts.current}×`);
+      const speedChoice = element("select");
+      speedChoice.setAttribute("aria-label", t("ttsSpeedAria"));
+      for (const value of ["0.75", "1", "1.25", "1.5"]) {
+        const option = element("option", "", `${value}×`);
+        option.value = value;
+        option.selected = String(data.tts.current) === value;
+        speedChoice.appendChild(option);
+      }
+      const speedRow = element("div", "settings-row");
+      speedRow.appendChild(speedChoice);
+      speedRow.appendChild(settingsButton(t("saveTTSSpeed"), () => changeSettings("/api/settings/tts-speed", "PUT", { speed: speedChoice.value }, "ttsSpeedSaved")));
+      speedRow.appendChild(settingsButton(t("resetTTSSpeed"), () => changeSettings("/api/settings/tts-speed", "DELETE", undefined, "ttsSpeedReset"), true));
+      tts.appendChild(speedRow);
+      ui.content.appendChild(tts);
+    }
     syncBusyState();
   }
 

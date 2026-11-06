@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"bot/internal/bot"
@@ -28,10 +29,71 @@ const (
 	maxInFlight           = 8
 	shutdownTimeout       = 2 * time.Second
 	contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors https://web.telegram.org"
+	mutationRateLimit     = 30
+	exportRateLimit       = 5
+	rateLimitWindow       = time.Minute
+	maxRateLimitUsers     = 4096
 )
 
 //go:embed static/index.html static/app.js static/style.css
 var staticFiles embed.FS
+
+type rateLimitBucket struct {
+	startedAt time.Time
+	count     int
+}
+
+type rateLimitPrincipal struct {
+	mutation rateLimitBucket
+	export   rateLimitBucket
+}
+
+type perUserRateLimiter struct {
+	mu         sync.Mutex
+	now        func() time.Time
+	principals map[int64]rateLimitPrincipal
+}
+
+func newPerUserRateLimiter() *perUserRateLimiter {
+	return &perUserRateLimiter{now: time.Now, principals: map[int64]rateLimitPrincipal{}}
+}
+
+func rateLimitBucketExpired(bucket rateLimitBucket, now time.Time) bool {
+	return bucket.startedAt.IsZero() || !now.Before(bucket.startedAt.Add(rateLimitWindow))
+}
+
+func (l *perUserRateLimiter) allow(userID int64, export bool) (bool, time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	for id, principal := range l.principals {
+		if rateLimitBucketExpired(principal.mutation, now) && rateLimitBucketExpired(principal.export, now) {
+			delete(l.principals, id)
+		}
+	}
+	principal, found := l.principals[userID]
+	if !found {
+		if len(l.principals) >= maxRateLimitUsers {
+			return false, rateLimitWindow
+		}
+		principal = rateLimitPrincipal{}
+	}
+	bucket := &principal.mutation
+	limit := mutationRateLimit
+	if export {
+		bucket = &principal.export
+		limit = exportRateLimit
+	}
+	if rateLimitBucketExpired(*bucket, now) {
+		*bucket = rateLimitBucket{startedAt: now}
+	}
+	if bucket.count >= limit {
+		return false, bucket.startedAt.Add(rateLimitWindow).Sub(now)
+	}
+	bucket.count++
+	l.principals[userID] = principal
+	return true, 0
+}
 
 type TaskLifecycle interface {
 	CancelTask(ctx context.Context, chatID int64) (store.Task, bool, error)
@@ -64,6 +126,7 @@ type App struct {
 	auth          *authenticator
 	handler       http.Handler
 	taskLifecycle TaskLifecycle
+	rateLimits    *perUserRateLimiter
 }
 
 func New(cfg config.Config, db *sql.DB, client model.Client, logger *slog.Logger) *App {
@@ -73,6 +136,7 @@ func New(cfg config.Config, db *sql.DB, client model.Client, logger *slog.Logger
 	app := &App{cfg: cfg, db: db, model: client, logger: logger}
 	app.taskLifecycle = storeTaskLifecycle{db: db}
 	app.auth = newAuthenticator(cfg.BotToken, cfg.Allows)
+	app.rateLimits = newPerUserRateLimiter()
 	app.handler = securityHeaders(limitInFlight(http.HandlerFunc(app.route), maxInFlight))
 	return app
 }
@@ -162,6 +226,14 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusUnauthorized, "session_expired", "Session expired. Reopen the Mini App from Telegram.")
 		return
 	}
+	isExport := req.URL.Path == "/api/history/export" && req.Method == http.MethodGet
+	if isExport || req.Method != http.MethodGet && req.Method != http.MethodHead {
+		allowed, retryAfter := a.rateLimits.allow(current.UserID, isExport)
+		if !allowed {
+			writeRateLimited(w, retryAfter)
+			return
+		}
+	}
 	if operation, ok := miniAppMutationOperation(req); ok {
 		audited := &auditResponseWriter{ResponseWriter: w, status: http.StatusOK}
 		w = audited
@@ -185,6 +257,14 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 		a.documentControl(w, req, current)
 		return
 	}
+	if req.URL.Path == "/api/links/item" {
+		if req.Method != http.MethodGet {
+			methodAllowed(w, http.MethodGet)
+			return
+		}
+		a.linkByID(w, req, current)
+		return
+	}
 	if strings.HasPrefix(req.URL.Path, "/api/links/") {
 		a.linkControl(w, req, current)
 		return
@@ -206,6 +286,9 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 	case "/api/settings/stream":
 		a.settingsStream(w, req, current)
 		return
+	case "/api/settings/tts-speed":
+		a.settingsTTSSpeed(w, req, current)
+		return
 	}
 	if req.Method != http.MethodGet {
 		methodAllowed(w, http.MethodGet)
@@ -216,6 +299,12 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 		a.status(w, req, current)
 	case "/api/history":
 		a.history(w, req, current)
+	case "/api/history/search":
+		a.searchHistory(w, req, current)
+	case "/api/history/item":
+		a.historyByID(w, req, current)
+	case "/api/history/export":
+		a.exportHistory(w, req, current)
 	case "/api/documents":
 		a.documents(w, req, current)
 	case "/api/links":
@@ -227,6 +316,15 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 	default:
 		writeError(w, http.StatusNotFound, "not_found", "API endpoint not found.")
 	}
+}
+
+func writeRateLimited(w http.ResponseWriter, retryAfter time.Duration) {
+	seconds := int64((retryAfter + time.Second - 1) / time.Second)
+	if seconds < 1 {
+		seconds = 1
+	}
+	w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
+	writeError(w, http.StatusTooManyRequests, "rate_limited", "Too many requests. Try again later.")
 }
 
 type auditResponseWriter struct {
@@ -283,6 +381,8 @@ func miniAppMutationOperation(req *http.Request) (string, bool) {
 			operation = "settings.persona."
 		case "/api/settings/stream":
 			operation = "settings.stream."
+		case "/api/settings/tts-speed":
+			operation = "settings.tts_speed."
 		}
 		if operation != "" {
 			if req.Method == http.MethodPut {
@@ -364,8 +464,13 @@ func (a *App) currentScope(req *http.Request) (scope, error) {
 
 func (a *App) revokeSession(w http.ResponseWriter, req *http.Request) {
 	bearer := bearerToken(req)
-	if _, err := a.auth.authorizeBearer(bearer); err != nil {
+	current, err := a.auth.authorizeBearer(bearer)
+	if err != nil {
 		writeError(w, http.StatusUnauthorized, "session_expired", "Session expired. Reopen the Mini App from Telegram.")
+		return
+	}
+	if allowed, retryAfter := a.rateLimits.allow(current.UserID, false); !allowed {
+		writeRateLimited(w, retryAfter)
 		return
 	}
 	a.auth.revoke(bearer)

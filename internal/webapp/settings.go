@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -123,6 +124,12 @@ type settingsResponse struct {
 		Enabled bool   `json:"enabled"`
 		Source  string `json:"source"`
 	} `json:"stream"`
+	TTS struct {
+		Enabled bool      `json:"enabled"`
+		Current float64   `json:"current"`
+		Default float64   `json:"default"`
+		Choices []float64 `json:"choices"`
+	} `json:"tts"`
 }
 
 func methodAllowed(w http.ResponseWriter, methods ...string) {
@@ -149,6 +156,11 @@ func (a *App) settings(w http.ResponseWriter, req *http.Request, current scope) 
 	streamOverride, streamFound, err := store.ChatStreaming(req.Context(), a.db, current.ChatID)
 	if err != nil {
 		a.queryFailed(w, "settings stream", err)
+		return
+	}
+	ttsSpeed, err := bot.TTSSpeed(req.Context(), a.db, current.ChatID)
+	if err != nil {
+		a.queryFailed(w, "settings TTS speed", err)
 		return
 	}
 
@@ -193,6 +205,10 @@ func (a *App) settings(w http.ResponseWriter, req *http.Request, current scope) 
 		response.Stream.Enabled = streamOverride
 		response.Stream.Source = "chat"
 	}
+	response.TTS.Enabled = a.cfg.TTSEnabled
+	response.TTS.Current = ttsSpeed
+	response.TTS.Default = 1
+	response.TTS.Choices = []float64{0.75, 1, 1.25, 1.5}
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -392,5 +408,59 @@ func (a *App) settingsStream(w http.ResponseWriter, req *http.Request, current s
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	default:
 		methodAllowed(w, http.MethodPut, http.MethodDelete)
+	}
+}
+
+func validTTSSpeed(value string) bool {
+	switch value {
+	case "0.75", "1", "1.25", "1.5":
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *App) settingsTTSSpeed(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.Method != http.MethodPut && req.Method != http.MethodDelete {
+		methodAllowed(w, http.MethodPut, http.MethodDelete)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_query", "TTS speed settings do not accept query parameters.")
+		return
+	}
+	switch req.Method {
+	case http.MethodPut:
+		var input struct {
+			Speed *string `json:"speed"`
+		}
+		if status, ok := decodeSettingsJSON(req, &input); !ok {
+			settingsDecodeError(w, status)
+			return
+		}
+		if input.Speed == nil || !validTTSSpeed(*input.Speed) {
+			writeError(w, http.StatusBadRequest, "invalid_tts_speed", "Set speed to one of 0.75, 1, 1.25, 1.5.")
+			return
+		}
+		if err := store.EnsureChat(req.Context(), a.db, current.ChatID, current.UserID, ""); err != nil {
+			a.queryFailed(w, "settings ensure chat", err)
+			return
+		}
+		if _, err := bot.SetTTSSpeed(req.Context(), a.db, current.ChatID, *input.Speed); err != nil {
+			a.queryFailed(w, "settings set TTS speed", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	case http.MethodDelete:
+		if status, ok := emptySettingsBody(req); !ok {
+			settingsDecodeError(w, status)
+			return
+		}
+		key := "tts_speed:" + strconv.FormatInt(current.ChatID, 10)
+		if _, err := a.db.ExecContext(req.Context(), `DELETE FROM bot_state WHERE key = ?`, key); err != nil {
+			a.queryFailed(w, "settings reset TTS speed", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}
 }

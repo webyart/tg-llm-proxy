@@ -2,6 +2,7 @@ package webapp
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"net/http"
 	"net/url"
@@ -169,6 +170,119 @@ func (a *App) history(w http.ResponseWriter, req *http.Request, current scope) {
 		items = items[:page.Limit]
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_before_id": next})
+}
+
+func strictQueryValue(req *http.Request, name string) (string, bool) {
+	values, err := url.ParseQuery(req.URL.RawQuery)
+	if err != nil || len(values) != 1 {
+		return "", false
+	}
+	entries, found := values[name]
+	if !found || len(entries) != 1 {
+		return "", false
+	}
+	return entries[0], true
+}
+
+func canonicalIDQuery(req *http.Request) (int64, bool) {
+	raw, ok := strictQueryValue(req, "id")
+	if !ok {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 || strconv.FormatInt(id, 10) != raw {
+		return 0, false
+	}
+	return id, true
+}
+
+func invalidItemQuery(w http.ResponseWriter) {
+	writeError(w, http.StatusBadRequest, "invalid_query", "Use exactly one positive canonical id.")
+}
+
+func (a *App) searchHistory(w http.ResponseWriter, req *http.Request, current scope) {
+	query, ok := strictQueryValue(req, "q")
+	if !ok || strings.TrimSpace(query) == "" || !utf8.ValidString(query) || len([]rune(query)) > store.RAGQueryMaxRunes {
+		writeError(w, http.StatusBadRequest, "invalid_query", "Use exactly one nonempty q of at most 4000 runes.")
+		return
+	}
+	rows, err := store.SearchMessages(req.Context(), a.db, current.ChatID, query, bot.SearchRowLimit)
+	if err != nil {
+		a.queryFailed(w, "history search", err)
+		return
+	}
+	var corpusTruncated bool
+	if err := a.db.QueryRowContext(req.Context(), `
+		SELECT EXISTS (SELECT 1 FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?)`,
+		current.ChatID, bot.ExportRowLimit).Scan(&corpusTruncated); err != nil {
+		a.queryFailed(w, "history search window", err)
+		return
+	}
+	items := make([]historyItem, 0, len(rows))
+	for _, row := range rows {
+		item := historyItem{ID: row.ID, Role: row.Role, Content: row.Content, CreatedAt: row.CreatedAt}
+		item.Content, item.Truncated = boundedText(item.Content, maxHistoryRunes)
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "truncated": corpusTruncated})
+}
+
+func (a *App) historyByID(w http.ResponseWriter, req *http.Request, current scope) {
+	id, ok := canonicalIDQuery(req)
+	if !ok {
+		invalidItemQuery(w)
+		return
+	}
+	var item historyItem
+	err := a.db.QueryRowContext(req.Context(), `
+		SELECT id, role, content, created_at FROM messages WHERE chat_id = ? AND id = ?`, current.ChatID, id).
+		Scan(&item.ID, &item.Role, &item.Content, &item.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "not_found", "Message not found.")
+		return
+	}
+	if err != nil {
+		a.queryFailed(w, "history item", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (a *App) exportHistory(w http.ResponseWriter, req *http.Request, current scope) {
+	format, ok := strictQueryValue(req, "format")
+	if !ok || format != "md" && format != "json" {
+		writeError(w, http.StatusBadRequest, "invalid_query", "Use exactly one format of md or json.")
+		return
+	}
+	data, err := bot.ExportHistoryData(req.Context(), a.db, current.ChatID, format)
+	if errors.Is(err, bot.ErrHistoryExportTooLarge) || len(data) > bot.ExportMaxBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "export_too_large", "History export exceeds 5 MiB.")
+		return
+	}
+	if errors.Is(err, bot.ErrHistoryExportFormat) {
+		writeError(w, http.StatusBadRequest, "invalid_query", "Use exactly one format of md or json.")
+		return
+	}
+	if err != nil {
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, req.Context().Err()) {
+			a.logger.Error("Mini App history export failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "export_failed", "The history could not be exported.")
+		}
+		return
+	}
+	if len(data) == 0 {
+		writeError(w, http.StatusNotFound, "history_empty", "There are no messages to export.")
+		return
+	}
+	contentType := "text/markdown; charset=utf-8"
+	if format == "json" {
+		contentType = "application/json; charset=utf-8"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", `attachment; filename="history-`+strconv.FormatInt(current.ChatID, 10)+`.`+format+`"`)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 type documentItem struct {
@@ -405,6 +519,27 @@ func (a *App) links(w http.ResponseWriter, req *http.Request, current scope) {
 		items = items[:page.Limit]
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_before_id": next})
+}
+
+func (a *App) linkByID(w http.ResponseWriter, req *http.Request, current scope) {
+	id, ok := canonicalIDQuery(req)
+	if !ok {
+		invalidItemQuery(w)
+		return
+	}
+	var item linkItem
+	err := a.db.QueryRowContext(req.Context(), `
+		SELECT id, title, canonical_url, content, updated_at FROM saved_links WHERE chat_id = ? AND id = ?`, current.ChatID, id).
+		Scan(&item.ID, &item.Title, &item.URL, &item.Content, &item.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "not_found", "Saved link not found.")
+		return
+	}
+	if err != nil {
+		a.queryFailed(w, "link item", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 func linkBodyError(w http.ResponseWriter, status int) {

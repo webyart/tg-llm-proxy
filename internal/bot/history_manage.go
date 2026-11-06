@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -58,7 +59,10 @@ type historyExportMetadata struct {
 	Window     historyExportWindow `json:"window"`
 }
 
-var errHistoryExportTooLarge = errors.New("history export exceeds byte limit")
+var (
+	ErrHistoryExportFormat   = errors.New("unsupported history export format")
+	ErrHistoryExportTooLarge = errors.New("history export exceeds byte limit")
+)
 
 type historyExportBuffer struct {
 	bytes.Buffer
@@ -75,7 +79,7 @@ func (b *historyExportBuffer) reserve(next int) {
 
 func (b *historyExportBuffer) Write(p []byte) (int, error) {
 	if len(p) > ExportMaxBytes-b.Len() {
-		return 0, errHistoryExportTooLarge
+		return 0, ErrHistoryExportTooLarge
 	}
 	b.reserve(len(p))
 	return b.Buffer.Write(p)
@@ -83,7 +87,7 @@ func (b *historyExportBuffer) Write(p []byte) (int, error) {
 
 func (b *historyExportBuffer) WriteString(text string) (int, error) {
 	if len(text) > ExportMaxBytes-b.Len() {
-		return 0, errHistoryExportTooLarge
+		return 0, ErrHistoryExportTooLarge
 	}
 	b.reserve(len(text))
 	return b.Buffer.WriteString(text)
@@ -196,7 +200,7 @@ func (s *historyExportSerializer) add(row store.Message) error {
 		return s.writeString("\n\n")
 	}
 	if row.ContentLength > int64(ExportMaxBytes-s.output.Len()) || len(row.Content) > ExportMaxBytes-s.output.Len() {
-		return errHistoryExportTooLarge
+		return ErrHistoryExportTooLarge
 	}
 	if s.messageCount > 0 {
 		if err := s.writeString(",\n"); err != nil {
@@ -241,28 +245,45 @@ func exportWarning(rowCount int, truncated bool) string {
 	return ""
 }
 
-func (d *Dispatcher) exportHistory(ctx context.Context, ev Event, arg string) error {
-	format := strings.ToLower(strings.TrimSpace(arg))
+func ExportHistoryData(ctx context.Context, db *sql.DB, chatID int64, format string) ([]byte, error) {
+	format = strings.ToLower(strings.TrimSpace(format))
 	if format == "" {
 		format = "md"
 	}
 	if format != "md" && format != "json" {
+		return nil, ErrHistoryExportFormat
+	}
+	serializer := historyExportSerializer{format: format, chatID: chatID}
+	window, _, err := store.StreamExportMessagesBounded(ctx, db, chatID, ExportRowLimit, ExportMaxBytes, serializer.start, serializer.add)
+	if errors.Is(err, store.ErrExportContentTooLarge) {
+		return nil, fmt.Errorf("%w: %w", ErrHistoryExportTooLarge, err)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if window.Count == 0 {
+		return nil, nil
+	}
+	return serializer.finish()
+}
+
+func (d *Dispatcher) exportHistory(ctx context.Context, ev Event, arg string) error {
+	format := strings.ToLower(strings.TrimSpace(arg))
+	data, err := ExportHistoryData(ctx, d.deps.DB, ev.ChatID, format)
+	if errors.Is(err, ErrHistoryExportFormat) {
 		return d.reply(ctx, ev.ChatID, "Используй /export md или /export json.")
 	}
-	serializer := historyExportSerializer{format: format, chatID: ev.ChatID}
-	window, _, err := store.StreamExportMessagesBounded(ctx, d.deps.DB, ev.ChatID, ExportRowLimit, ExportMaxBytes, serializer.start, serializer.add)
-	var data []byte
-	if err == nil && window.Count > 0 {
-		data, err = serializer.finish()
-	}
-	if errors.Is(err, errHistoryExportTooLarge) || errors.Is(err, store.ErrExportContentTooLarge) {
+	if errors.Is(err, ErrHistoryExportTooLarge) {
 		return d.reply(ctx, ev.ChatID, "Экспорт превышает 5 МиБ. Удали старую историю или используй более поздний чат.")
 	}
 	if err != nil {
 		return err
 	}
-	if window.Count == 0 {
+	if len(data) == 0 {
 		return d.reply(ctx, ev.ChatID, msgHistoryEmpty)
+	}
+	if format == "" {
+		format = "md"
 	}
 	sender, ok := d.deps.Replier.(DocumentSender)
 	if !ok {

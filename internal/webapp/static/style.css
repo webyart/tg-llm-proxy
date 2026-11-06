@@ -72,10 +72,12 @@ textarea { min-height: 120px; resize: vertical; }
 .settings-row button { flex: 0 1 auto; }
 .counter { font-size: .78rem; color: var(--tg-theme-hint-color, #607080); text-align: right; }
 .loading { margin: 0 0 12px; padding: 10px 12px; border-radius: 10px; color: var(--tg-theme-text-color, #17202a); background: #7b899614; font-weight: 600; }
-.document-search { padding-bottom: 14px; margin-bottom: 4px; border-bottom: 1px solid #7b899633; }
-.document-search-row { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; }
-.document-search-row input { flex: 1 1 220px; }
-.document-search-row button { flex: 0 1 auto; }
+.document-search, .history-search { padding-bottom: 14px; margin-bottom: 4px; border-bottom: 1px solid #7b899633; }
+.document-search-row, .history-search-row, .history-export { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; }
+.document-search-row input, .history-search-row input { flex: 1 1 220px; }
+.document-search-row button, .history-search-row button { flex: 0 1 auto; }
+.history-export { margin-top: 8px; }
+.history-export button { flex: 1 1 160px; }
 .search-results { margin-top: 12px; }
 .search-results h3, .reminder-section h3 { font-size: 1rem; margin: 0 0 6px; }
 .reminder-section { padding: 12px 0; border-top: 1px solid #7b899633; }
@@ -88,7 +90,7 @@ textarea { min-height: 120px; resize: vertical; }
   nav button { flex: 1 1 calc(50% - 5px); }
   .settings-row { align-items: stretch; }
   .settings-row select, .settings-row button { flex: 1 1 100%; width: 100%; }
-  .document-search-row input, .document-search-row button { flex: 1 1 100%; width: 100%; }
+  .document-search-row input, .document-search-row button, .history-search-row input, .history-search-row button, .history-export button { flex: 1 1 100%; width: 100%; }
   .header-actions { width: 100%; }
   .header-actions #language { flex: 0 0 auto; width: auto; }
   .header-actions #logout { flex: 1 1 auto; }

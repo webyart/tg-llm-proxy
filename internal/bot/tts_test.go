@@ -303,6 +303,56 @@ func TestTTSLastHonorsCharacterLimit(t *testing.T) {
 	}
 }
 
+func TestTTSSpeedHelpersPersistChoicesAndIsolateChats(t *testing.T) {
+	ctx := context.Background()
+	db := testStore(t)
+	for _, chatID := range []int64{100, 200} {
+		speed, err := TTSSpeed(ctx, db, chatID)
+		if err != nil || speed != ttsDefaultSpeed {
+			t.Fatalf("default speed for chat %d = %v, err = %v", chatID, speed, err)
+		}
+	}
+	for _, choice := range []struct {
+		value string
+		want  float64
+	}{
+		{value: "0.75", want: 0.75},
+		{value: "1", want: 1},
+		{value: "1.25", want: 1.25},
+		{value: "1.5", want: 1.5},
+	} {
+		speed, err := SetTTSSpeed(ctx, db, 100, choice.value)
+		if err != nil || speed != choice.want {
+			t.Fatalf("SetTTSSpeed(%q) = %v, err = %v", choice.value, speed, err)
+		}
+		speed, err = TTSSpeed(ctx, db, 100)
+		if err != nil || speed != choice.want {
+			t.Fatalf("TTSSpeed after %q = %v, err = %v", choice.value, speed, err)
+		}
+	}
+	if _, err := SetTTSSpeed(ctx, db, 100, "1.25"); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []string{"0.5", "1.0", "2", "fast", "1.25 extra", " 1"} {
+		speed, err := SetTTSSpeed(ctx, db, 100, invalid)
+		if speed != 0 || !errors.Is(err, model.ErrTTSSpeed) {
+			t.Fatalf("SetTTSSpeed(%q) = %v, err = %v", invalid, speed, err)
+		}
+	}
+	speed, err := TTSSpeed(ctx, db, 100)
+	if err != nil || speed != 1.25 {
+		t.Fatalf("invalid mutation changed speed: %v, err = %v", speed, err)
+	}
+	speed, err = TTSSpeed(ctx, db, 200)
+	if err != nil || speed != ttsDefaultSpeed {
+		t.Fatalf("other chat speed = %v, err = %v", speed, err)
+	}
+	value, found, err := store.GetState(ctx, db, ttsSpeedStateKey(100))
+	if err != nil || !found || value != "1.25" {
+		t.Fatalf("stored speed = %q, found = %v, err = %v", value, found, err)
+	}
+}
+
 func TestTTSSpeedValidationPersistenceAndChatIsolation(t *testing.T) {
 	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "TTS_ENABLED": "true"})
 	db := testStore(t)

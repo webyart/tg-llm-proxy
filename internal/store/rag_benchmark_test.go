@@ -32,11 +32,13 @@ func BenchmarkSearchRAGChunksManyIrrelevant(b *testing.B) {
 		b.Fatalf("LastInsertId: %v", err)
 	}
 	content := strings.Repeat("ordinary unrelated vocabulary ", 40)
-	for i := 0; i < 9999; i++ {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO rag_chunks (document_id, chat_id, ordinal, content) VALUES (?, ?, ?, ?)`, documentID, 900, i, fmt.Sprintf("%s %d", content, i)); err != nil {
-			tx.Rollback()
-			b.Fatalf("insert chunk %d: %v", i, err)
-		}
+	chunks := make([]string, 9999)
+	for index := range chunks {
+		chunks[index] = fmt.Sprintf("%s %d", content, index)
+	}
+	if err := insertRAGChunks(ctx, tx, documentID, 900, chunks); err != nil {
+		tx.Rollback()
+		b.Fatalf("insert chunks: %v", err)
 	}
 	if err := tx.Commit(); err != nil {
 		b.Fatalf("Commit: %v", err)
@@ -45,12 +47,15 @@ func BenchmarkSearchRAGChunksManyIrrelevant(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		chunks, err := SearchRAGChunks(ctx, db, 900, "needle", 5, 2000)
+		result, err := SearchRAGChunksDetailed(ctx, db, 900, "needle", 5, 2000)
 		if err != nil {
-			b.Fatalf("SearchRAGChunks: %v", err)
+			b.Fatalf("SearchRAGChunksDetailed: %v", err)
 		}
-		if len(chunks) != 1 || chunks[0].Name != "match.txt" {
-			b.Fatalf("unexpected result: %+v", chunks)
+		if result.TotalChunks != 10000 || result.ScannedChunks != 10000 || result.CorpusTruncated {
+			b.Fatalf("unexpected corpus statistics: %+v", result)
+		}
+		if len(result.Chunks) != 1 || result.Chunks[0].Name != "match.txt" {
+			b.Fatalf("unexpected result: %+v", result.Chunks)
 		}
 	}
 }
@@ -90,6 +95,33 @@ func BenchmarkSearchRAGChunksManyTermTranscript(b *testing.B) {
 		}
 		if len(chunks) != 1 || chunks[0].Name != "included.txt" {
 			b.Fatalf("unexpected result: %+v", chunks)
+		}
+	}
+}
+
+func BenchmarkPutRAGDocumentBatchedChunks(b *testing.B) {
+	ctx := context.Background()
+	db, err := OpenMemory(ctx, "rag_benchmark_batched_insert")
+	if err != nil {
+		b.Fatalf("OpenMemory: %v", err)
+	}
+	defer db.Close()
+	content := strings.Repeat("A sentence with enough RAG content to chunk. ", 3000)
+	wantChunks := len(chunkRAGText(content))
+	if wantChunks <= ragChunkInsertBatchSize {
+		b.Fatalf("benchmark has only %d chunks", wantChunks)
+	}
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(content)))
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		_, chunks, err := PutRAGDocument(ctx, db, 902, 11, "large.txt", content)
+		if err != nil {
+			b.Fatalf("PutRAGDocument: %v", err)
+		}
+		if chunks != wantChunks {
+			b.Fatalf("chunks=%d, want %d", chunks, wantChunks)
 		}
 	}
 }

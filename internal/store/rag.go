@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/bits"
 	"sort"
 	"strings"
 	"unicode"
@@ -20,16 +21,23 @@ const (
 	RAGQueryMaxTerms = 32
 )
 
+const (
+	ragSearchChunkScanLimit = 10000
+	ragChunkInsertBatchSize = 100
+)
+
 // BM25-lite weights of SearchRAGChunks. ragB is 1 so chunk length is normalised in full: a chunk
 // gains only from the terms it actually covers, never from repeating one term. ragScoreScale keeps
 // the core term score in the same order of magnitude as the name and phrase bonuses below.
 const (
-	ragK1                = 1.2
-	ragB                 = 1.0
-	ragScoreScale        = 10.0
-	ragNameTermBonus     = 4.0
-	ragPhraseBonus       = 25.0
-	ragDistinctTermBonus = 12.0
+	ragK1                  = 1.2
+	ragB                   = 1.0
+	ragScoreScale          = 10.0
+	ragNameTermBonus       = 4.0
+	ragPhraseBonus         = 25.0
+	ragDistinctTermBonus   = 12.0
+	ragMinimumRelevance    = 5.0
+	ragMinimumTermCoverage = 0.25
 )
 
 // ragLengthPrior multiplies the core term score. BM25 with ragB = 1 normalises by length only
@@ -56,6 +64,13 @@ type RAGChunk struct {
 	Name       string
 	Content    string
 	Score      int
+}
+
+type RAGSearchResult struct {
+	Chunks          []RAGChunk
+	CorpusTruncated bool
+	ScannedChunks   int
+	TotalChunks     int
 }
 
 func PutRAGDocument(ctx context.Context, db *sql.DB, chatID int64, userID int64, name string, content string) (int64, int, error) {
@@ -105,10 +120,8 @@ func PutRAGDocumentWithLimit(ctx context.Context, db *sql.DB, chatID int64, user
 	if _, err := tx.ExecContext(ctx, `DELETE FROM rag_chunks WHERE document_id = ?`, documentID); err != nil {
 		return 0, 0, err
 	}
-	for i, chunk := range chunks {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO rag_chunks (document_id, chat_id, ordinal, content) VALUES (?, ?, ?, ?)`, documentID, chatID, i, chunk); err != nil {
-			return 0, 0, err
-		}
+	if err := insertRAGChunks(ctx, tx, documentID, chatID, chunks); err != nil {
+		return 0, 0, err
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, 0, err
@@ -116,21 +129,100 @@ func PutRAGDocumentWithLimit(ctx context.Context, db *sql.DB, chatID int64, user
 	return documentID, len(chunks), nil
 }
 
+func insertRAGChunks(ctx context.Context, tx *sql.Tx, documentID int64, chatID int64, chunks []string) error {
+	for start := 0; start < len(chunks); start += ragChunkInsertBatchSize {
+		end := start + ragChunkInsertBatchSize
+		if end > len(chunks) {
+			end = len(chunks)
+		}
+		var statement strings.Builder
+		statement.WriteString("INSERT INTO rag_chunks (document_id, chat_id, ordinal, content) VALUES ")
+		args := make([]any, 0, (end-start)*4)
+		for index := start; index < end; index++ {
+			if index > start {
+				statement.WriteByte(',')
+			}
+			statement.WriteString("(?, ?, ?, ?)")
+			args = append(args, documentID, chatID, index, chunks[index])
+		}
+		if _, err := tx.ExecContext(ctx, statement.String(), args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func chunkRAGText(content string) []string {
 	runes := []rune(strings.TrimSpace(content))
 	chunks := []string{}
 	for start := 0; start < len(runes); {
 		end := start + RAGChunkRunes
-		if end > len(runes) {
-			end = len(runes)
-		}
-		chunks = append(chunks, string(runes[start:end]))
-		if end == len(runes) {
+		if end >= len(runes) {
+			chunks = append(chunks, string(runes[start:]))
 			break
 		}
-		start = end - RAGChunkOverlap
+		end = ragSentenceChunkEnd(runes, start, end)
+		chunk := strings.TrimSpace(string(runes[start:end]))
+		if chunk != "" {
+			chunks = append(chunks, chunk)
+		}
+		next := end - RAGChunkOverlap
+		if next <= start {
+			next = start + 1
+		}
+		next = ragSentenceOverlapStart(runes, next, end)
+		for next < len(runes) && unicode.IsSpace(runes[next]) {
+			next++
+		}
+		if next <= start {
+			next = start + 1
+		}
+		start = next
 	}
 	return chunks
+}
+
+func ragSentenceChunkEnd(runes []rune, start int, limit int) int {
+	minimum := start + RAGChunkRunes/2
+	for end := limit; end > minimum; end-- {
+		if ragSentenceBoundary(runes, end) {
+			return end
+		}
+	}
+	return limit
+}
+
+func ragSentenceOverlapStart(runes []rune, start int, end int) int {
+	for candidate := start; candidate <= end; candidate++ {
+		if !ragSentenceBoundary(runes, candidate) {
+			continue
+		}
+		for candidate < len(runes) && unicode.IsSpace(runes[candidate]) {
+			candidate++
+		}
+		return candidate
+	}
+	return start
+}
+
+func ragSentenceBoundary(runes []rune, end int) bool {
+	if end <= 0 || end > len(runes) {
+		return false
+	}
+	if runes[end-1] == '\n' {
+		return true
+	}
+	if end < len(runes) && !unicode.IsSpace(runes[end]) {
+		return false
+	}
+	index := end - 1
+	for index >= 0 && strings.ContainsRune("\"'”’»)]}", runes[index]) {
+		index--
+	}
+	if index < 0 {
+		return false
+	}
+	return strings.ContainsRune(".!?…", runes[index]) || runes[index] == '\n'
 }
 
 func ListRAGDocuments(ctx context.Context, db *sql.DB, chatID int64) ([]RAGDocument, error) {
@@ -173,53 +265,74 @@ func ClearRAGDocuments(ctx context.Context, db *sql.DB, chatID int64) (int64, er
 
 type ragScoredChunk struct {
 	RAGChunk
-	id        int
-	tokens    int
-	occurred  map[string]int
-	lowerName string
-	lowerText string
-	nameHits  int
-	rankScore float64
+	id           int
+	tokens       int
+	occurred     map[string]int
+	textTokens   []string
+	nameHits     int
+	matchedTerms uint32
+	coverage     float64
+	rankScore    float64
 }
 
 type ragSearchCorpus struct {
 	candidates  []ragScoredChunk
 	documents   map[string]int
 	chunkCount  int
+	totalChunks int
 	totalTokens int
 }
 
 func readRAGSearchCorpus(ctx context.Context, db *sql.DB, chatID int64, terms []string) (ragSearchCorpus, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT c.id, c.document_id, d.name, c.content FROM rag_chunks c
-		JOIN rag_documents d ON d.id = c.document_id WHERE c.chat_id = ? ORDER BY c.id DESC LIMIT 10000`, chatID)
+		SELECT c.id, c.document_id, d.name, c.content, totals.total_chunks FROM rag_chunks c
+		JOIN rag_documents d ON d.id = c.document_id
+		CROSS JOIN (SELECT COUNT(*) AS total_chunks FROM rag_chunks WHERE chat_id = ?) totals
+		WHERE c.chat_id = ? ORDER BY c.id DESC LIMIT ?`, chatID, chatID, ragSearchChunkScanLimit)
 	if err != nil {
 		return ragSearchCorpus{}, err
 	}
 	defer rows.Close()
+	termIndexes := make(map[string]int, len(terms))
+	for index, term := range terms {
+		termIndexes[term] = index
+	}
 	corpus := ragSearchCorpus{documents: map[string]int{}}
 	for rows.Next() {
 		var row ragScoredChunk
-		if err := rows.Scan(&row.id, &row.DocumentID, &row.Name, &row.Content); err != nil {
+		if err := rows.Scan(&row.id, &row.DocumentID, &row.Name, &row.Content, &corpus.totalChunks); err != nil {
 			return ragSearchCorpus{}, err
 		}
-		row.lowerText = strings.ToLower(row.Content)
-		row.lowerName = strings.ToLower(row.Name)
-		for _, term := range terms {
-			occurrences := strings.Count(row.lowerText, term)
-			if occurrences > 0 {
+		row.textTokens = lexicalTokens(row.Content)
+		row.tokens = len(row.textTokens)
+		for _, token := range row.textTokens {
+			if _, wanted := termIndexes[token]; wanted {
 				if row.occurred == nil {
 					row.occurred = map[string]int{}
 				}
-				row.occurred[term] = occurrences
-				corpus.documents[term]++
+				row.occurred[token]++
 			}
-			if strings.Contains(row.lowerName, term) {
+		}
+		nameTerms := uint32(0)
+		for _, token := range lexicalTokens(row.Name) {
+			index, wanted := termIndexes[token]
+			if !wanted {
+				continue
+			}
+			bit := uint32(1) << index
+			if nameTerms&bit == 0 {
 				row.nameHits++
+				nameTerms |= bit
+				row.matchedTerms |= bit
+			}
+		}
+		for index, term := range terms {
+			if row.occurred[term] > 0 {
+				corpus.documents[term]++
+				row.matchedTerms |= uint32(1) << index
 			}
 		}
 		corpus.chunkCount++
-		row.tokens = lexicalTokenCount(row.Content)
 		corpus.totalTokens += row.tokens
 		if len(row.occurred) > 0 || row.nameHits > 0 {
 			corpus.candidates = append(corpus.candidates, row)
@@ -232,45 +345,47 @@ func readRAGSearchCorpus(ctx context.Context, db *sql.DB, chatID int64, terms []
 }
 
 func lexicalTokenCount(text string) int {
-	count := 0
-	inToken := false
-	for _, r := range text {
-		isToken := unicode.IsLetter(r) || unicode.IsNumber(r)
-		if isToken && !inToken {
-			count++
-		}
-		inToken = isToken
-	}
-	return count
+	return len(lexicalTokens(text))
 }
 
-// SearchRAGChunks ranks the chunks of one chat with BM25-lite scoring computed in Go: the chat has
-// no FTS index (modernc.org/sqlite builds without FTS5), so the corpus is read, counted and scored
-// here. Every query term contributes idf × a saturating term-frequency factor, where the denominator
-// carries the chunk length, so a chunk gains from the terms it covers rather than from the amount of
-// text it holds. The document-frequency and average-length pass needs the whole corpus, but only
-// content or name matches remain candidates for scoring.
+// SearchRAGChunks keeps the original result-only API.
 func SearchRAGChunks(ctx context.Context, db *sql.DB, chatID int64, query string, limit int, maxRunes int) ([]RAGChunk, error) {
-	query = ragQueryPrefix(query)
-	terms := lexicalTerms(query)
-	if len(terms) == 0 || limit <= 0 || maxRunes <= 0 {
-		return []RAGChunk{}, nil
-	}
-	corpus, err := readRAGSearchCorpus(ctx, db, chatID, terms)
+	result, err := SearchRAGChunksDetailed(ctx, db, chatID, query, limit, maxRunes)
 	if err != nil {
 		return nil, err
 	}
+	return result.Chunks, nil
+}
+
+// SearchRAGChunksDetailed ranks at most the newest 10000 chunks of one chat with BM25-lite scoring
+// computed in Go. The corpus has no FTS index, so token occurrence and document-frequency counts are
+// collected in one pass; the result reports when that scan does not cover the whole chat corpus.
+func SearchRAGChunksDetailed(ctx context.Context, db *sql.DB, chatID int64, query string, limit int, maxRunes int) (RAGSearchResult, error) {
+	result := RAGSearchResult{Chunks: []RAGChunk{}}
+	query = ragQueryPrefix(query)
+	terms := lexicalTerms(query)
+	if len(terms) == 0 || limit <= 0 || maxRunes <= 0 {
+		return result, nil
+	}
+	corpus, err := readRAGSearchCorpus(ctx, db, chatID, terms)
+	if err != nil {
+		return RAGSearchResult{}, err
+	}
+	result.TotalChunks = corpus.totalChunks
+	result.ScannedChunks = corpus.chunkCount
+	result.CorpusTruncated = corpus.chunkCount == ragSearchChunkScanLimit && corpus.totalChunks > corpus.chunkCount
 	if corpus.chunkCount == 0 {
-		return []RAGChunk{}, nil
+		return result, nil
 	}
 	averageTokens := float64(corpus.totalTokens) / float64(corpus.chunkCount)
 	if averageTokens < 1 {
 		averageTokens = 1
 	}
-	phrase := strings.ToLower(strings.TrimSpace(query))
-	phraseLong := len([]rune(phrase)) >= 2
+	phraseTokens := lexicalTokens(strings.TrimSpace(query))
+	phraseLong := len([]rune(strings.TrimSpace(query))) >= 2
 	scored := corpus.candidates
 	matched := scored[:0]
+	bestCoverage := 0.0
 	for index := range scored {
 		row := &scored[index]
 		lengthNormalizer := ragK1 * ((1 - ragB) + ragB*float64(row.tokens)/averageTokens)
@@ -288,27 +403,45 @@ func SearchRAGChunks(ctx context.Context, db *sql.DB, chatID int64, query string
 		score := core * ragScoreScale * ragLengthPrior(row.tokens, averageTokens)
 		score += ragDistinctTermBonus * float64(len(row.occurred))
 		score += ragNameTermBonus * float64(row.nameHits)
-		if phraseLong && strings.Contains(row.lowerText, phrase) {
+		if phraseLong && ragContainsTokenPhrase(row.textTokens, phraseTokens) {
 			score += ragPhraseBonus
 		}
-		if score <= 0 {
+		minimumRelevance := ragMinimumRelevance
+		if len(terms) == 1 {
+			minimumRelevance = ragNameTermBonus
+		}
+		if score < minimumRelevance {
 			continue
+		}
+		row.coverage = float64(bits.OnesCount32(row.matchedTerms)) / float64(len(terms))
+		if row.coverage > bestCoverage {
+			bestCoverage = row.coverage
 		}
 		row.rankScore = score
 		row.Score = int(math.Round(score))
 		matched = append(matched, *row)
 	}
 	scored = matched
+	minimumCoverage := ragMinimumTermCoverage
+	if bestCoverage < minimumCoverage {
+		minimumCoverage = bestCoverage
+	}
+	covered := scored[:0]
+	for _, row := range scored {
+		if row.coverage >= minimumCoverage {
+			covered = append(covered, row)
+		}
+	}
+	scored = covered
 	sort.SliceStable(scored, func(i, j int) bool {
 		if scored[i].rankScore != scored[j].rankScore {
 			return scored[i].rankScore > scored[j].rankScore
 		}
 		return scored[i].id > scored[j].id
 	})
-	out := []RAGChunk{}
 	used := 0
 	for _, row := range scored {
-		if len(out) == limit || used >= maxRunes {
+		if len(result.Chunks) == limit || used >= maxRunes {
 			break
 		}
 		content := row.Content
@@ -321,15 +454,36 @@ func SearchRAGChunks(ctx context.Context, db *sql.DB, chatID int64, query string
 		}
 		row.Content = content
 		used += len([]rune(content))
-		out = append(out, row.RAGChunk)
+		result.Chunks = append(result.Chunks, row.RAGChunk)
 	}
-	return out, nil
+	return result, nil
 }
 
-// lexicalTokens splits text into the lowercased word tokens the ranking counts; letters and digits
-// of any script are token characters, so Cyrillic and Latin are handled the same way.
+func ragContainsTokenPhrase(tokens []string, phrase []string) bool {
+	if len(phrase) == 0 || len(phrase) > len(tokens) {
+		return false
+	}
+	for start := 0; start+len(phrase) <= len(tokens); start++ {
+		matched := true
+		for index := range phrase {
+			if tokens[start+index] != phrase[index] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+// lexicalTokens splits text into lowercase word tokens. Letters, marks and digits of every script
+// stay inside a token, so matching uses Unicode token boundaries rather than byte substrings.
 func lexicalTokens(text string) []string {
-	return strings.FieldsFunc(strings.ToLower(text), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) })
+	return strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r) && !unicode.IsMark(r)
+	})
 }
 
 func ragQueryPrefix(query string) string {
@@ -346,11 +500,55 @@ func ragQueryPrefix(query string) string {
 	return query
 }
 
+var ragStopwords = map[string]bool{
+	"about": true, "after": true, "again": true, "against": true, "all": true, "also": true,
+	"an": true, "and": true, "any": true, "are": true, "as": true, "at": true, "be": true,
+	"because": true, "been": true, "before": true, "by": true,
+	"being": true, "below": true, "between": true, "both": true, "but": true, "can": true,
+	"could": true, "did": true, "does": true, "doing": true, "down": true, "during": true,
+	"each": true, "few": true, "for": true, "from": true, "further": true, "had": true,
+	"has": true, "have": true, "having": true, "he": true, "here": true, "hers": true,
+	"herself": true, "him": true, "himself": true, "his": true, "how": true, "in": true,
+	"into": true, "is": true, "it": true, "its": true, "itself": true, "just": true,
+	"me": true, "more": true, "most": true, "myself": true, "no": true, "nor": true,
+	"not": true, "now": true, "of": true, "off": true, "on": true, "once": true,
+	"only": true, "or": true, "other": true, "our": true, "ours": true, "ourselves": true,
+	"out": true, "over": true, "own": true, "same": true, "she": true, "should": true,
+	"some": true, "such": true, "than": true, "that": true, "the": true, "their": true,
+	"theirs": true, "them": true, "themselves": true, "then": true, "there": true,
+	"these": true, "they": true, "this": true, "those": true, "through": true, "to": true,
+	"too": true, "under": true, "until": true, "up": true, "us": true, "very": true,
+	"was": true, "we": true, "were": true, "what": true, "when": true, "where": true,
+	"which": true, "while": true, "who": true, "whom": true, "why": true, "will": true,
+	"with": true, "you": true, "your": true, "yours": true, "yourself": true, "yourselves": true,
+	"без": true, "более": true, "бы": true, "был": true, "была": true, "были": true,
+	"было": true, "быть": true, "вам": true, "вас": true, "ведь": true, "весь": true,
+	"во": true, "вот": true, "все": true, "всего": true, "всех": true, "всю": true,
+	"всё": true, "вы": true,
+	"где": true, "да": true, "даже": true, "для": true, "до": true, "его": true,
+	"ее": true, "ей": true, "ему": true, "если": true, "есть": true, "еще": true,
+	"же": true, "за": true, "здесь": true, "из": true, "или": true, "им": true,
+	"их": true, "как": true, "какая": true, "какой": true, "когда": true, "кто": true,
+	"куда": true, "ли": true, "между": true, "меня": true, "мне": true, "много": true,
+	"может": true, "можно": true, "мой": true, "моя": true, "мы": true, "на": true,
+	"над": true, "нам": true, "нас": true, "не": true, "нее": true, "ней": true,
+	"нет": true, "ни": true, "них": true, "ничего": true, "но": true, "ну": true,
+	"об": true, "один": true, "она": true,
+	"они": true, "от": true, "очень": true, "по": true, "под": true, "после": true,
+	"потом": true, "потому": true, "почти": true, "при": true, "про": true, "раз": true,
+	"разве": true, "сам": true, "свою": true, "себе": true, "себя": true, "сейчас": true,
+	"со": true, "так": true, "такой": true, "там": true, "тебя": true, "тем": true,
+	"теперь": true, "то": true, "того": true, "тоже": true, "только": true, "том": true,
+	"тот": true, "тут": true, "ты": true, "уже": true, "хоть": true, "чего": true,
+	"чем": true, "через": true, "что": true, "чтоб": true, "чтобы": true, "эта": true,
+	"эти": true, "этого": true, "этой": true, "этом": true, "этот": true, "эту": true,
+}
+
 func lexicalTerms(query string) []string {
 	seen := map[string]bool{}
 	terms := []string{}
 	for _, term := range lexicalTokens(ragQueryPrefix(query)) {
-		if len([]rune(term)) >= 2 && !seen[term] {
+		if len([]rune(term)) >= 2 && !ragStopwords[term] && !seen[term] {
 			seen[term] = true
 			terms = append(terms, term)
 			if len(terms) == RAGQueryMaxTerms {

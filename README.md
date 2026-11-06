@@ -250,7 +250,7 @@ Reverse proxy или туннель должен перенаправлять п
 - Denied/bootstrap/overload replies coalesce, а отклонённая работа не скачивает вложения, не вызывает модель и не создаёт command/history rows.
 - Streaming ограничен 100000 runes, tool argument — 16384 runes, один ответ — 64 Telegram-сообщениями.
 - Model work — `3 × RATE_LIMIT_PER_MINUTE` на пользователя; network tools — 8/мин/user и 4 global in flight.
-- RAG использует первые 32 термина из 4000 runes запроса. Export сериализуется инкрементально с остановкой на 5 МиБ.
+- RAG использует до 32 значимых RU/EN терминов из 4000 runes запроса, Unicode token boundaries и sentence-aware chunks. Поиск сканирует последние 10000 фрагментов чата; при большем корпусе `/docs search` и automatic RAG context явно сообщают о truncation. Export сериализуется инкрементально с остановкой на 5 МиБ.
 - Compose resource backstops: bot 512MiB/1 CPU/128 PIDs, Whisper 4GiB/4 CPU/256 PIDs, SearxNG 1GiB/1 CPU/128 PIDs.
 
 ## Команды бота
@@ -271,7 +271,7 @@ Reverse proxy или туннель должен перенаправлять п
 | `/links` | сохранённые ссылки; `add <url>`, `search <текст>`, `summary <id>`, `delete <id>` |
 | `/task <цель>` | read-only задача из 1–3 шагов с прогрессом; без аргумента — статус, `/task cancel` — отмена, `/task resume <id>` — возобновление только последней failed/cancelled текущего чата с сохранением прогресса, `/task clear` — очистка списка с подтверждением |
 | `/tts <текст>` | opt-in озвучка через Speaches и `sendAudio`; `/tts last` — последний ответ ассистента, `/tts speed [0.75\|1\|1.25\|1.5]` — скорость чата; по умолчанию выключено |
-| `/docs` | RAG-база; `/docs add`, `export`, `delete <id>` и `clear` |
+| `/docs` | RAG-база; `/docs add`, `search <query>`, `export`, `delete <id>` и `clear`; поиск показывает до 3 фрагментов с document id и score |
 | `/export [md\|json]` | экспорт последних 10000 сообщений с явным truncation warning и ID/time window |
 | `/search <текст>` | до 20 совпадений среди последних 10000 сообщений; область указана в ответе |
 | `/delete` | одноразовые Confirm/Cancel с TTL 5 минут, привязкой к пользователю и сообщению; настройки сохраняются |

@@ -1,3 +1,17 @@
+# tg-llm-proxy v1.31.0
+
+## RAG precision and inspection
+
+- Lexical retrieval использует Unicode token boundaries вместо substring matching: короткие термины больше не совпадают с частями длинных слов. Добавлены RU/EN stopwords, минимальный relevance score и coverage floor с fallback к лучшему доступному покрытию.
+- Chunking учитывает окончания предложений, сохраняет лимит 1000 runes и overlap до 100 runes; длинные предложения разбиваются с гарантированным прогрессом. Вставка chunks выполняется транзакционными пакетами по 100 записей.
+- `/docs search <query>` показывает до трёх chat-scoped результатов с document name/id, score и содержимым. `SearchRAGChunksDetailed` сообщает `ScannedChunks`, `TotalChunks` и `CorpusTruncated`; прежний `SearchRAGChunks` сохранён как совместимая обёртка.
+- Поиск по-прежнему ограничен последними 10000 chunks. При превышении `/docs search` явно показывает предупреждение, а automatic RAG context сообщает модели о неполном корпусе. Semantic retrieval не добавлялся: embeddings endpoint STRATA недоступен.
+
+## Regressions and benchmarks
+
+- Добавлены Unicode/substring, RU/EN stopwords, relevance/coverage, sentence boundaries, точные 10000/10001 chunk counters, wrapper compatibility, chat isolation, Telegram output caps и automatic truncation warning tests.
+- RAG benchmarks используют batched fixture setup и покрывают поиск по большому корпусу, query term caps, Detailed API и пакетную вставку документов.
+
 # tg-llm-proxy v1.30.4
 
 ## Reminders failure UX

@@ -252,6 +252,108 @@ func TestRAGQueryCapsUnicodeRunesBeforeRetrieval(t *testing.T) {
 	}
 }
 
+func TestRAGSearchUsesUnicodeTokenBoundaries(t *testing.T) {
+	ctx := context.Background()
+	db, err := OpenMemory(ctx, "rag_boundaries_"+t.Name())
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	defer db.Close()
+	for _, row := range []struct {
+		name    string
+		content string
+	}{
+		{name: "category.txt", content: "concatenate категория"},
+		{name: "exact.txt", content: "Cat кат"},
+	} {
+		if _, _, err := PutRAGDocument(ctx, db, 120, 11, row.name, row.content); err != nil {
+			t.Fatalf("Put %s: %v", row.name, err)
+		}
+	}
+	for _, query := range []string{"cat", "кат"} {
+		chunks, err := SearchRAGChunks(ctx, db, 120, query, 5, 2000)
+		if err != nil || len(chunks) != 1 || chunks[0].Name != "exact.txt" {
+			t.Fatalf("query %q matched a substring: %+v err=%v", query, chunks, err)
+		}
+	}
+}
+
+func TestRAGPhraseMatchingUsesTokenBoundaries(t *testing.T) {
+	for _, row := range []struct {
+		text    string
+		phrase  string
+		matched bool
+	}{
+		{text: "Кот, сел!", phrase: "кот сел", matched: true},
+		{text: "котёнок сел", phrase: "кот сел", matched: false},
+		{text: "cat satellite", phrase: "cat sat", matched: false},
+		{text: "category sat", phrase: "cat sat", matched: false},
+		{text: "A cat, then sat down", phrase: "cat then sat", matched: true},
+	} {
+		matched := ragContainsTokenPhrase(lexicalTokens(row.text), lexicalTokens(row.phrase))
+		if matched != row.matched {
+			t.Errorf("text %q phrase %q matched=%v, want %v", row.text, row.phrase, matched, row.matched)
+		}
+	}
+}
+
+func TestRAGSearchFiltersEnglishAndRussianStopwords(t *testing.T) {
+	terms := lexicalTerms("the and of needle при этом")
+	if len(terms) != 1 || terms[0] != "needle" {
+		t.Fatalf("lexical terms=%q, want [needle]", terms)
+	}
+
+	ctx := context.Background()
+	db, err := OpenMemory(ctx, "rag_stopwords_"+t.Name())
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	defer db.Close()
+	if _, _, err := PutRAGDocument(ctx, db, 121, 11, "stopwords.txt", "the and of при этом"); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if _, _, err := PutRAGDocument(ctx, db, 121, 11, "needle.txt", "needle"); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	chunks, err := SearchRAGChunks(ctx, db, 121, "the and of needle при этом", 5, 2000)
+	if err != nil || len(chunks) != 1 || chunks[0].Name != "needle.txt" {
+		t.Fatalf("stopword-aware search=%+v err=%v", chunks, err)
+	}
+	for _, query := range []string{"the and of", "при этом что"} {
+		chunks, err := SearchRAGChunks(ctx, db, 121, query, 5, 2000)
+		if err != nil || len(chunks) != 0 {
+			t.Fatalf("stopword-only query %q returned %+v err=%v", query, chunks, err)
+		}
+	}
+}
+
+func TestRAGRankingCoverageFloorKeepsOnlyUsefulFallback(t *testing.T) {
+	ctx := context.Background()
+	db, err := OpenMemory(ctx, "rag_coverage_"+t.Name())
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	defer db.Close()
+	query := "alpha beta gamma delta epsilon"
+	if _, _, err := PutRAGDocument(ctx, db, 122, 11, "strong.txt", query); err != nil {
+		t.Fatalf("strong Put: %v", err)
+	}
+	if _, _, err := PutRAGDocument(ctx, db, 122, 11, "weak.txt", "alpha"); err != nil {
+		t.Fatalf("weak Put: %v", err)
+	}
+	chunks, err := SearchRAGChunks(ctx, db, 122, query, 5, 2000)
+	if err != nil || len(chunks) != 1 || chunks[0].Name != "strong.txt" {
+		t.Fatalf("coverage floor search=%+v err=%v", chunks, err)
+	}
+	if _, _, err := PutRAGDocument(ctx, db, 123, 11, "fallback.txt", "alpha"); err != nil {
+		t.Fatalf("fallback Put: %v", err)
+	}
+	chunks, err = SearchRAGChunks(ctx, db, 123, query, 5, 2000)
+	if err != nil || len(chunks) != 1 || chunks[0].Name != "fallback.txt" {
+		t.Fatalf("only useful low-coverage match was dropped: %+v err=%v", chunks, err)
+	}
+}
+
 func TestRAGQueryKeepsFirst32DistinctLexicalTerms(t *testing.T) {
 	allTerms := make([]string, 40)
 	queryParts := []string{"term00", "term00"}

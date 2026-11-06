@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -15,7 +16,8 @@ import (
 
 func TestDailyModelLimitDefaultsToUnlimited(t *testing.T) {
 	m := &fakeModel{response: model.Response{Content: "ok"}}
-	d := newTestDispatcher(t, testConfig(t, nil), m, nil, nil)
+	db := testStore(t)
+	d := newTestDispatcher(t, testConfig(t, nil), m, nil, db)
 	for i := 0; i < 2; i++ {
 		resp, err := d.callModel(context.Background(), 11, model.Request{}, nil, nil)
 		if err != nil || resp.Content != "ok" {
@@ -24,6 +26,14 @@ func TestDailyModelLimitDefaultsToUnlimited(t *testing.T) {
 	}
 	if m.callCount() != 2 {
 		t.Fatalf("provider calls=%d, want 2 with unlimited defaults", m.callCount())
+	}
+	calls, err := store.CountEvents(context.Background(), db, store.EventModelCall)
+	if err != nil || calls != 2 {
+		t.Fatalf("unlimited model_call events=%d err=%v, want 2", calls, err)
+	}
+	used, err := store.DailyQuotaUsed(context.Background(), db, 11, d.now(), store.DailyQuotaModel)
+	if err != nil || used != 0 {
+		t.Fatalf("unlimited reservation used=%d err=%v, want 0", used, err)
 	}
 }
 
@@ -101,7 +111,6 @@ func TestDailyNetworkToolLimitBelowAtOverAndPerUser(t *testing.T) {
 	if err != nil || !executed || !strings.Contains(result, `"results"`) {
 		t.Fatalf("below-limit result=%q executed=%v err=%v", result, executed, err)
 	}
-	d.logEvent(context.Background(), 11, store.EventUsage, "web_search")
 	result, executed, err = d.executeNetworkTool(context.Background(), 11, call)
 	if err != nil || executed || result != networkDailyLimitErrorJSON || !json.Valid([]byte(result)) {
 		t.Fatalf("at-limit result=%q executed=%v err=%v", result, executed, err)
@@ -228,5 +237,190 @@ func TestDailyModelLimitCountsEveryToolLoopProviderCall(t *testing.T) {
 	calls, err := store.CountEvents(context.Background(), db, store.EventModelCall)
 	if err != nil || calls != 2 {
 		t.Fatalf("model_call events=%d err=%v, want 2", calls, err)
+	}
+}
+
+func TestDailyModelLimitConcurrentSameUserAcrossChats(t *testing.T) {
+	cfg := testConfig(t, map[string]string{
+		"TELEGRAM_ALLOWED_USERS":        "11",
+		"USER_DAILY_MODEL_LIMIT":        "5",
+		"RATE_LIMIT_PER_MINUTE":         "0",
+		"MAX_CONCURRENT_MODEL_REQUESTS": "12",
+	})
+	m := &fakeModel{response: model.Response{Content: "ok"}}
+	db := testStore(t)
+	d := newTestDispatcher(t, cfg, m, nil, db)
+	const attempts = 12
+	start := make(chan struct{})
+	errs := make(chan error, attempts)
+	var wg sync.WaitGroup
+	for attempt := 0; attempt < attempts; attempt++ {
+		chatID := int64(1000 + attempt)
+		telegramMessageID := int64(3000 + attempt)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- d.Dispatch(context.Background(), testEvent(chatID, 11, telegramMessageID, "question"))
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("concurrent Dispatch: %v", err)
+		}
+	}
+	if m.callCount() != 5 {
+		t.Fatalf("provider calls=%d, want daily cap 5", m.callCount())
+	}
+	used, err := store.DailyQuotaUsed(context.Background(), db, 11, d.now(), store.DailyQuotaModel)
+	if err != nil || used != 5 {
+		t.Fatalf("reserved calls=%d err=%v, want 5", used, err)
+	}
+	var answers int
+	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM messages WHERE user_id = 11 AND role = 'assistant'`).Scan(&answers); err != nil || answers != 5 {
+		t.Fatalf("assistant answers=%d err=%v, want 5", answers, err)
+	}
+	calls, err := store.CountEvents(context.Background(), db, store.EventModelCall)
+	if err != nil || calls != 5 {
+		t.Fatalf("model_call events=%d err=%v, want 5", calls, err)
+	}
+}
+
+func TestDailyNetworkLimitConcurrentSameUserCannotExceedCap(t *testing.T) {
+	var providerCalls atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer target.Close()
+	cfg := testConfig(t, map[string]string{
+		"USER_DAILY_NETWORK_TOOL_LIMIT": "3",
+		"WEB_SEARCH_ENABLED":            "true",
+		"WEB_SEARCH_BASE_URL":           target.URL,
+	})
+	db := testStore(t)
+	d := newTestDispatcher(t, cfg, nil, nil, db)
+	call := model.ToolCall{ID: "search", Name: "web_search", Arguments: `{"query":"concurrent"}`}
+	const attempts = 8
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for attempt := 0; attempt < attempts; attempt++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, _, err := d.executeNetworkTool(context.Background(), 11, call)
+			if err != nil {
+				t.Errorf("executeNetworkTool: %v", err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if providerCalls.Load() != 3 {
+		t.Fatalf("outbound calls=%d, want daily cap 3", providerCalls.Load())
+	}
+	used, err := store.DailyQuotaUsed(context.Background(), db, 11, d.now(), store.DailyQuotaNetworkTools)
+	if err != nil || used != 3 {
+		t.Fatalf("reserved network calls=%d err=%v, want 3", used, err)
+	}
+}
+
+func TestNetworkReservationWriteFailurePreventsOutboundIO(t *testing.T) {
+	var providerCalls atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer target.Close()
+	cfg := testConfig(t, map[string]string{
+		"USER_DAILY_NETWORK_TOOL_LIMIT": "1",
+		"WEB_SEARCH_ENABLED":            "true",
+		"WEB_SEARCH_BASE_URL":           target.URL,
+	})
+	db := testStore(t)
+	d := newTestDispatcher(t, cfg, nil, nil, db)
+	if _, err := db.ExecContext(context.Background(), `DROP TABLE daily_quota_reservations`); err != nil {
+		t.Fatal(err)
+	}
+	result, executed, err := d.executeNetworkTool(context.Background(), 11, model.ToolCall{
+		ID: "search", Name: "web_search", Arguments: `{"query":"must not leave the process"}`,
+	})
+	if err == nil || executed || result != "" {
+		t.Fatalf("failed reservation result=%q executed=%v err=%v", result, executed, err)
+	}
+	if providerCalls.Load() != 0 {
+		t.Fatalf("reservation failure allowed %d outbound calls", providerCalls.Load())
+	}
+	if d.networkWork.Count(11) != 0 || len(d.outboundTools) != 0 {
+		t.Fatalf("failed reservation consumed work=%d slots=%d", d.networkWork.Count(11), len(d.outboundTools))
+	}
+}
+
+func TestUnlimitedNetworkToolDoesNotNeedReservationTable(t *testing.T) {
+	var providerCalls atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer target.Close()
+	cfg := testConfig(t, map[string]string{
+		"WEB_SEARCH_ENABLED":  "true",
+		"WEB_SEARCH_BASE_URL": target.URL,
+	})
+	db := testStore(t)
+	d := newTestDispatcher(t, cfg, nil, nil, db)
+	if _, err := db.ExecContext(context.Background(), `DROP TABLE daily_quota_reservations`); err != nil {
+		t.Fatal(err)
+	}
+	result, executed, err := d.executeNetworkTool(context.Background(), 11, model.ToolCall{
+		ID: "search", Name: "web_search", Arguments: `{"query":"unlimited"}`,
+	})
+	if err != nil || !executed || !strings.Contains(result, `"results"`) || providerCalls.Load() != 1 {
+		t.Fatalf("unlimited result=%q executed=%v calls=%d err=%v", result, executed, providerCalls.Load(), err)
+	}
+}
+
+func TestGroupUsageAttributionSurvivesMiniAppSettingsMutation(t *testing.T) {
+	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11,12", "STRATA_MODEL": "model-a"})
+	tokensIn, tokensOut := int64(7), int64(9)
+	m := &fakeModel{response: model.Response{Content: "answer", Model: "model-a", TokensIn: &tokensIn, TokensOut: &tokensOut}}
+	db := testStore(t)
+	d := newTestDispatcher(t, cfg, m, nil, db)
+	const groupID int64 = -100500
+	first := testEvent(groupID, 11, 5001, "first user question")
+	first.ChatType = "group"
+	if err := dispatch(t, d, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.EnsureChat(context.Background(), db, groupID, 12, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChatModel(context.Background(), db, groupID, "model-a"); err != nil {
+		t.Fatal(err)
+	}
+	second := testEvent(groupID, 12, 5002, "second user question")
+	second.ChatType = "group"
+	if err := dispatch(t, d, second); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.HistoryOfChat(context.Background(), db, groupID, 10)
+	if err != nil || len(rows) != 4 {
+		t.Fatalf("group history=%+v err=%v", rows, err)
+	}
+	if rows[1].Role != store.RoleAssistant || rows[1].UserID != 11 || rows[3].Role != store.RoleAssistant || rows[3].UserID != 12 {
+		t.Fatalf("assistant attribution=%+v", rows)
+	}
+	for _, userID := range []int64{11, 12} {
+		usage, err := store.UserDailyUsage(context.Background(), db, userID, d.now())
+		if err != nil || usage.ModelCalls() != 1 || len(usage.Models) != 1 || usage.Models[0].TokensIn != 7 || usage.Models[0].TokensOut != 9 {
+			t.Fatalf("user %d usage=%+v err=%v", userID, usage, err)
+		}
 	}
 }

@@ -8,38 +8,21 @@ import (
 	"bot/internal/store"
 )
 
-func (d *Dispatcher) dailyModelLimitExceeded(ctx context.Context, userID int64) (bool, error) {
+func (d *Dispatcher) reserveDailyModelCall(ctx context.Context, userID int64) (bool, error) {
 	limit := d.deps.Cfg.DailyLimitsFor(userID).Model
-	if limit == 0 {
-		return false, nil
-	}
-	used, err := store.DailyModelCalls(ctx, d.deps.DB, userID, d.now())
-	if err != nil {
-		return false, err
-	}
-	return used >= limit, nil
+	return store.ReserveDailyQuota(ctx, d.deps.DB, userID, d.now(), store.DailyQuotaModel, limit)
 }
 
 func (d *Dispatcher) recordModelCall(ctx context.Context, userID int64, modelName string) error {
-	if d.deps.Cfg.DailyLimitsFor(userID).Model == 0 {
-		return nil
-	}
 	if strings.TrimSpace(modelName) == "" {
 		modelName = d.deps.Cfg.StrataModel
 	}
 	return store.LogEvent(ctx, d.deps.DB, userID, store.EventModelCall, modelName)
 }
 
-func (d *Dispatcher) dailyNetworkToolLimitExceeded(ctx context.Context, userID int64) (bool, error) {
+func (d *Dispatcher) reserveDailyNetworkToolCall(ctx context.Context, userID int64) (bool, error) {
 	limit := d.deps.Cfg.DailyLimitsFor(userID).NetworkTools
-	if limit == 0 {
-		return false, nil
-	}
-	used, err := store.DailyNetworkToolCalls(ctx, d.deps.DB, userID, d.now())
-	if err != nil {
-		return false, err
-	}
-	return used >= limit, nil
+	return store.ReserveDailyQuota(ctx, d.deps.DB, userID, d.now(), store.DailyQuotaNetworkTools, limit)
 }
 
 func (d *Dispatcher) usage(ctx context.Context, ev Event, arg string) error {

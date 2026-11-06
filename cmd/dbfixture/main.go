@@ -74,9 +74,16 @@ func main() {
 		os.Exit(1)
 	}
 	if *preVersion {
-		if _, err := db.ExecContext(ctx, `DROP TABLE schema_migrations`); err != nil {
-			fmt.Fprintf(os.Stderr, "dbfixture: make pre-versioning schema: %v\n", err)
-			os.Exit(1)
+		for _, statement := range []string{
+			`DROP TABLE daily_quota_reservations`,
+			`DROP INDEX idx_messages_user_role_created_at`,
+			`ALTER TABLE messages DROP COLUMN user_id`,
+			`DROP TABLE schema_migrations`,
+		} {
+			if _, err := db.ExecContext(ctx, statement); err != nil {
+				fmt.Fprintf(os.Stderr, "dbfixture: make pre-versioning schema: %v\n", err)
+				os.Exit(1)
+			}
 		}
 	}
 	fmt.Printf("fixture: %s (4 messages, 2 events, offset 4242; one old pair and one old event; pre-version=%t)\n", *path, *preVersion)

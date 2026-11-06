@@ -1,3 +1,12 @@
+# tg-llm-proxy v1.30.2
+
+## Atomic accounting and immutable token attribution
+
+- Дневные model/network quotas используют атомарную reservation в SQLite по `(user_id, UTC day, class)`: один conditional upsert допускает вызов только при `used < effective limit`. Reservation выполняется до provider/outbound I/O, поэтому одновременные запросы одного пользователя из разных чатов не превышают cap, а ошибка записи не допускает неучтённую сетевую активность. Disabled tools по-прежнему отклоняются первыми; `0` остаётся unlimited и не создаёт reservation.
+- Migration 10 добавляет `daily_quota_reservations` и индексы daily event paths; quota checks больше не выполняют полную `/usage` агрегацию. Per-minute и global outbound ограничения сохранены.
+- Migration 11 добавляет `messages.user_id` с индексом для daily token aggregation. Обычные и streaming assistant answers, а также task completion сохраняют неизменного владельца. Исторические строки имеют `user_id=0` и не приписываются последнему владельцу группового чата после Telegram/Mini App mutations.
+- `model_call` events записываются для всех пользователей, включая unlimited; прежняя event-based статистика вызовов и `/usage` сохранена. Добавлены migration, same-user concurrency, usage-write failure и two-user group + real Mini App settings regressions.
+
 # tg-llm-proxy v1.30.1
 
 ## Correctness patch

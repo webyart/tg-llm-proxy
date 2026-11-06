@@ -18,7 +18,7 @@ Telegram-бот-прокси между пользователями и лока
 - «Ссылки на потом»: сохранение страниц, поиск и резюме без повторной загрузки.
 - Многошаговые read-only задачи с планом, прогрессом и подтверждениями сетевых действий.
 - Opt-in `/tts` для русской речи через существующий Speaches sidecar и Telegram `sendAudio`.
-- Версионированные миграции через `schema_migrations` (текущая схема — версия 9).
+- Версионированные миграции через `schema_migrations` (текущая схема — версия 11).
 - Backup/restore, ротация копий и age-based retention с dry-run по умолчанию.
 - Безопасное восстановление Docker named volume.
 - Docker multi-stage build, non-root runtime, healthcheck, build commit и ротация логов 10 MB × 5.
@@ -319,7 +319,7 @@ Release CI — `.gitlab-ci.yml`: Linux host checks, race и `govulncheck`. Share
 .\scripts\db_inspect.ps1 -Integrity
 ```
 
-`schema_version=0` означает backup до версионирования; при следующем writable `store.Open` он автоматически становится 9 без изменения прикладных строк.
+`schema_version=0` означает backup до версионирования; при следующем writable `store.Open` он автоматически становится 11 без изменения прикладных строк.
 
 ### Backup и scratch restore
 

@@ -49,8 +49,7 @@ func UserDailyUsage(ctx context.Context, db *sql.DB, userID int64, now time.Time
 	rows, err := db.QueryContext(ctx, `
 		SELECT COALESCE(m.model, ''), COUNT(*), COALESCE(SUM(m.tokens_in), 0), COALESCE(SUM(m.tokens_out), 0)
 		FROM messages m
-		JOIN chats c ON c.chat_id = m.chat_id
-		WHERE c.user_id = ? AND m.role = ? AND m.created_at >= ? AND m.created_at < ?
+		WHERE m.user_id = ? AND m.role = ? AND m.created_at >= ? AND m.created_at < ?
 		GROUP BY m.model
 		ORDER BY m.model`, userID, RoleAssistant, start, end)
 	if err != nil {

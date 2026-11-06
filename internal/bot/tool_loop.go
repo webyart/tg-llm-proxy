@@ -234,11 +234,11 @@ func (d *Dispatcher) callModel(ctx context.Context, userID int64, req model.Requ
 	if !d.modelWork.Allow(userID) {
 		return model.Response{}, ErrModelRateLimited
 	}
-	exceeded, err := d.dailyModelLimitExceeded(ctx, userID)
+	admitted, err := d.reserveDailyModelCall(ctx, userID)
 	if err != nil {
-		return model.Response{}, fmt.Errorf("check daily model limit: %w", err)
+		return model.Response{}, fmt.Errorf("reserve daily model call: %w", err)
 	}
-	if exceeded {
+	if !admitted {
 		return model.Response{}, ErrModelDailyLimited
 	}
 	if err := d.recordModelCall(ctx, userID, req.Model); err != nil {
@@ -265,11 +265,11 @@ func (d *Dispatcher) executeNetworkTool(ctx context.Context, userID int64, call 
 	default:
 		return "", false, errors.New("unknown tool")
 	}
-	exceeded, err := d.dailyNetworkToolLimitExceeded(ctx, userID)
+	admitted, err := d.reserveDailyNetworkToolCall(ctx, userID)
 	if err != nil {
-		return "", false, fmt.Errorf("check daily network tool limit: %w", err)
+		return "", false, fmt.Errorf("reserve daily network tool call: %w", err)
 	}
-	if exceeded {
+	if !admitted {
 		return networkDailyLimitErrorJSON, false, nil
 	}
 	select {

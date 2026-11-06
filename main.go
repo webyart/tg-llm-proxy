@@ -193,19 +193,6 @@ func main() {
 	var logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel(cfg.LogLevel)}))
 	var miniApp *webapp.App
 	var miniAppErr chan error
-	if cfg.MiniAppEnabled {
-		miniApp = webapp.New(cfg, db, logger)
-		miniAppServer, listenErr := webapp.Listen(miniApp, cfg.MiniAppAddress())
-		if listenErr != nil {
-			fmt.Println("Mini App listener:", listenErr, "")
-			db.Close()
-			os.Exit(1)
-		}
-		defer miniAppServer.Close()
-		miniAppErr = make(chan error, 1)
-		go func() { miniAppErr <- miniAppServer.Run(ctx) }()
-		fmt.Println("Mini App is listening on", miniAppServer.URL(), "public URL", cfg.MiniAppPublicURL, "")
-	}
 	var client, clientErr = model.New(model.Options{
 		ChatURL:             cfg.ChatURL,
 		ModelsURL:           cfg.ModelsURL,
@@ -227,6 +214,19 @@ func main() {
 		fmt.Println("model.New:", clientErr, "")
 		db.Close()
 		os.Exit(1)
+	}
+	if cfg.MiniAppEnabled {
+		miniApp = webapp.New(cfg, db, client, logger)
+		miniAppServer, listenErr := webapp.Listen(miniApp, cfg.MiniAppAddress())
+		if listenErr != nil {
+			fmt.Println("Mini App listener:", listenErr, "")
+			db.Close()
+			os.Exit(1)
+		}
+		defer miniAppServer.Close()
+		miniAppErr = make(chan error, 1)
+		go func() { miniAppErr <- miniAppServer.Run(ctx) }()
+		fmt.Println("Mini App is listening on", miniAppServer.URL(), "public URL", cfg.MiniAppPublicURL, "")
 	}
 	var synthesizer model.SpeechSynthesizer
 	if cfg.TTSEnabled {

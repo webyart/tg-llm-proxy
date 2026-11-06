@@ -174,7 +174,7 @@ func startBotWithURLReader(t *testing.T, ctx context.Context, cfg config.Config,
 	var miniApp *webapp.App
 	miniAppURL := ""
 	if cfg.MiniAppEnabled {
-		miniApp = webapp.New(cfg, db, logger)
+		miniApp = webapp.New(cfg, db, client, logger)
 		miniAppHTTP := httptest.NewServer(miniApp.Handler())
 		t.Cleanup(miniAppHTTP.Close)
 		miniAppURL = miniAppHTTP.URL

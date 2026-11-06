@@ -162,6 +162,25 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusUnauthorized, "session_expired", "Session expired. Reopen the Mini App from Telegram.")
 		return
 	}
+	if operation, ok := miniAppMutationOperation(req); ok {
+		audited := &auditResponseWriter{ResponseWriter: w, status: http.StatusOK}
+		w = audited
+		defer func() {
+			a.logMiniAppMutation(req, current, operation, audited.status, audited.body)
+		}()
+	}
+	if req.URL.Path == "/api/documents/search" {
+		a.searchDocuments(w, req, current)
+		return
+	}
+	if req.URL.Path == "/api/reminders" {
+		a.reminders(w, req, current)
+		return
+	}
+	if strings.HasPrefix(req.URL.Path, "/api/reminders/") {
+		a.reminderControl(w, req, current)
+		return
+	}
 	if strings.HasPrefix(req.URL.Path, "/api/documents/") {
 		a.documentControl(w, req, current)
 		return
@@ -207,6 +226,98 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 		a.usage(w, req, current)
 	default:
 		writeError(w, http.StatusNotFound, "not_found", "API endpoint not found.")
+	}
+}
+
+type auditResponseWriter struct {
+	http.ResponseWriter
+	status int
+	body   []byte
+}
+
+func (w *auditResponseWriter) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *auditResponseWriter) Write(content []byte) (int, error) {
+	w.body = append(w.body, content...)
+	return w.ResponseWriter.Write(content)
+}
+
+func miniAppMutationOperation(req *http.Request) (string, bool) {
+	path := req.URL.Path
+	if req.Method == http.MethodPost {
+		switch path {
+		case "/api/documents/clear":
+			return "documents.clear", true
+		case "/api/links/clear":
+			return "links.clear", true
+		case "/api/tasks/cancel":
+			return "tasks.cancel", true
+		case "/api/tasks/clear":
+			return "tasks.clear", true
+		}
+		if _, ok := deleteDocumentID(path); ok {
+			return "documents.delete", true
+		}
+		if _, ok := deleteLinkID(path); ok {
+			return "links.delete", true
+		}
+		if _, ok := resumeTaskID(path); ok {
+			return "tasks.resume", true
+		}
+		if _, ok := deleteTaskID(path); ok {
+			return "tasks.delete", true
+		}
+		if _, action, ok := reminderActionID(path); ok {
+			return "reminders." + action, true
+		}
+	}
+	if req.Method == http.MethodPut || req.Method == http.MethodDelete {
+		operation := ""
+		switch path {
+		case "/api/settings/model":
+			operation = "settings.model."
+		case "/api/settings/persona":
+			operation = "settings.persona."
+		case "/api/settings/stream":
+			operation = "settings.stream."
+		}
+		if operation != "" {
+			if req.Method == http.MethodPut {
+				return operation + "set", true
+			}
+			return operation + "reset", true
+		}
+	}
+	return "", false
+}
+
+func (a *App) logMiniAppMutation(req *http.Request, current scope, operation string, status int, body []byte) {
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		return
+	}
+	var result struct {
+		ID      int64  `json:"id"`
+		TaskID  int64  `json:"task_id"`
+		Deleted *int64 `json:"deleted"`
+	}
+	_ = json.Unmarshal(body, &result)
+	id := result.ID
+	if id == 0 {
+		id = result.TaskID
+	}
+	var detail strings.Builder
+	fmt.Fprintf(&detail, "operation=%s chat_id=%d", operation, current.ChatID)
+	if id > 0 {
+		fmt.Fprintf(&detail, " id=%d", id)
+	}
+	if result.Deleted != nil {
+		fmt.Fprintf(&detail, " count=%d", *result.Deleted)
+	}
+	if err := store.LogEvent(req.Context(), a.db, current.UserID, "miniapp_mutation", detail.String()); err != nil {
+		a.logger.Error("Mini App mutation audit failed", "operation", operation, "error", err)
 	}
 }
 

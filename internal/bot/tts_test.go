@@ -365,6 +365,149 @@ func TestTTSSpeedValidationPersistenceAndChatIsolation(t *testing.T) {
 	}
 }
 
+func assertTTSHeartbeatStopped(t *testing.T, r *typingReplier) {
+	t.Helper()
+	calls := r.typingCount()
+	time.Sleep(25 * time.Millisecond)
+	if got := r.typingCount(); got != calls {
+		t.Fatalf("typing continued after TTS completion: before=%d after=%d", calls, got)
+	}
+}
+
+type delayedSynthesizer struct {
+	mu      sync.Mutex
+	calls   int
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *delayedSynthesizer) Synthesize(ctx context.Context, text string, speed float64) ([]byte, error) {
+	s.mu.Lock()
+	s.calls++
+	s.mu.Unlock()
+	s.once.Do(func() { close(s.started) })
+	select {
+	case <-s.release:
+		return []byte("delayed audio"), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (s *delayedSynthesizer) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func TestTTSDelayedSynthesisStartsAndStopsTyping(t *testing.T) {
+	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "TTS_ENABLED": "true"})
+	r := &typingReplier{}
+	m := &fakeModel{}
+	d := newTestDispatcher(t, cfg, m, r, nil)
+	synth := &delayedSynthesizer{started: make(chan struct{}), release: make(chan struct{})}
+	d.deps.TTS = synth
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(synth.release) }) }
+	defer release()
+	done := make(chan error, 1)
+	go func() {
+		done <- dispatch(t, d, testEvent(100, 11, 860, "/tts delayed"))
+	}()
+	select {
+	case <-synth.started:
+	case <-time.After(time.Second):
+		t.Fatal("delayed synthesis did not start")
+	}
+	waitForTypingCalls(t, r, 1)
+	if synth.callCount() != 1 || len(r.audio) != 0 {
+		t.Fatalf("synthesis calls=%d audio before release=%d", synth.callCount(), len(r.audio))
+	}
+	release()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("delayed synthesis did not finish")
+	}
+	assertTTSHeartbeatStopped(t, r)
+	if len(r.audio) != 1 || string(r.audio[0].Data) != "delayed audio" || m.callCount() != 0 {
+		t.Fatalf("audio=%+v model calls=%d", r.audio, m.callCount())
+	}
+}
+
+func TestTTSSynthesisTimeoutAndErrorStopHeartbeat(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "TTS timeout", err: model.ErrTTSTimeout, want: "Сервис озвучивания не ответил"},
+		{name: "context deadline", err: context.DeadlineExceeded, want: "Сервис озвучивания не ответил"},
+		{name: "synthesis error", err: errors.New("private upstream response body"), want: "Не удалось озвучить текст"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "TTS_ENABLED": "true"})
+			r := &typingReplier{}
+			m := &fakeModel{}
+			d := newTestDispatcher(t, cfg, m, r, nil)
+			d.deps.TTS = &fakeSynthesizer{err: test.err}
+			if err := dispatch(t, d, testEvent(100, 11, 861, "/tts failure")); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(r.joined(), test.want) || len(r.audio) != 0 || m.callCount() != 0 {
+				t.Fatalf("reply=%q audio=%d model calls=%d", r.joined(), len(r.audio), m.callCount())
+			}
+			if r.typingCount() != 1 {
+				t.Fatalf("typing actions=%d, want one immediate action", r.typingCount())
+			}
+			assertTTSHeartbeatStopped(t, r)
+		})
+	}
+}
+
+type failingAudioReplier struct {
+	typingReplier
+	err error
+}
+
+func (r *failingAudioReplier) SendAudio(ctx context.Context, chatID int64, audio Audio) error {
+	return r.err
+}
+
+func TestTTSSendAudioFailureIsReportedAndRedacted(t *testing.T) {
+	const privateInput = "private text that must not escape"
+	const privateError = "https://private-upstream/sendAudio private response body"
+	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "TTS_ENABLED": "true"})
+	r := &failingAudioReplier{err: errors.New(privateError)}
+	m := &fakeModel{}
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	d := newTestDispatcher(t, cfg, m, r, nil, logger)
+	d.deps.TTS = &fakeSynthesizer{data: []byte("audio")}
+	if err := dispatch(t, d, testEvent(100, 11, 862, "/tts "+privateInput)); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r.joined(), "Не удалось доставить аудио в Telegram") || Runes(r.joined()) > 120 || len(r.audio) != 0 || m.callCount() != 0 {
+		t.Fatalf("reply=%q audio=%d model calls=%d", r.joined(), len(r.audio), m.callCount())
+	}
+	if !strings.Contains(logs.String(), "TTS audio delivery failed") {
+		t.Fatalf("delivery failure was not logged: %q", logs.String())
+	}
+	for _, output := range []string{r.joined(), logs.String()} {
+		if strings.Contains(output, privateInput) || strings.Contains(output, privateError) || strings.Contains(output, "private-upstream") || strings.Contains(output, "response body") {
+			t.Fatalf("output leaked TTS delivery details: %q", output)
+		}
+	}
+	if r.typingCount() != 1 {
+		t.Fatalf("typing actions=%d, want one immediate action", r.typingCount())
+	}
+	assertTTSHeartbeatStopped(t, &r.typingReplier)
+}
+
 func TestTTSSpeedMenuShowsAndSetsCurrentSpeed(t *testing.T) {
 	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "TTS_ENABLED": "true"})
 	r := &menuEditReplier{}

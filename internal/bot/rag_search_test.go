@@ -189,3 +189,81 @@ func TestDocumentSearchTruncationAndAutomaticWarning(t *testing.T) {
 		t.Fatalf("usage events after empty result=%d err=%v", uses, err)
 	}
 }
+
+func TestDocumentMenuSearchPendingCompletionCancelAndExpiry(t *testing.T) {
+	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11,12", "PROXY_FREE_TEXT": "false"})
+	m := &fakeModel{}
+	r := &menuEditReplier{}
+	db := testStore(t)
+	d := newTestDispatcher(t, cfg, m, r, db)
+	if _, _, err := store.PutRAGDocument(context.Background(), db, 350, 11, "local.txt", "Aurora local runbook"); err != nil {
+		t.Fatalf("local Put: %v", err)
+	}
+	if _, _, err := store.PutRAGDocument(context.Background(), db, 351, 11, "foreign.txt", "Aurora foreign runbook"); err != nil {
+		t.Fatalf("foreign Put: %v", err)
+	}
+	if err := dispatchMenuData(t, d, 350, 11, 700, "menu:docs"); err != nil {
+		t.Fatal(err)
+	}
+	if !hasMenuCallback(r.lastEdit().markup, "menu:docs:search") {
+		t.Fatalf("documents menu has no search: %+v", r.lastEdit())
+	}
+	if err := dispatchMenuData(t, d, 350, 11, 700, "menu:docs:search"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r.lastEdit().text, "/docs search <query>") || !strings.Contains(r.lastEdit().text, "2 минуты") || findMenuCallback(r.lastEdit().markup, "menu:input:cancel:") == "" {
+		t.Fatalf("document search prompt = %+v", r.lastEdit())
+	}
+	if _, consumed := d.pendingEvent(testEvent(350, 12, 701, "Aurora")); consumed {
+		t.Fatal("wrong user consumed document search input")
+	}
+	pending, consumed := d.pendingEvent(testEvent(350, 11, 702, "Aurora"))
+	if !consumed || pending.Text != "/docs search Aurora" {
+		t.Fatalf("document search pending = %q consumed=%v", pending.Text, consumed)
+	}
+	if err := dispatch(t, d, pending); err != nil {
+		t.Fatal(err)
+	}
+	reply := r.texts()[len(r.texts())-1]
+	if !strings.Contains(reply, "local.txt") || !strings.Contains(reply, "Aurora local runbook") || strings.Contains(reply, "foreign") {
+		t.Fatalf("menu document search reply = %q", reply)
+	}
+	if m.callCount() != 0 {
+		t.Fatalf("menu document search called the model %d times", m.callCount())
+	}
+	if _, consumed := d.pendingEvent(testEvent(350, 11, 703, "second query")); consumed {
+		t.Fatal("document search input was consumed twice")
+	}
+
+	if err := dispatchMenuData(t, d, 350, 11, 700, "menu:docs:search"); err != nil {
+		t.Fatal(err)
+	}
+	cancel := findMenuCallback(r.lastEdit().markup, "menu:input:cancel:")
+	if err := dispatchMenuData(t, d, 350, 11, 700, cancel); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r.lastEdit().text, "Поиск отменён") {
+		t.Fatalf("cancelled document search menu = %q", r.lastEdit().text)
+	}
+	if _, consumed := d.pendingEvent(testEvent(350, 11, 704, "не поиск")); consumed {
+		t.Fatal("cancelled document search input remained pending")
+	}
+
+	if err := dispatchMenuData(t, d, 350, 11, 700, "menu:docs:search"); err != nil {
+		t.Fatal(err)
+	}
+	set := pendingInputsFor(d)
+	set.mu.Lock()
+	for key, pending := range set.pending {
+		pending.ExpiresAt = pending.ExpiresAt.Add(-2 * pendingInputTTL)
+		set.pending[key] = pending
+	}
+	set.mu.Unlock()
+	expired := testEvent(350, 11, 705, "запрос после expiry")
+	if got, consumed := d.pendingEvent(expired); consumed || got.Text != expired.Text {
+		t.Fatalf("expired document search intercepted text: %+v consumed=%v", got, consumed)
+	}
+	if m.callCount() != 0 {
+		t.Fatalf("document search lifecycle called the model %d times", m.callCount())
+	}
+}

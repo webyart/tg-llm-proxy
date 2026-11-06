@@ -99,6 +99,7 @@ func (d *Dispatcher) showDocumentsMenu(ctx context.Context, ev Event, note ...st
 		buttons = append(buttons, menuRow(menuButton(fmt.Sprintf("Удалить #%d %s", row.ID, brief(row.Name, 24)), fmt.Sprintf("menu:doc:delete:%d", row.ID))))
 	}
 	buttons = append(buttons,
+		menuRow(menuButton("Поиск по документам", "menu:docs:search")),
 		menuRow(menuButton("Ссылки на потом", "menu:links")),
 		menuRow(menuButton("Как добавить", "menu:docs:add"), menuButton("Экспорт RAG JSON", "menu:docs:export")),
 		menuRow(menuButton("Удалить все документы", "menu:docs:clear")),
@@ -144,12 +145,16 @@ func (d *Dispatcher) promptDocumentConfirmation(ctx context.Context, ev Event, a
 	return nil
 }
 
+const pendingDocumentSearch = "documents_search"
+
 func (d *Dispatcher) documentMenuControl(ctx context.Context, ev Event, action string) error {
 	switch action {
 	case "menu":
 		return d.showDocumentsMenu(ctx, ev)
 	case "menu:add":
 		return d.renderMenu(ctx, ev, "Отправь текстовый файл с подписью /docs add. Документ останется доступен только этому чату.", simpleBackMarkup("menu:docs"))
+	case "menu:search":
+		return d.beginPendingInput(ctx, ev, pendingDocumentSearch, "menu:docs", "Отправь текст для поиска по документам текущего чата. Он будет обработан как /docs search <query>. Ввод действует 2 минуты.")
 	case "menu:clear":
 		return d.promptDocumentConfirmation(ctx, ev, "clear", 0)
 	}

@@ -36,6 +36,7 @@
         <button type="button" data-tab="documents" data-i18n="tabDocuments">Документы</button>
         <button type="button" data-tab="links" data-i18n="tabLinks">Ссылки</button>
         <button type="button" data-tab="tasks" data-i18n="tabTasks">Задачи</button>
+        <button type="button" data-tab="reminders" data-i18n="tabReminders">Напоминания</button>
         <button type="button" data-tab="usage" data-i18n="tabUsage">Использование</button>
         <button type="button" data-tab="settings" data-i18n="tabSettings">Настройки</button>
       </nav>
@@ -44,7 +45,8 @@
           <h2 id="section-title">Статус</h2>
           <button id="refresh" class="secondary" type="button" data-i18n="refresh">Обновить</button>
         </div>
-        <div id="content" aria-live="polite"></div>
+        <div id="loading" class="loading" role="status" data-i18n="loading" hidden>Загрузка…</div>
+        <div id="content" aria-live="polite" aria-busy="false"></div>
         <button id="more" type="button" data-i18n="loadOlder" hidden>Показать ранее</button>
       </section>
     </div>

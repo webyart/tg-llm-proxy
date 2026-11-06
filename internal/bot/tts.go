@@ -212,7 +212,11 @@ func (d *Dispatcher) synthesizeSpeech(ctx context.Context, ev Event, arg string)
 	if err != nil {
 		return err
 	}
-	audio, err := d.deps.TTS.Synthesize(ctx, text, speed)
+	audio, err := func() ([]byte, error) {
+		stopTyping := d.startTypingHeartbeat(ctx, ev.ChatID)
+		defer stopTyping()
+		return d.deps.TTS.Synthesize(ctx, text, speed)
+	}()
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return err
@@ -223,7 +227,8 @@ func (d *Dispatcher) synthesizeSpeech(ctx context.Context, ev Event, arg string)
 		return d.reply(ctx, ev.ChatID, "Не удалось озвучить текст. Попробуй ещё раз позже.")
 	}
 	if err := sender.SendAudio(ctx, ev.ChatID, Audio{Name: "speech.mp3", Data: audio, MIME: "audio/mpeg"}); err != nil {
-		return fmt.Errorf("telegram sendAudio: %w", err)
+		d.deps.Logger.Error("TTS audio delivery failed", "chat_id", ev.ChatID)
+		return d.reply(ctx, ev.ChatID, "Не удалось доставить аудио в Telegram. Попробуй ещё раз позже.")
 	}
 	return nil
 }

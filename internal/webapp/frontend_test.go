@@ -284,15 +284,17 @@ func TestFrontendOnlyTerminalTasksHaveDeleteAndKeepResume(t *testing.T) {
 
 func TestFrontendMutationGuardsAndConfirmationResets(t *testing.T) {
 	script := frontendAsset(t, "static/app.js")
-	for _, functionName := range []string{"changeDocument", "changeLink", "changeTask"} {
+	for _, functionName := range []string{"changeDocument", "changeLink", "changeTask", "changeReminder"} {
 		body := regexp.MustCompile(`(?s)async function ` + functionName + `\(path\) \{(.*?)\n  \}`).FindStringSubmatch(script)
 		if len(body) != 2 {
 			t.Fatalf("mutation helper %s is missing", functionName)
 		}
 		for _, want := range []string{
 			`if (loading || !session) return;`,
+			`setBusy(true);`,
 			`await api(path, { method: "POST" });`,
-			"if (changed) {\n      resetArmedStates();",
+			`setBusy(false);`,
+			"if (changed) {\n      resetArmedStates();\n      resetSearchState();",
 		} {
 			if !strings.Contains(body[1], want) {
 				t.Errorf("%s misses mutation guard %q", functionName, want)
@@ -302,27 +304,27 @@ func TestFrontendMutationGuardsAndConfirmationResets(t *testing.T) {
 			t.Errorf("%s does not use a strictly empty POST body without query parameters", functionName)
 		}
 	}
-	for _, functionName := range []string{"setDocumentClearArmed", "setLinkClearArmed", "setTaskClearArmed", "setDocumentDeleteArmed", "setLinkDeleteArmed", "setTaskDeleteArmed"} {
+	for _, functionName := range []string{"setDocumentClearArmed", "setLinkClearArmed", "setTaskClearArmed", "setDocumentDeleteArmed", "setLinkDeleteArmed", "setTaskDeleteArmed", "setReminderDeleteArmed"} {
 		body := regexp.MustCompile(`(?s)function ` + functionName + `\([^\n]*\) \{(.*?)\n  \}`).FindStringSubmatch(script)
 		if len(body) != 2 || !strings.Contains(body[1], "if (loading) return;") {
 			t.Errorf("%s does not block stale confirmations while loading", functionName)
 		}
 	}
 	for _, want := range []string{
-		"if (!button || loading) return;\n    resetArmedStates();",
-		`ui.refresh.addEventListener("click", () => { resetArmedStates(); nextBefore = null; load(); });`,
-		"loading = true;\n    resetArmedStates();\n    if (![\"status\", \"settings\", \"usage\"].includes(activeTab)) renderItems(activeTab, view.items);",
-		`ui.more.addEventListener("click", () => load(true));`,
+		"if (!button || loading) return;\n    resetArmedStates();\n    resetSearchState();",
+		`ui.refresh.addEventListener("click", () => { resetArmedStates(); resetSearchState(); nextBefore = null; load(); });`,
+		"setBusy(true);\n    resetArmedStates();\n    resetSearchState();\n    if (![\"status\", \"settings\", \"usage\", \"reminders\"].includes(activeTab)) renderItems(activeTab, view.items);",
+		`ui.more.addEventListener("click", () => { resetArmedStates(); resetSearchState(); load(true); });`,
 	} {
 		if !strings.Contains(script, want) {
-			t.Errorf("app.js misses confirmation reset regression %q", want)
+			t.Errorf("app.js misses transient-state reset regression %q", want)
 		}
 	}
 	resetBody := regexp.MustCompile(`(?s)function resetArmedStates\(\) \{(.*?)\n  \}`).FindStringSubmatch(script)
 	if len(resetBody) != 2 {
 		t.Fatal("shared confirmation reset helper is missing")
 	}
-	for _, variable := range []string{"clearDocumentsArmed", "clearLinksArmed", "clearTasksArmed", "deleteDocumentArmed", "deleteLinkArmed", "deleteTaskArmed"} {
+	for _, variable := range []string{"clearDocumentsArmed", "clearLinksArmed", "clearTasksArmed", "deleteDocumentArmed", "deleteLinkArmed", "deleteTaskArmed", "deleteReminderArmed"} {
 		if !strings.Contains(resetBody[1], variable) {
 			t.Errorf("confirmation reset misses %s", variable)
 		}
@@ -341,7 +343,7 @@ func TestFrontendSuccessNoticesAreSeparateFromErrors(t *testing.T) {
 			t.Errorf("index misses notice regression %q", want)
 		}
 	}
-	for _, key := range []string{"settingsSaved", "documentUpdated", "linkUpdated", "taskUpdated"} {
+	for _, key := range []string{"settingsSaved", "documentUpdated", "linkUpdated", "taskUpdated", "reminderUpdated"} {
 		if want := `showNotice(t("` + key + `"))`; !strings.Contains(script, want) {
 			t.Errorf("app.js misses success notice %q", want)
 		}
@@ -378,6 +380,157 @@ func TestFrontendSuccessNoticesAreSeparateFromErrors(t *testing.T) {
 		}
 		if !strings.Contains(asset, want) {
 			t.Errorf("frontend misses notice regression %q", want)
+		}
+	}
+}
+
+func TestFrontendDocumentSearchUsesBoundedReadOnlyResults(t *testing.T) {
+	script := frontendAsset(t, "static/app.js")
+	for _, want := range []string{
+		`searchDocuments: "Найти"`, `searchDocuments: "Search"`,
+		`documentSearchAria: "Поиск по документам"`, `documentSearchAria: "Search documents"`,
+		`documentSearchTruncated: "Поиск охватил только часть фрагментов документов; более старые фрагменты не проверялись."`,
+		`documentSearchTruncated: "Search covered only part of the document chunks; older chunks were not checked."`,
+		`input.type = "search"`, `input.maxLength = 4000`,
+		"api(`/api/documents/search?q=${encodeURIComponent(normalized)}`)",
+		`.slice(0, 3)`, `documentSearch.items.slice(0, 3)`,
+		`itemShell(item.document_id)`, `item.name`, `item.score`, `item.content`,
+		`data.corpus && data.corpus.truncated`, `t("documentSearchTruncated")`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js misses document search regression %q", want)
+		}
+	}
+	if got := strings.Count(script, "/api/documents/search"); got != 1 {
+		t.Errorf("document search endpoint count = %d, want 1", got)
+	}
+	body := regexp.MustCompile(`(?s)async function searchDocuments\(query\) \{(.*?)\n  \}`).FindStringSubmatch(script)
+	if len(body) != 2 {
+		t.Fatal("document search helper is missing")
+	}
+	for _, want := range []string{`if (loading || !session) return;`, `setBusy(true);`, `resetArmedStates();`, `setBusy(false);`} {
+		if !strings.Contains(body[1], want) {
+			t.Errorf("document search misses %q", want)
+		}
+	}
+	for _, rejected := range []string{`method: "POST"`, `/api/settings/model`, `/api/tasks`, `/api/reminders`, `innerHTML`} {
+		if strings.Contains(body[1], rejected) {
+			t.Errorf("document search unexpectedly contains %q", rejected)
+		}
+	}
+}
+
+func TestFrontendRemindersAreScopedToActiveAndFailedActions(t *testing.T) {
+	index := frontendAsset(t, "static/index.html")
+	script := frontendAsset(t, "static/app.js")
+	for _, want := range []string{`data-tab="reminders"`, `data-i18n="tabReminders"`} {
+		if !strings.Contains(index, want) {
+			t.Errorf("index misses reminders regression %q", want)
+		}
+	}
+	for _, want := range []string{
+		`tabReminders: "Напоминания"`, `tabReminders: "Reminders"`,
+		`activeReminders: "Активные напоминания"`, `activeReminders: "Active reminders"`,
+		`failedReminders: "Недоставленные напоминания"`, `failedReminders: "Failed reminders"`,
+		`retryReminder: "Повторить"`, `retryReminder: "Retry"`,
+		`deleteReminderWarning: "Удалить это недоставленное напоминание? Это действие нельзя отменить."`,
+		`deleteReminderWarning: "Delete this failed reminder? This cannot be undone."`,
+		`api("/api/reminders")`, `data.active || []`, `data.failed || []`,
+		`item.text`, `item.cadence`, `item.next_run`, `item.attempts`,
+		`settingsButton(t("cancelTask"), () => changeReminder(` + "`/api/reminders/${item.id}/cancel`" + `), true)`,
+		`settingsButton(t("retryReminder"), () => changeReminder(` + "`/api/reminders/${item.id}/retry`" + `))`,
+		`settingsButton(t("deleteReminder"), () => setReminderDeleteArmed(item.id, view.data), true)`,
+		`() => changeReminder(` + "`/api/reminders/${item.id}/delete`" + `)`,
+		`() => setReminderDeleteArmed(null, view.data)`,
+		`reminder_mutation_failed: "reminderMutationFailed"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js misses reminders regression %q", want)
+		}
+	}
+	for _, action := range []string{"cancel", "retry", "delete"} {
+		endpoint := "changeReminder(`/api/reminders/${item.id}/" + action + "`)"
+		if got := strings.Count(script, endpoint); got != 1 {
+			t.Errorf("reminder %s endpoint count = %d, want 1", action, got)
+		}
+	}
+	for _, rejected := range []string{"/api/reminders/new", "/api/reminders/create", "createReminder("} {
+		if strings.Contains(script, rejected) {
+			t.Errorf("Mini App unexpectedly exposes reminder creation %q", rejected)
+		}
+	}
+	armBody := regexp.MustCompile(`(?s)function setReminderDeleteArmed\([^\n]*\) \{(.*?)\n  \}`).FindStringSubmatch(script)
+	if len(armBody) != 2 {
+		t.Fatal("reminder delete armed-state helper is missing")
+	}
+	for _, rejected := range []string{`changeReminder(`, `api(`, `fetch(`} {
+		if strings.Contains(armBody[1], rejected) {
+			t.Errorf("showing or cancelling reminder confirmation unexpectedly calls %q", rejected)
+		}
+	}
+	actions := regexp.MustCompile(`(?s)if \(failed\) \{(.*?)\n      \} else \{(.*?)\n      \}\n      if \(actions`).FindStringSubmatch(script)
+	if len(actions) != 3 {
+		t.Fatal("reminder active/failed action branches are missing")
+	}
+	for _, want := range []string{"/retry", "/delete", "deleteReminderWarning"} {
+		if !strings.Contains(actions[1], want) {
+			t.Errorf("failed reminders miss %q", want)
+		}
+	}
+	if strings.Contains(actions[1], "/cancel") || !strings.Contains(actions[2], "/cancel") {
+		t.Error("reminder Cancel is not restricted to active reminders")
+	}
+	for _, rejected := range []string{"/retry", "/delete", "deleteReminderWarning"} {
+		if strings.Contains(actions[2], rejected) {
+			t.Errorf("active reminders unexpectedly expose %q", rejected)
+		}
+	}
+}
+
+func TestFrontendBusyControlsAreDisabledAndRestored(t *testing.T) {
+	index := frontendAsset(t, "static/index.html")
+	script := frontendAsset(t, "static/app.js")
+	css := frontendAsset(t, "static/style.css")
+	for _, want := range []string{
+		`<div id="loading" class="loading" role="status" data-i18n="loading" hidden>Загрузка…</div>`,
+		`<div id="content" aria-live="polite" aria-busy="false"></div>`,
+	} {
+		if !strings.Contains(index, want) {
+			t.Errorf("index misses busy regression %q", want)
+		}
+	}
+	if !strings.Contains(css, ".loading {") {
+		t.Error("visible loading indicator has no styling")
+	}
+	for _, want := range []string{`loading: "Загрузка…"`, `loading: "Loading…"`} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js misses busy translation %q", want)
+		}
+	}
+	body := regexp.MustCompile(`(?s)function syncBusyState\(\) \{(.*?)\n  \}`).FindStringSubmatch(script)
+	if len(body) != 2 {
+		t.Fatal("shared busy-state helper is missing")
+	}
+	for _, want := range []string{
+		`ui.loading.hidden = !loading;`, `ui.content.setAttribute("aria-busy", String(loading));`,
+		`document.querySelectorAll("button, input, select, textarea")`,
+		`control.dataset.wasDisabled = String(control.disabled);`, `control.disabled = true;`,
+		`control.disabled = control.dataset.wasDisabled === "true";`,
+		`delete control.dataset.busyDisabled;`, `delete control.dataset.wasDisabled;`,
+	} {
+		if !strings.Contains(body[1], want) {
+			t.Errorf("busy-state helper misses %q", want)
+		}
+	}
+	for _, functionName := range []string{"searchDocuments", "load"} {
+		body := regexp.MustCompile(`(?s)async function ` + functionName + `\([^\n]*\) \{(.*?)\n  \}`).FindStringSubmatch(script)
+		if len(body) != 2 || !strings.Contains(body[1], "finally {") || !strings.Contains(body[1], "setBusy(false);") {
+			t.Errorf("%s does not always clear busy state", functionName)
+		}
+	}
+	for _, rejected := range []string{`ui.refresh.disabled = false`, `ui.more.disabled = false`} {
+		if strings.Contains(script, rejected) {
+			t.Errorf("busy state bypasses disabled-state restoration with %q", rejected)
 		}
 	}
 }

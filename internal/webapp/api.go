@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"bot/internal/bot"
 	"bot/internal/store"
 )
 
@@ -213,6 +215,59 @@ func (a *App) documents(w http.ResponseWriter, req *http.Request, current scope)
 		items = items[:page.Limit]
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_before_id": next})
+}
+
+type documentSearchItem struct {
+	DocumentID int64  `json:"document_id"`
+	Name       string `json:"name"`
+	Score      int    `json:"score"`
+	Content    string `json:"content"`
+}
+
+type documentSearchResponse struct {
+	Items  []documentSearchItem `json:"items"`
+	Corpus struct {
+		Scanned   int  `json:"scanned"`
+		Total     int  `json:"total"`
+		Truncated bool `json:"truncated"`
+	} `json:"corpus"`
+}
+
+func (a *App) searchDocuments(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.Method != http.MethodGet {
+		methodAllowed(w, http.MethodGet)
+		return
+	}
+	values, err := url.ParseQuery(req.URL.RawQuery)
+	if err != nil || len(values) != 1 {
+		writeError(w, http.StatusBadRequest, "invalid_query", "Use exactly one nonempty q of at most 4000 runes.")
+		return
+	}
+	queries, found := values["q"]
+	if !found || len(queries) != 1 {
+		writeError(w, http.StatusBadRequest, "invalid_query", "Use exactly one nonempty q of at most 4000 runes.")
+		return
+	}
+	query := queries[0]
+	if strings.TrimSpace(query) == "" || !utf8.ValidString(query) || len([]rune(query)) > store.RAGQueryMaxRunes {
+		writeError(w, http.StatusBadRequest, "invalid_query", "Use exactly one nonempty q of at most 4000 runes.")
+		return
+	}
+	result, err := store.SearchRAGChunksDetailed(req.Context(), a.db, current.ChatID, query, bot.RAGResultLimit, bot.RAGMaxRunes)
+	if err != nil {
+		a.queryFailed(w, "document search", err)
+		return
+	}
+	response := documentSearchResponse{Items: make([]documentSearchItem, 0, len(result.Chunks))}
+	for _, chunk := range result.Chunks {
+		response.Items = append(response.Items, documentSearchItem{
+			DocumentID: chunk.DocumentID, Name: chunk.Name, Score: chunk.Score, Content: chunk.Content,
+		})
+	}
+	response.Corpus.Scanned = result.ScannedChunks
+	response.Corpus.Total = result.TotalChunks
+	response.Corpus.Truncated = result.CorpusTruncated
+	writeJSON(w, http.StatusOK, response)
 }
 
 func documentBodyError(w http.ResponseWriter, status int) {
@@ -672,6 +727,145 @@ func (a *App) taskControl(w http.ResponseWriter, req *http.Request, current scop
 		}
 		a.resumeTask(w, req, current)
 	}
+}
+
+const maxFailedReminders = 5
+
+type reminderItem struct {
+	ID         int64   `json:"id"`
+	Text       string  `json:"text"`
+	Cadence    string  `json:"cadence"`
+	DailyTime  string  `json:"daily_time"`
+	NextRun    string  `json:"next_run"`
+	Status     string  `json:"status"`
+	Attempts   int     `json:"attempts"`
+	CreatedAt  string  `json:"created_at"`
+	UpdatedAt  string  `json:"updated_at"`
+	LastSentAt *string `json:"last_sent_at"`
+	FinishedAt *string `json:"finished_at"`
+}
+
+func reminderTime(value time.Time) string {
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func optionalReminderTime(value *time.Time) *string {
+	if value == nil {
+		return nil
+	}
+	formatted := reminderTime(*value)
+	return &formatted
+}
+
+func makeReminderItem(reminder store.Reminder) reminderItem {
+	return reminderItem{
+		ID: reminder.ID, Text: reminder.Text, Cadence: reminder.Cadence, DailyTime: reminder.DailyTime,
+		NextRun: reminderTime(reminder.NextRunAt), Status: reminder.Status, Attempts: reminder.Attempts,
+		CreatedAt: reminderTime(reminder.CreatedAt), UpdatedAt: reminderTime(reminder.UpdatedAt),
+		LastSentAt: optionalReminderTime(reminder.LastSentAt), FinishedAt: optionalReminderTime(reminder.FinishedAt),
+	}
+}
+
+func (a *App) reminders(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.Method != http.MethodGet {
+		methodAllowed(w, http.MethodGet)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_query", "The reminder list does not accept query parameters.")
+		return
+	}
+	active, err := store.ListReminders(req.Context(), a.db, current.ChatID, store.ReminderListLimit)
+	if err != nil {
+		a.queryFailed(w, "active reminders", err)
+		return
+	}
+	failed, err := store.ListFailedReminders(req.Context(), a.db, current.ChatID, maxFailedReminders)
+	if err != nil {
+		a.queryFailed(w, "failed reminders", err)
+		return
+	}
+	response := struct {
+		Active []reminderItem `json:"active"`
+		Failed []reminderItem `json:"failed"`
+	}{Active: make([]reminderItem, 0, len(active)), Failed: make([]reminderItem, 0, len(failed))}
+	for _, reminder := range active {
+		response.Active = append(response.Active, makeReminderItem(reminder))
+	}
+	for _, reminder := range failed {
+		response.Failed = append(response.Failed, makeReminderItem(reminder))
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func reminderActionID(path string) (int64, string, bool) {
+	if !strings.HasPrefix(path, "/api/reminders/") {
+		return 0, "", false
+	}
+	parts := strings.Split(strings.TrimPrefix(path, "/api/reminders/"), "/")
+	if len(parts) != 2 || (parts[1] != "cancel" && parts[1] != "retry" && parts[1] != "delete") {
+		return 0, "", false
+	}
+	id, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || id <= 0 || strconv.FormatInt(id, 10) != parts[0] {
+		return 0, "", false
+	}
+	return id, parts[1], true
+}
+
+func reminderBodyError(w http.ResponseWriter, status int) {
+	if status == http.StatusRequestEntityTooLarge {
+		writeError(w, status, "body_too_large", "Request body is too large.")
+		return
+	}
+	writeError(w, http.StatusBadRequest, "invalid_body", "Reminder controls accept an empty request body.")
+}
+
+func (a *App) reminderMutationFailed(w http.ResponseWriter, req *http.Request, action string, err error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, req.Context().Err()) {
+		return
+	}
+	a.logger.Error("Mini App reminder mutation failed", "operation", action, "error", err)
+	writeError(w, http.StatusInternalServerError, "reminder_mutation_failed", "The reminder could not be changed.")
+}
+
+func (a *App) reminderControl(w http.ResponseWriter, req *http.Request, current scope) {
+	reminderID, action, valid := reminderActionID(req.URL.Path)
+	if !valid {
+		writeError(w, http.StatusNotFound, "not_found", "API endpoint not found.")
+		return
+	}
+	if req.Method != http.MethodPost {
+		methodAllowed(w, http.MethodPost)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Reminder controls do not accept query parameters.")
+		return
+	}
+	if status, ok := emptySettingsBody(req); !ok {
+		reminderBodyError(w, status)
+		return
+	}
+	var changed bool
+	var err error
+	switch action {
+	case "cancel":
+		changed, err = store.CancelReminder(req.Context(), a.db, current.ChatID, reminderID, time.Now().UTC())
+	case "retry":
+		changed, err = store.RetryFailedReminder(req.Context(), a.db, current.ChatID, reminderID, time.Now().UTC())
+	case "delete":
+		changed, err = store.DeleteFailedReminder(req.Context(), a.db, current.ChatID, reminderID)
+	}
+	if err != nil {
+		a.reminderMutationFailed(w, req, action, err)
+		return
+	}
+	if !changed {
+		writeError(w, http.StatusConflict, "reminder_not_mutable", "The reminder is missing or cannot be changed in its current state.")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": reminderID})
 }
 
 type usageModel struct {

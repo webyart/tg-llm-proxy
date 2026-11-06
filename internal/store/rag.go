@@ -1,6 +1,7 @@
 package store
 
 import (
+	"container/heap"
 	"context"
 	"database/sql"
 	"errors"
@@ -275,6 +276,39 @@ type ragScoredChunk struct {
 	rankScore    float64
 }
 
+type ragTopKHeap []ragScoredChunk
+
+func (h ragTopKHeap) Len() int { return len(h) }
+
+func (h ragTopKHeap) Less(i, j int) bool {
+	if h[i].rankScore != h[j].rankScore {
+		return h[i].rankScore < h[j].rankScore
+	}
+	return h[i].id < h[j].id
+}
+
+func (h ragTopKHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+
+func (h *ragTopKHeap) Push(value any) {
+	*h = append(*h, value.(ragScoredChunk))
+}
+
+func (h *ragTopKHeap) Pop() any {
+	old := *h
+	last := len(old) - 1
+	value := old[last]
+	old[last] = ragScoredChunk{}
+	*h = old[:last]
+	return value
+}
+
+func ragChunkRanksBefore(left, right ragScoredChunk) bool {
+	if left.rankScore != right.rankScore {
+		return left.rankScore > right.rankScore
+	}
+	return left.id > right.id
+}
+
 type ragSearchCorpus struct {
 	candidates  []ragScoredChunk
 	documents   map[string]int
@@ -303,16 +337,7 @@ func readRAGSearchCorpus(ctx context.Context, db *sql.DB, chatID int64, terms []
 		if err := rows.Scan(&row.id, &row.DocumentID, &row.Name, &row.Content, &corpus.totalChunks); err != nil {
 			return ragSearchCorpus{}, err
 		}
-		row.textTokens = lexicalTokens(row.Content)
-		row.tokens = len(row.textTokens)
-		for _, token := range row.textTokens {
-			if _, wanted := termIndexes[token]; wanted {
-				if row.occurred == nil {
-					row.occurred = map[string]int{}
-				}
-				row.occurred[token]++
-			}
-		}
+		row.tokens, row.occurred = lexicalTokenOccurrences(row.Content, termIndexes)
 		nameTerms := uint32(0)
 		for _, token := range lexicalTokens(row.Name) {
 			index, wanted := termIndexes[token]
@@ -335,6 +360,7 @@ func readRAGSearchCorpus(ctx context.Context, db *sql.DB, chatID int64, terms []
 		corpus.chunkCount++
 		corpus.totalTokens += row.tokens
 		if len(row.occurred) > 0 || row.nameHits > 0 {
+			row.textTokens = lexicalTokens(row.Content)
 			corpus.candidates = append(corpus.candidates, row)
 		}
 	}
@@ -426,18 +452,23 @@ func SearchRAGChunksDetailed(ctx context.Context, db *sql.DB, chatID int64, quer
 	if bestCoverage < minimumCoverage {
 		minimumCoverage = bestCoverage
 	}
-	covered := scored[:0]
+	top := &ragTopKHeap{}
 	for _, row := range scored {
-		if row.coverage >= minimumCoverage {
-			covered = append(covered, row)
+		if row.coverage < minimumCoverage {
+			continue
+		}
+		if top.Len() < limit {
+			heap.Push(top, row)
+			continue
+		}
+		if ragChunkRanksBefore(row, (*top)[0]) {
+			(*top)[0] = row
+			heap.Fix(top, 0)
 		}
 	}
-	scored = covered
-	sort.SliceStable(scored, func(i, j int) bool {
-		if scored[i].rankScore != scored[j].rankScore {
-			return scored[i].rankScore > scored[j].rankScore
-		}
-		return scored[i].id > scored[j].id
+	scored = *top
+	sort.Slice(scored, func(i, j int) bool {
+		return ragChunkRanksBefore(scored[i], scored[j])
 	})
 	used := 0
 	for _, row := range scored {
@@ -478,12 +509,52 @@ func ragContainsTokenPhrase(tokens []string, phrase []string) bool {
 	return false
 }
 
+func lexicalTokenOccurrences(text string, terms map[string]int) (int, map[string]int) {
+	lowered := strings.ToLower(text)
+	tokens := 0
+	var occurred map[string]int
+	start := -1
+	for index, r := range lowered {
+		if !ragLexicalTokenBoundary(r) {
+			if start < 0 {
+				start = index
+			}
+			continue
+		}
+		if start < 0 {
+			continue
+		}
+		token := lowered[start:index]
+		tokens++
+		if _, wanted := terms[token]; wanted {
+			if occurred == nil {
+				occurred = map[string]int{}
+			}
+			occurred[token]++
+		}
+		start = -1
+	}
+	if start >= 0 {
+		token := lowered[start:]
+		tokens++
+		if _, wanted := terms[token]; wanted {
+			if occurred == nil {
+				occurred = map[string]int{}
+			}
+			occurred[token]++
+		}
+	}
+	return tokens, occurred
+}
+
+func ragLexicalTokenBoundary(r rune) bool {
+	return !unicode.IsLetter(r) && !unicode.IsNumber(r) && !unicode.IsMark(r)
+}
+
 // lexicalTokens splits text into lowercase word tokens. Letters, marks and digits of every script
 // stay inside a token, so matching uses Unicode token boundaries rather than byte substrings.
 func lexicalTokens(text string) []string {
-	return strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsNumber(r) && !unicode.IsMark(r)
-	})
+	return strings.FieldsFunc(strings.ToLower(text), ragLexicalTokenBoundary)
 }
 
 func ragQueryPrefix(query string) string {

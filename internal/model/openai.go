@@ -7,6 +7,7 @@
 package model
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -131,10 +132,14 @@ func (c *OpenAI) Complete(ctx context.Context, req Request) (Response, error) {
 	}
 	var attemptCtx, cancel = context.WithTimeout(ctx, budget)
 	defer cancel()
+	var body, model, err = c.marshalChatRequest(req, false, 1)
+	if err != nil {
+		return Response{}, err
+	}
 
 	var lastErr error
 	for attempt := 1; attempt <= c.attempts; attempt++ {
-		var resp, err = c.attempt(attemptCtx, req, attempt)
+		var resp, err = c.attempt(attemptCtx, body, model, attempt)
 		if err == nil {
 			resp.Latency = time.Since(start)
 			resp.Attempts = attempt
@@ -259,21 +264,24 @@ type modelsResponse struct {
 	} `json:"data"`
 }
 
-func (c *OpenAI) attempt(ctx context.Context, req Request, attempt int) (Response, error) {
+func (c *OpenAI) marshalChatRequest(req Request, stream bool, attempt int) ([]byte, string, error) {
 	var model = req.Model
 	if model == "" {
 		model = c.model
 	}
 	if model == "" {
-		return Response{}, fmt.Errorf("the model of (STRATA_MODEL) is not set, attempt %d", attempt)
+		return nil, "", fmt.Errorf("the model of (STRATA_MODEL) is not set, attempt %d", attempt)
 	}
 
-	var body, err = json.Marshal(chatRequest{Model: model, Messages: toWire(req.Messages), Stream: false, Tools: toWireTools(req.Tools)})
+	body, err := json.Marshal(chatRequest{Model: model, Messages: toWire(req.Messages), Stream: stream, Tools: toWireTools(req.Tools)})
 	if err != nil {
-		return Response{}, err
+		return nil, "", err
 	}
+	return body, model, nil
+}
 
-	var httpReq, buildErr = http.NewRequestWithContext(ctx, http.MethodPost, c.chatURL, strings.NewReader(string(body)))
+func (c *OpenAI) attempt(ctx context.Context, body []byte, model string, attempt int) (Response, error) {
+	var httpReq, buildErr = http.NewRequestWithContext(ctx, http.MethodPost, c.chatURL, bytes.NewReader(body))
 	if buildErr != nil {
 		return Response{}, buildErr
 	}

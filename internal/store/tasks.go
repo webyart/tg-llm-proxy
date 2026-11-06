@@ -212,11 +212,21 @@ func ClaimNextTask(ctx context.Context, db *sql.DB, now time.Time, lease time.Du
 	if lease <= 0 {
 		lease = 30 * time.Second
 	}
+	nowText := formatReminderTime(now)
+	var workExists bool
+	if err := db.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM tasks WHERE expires_at > ? AND due_at <= ?
+			AND (status = 'ready' OR (status = 'running' AND lease_until <= ?))
+	)`, nowText, nowText, nowText).Scan(&workExists); err != nil {
+		return Task{}, false, err
+	}
+	if !workExists {
+		return Task{}, false, nil
+	}
 	token, err := reminderClaimToken()
 	if err != nil {
 		return Task{}, false, err
 	}
-	nowText := formatReminderTime(now)
 	row := db.QueryRowContext(ctx, `UPDATE tasks
 		SET status = 'running', attempts = attempts + 1, claim_token = ?, lease_until = ?, updated_at = ?
 		WHERE id = (
@@ -423,6 +433,16 @@ func ExpireTasks(ctx context.Context, db *sql.DB, now time.Time, limit int) ([]T
 		limit = 20
 	}
 	nowText := formatReminderTime(now)
+	var workExists bool
+	if err := db.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM tasks WHERE status IN ('ready', 'running', 'awaiting_approval')
+			AND (expires_at <= ? OR (status = 'awaiting_approval' AND approval_expires_at <= ?))
+	)`, nowText, nowText).Scan(&workExists); err != nil {
+		return nil, err
+	}
+	if !workExists {
+		return nil, nil
+	}
 	rows, err := db.QueryContext(ctx, `UPDATE tasks
 		SET status = 'failed', error = 'task or network approval expired', claim_token = NULL,
 			lease_until = NULL, continuation_json = NULL, approval_token = NULL,

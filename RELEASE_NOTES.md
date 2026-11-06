@@ -1,3 +1,17 @@
+# tg-llm-proxy v1.33.2
+
+## RAG and scheduler performance
+
+- RAG corpus scan больше не материализует полный `[]string` tokens для irrelevant chunks: token count и occurrences собираются однопроходно, полные tokens для phrase matching создаются только для candidates. Unicode boundaries, IDF, deterministic scores и corpus caps сохранены.
+- Полная сортировка matching candidates заменена bounded heap размером `limit`; итоговая сортировка и `(rankScore,id)` ordering не изменены. Добавлены golden equivalence, all-match10000 и Cyrillic-heavy benchmarks.
+- `ClaimNextTask`, `ExpireTasks` и `ClaimNextReminder` получили `SELECT EXISTS` prechecks с прежними predicates. Idle-проходы возвращаются без UPDATE; due path остаётся атомарным UPDATE/RETURNING. Driver-level regressions подтверждают 0 idle UPDATE, concurrent claims без дублей и lease recovery.
+
+## HTTP allocations
+
+- Complete, Stream и Transcribe маршаллируют request body один раз на retry sequence. Каждая попытка получает новый `bytes.Reader` с побайтовым идентичным body; multipart boundary и Content-Type сохраняются.
+- Retry rules, headers/auth, deadlines и no-retry-after-delta не изменены. Custom JSON marshaler вызывается один раз; regressions проверяют body/headers/metadata/binary audio на обеих попытках.
+- На повторных local benchmarks allocation bytes снизились примерно на 74% Complete, 64% Stream и 49% Transcribe; на преимущественно irrelevant RAG corpus — на 77%. Это измерения одного хоста, не wall-clock gates.
+
 # tg-llm-proxy v1.33.1
 
 ## Security and reliability patch

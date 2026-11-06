@@ -287,11 +287,21 @@ func ClaimNextReminder(ctx context.Context, db *sql.DB, now time.Time, lease tim
 	if lease <= 0 {
 		lease = 30 * time.Second
 	}
+	nowText := formatReminderTime(now)
+	var workExists bool
+	if err := db.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM reminders
+		WHERE next_run_at <= ? AND (status = 'active' OR (status = 'sending' AND lease_until <= ?))
+	)`, nowText, nowText).Scan(&workExists); err != nil {
+		return Reminder{}, false, err
+	}
+	if !workExists {
+		return Reminder{}, false, nil
+	}
 	token, err := reminderClaimToken()
 	if err != nil {
 		return Reminder{}, false, err
 	}
-	nowText := formatReminderTime(now)
 	leaseText := formatReminderTime(now.Add(lease))
 	row := db.QueryRowContext(ctx, `UPDATE reminders
 		SET status = 'sending', attempts = attempts + 1, claim_token = ?, lease_until = ?, updated_at = ?

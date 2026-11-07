@@ -1,0 +1,82 @@
+http:
+  routers:
+    miniapp-bare:
+      entryPoints:
+        - web
+      rule: Path(`/miniapp`)
+      priority: 110
+      middlewares:
+        - miniapp-redirect
+      service: miniapp
+    miniapp:
+      entryPoints:
+        - web
+      rule: PathPrefix(`/miniapp/`)
+      priority: 100
+      middlewares:
+        - miniapp-strip
+        - miniapp-headers
+      service: miniapp
+    max-health:
+      entryPoints:
+        - web
+      rule: PathPrefix(`/max/healthz`)
+      priority: 105
+      middlewares:
+        - max-health-strip
+      service: max
+    max:
+      entryPoints:
+        - web
+      rule: Path(`/max`) || PathPrefix(`/max/`)
+      priority: 100
+      service: max
+    dashboard:
+      entryPoints:
+        - web
+      rule: PathPrefix(`/`)
+      priority: 1
+      service: dashboard
+
+  middlewares:
+    miniapp-redirect:
+      redirectRegex:
+        regex: ^https?://[^/]+/miniapp$
+        replacement: /miniapp/
+        permanent: true
+    miniapp-strip:
+      stripPrefix:
+        prefixes:
+          - /miniapp
+    miniapp-headers:
+      headers:
+        customRequestHeaders:
+          X-Forwarded-Prefix: /miniapp
+    max-health-strip:
+      stripPrefix:
+        prefixes:
+          - /max
+
+  services:
+    miniapp:
+      loadBalancer:
+        serversTransport: default
+        servers:
+          - url: http://bot:8084
+    max:
+      loadBalancer:
+        serversTransport: default
+        servers:
+          - url: http://host.docker.internal:8090
+    dashboard:
+      loadBalancer:
+        serversTransport: default
+        servers:
+          - url: http://host.docker.internal:8787
+
+  serversTransports:
+    default:
+      forwardingTimeouts:
+        dialTimeout: 5s
+        responseHeaderTimeout: 30s
+        idleConnTimeout: 90s

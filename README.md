@@ -297,19 +297,45 @@ Ask, Search, Custom Persona и создание напоминания прин�
 
 More → Mini App открывает companion со Status, History, Documents, Links, Tasks, Reminders, Usage и Settings. Для включения задайте `MINIAPP_ENABLED=true` и HTTPS `MINIAPP_PUBLIC_URL`; внутри контейнера listener `0.0.0.0`, host-порт бота остаётся loopback-only `127.0.0.1:8084`.
 
-Production с существующим dashboard запускается всеми override-файлами одной командой:
+Начиная с v1.38.0 production с существующим dashboard, Mini App и max запускается всеми override-файлами одной командой:
 
 ```powershell
 docker compose -f docker-compose.yml -f compose.websearch.yaml -f compose.tts.yaml -f compose.production.yaml up -d
 ```
 
-`compose.production.yaml` задаёт `MINIAPP_PUBLIC_URL=https://desktop-hvobbn7.tail66517e.ts.net/miniapp`. Caddy gateway слушает только `127.0.0.1:8085`: `/miniapp` и `/miniapp/*` направляются на `bot:8084` со снятием префикса и `X-Forwarded-Prefix: /miniapp`, поэтому static, `/miniapp/api/session` и остальные API используют тот же backend. Корень `/` и все остальные пути проксируются без изменения path на существующий dashboard `host.docker.internal:8787` (`127.0.0.1:8787` на хосте). Настройте корень Tailscale Funnel на gateway:
+`compose.production.yaml` сохраняет `MINIAPP_PUBLIC_URL=https://desktop-hvobbn7.tail66517e.ts.net/miniapp` и запускает основной gateway Traefik v3.6, закреплённый как `traefik:v3.6@sha256:31267173a15b4944e797a76ffd9c419707c8d8b32fe5b610f80cd0cfa05f372d`. Сервис `gateway` публикует только `127.0.0.1:8086:8080`: это единая точка входа для dashboard, Mini App и max.
+
+Маршруты gateway:
+
+- `/miniapp` и `/miniapp/*` → `http://bot:8084`. Middleware `stripPrefix` снимает `/miniapp`, а `X-Forwarded-Prefix: /miniapp` сохраняет публичный префикс. Static, `/miniapp/api/session` и остальные API используют тот же backend.
+- `/max` и `/max/*` → `http://host.docker.internal:8090`. Path передаётся без `stripPrefix` и других изменений.
+- `/` и все остальные пути → существующий dashboard `http://host.docker.internal:8787` (`127.0.0.1:8787` на хосте) как fallback без изменения path.
+
+Health и прямые listeners не меняются: bot health остаётся на `127.0.0.1:8080/healthz`, Mini App без gateway по-прежнему принимает запросы без префикса на `127.0.0.1:8084`, а прямой max на `127.0.0.1:8090` отвечает `/healthz` = 200; ответ 404 на его корне `/` допустим и не означает сбой gateway.
+
+Traefik использует только static file provider: `/etc/traefik/traefik.yml` и `/etc/traefik/dynamic.yml` монтируются read-only. Docker provider и Docker socket не используются. Встроенные Traefik API/dashboard не включены и не публикуются; маршрут `/` относится к приложению dashboard на порту 8787. Для `host.docker.internal` задан `host-gateway`, а запуск gateway зависит от healthy `bot`.
+
+Контейнер gateway работает non-root с read-only rootfs, `cap_drop: ALL`, `no-new-privileges` и tmpfs; заданы memory/CPU/PID limits и ротация Docker logs. Auth headers, cookies, Telegram `initData`, bearer sessions, токены и ключи не записываются в access/error logs. Логи не должны использоваться для вывода секретов при диагностике маршрутов.
+
+### Миграция с Caddy на Traefik
+
+Текущий Caddy на `127.0.0.1:8085` — только временный migration path и rollback, а не второй постоянный production gateway. На время миграции сохраните его маршрут и действующий Tailscale Funnel root → `8085`: не останавливайте Caddy и не переназначайте Funnel до проверки Traefik напрямую на `127.0.0.1:8086`.
+
+1. Запустите production Compose командой выше. Traefik использует `8086`, поэтому не перехватывает текущий Caddy на `8085`.
+2. До переключения Funnel проверьте на `8086` dashboard `/`, Mini App `/miniapp` со static/session/API, max `/max`, health/direct behaviors и отсутствие секретов в логах.
+3. Только после целевых тестов main agent переключает production Funnel на новый gateway:
+
+```powershell
+tailscale funnel --bg http://127.0.0.1:8086
+```
+
+При необходимости отката до завершения миграции восстанавливается прежний маршрут:
 
 ```powershell
 tailscale funnel --bg http://127.0.0.1:8085
 ```
 
-Так dashboard остаётся на публичном корне, а Mini App доступен по `/miniapp`. Прямой запуск без gateway сохраняет прежнее поведение: reverse proxy/tunnel направляет публичный URL без `/miniapp` на `127.0.0.1:8084`, и префикс приложению не требуется.
+После принятия Traefik и завершения наблюдения Caddy удаляется отдельным изменением. Прямой запуск Mini App без любого gateway сохраняет прежнее поведение: reverse proxy/tunnel направляет публичный URL без `/miniapp` на `127.0.0.1:8084`, и префикс приложению не требуется.
 
 Raw `initData` проверяется через Telegram HMAC и `auth_date`, launch ticket привязан к chat/user на 2 минуты, session — на 15 минут. Доступ проверяется при каждом запросе. Нет model keys, task plans/results или tool arguments. Настройки Model/Persona/Stream работают через те же store-операции и проверку allowlist, без прямых обращений браузера к STRATA. Интерфейс по умолчанию русский, есть переключатель RU/EN и адаптивная мобильная вёрстка без горизонтального скролла. `watch_container.ps1` дополнительно проверяет `/healthz` при включённом Mini App.
 

@@ -1,0 +1,35 @@
+log:
+  level: INFO
+  format: json
+
+accessLog:
+  format: json
+  fields:
+    headers:
+      defaultMode: drop
+
+api:
+  dashboard: false
+  insecure: false
+
+ping:
+  entryPoint: health
+
+entryPoints:
+  web:
+    address: ":8080"
+    transport:
+      respondingTimeouts:
+        readTimeout: 30s
+        writeTimeout: 0s
+        idleTimeout: 90s
+      lifeCycle:
+        requestAcceptGraceTimeout: 10s
+        graceTimeOut: 30s
+  health:
+    address: ":8081"
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yml
+    watch: false

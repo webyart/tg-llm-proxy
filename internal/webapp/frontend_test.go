@@ -617,7 +617,7 @@ func TestFrontendHistoryExportUsesAuthenticatedBlobDownload(t *testing.T) {
 		`historyExportReady: "Экспорт истории подготовлен."`, `historyExportReady: "History export is ready."`,
 		`historyExportEmpty: "Нет сообщений для экспорта."`, `historyExportEmpty: "There are no messages to export."`,
 		`history_empty: "historyExportEmpty"`, `exportHistory("md")`, `exportHistory("json")`,
-		"fetch(`/api/history/export?format=${format}`",
+		"fetch(miniAppBase + `/api/history/export?format=${format}`",
 		`new Headers({ "Authorization": ` + "`Bearer ${session}`" + ` })`,
 		`const blob = await response.blob()`, `blob.size > 5 * 1024 * 1024`,
 		`URL.createObjectURL(blob)`, "anchor.download = `history.${format}`", `anchor.click()`,
@@ -708,6 +708,20 @@ func TestFrontendRateLimitedErrorsAreLocalized(t *testing.T) {
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("app.js misses localized 429 regression %q", want)
+		}
+	}
+}
+
+func TestFrontendUsesInjectedBaseForAPIAndExport(t *testing.T) {
+	script := frontendAsset(t, "static/app.js")
+	for _, want := range []string{
+		`document.querySelector('meta[name="miniapp-base"]')`,
+		`baseMeta.getAttribute("content")`,
+		`fetch(miniAppBase + path`,
+		"fetch(miniAppBase + `/api/history/export?format=${format}`",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js misses forwarded base regression %q", want)
 		}
 	}
 }

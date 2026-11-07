@@ -252,6 +252,8 @@
     return translated || fallback;
   }
 
+  const baseMeta = document.querySelector('meta[name="miniapp-base"]');
+  const miniAppBase = baseMeta ? baseMeta.getAttribute("content") || "" : "";
   const launch = new URLSearchParams(window.location.hash.slice(1));
   const ticket = launch.get("ticket") || "";
   const initData = (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData) || launch.get("tgWebAppData") || "";
@@ -370,7 +372,7 @@
     if (session) headers.set("Authorization", `Bearer ${session}`);
     let response;
     try {
-      response = await fetch(path, { ...options, headers, cache: "no-store" });
+      response = await fetch(miniAppBase + path, { ...options, headers, cache: "no-store" });
     } catch (_) {
       throw new Error(t("networkError"));
     }
@@ -1051,7 +1053,7 @@
       const headers = new Headers({ "Authorization": `Bearer ${session}` });
       let response;
       try {
-        response = await fetch(`/api/history/export?format=${format}`, { headers, cache: "no-store" });
+        response = await fetch(miniAppBase + `/api/history/export?format=${format}`, { headers, cache: "no-store" });
       } catch (_) {
         throw new Error(t("networkError"));
       }

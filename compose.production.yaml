@@ -1,0 +1,4 @@
+services:
+  bot:
+    environment:
+      MINIAPP_PUBLIC_URL: https://desktop-hvobbn7.tail66517e.ts.net/miniapp

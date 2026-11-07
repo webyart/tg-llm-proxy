@@ -544,6 +544,40 @@ func (a *App) revokeSession(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"revoked": true})
 }
 
+func forwardedPrefix(req *http.Request) string {
+	prefix := strings.TrimRight(req.Header.Get("X-Forwarded-Prefix"), "/")
+	if prefix == "" {
+		return ""
+	}
+	if !strings.HasPrefix(prefix, "/") {
+		return ""
+	}
+	for _, segment := range strings.Split(prefix[1:], "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return ""
+		}
+		for _, char := range segment {
+			if char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' ||
+				char == '-' || char == '.' || char == '_' || char == '~' {
+				continue
+			}
+			return ""
+		}
+	}
+	return prefix
+}
+
+func indexWithPrefix(content []byte, prefix string) []byte {
+	if prefix == "" {
+		return content
+	}
+	page := string(content)
+	page = strings.Replace(page, "<title>", `<meta name="miniapp-base" content="`+prefix+`">`+"\n  <title>", 1)
+	page = strings.Replace(page, `href="/style.css"`, `href="`+prefix+`/style.css"`, 1)
+	page = strings.Replace(page, `src="/app.js"`, `src="`+prefix+`/app.js"`, 1)
+	return []byte(page)
+}
+
 func (a *App) serveStatic(w http.ResponseWriter, req *http.Request) {
 	name := ""
 	contentType := ""
@@ -562,6 +596,9 @@ func (a *App) serveStatic(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "static_error", "Frontend is unavailable.")
 		return
+	}
+	if req.URL.Path == "/" {
+		content = indexWithPrefix(content, forwardedPrefix(req))
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", strconv.Itoa(len(content)))

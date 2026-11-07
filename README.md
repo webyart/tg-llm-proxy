@@ -295,9 +295,23 @@ Ask, Search, Custom Persona и создание напоминания прин�
 
 ## Telegram Mini App (opt-in)
 
-More → Mini App открывает companion со Status, History, Documents, Links, Tasks, Reminders, Usage и Settings. Для включения задайте `MINIAPP_ENABLED=true` и HTTPS `MINIAPP_PUBLIC_URL`, затем запустите Compose. Публичный URL должен вести через reverse proxy/tunnel на host `127.0.0.1:8084`; внутри контейнера listener `0.0.0.0`.
+More → Mini App открывает companion со Status, History, Documents, Links, Tasks, Reminders, Usage и Settings. Для включения задайте `MINIAPP_ENABLED=true` и HTTPS `MINIAPP_PUBLIC_URL`; внутри контейнера listener `0.0.0.0`, host-порт бота остаётся loopback-only `127.0.0.1:8084`.
 
-Raw `initData` проверяется через Telegram HMAC и `auth_date`, launch ticket привязан к chat/user на 2 минуты, session — на 15 минут. Доступ проверяется при каждом запросе. Нет model keys, task plans/results или tool arguments. Настройки Model/Persona/Stream работают через те же store-операции и проверку allowlist, без прямых обращений браузера к STRATA. Интерфейс по умолчанию русский, есть переключатель RU/EN и адаптивная мобильная вёрстка без горизонтального скролла. Внешний HTTPS acceptance выполнен через Tailscale Funnel: локальный и публичный endpoint отвечают 200, `/api/history` без авторизации возвращает 401, запуск в Telegram client подтверждён. `watch_container.ps1` дополнительно проверяет `/healthz` при включённом Mini App.
+Production с существующим dashboard запускается всеми override-файлами одной командой:
+
+```powershell
+docker compose -f docker-compose.yml -f compose.websearch.yaml -f compose.tts.yaml -f compose.production.yaml up -d
+```
+
+`compose.production.yaml` задаёт `MINIAPP_PUBLIC_URL=https://desktop-hvobbn7.tail66517e.ts.net/miniapp`. Caddy gateway слушает только `127.0.0.1:8085`: `/miniapp` и `/miniapp/*` направляются на `bot:8084` со снятием префикса и `X-Forwarded-Prefix: /miniapp`, поэтому static, `/miniapp/api/session` и остальные API используют тот же backend. Корень `/` и все остальные пути проксируются без изменения path на существующий dashboard `host.docker.internal:8787` (`127.0.0.1:8787` на хосте). Настройте корень Tailscale Funnel на gateway:
+
+```powershell
+tailscale funnel --bg http://127.0.0.1:8085
+```
+
+Так dashboard остаётся на публичном корне, а Mini App доступен по `/miniapp`. Прямой запуск без gateway сохраняет прежнее поведение: reverse proxy/tunnel направляет публичный URL без `/miniapp` на `127.0.0.1:8084`, и префикс приложению не требуется.
+
+Raw `initData` проверяется через Telegram HMAC и `auth_date`, launch ticket привязан к chat/user на 2 минуты, session — на 15 минут. Доступ проверяется при каждом запросе. Нет model keys, task plans/results или tool arguments. Настройки Model/Persona/Stream работают через те же store-операции и проверку allowlist, без прямых обращений браузера к STRATA. Интерфейс по умолчанию русский, есть переключатель RU/EN и адаптивная мобильная вёрстка без горизонтального скролла. `watch_container.ps1` дополнительно проверяет `/healthz` при включённом Mini App.
 
 History поддерживает поиск через `GET /api/history/search?q=...`, полный просмотр через `/api/history/item`, MD/JSON export с bearer fetch/Blob, удаление отдельных user/assistant сообщений и очистку с подтверждением. Links поддерживает добавление HTTPS-страниц через общий Dispatcher lifecycle, поиск, полный просмотр и delete/clear. Reminders поддерживает создание once/daily, Cancel active и Retry/Delete failed; Tasks — создание безопасного плана через общий Dispatcher lifecycle, Cancel/Resume/Delete/Clear. Settings при включённом TTS позволяет выбрать скорость 0.75/1/1.25/1.5 через `/api/settings/tts-speed` или вернуть 1. Bearer mutations ограничены 30/min/user, History export — 5/min/user с HTTP 429 и `Retry-After`.
 
@@ -312,6 +326,7 @@ Documents поддерживает поиск через `GET /api/documents/sea
 .\scripts\verify.ps1 -WithVolumeRestore   # + изолированная volume restore rehearsal
 .\scripts\verify.ps1 -SkipRace -SkipHealth
 .\scripts\test-maintenance.ps1 -WithVolumeRestore
+.\scripts\test-gateway.ps1                   # изолированные Compose и HTTP gateway regressions
 ```
 
 Pipeline включает gofmt/vet, PowerShell parser, unit/store, fixture backup/restore/external-copy/rotate/prune/migration, loopback Telegram alerts, fake Telegram + fake STRATA, build, secret leak scan и Docker race. `-WithVolumeRestore` добавляет volume restore и container-monitor acceptance. Host tests/vet используют явные package roots без `zzscratch`; `go mod tidy -diff` проверяет module files без изменений. Docker base images и CI images/tools закреплены по digest/версии.

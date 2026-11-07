@@ -1,3 +1,12 @@
+# tg-llm-proxy v1.37.2
+
+## Windows test listener hotfix
+
+- Unit/store и integration Go tests по умолчанию запускаются в Docker image `tg-llm-proxy-test:latest`, собранном из текущих исходников. На Windows штатные `test.ps1`, `smoke.ps1` и `verify.ps1` больше не запускают `go test` на хосте: fake Telegram/fake STRATA слушают порты внутри Linux-контейнера, а `*.test.exe` не создают host listeners и Windows Firewall prompts.
+- Явный `-Host` у `test.ps1` и `smoke.ps1` сохраняет fallback для среды без Docker, но может вернуть Windows firewall prompts. `-SkipBuild` повторно использует существующий test image; после изменения исходников или зависимостей образ нужно пересобрать. Разработка и CI используют Docker default без неявного host fallback.
+- Существующий `test-race.ps1` Docker path сохранён без изменений: тот же test target, `go test -race` в контейнере, `-Tagged` для integration и `-SkipBuild` для повторного использования образа.
+- Production не изменён: команда остаётся `docker compose -f docker-compose.yml -f compose.websearch.yaml -f compose.tts.yaml -f compose.production.yaml up -d`; dashboard обслуживается на `/`, Mini App — на `/miniapp`.
+
 # tg-llm-proxy v1.37.1
 
 ## Gateway hotfix

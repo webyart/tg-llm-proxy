@@ -3,12 +3,18 @@
 the other side: the fake Telegram (bot.WithServerURL) and the fake STRATA live inside the Go test, so this
 Telegram API» is impossible (httptest lives in the Go process).
 
+By default the tg-llm-proxy-test:latest image is rebuilt from the Dockerfile test target and both the
+integration suite and the optional -Unit suite run in that container. -Host is the explicit host Go fallback;
+-SkipBuild reuses the local image. Health probes and the leak scan still run on the host.
+
 Checks:
      WARN when a listener exists but the host probe fails, FAIL on a non-200 answer. -SkipHealth omits the probe.
 
 Usage:
   pwsh -NoLogo -File scripts\smoke.ps1
   pwsh -NoLogo -File scripts\smoke.ps1 -Unit
+  pwsh -NoLogo -File scripts\smoke.ps1 -SkipBuild
+  pwsh -NoLogo -File scripts\smoke.ps1 -Host
   pwsh -NoLogo -File scripts\smoke.ps1 -HealthPort 8080
   pwsh -NoLogo -File scripts\smoke.ps1 -SkipHealth
 
@@ -22,12 +28,17 @@ param(
     [int]$HealthPort,
     [switch]$Unit,
     [switch]$SkipHealth,
-    [int]$TimeoutSec = 5
+    [int]$TimeoutSec = 5,
+    # $Host is a read-only PowerShell automatic variable, so expose -Host through an alias.
+    [Alias('Host')]
+    [switch]$HostTests,
+    [switch]$SkipBuild
 )
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 . (Join-Path $PSScriptRoot 'Platform.ps1')
 $envPath = Join-Path $repoRoot '.env'
+$image = 'tg-llm-proxy-test:latest'
 $script:results = @()
 $ProgressPreference = 'SilentlyContinue'   # the byte-progress bar of Invoke-WebRequest is noise here
 
@@ -52,18 +63,66 @@ if (-not $HealthPort) { $HealthPort = $env:HEALTH_PORT }
 if (-not $HealthPort) { $HealthPort = ReadEnv 'HEALTH_PORT' }
 if (-not $HealthPort) { $HealthPort = 8080 }   # the default
 
+$testsReady = [bool]$HostTests
+$testSetupError = ''
+if (-not $HostTests) {
+    if (Get-Command -Name docker -ErrorAction SilentlyContinue) {
+        $testsReady = $true
+    }
+    else {
+        $testSetupError = 'docker is not on PATH — use -Host for the explicit host Go fallback'
+    }
+}
+
 Push-Location $repoRoot
 try {
-    $integrationOut = (go test -count=1 -tags=integration ./test/... 2>&1 | Out-String)
-    $integrationOk = ($LASTEXITCODE -eq 0)
-    $integrationNote = "go test -count=1 -tags=integration ./test/... exit $LASTEXITCODE"
+    if ($testsReady -and -not $HostTests -and -not $SkipBuild) {
+        $build = (docker build --target test -t $image . 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0) {
+            $testsReady = $false
+            $buildTail = (($build -split "`r?`n" | Select-Object -Last 25) -join "`n")
+            $testSetupError = "docker build --target test exit $LASTEXITCODE — output: $buildTail"
+        }
+    }
+
+    $integrationExit = 1
+    if ($testsReady) {
+        $goArgs = @('test', '-count=1', '-tags=integration', './test/...')
+        if ($HostTests) {
+            $integrationOut = (& go @goArgs 2>&1 | Out-String)
+        }
+        else {
+            $dockerArgs = @('run', '--rm', $image, 'go') + $goArgs
+            $integrationOut = (& docker @dockerArgs 2>&1 | Out-String)
+        }
+        $integrationExit = $LASTEXITCODE
+    }
+    else {
+        $integrationOut = $testSetupError
+    }
+    $integrationOk = ($integrationExit -eq 0)
+    $integrationNote = "go test -count=1 -tags=integration ./test/... exit $integrationExit"
     if (-not $integrationOk) { $integrationNote += " — output: $($integrationOut.Trim())" }
     Check 'integration tests ' $integrationOk $integrationNote $false
 
     if ($Unit) {
-        $unitOut = (go test -count=1 ./... 2>&1 | Out-String)
-        $unitOk = ($LASTEXITCODE -eq 0)
-        $unitNote = "go test -count=1 ./... exit $LASTEXITCODE"
+        $unitExit = 1
+        if ($testsReady) {
+            $goArgs = @('test', '-count=1', './...')
+            if ($HostTests) {
+                $unitOut = (& go @goArgs 2>&1 | Out-String)
+            }
+            else {
+                $dockerArgs = @('run', '--rm', $image, 'go') + $goArgs
+                $unitOut = (& docker @dockerArgs 2>&1 | Out-String)
+            }
+            $unitExit = $LASTEXITCODE
+        }
+        else {
+            $unitOut = $testSetupError
+        }
+        $unitOk = ($unitExit -eq 0)
+        $unitNote = "go test -count=1 ./... exit $unitExit"
         if (-not $unitOk) { $unitNote += " — output: $($unitOut.Trim())" }
         Check 'unit tests ' $unitOk $unitNote $false
     }

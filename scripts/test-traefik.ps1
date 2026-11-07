@@ -180,7 +180,7 @@ try {
     Assert-Equal (Get-Route $gatewayBase '/miniapp/api/session' 'POST') '/api/session|/miniapp' 'Mini App session routing failed'
     Assert-Equal (Get-Route $gatewayBase '/miniapp/api/history') '/api/history|/miniapp' 'Mini App API routing failed'
     Assert-Equal (Get-Route $gatewayBase '/miniapp/healthz') '/healthz|/miniapp' 'Mini App health routing failed'
-    Assert-Equal (Get-Route $gatewayBase '/max/healthz') 'proxied-max-healthz' 'MAX health path must be proxied without stripping /max'
+    Assert-Equal (Get-Route $gatewayBase '/max/healthz') 'direct-healthz' 'MAX health path must be rewritten to the direct health endpoint'
     Assert-Equal (Get-Route $gatewayBase '/max/api/update' 'POST') '/max/api/update|' 'MAX path must remain unchanged'
     Assert-Equal (Get-Route $botBase '/') '/|' 'direct Mini App root must not require a prefix'
     Assert-Equal (Get-Route $botBase '/healthz') '/healthz|' 'direct Mini App health must remain available'

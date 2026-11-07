@@ -80,15 +80,16 @@ services:
     # The image already carries HEALTHCHECK (§8.1); compose surfaces its state in `docker ps`.
 
   gateway:
-    image: caddy:2-alpine@sha256:78bd35025c7ba85961dd149ae670315129954e77abe2383ac47c89106b35ade9
-    user: "1000:1000"
+    image: traefik:v3.6@sha256:31267173a15b4944e797a76ffd9c419707c8d8b32fe5b610f80cd0cfa05f372d
+    user: "65532:65532"
     depends_on:
       bot:
         condition: service_healthy
     ports:
-      - "127.0.0.1:8085:8085"
+      - "127.0.0.1:8086:8080"
     volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./deploy/dynamic.yml:/etc/traefik/dynamic.yml:ro
     read_only: true
     mem_limit: 128MiB
     cpus: 0.5
@@ -99,11 +100,15 @@ services:
       - no-new-privileges:true
     tmpfs:
       - /tmp:mode=1777
-      - /config:uid=1000,gid=1000,mode=0700
-      - /data:uid=1000,gid=1000,mode=0700
     restart: unless-stopped
     extra_hosts:
       - host.docker.internal:host-gateway
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--configFile=/etc/traefik/traefik.yml"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
     logging:
       driver: local
       options:

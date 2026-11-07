@@ -1,3 +1,14 @@
+# tg-llm-proxy v1.38.0
+
+## Traefik main gateway
+
+- Единый production edge заменён на Traefik v3.6 (`traefik:v3.6@sha256:31267173a15b4944e797a76ffd9c419707c8d8b32fe5b610f80cd0cfa05f372d`). Сервис `gateway` слушает только `127.0.0.1:8086:8080`; production запускается командой `docker compose -f docker-compose.yml -f compose.websearch.yaml -f compose.tts.yaml -f compose.production.yaml up -d`.
+- Dashboard `http://host.docker.internal:8787` обслуживает `/` и все нераспознанные пути как fallback. Mini App `http://bot:8084` обслуживает `/miniapp` и `/miniapp/*` через `stripPrefix /miniapp` с `X-Forwarded-Prefix: /miniapp`. max `http://host.docker.internal:8090` обслуживает `/max` и `/max/*` без снятия префикса.
+- Используются только static file provider `/etc/traefik/traefik.yml` и `/etc/traefik/dynamic.yml`; Docker provider/socket отсутствуют. Встроенные Traefik API/dashboard не включены. Сохранены `host-gateway` и `depends_on` от healthy `bot`.
+- Gateway получил non-root/read-only runtime, `cap_drop: ALL`, `no-new-privileges`, tmpfs, memory/CPU/PID limits и Docker log limits. Auth headers, cookies, Telegram `initData`, bearer sessions, токены и ключи не логируются.
+- Production `MINIAPP_PUBLIC_URL` остаётся `https://desktop-hvobbn7.tail66517e.ts.net/miniapp`. Прямые bot/Mini App/max listeners и health behavior не изменены: у max прямой `/healthz` = 200, а корень `/` = 404 допустим.
+- Caddy на `127.0.0.1:8085` сохранён только на время миграции и отката. Действующий Funnel root → `8085` не меняется во время проверок Traefik на `8086`; main agent переключает production Funnel на `http://127.0.0.1:8086` только после целевых тестов. Откат до завершения миграции — Funnel root → `8085`.
+
 # tg-llm-proxy v1.37.2
 
 ## Windows test listener hotfix

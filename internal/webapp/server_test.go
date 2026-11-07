@@ -469,3 +469,94 @@ func TestStatusPendingHonorsResumeSkipNewerQuestionAndReset(t *testing.T) {
 		t.Fatalf("reset exposed hidden pending state: %+v", state)
 	}
 }
+
+func staticResponse(t *testing.T, app *App, path string, prefix string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	if prefix != "" {
+		req.Header.Set("X-Forwarded-Prefix", prefix)
+	}
+	response := httptest.NewRecorder()
+	app.Handler().ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET %s status=%d body=%s", path, response.Code, response.Body.String())
+	}
+	return response
+}
+
+func TestIndexForwardedPrefixInjectionAndRootUnchanged(t *testing.T) {
+	app, _ := newTestApp(t)
+	original, err := staticFiles.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, prefix := range []string{"", "/"} {
+		response := staticResponse(t, app, "/", prefix)
+		if !bytes.Equal(response.Body.Bytes(), original) {
+			t.Errorf("prefix %q changed the direct root page", prefix)
+		}
+	}
+	for _, test := range []struct {
+		prefix string
+		want   string
+	}{
+		{prefix: "/miniapp", want: "/miniapp"},
+		{prefix: "/miniapp/", want: "/miniapp"},
+		{prefix: "/telegram/miniapp/", want: "/telegram/miniapp"},
+	} {
+		response := staticResponse(t, app, "/", test.prefix)
+		body := response.Body.String()
+		for _, want := range []string{
+			`<meta name="miniapp-base" content="` + test.want + `">`,
+			`href="` + test.want + `/style.css"`,
+			`src="` + test.want + `/app.js"`,
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("prefix %q index misses %q", test.prefix, want)
+			}
+		}
+		if got := response.Header().Get("Content-Length"); got != strconv.Itoa(response.Body.Len()) {
+			t.Errorf("prefix %q Content-Length=%q body length=%d", test.prefix, got, response.Body.Len())
+		}
+	}
+}
+
+func TestIndexRejectsUnsafeForwardedPrefixes(t *testing.T) {
+	app, _ := newTestApp(t)
+	original, err := staticFiles.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, prefix := range []string{
+		"miniapp",
+		"https://evil.test/miniapp",
+		"//evil.test",
+		"/miniapp/../admin",
+		"/miniapp/./admin",
+		`/miniapp\admin`,
+		"/miniapp?next=/admin",
+		"/miniapp#fragment",
+		`/miniapp"><script>alert(1)</script>`,
+		"/miniapp%2f..",
+		"/miniapp//admin",
+	} {
+		response := staticResponse(t, app, "/", prefix)
+		if !bytes.Equal(response.Body.Bytes(), original) {
+			t.Errorf("unsafe prefix %q was injected into index: %s", prefix, response.Body.String())
+		}
+	}
+}
+
+func TestForwardedPrefixDoesNotRewriteJavaScriptOrCSS(t *testing.T) {
+	app, _ := newTestApp(t)
+	for _, path := range []string{"/app.js", "/style.css"} {
+		original, err := staticFiles.ReadFile("static" + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := staticResponse(t, app, path, "/miniapp")
+		if !bytes.Equal(response.Body.Bytes(), original) {
+			t.Errorf("GET %s was rewritten with a forwarded prefix", path)
+		}
+	}
+}

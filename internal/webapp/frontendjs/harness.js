@@ -289,8 +289,14 @@ async function flush() {
   for (let index = 0; index < 6; index += 1) await new Promise((resolve) => setImmediate(resolve));
 }
 
-async function createHarness() {
+async function createHarness(options = {}) {
   const document = initialDocument();
+  if (options.base) {
+    const meta = staticElement(document, "meta");
+    meta.setAttribute("name", "miniapp-base");
+    meta.setAttribute("content", options.base);
+    document.documentElement.appendChild(meta);
+  }
   const requests = [];
   const createdObjectURLs = [];
   const revokedObjectURLs = [];
@@ -331,10 +337,10 @@ async function createHarness() {
     }
   }
   sandbox.URL = FakeURL;
-  sandbox.fetch = async (requestPath, options = {}) => {
-    const request = { path: requestPath, options };
+  sandbox.fetch = async (requestPath, fetchOptions = {}) => {
+    const request = { path: requestPath, options: fetchOptions };
     requests.push(request);
-    const fallback = () => defaultResponse(request);
+    const fallback = () => defaultResponse({ ...request, path: request.path.slice((options.base || "").length) });
     return handler(request, fallback);
   };
   vm.createContext(sandbox);

@@ -648,3 +648,20 @@ test("every literal translation and static catalog key exists in both RU and EN"
     assert.ok(catalogs[2].includes(`${key}:`), `EN misses ${key}`);
   }
 });
+
+test("miniapp base prefixes session, central API and history export fetches", async () => {
+  const harness = await createHarness({ base: "/miniapp" });
+  assert.deepEqual(harness.requests.map((request) => request.path), [
+    "/miniapp/api/session",
+    "/miniapp/api/status",
+  ]);
+
+  await openTab(harness, "history");
+  harness.resetRequests();
+  findButton(harness.element("content"), "Скачать JSON").click();
+  await harness.flush();
+
+  assert.equal(harness.requests.length, 1);
+  assert.equal(harness.requests[0].path, "/miniapp/api/history/export?format=json");
+  assert.equal(harness.requests[0].options.headers.get("Authorization"), "Bearer test-session");
+});

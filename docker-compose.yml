@@ -79,6 +79,37 @@ services:
       - host.docker.internal:host-gateway
     # The image already carries HEALTHCHECK (§8.1); compose surfaces its state in `docker ps`.
 
+  gateway:
+    image: caddy:2-alpine@sha256:78bd35025c7ba85961dd149ae670315129954e77abe2383ac47c89106b35ade9
+    user: "1000:1000"
+    depends_on:
+      bot:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8085:8085"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+    read_only: true
+    mem_limit: 128MiB
+    cpus: 0.5
+    pids_limit: 64
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777
+      - /config:uid=1000,gid=1000,mode=0700
+      - /data:uid=1000,gid=1000,mode=0700
+    restart: unless-stopped
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "5"
+
   whisper:
     image: ghcr.io/speaches-ai/speaches:latest-cpu@sha256:21e3df06d842fb7802ab470dd77c25f0e8c0d22950e8d8c6ae886e851af53ef8
     environment:

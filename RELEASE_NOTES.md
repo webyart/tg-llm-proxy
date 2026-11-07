@@ -1,3 +1,12 @@
+# tg-llm-proxy v1.37.1
+
+## Gateway hotfix
+
+- Добавлен hardened Caddy gateway на loopback-only `127.0.0.1:8085`. `/miniapp/*` проксируется на `bot:8084` со снятием префикса и `X-Forwarded-Prefix: /miniapp`; static, session и остальные API Mini App сохраняют общий маршрут.
+- Корень и все пути вне `/miniapp` направляются на существующий dashboard `host.docker.internal:8787`. Tailscale Funnel root теперь указывает на `8085`, поэтому dashboard на `/` и Mini App на `/miniapp` работают одновременно.
+- `compose.production.yaml` задаёт production `MINIAPP_PUBLIC_URL=https://desktop-hvobbn7.tail66517e.ts.net/miniapp`. Прямой запуск Mini App без префикса через loopback `8084` сохранён; существующие `.env` и `data/telegram-proxy.env` не изменены.
+- Добавлены целевые regressions для merged Compose, hardening, маршрутизации `/miniapp`, API/static/session, dashboard fallback и прямого listener без префикса.
+
 # tg-llm-proxy v1.37.0
 
 ## Mini App management

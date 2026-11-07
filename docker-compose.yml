@@ -78,42 +78,11 @@ services:
     extra_hosts:
       - host.docker.internal:host-gateway
     # The image already carries HEALTHCHECK (§8.1); compose surfaces its state in `docker ps`.
-
-  gateway:
-    image: traefik:v3.6@sha256:31267173a15b4944e797a76ffd9c419707c8d8b32fe5b610f80cd0cfa05f372d
-    user: "65532:65532"
-    depends_on:
-      bot:
-        condition: service_healthy
-    ports:
-      - "127.0.0.1:8086:8080"
-    volumes:
-      - ./deploy/traefik.yml:/etc/traefik/traefik.yml:ro
-      - ./deploy/dynamic.yml:/etc/traefik/dynamic.yml:ro
-    read_only: true
-    mem_limit: 128MiB
-    cpus: 0.5
-    pids_limit: 64
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /tmp:mode=1777
-    restart: unless-stopped
-    extra_hosts:
-      - host.docker.internal:host-gateway
-    healthcheck:
-      test: ["CMD", "traefik", "healthcheck", "--configFile=/etc/traefik/traefik.yml"]
-      interval: 10s
-      timeout: 3s
-      retries: 6
-      start_period: 5s
-    logging:
-      driver: local
-      options:
-        max-size: "10m"
-        max-file: "5"
+    networks:
+      default:
+      edge-telegram:
+        aliases:
+          - telegram-miniapp
 
   whisper:
     image: ghcr.io/speaches-ai/speaches:latest-cpu@sha256:21e3df06d842fb7802ab470dd77c25f0e8c0d22950e8d8c6ae886e851af53ef8
@@ -160,6 +129,11 @@ services:
     # mounted into the race run (§8.1, same 9p/WAL reason as /data above).
     environment:
       GOMAXPROCS: "4"
+
+networks:
+  default:
+  edge-telegram:
+    external: true
 
 volumes:
   bot-data:

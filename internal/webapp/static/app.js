@@ -1561,7 +1561,7 @@
   }
 
   async function exchange() {
-    if (!ticket || !initData) {
+    if (!initData) {
       showError(t("launchRequired"));
       return;
     }

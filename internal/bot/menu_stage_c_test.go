@@ -25,14 +25,25 @@ type editedMenu struct {
 
 type menuEditReplier struct {
 	fakeReplier
-	edits []editedMenu
+	edits   []editedMenu
+	editErr error
 }
 
 func (r *menuEditReplier) EditMenu(ctx context.Context, chatID int64, messageID int64, text string, markup models.InlineKeyboardMarkup) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.edits = append(r.edits, editedMenu{chatID: chatID, messageID: messageID, text: text, markup: markup})
-	return nil
+	return r.editErr
+}
+
+func (r *menuEditReplier) editsJoined() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	parts := make([]string, 0, len(r.edits))
+	for _, edit := range r.edits {
+		parts = append(parts, edit.text)
+	}
+	return strings.Join(parts, "\n")
 }
 
 func (r *menuEditReplier) SendMenuWithID(ctx context.Context, chatID int64, text string, markup models.InlineKeyboardMarkup) (int64, error) {
@@ -417,8 +428,8 @@ func TestStageCPendingInputBindingConsumptionAndExpiry(t *testing.T) {
 	if err := dispatchMenuData(t, d, 100, 12, 700, cancel); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(r.joined(), "другому пользователю") {
-		t.Fatalf("wrong-user cancel did not explain binding: %q", r.joined())
+	if !strings.Contains(r.lastEdit().text, "другому пользователю") {
+		t.Fatalf("wrong-user cancel did not explain binding: %q", r.lastEdit().text)
 	}
 	if _, consumed := d.pendingEvent(testEvent(100, 11, 705, "ещё вопрос")); !consumed {
 		t.Fatal("wrong-user cancel consumed the owner's pending input")
@@ -499,20 +510,17 @@ func TestStageCMenuDeleteKeepsHistoryConfirmationSingleUse(t *testing.T) {
 	if err := dispatchMenuData(t, d, 100, 11, 700, "menu:delete"); err != nil {
 		t.Fatal(err)
 	}
-	confirm := ""
-	for _, markup := range r.menus {
-		confirm = findMenuCallback(markup, "delete:confirm:")
-	}
-	if confirm == "" || historyLength(t, d, 100) != 1 {
-		t.Fatalf("history delete prompt confirm=%q history=%d", confirm, historyLength(t, d, 100))
+	confirm := findMenuCallback(r.lastEdit().markup, "delete:confirm:")
+	if confirm == "" || historyLength(t, d, 100) != 1 || len(r.menus) != 0 {
+		t.Fatalf("history delete prompt confirm=%q history=%d new menus=%d", confirm, historyLength(t, d, 100), len(r.menus))
 	}
 	for index := 0; index < 2; index++ {
 		if err := dispatchMenuData(t, d, 100, 11, 700, confirm); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if historyLength(t, d, 100) != 0 || strings.Count(r.joined(), "Удалено сообщений:") != 1 || !strings.Contains(r.joined(), "истекло или уже использовано") {
-		t.Fatalf("single-use history confirmation = %q", r.joined())
+	if historyLength(t, d, 100) != 0 || strings.Count(r.editsJoined(), "Удалено сообщений:") != 1 || !strings.Contains(r.editsJoined(), "истекло или уже использовано") {
+		t.Fatalf("single-use history confirmation = %q", r.editsJoined())
 	}
 }
 

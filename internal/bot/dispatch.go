@@ -39,6 +39,7 @@ type Event struct {
 	MediaGroupID          string
 	UnsupportedMedia      bool
 	Recovery              bool
+	MenuCallback          bool
 	// "/ask" prefixes makes the model see the shell instead of the conversation. Dispatch fills it
 	// after Normalize and resolve, so the `stored` middleware does not need the argument of the
 	// handler.
@@ -349,9 +350,6 @@ func (d *Dispatcher) dispatchOverloaded(ctx context.Context, ev Event) error {
 
 func (d *Dispatcher) dispatchEvent(ctx context.Context, ev Event, acknowledge bool) error {
 	cmd, commandArg := d.commandFor(ev)
-	if cmd.Name == CommandLinks && strings.HasPrefix(commandArg, "menu:summary:") {
-		ev.TelegramMessageID = 0
-	}
 	ev.Question = ""
 	if cmd.UsesModel {
 		ev.Question = strings.TrimSpace(commandArg)

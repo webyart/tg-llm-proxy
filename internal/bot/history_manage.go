@@ -267,20 +267,27 @@ func ExportHistoryData(ctx context.Context, db *sql.DB, chatID int64, format str
 	return serializer.finish()
 }
 
+func (d *Dispatcher) historyActionReply(ctx context.Context, ev Event, text string) error {
+	if ev.MenuCallback {
+		return d.showHistoryMenu(ctx, ev, text)
+	}
+	return d.reply(ctx, ev.ChatID, text)
+}
+
 func (d *Dispatcher) exportHistory(ctx context.Context, ev Event, arg string) error {
 	format := strings.ToLower(strings.TrimSpace(arg))
 	data, err := ExportHistoryData(ctx, d.deps.DB, ev.ChatID, format)
 	if errors.Is(err, ErrHistoryExportFormat) {
-		return d.reply(ctx, ev.ChatID, "Используй /export md или /export json.")
+		return d.historyActionReply(ctx, ev, "Используй /export md или /export json.")
 	}
 	if errors.Is(err, ErrHistoryExportTooLarge) {
-		return d.reply(ctx, ev.ChatID, "Экспорт превышает 5 МиБ. Удали старую историю или используй более поздний чат.")
+		return d.historyActionReply(ctx, ev, "Экспорт превышает 5 МиБ. Удали старую историю или используй более поздний чат.")
 	}
 	if err != nil {
 		return err
 	}
 	if len(data) == 0 {
-		return d.reply(ctx, ev.ChatID, msgHistoryEmpty)
+		return d.historyActionReply(ctx, ev, msgHistoryEmpty)
 	}
 	if format == "" {
 		format = "md"
@@ -335,6 +342,13 @@ func (d *Dispatcher) promptDeleteHistory(ctx context.Context, ev Event) error {
 		{Text: "Отмена", CallbackData: "delete:cancel:" + token},
 	}}}
 	text := Escape("Удалить всю историю этого чата? Настройки модели и persona сохранятся. Кнопки действуют 5 минут.", d.deps.Cfg.ParseMode)
+	if ev.MenuCallback {
+		if err := d.renderMenu(ctx, ev, "Удалить всю историю этого чата? Настройки модели и persona сохранятся. Кнопки действуют 5 минут.", markup); err != nil {
+			return err
+		}
+		d.rememberDeleteConfirmation(token, ev, ev.TelegramMessageID)
+		return nil
+	}
 	if sender, ok := d.deps.Replier.(interface {
 		SendMenuWithID(context.Context, int64, string, models.InlineKeyboardMarkup) (int64, error)
 	}); ok {
@@ -422,30 +436,25 @@ func (d *Dispatcher) removeDeleteMenu(ctx context.Context, chatID int64, message
 func (d *Dispatcher) handleDeleteCallback(ctx context.Context, ev Event, arg string) error {
 	action, token, ok := strings.Cut(strings.TrimSpace(arg), ":")
 	if !ok || (action != "confirm" && action != "cancel") {
-		return d.reply(ctx, ev.ChatID, "Это меню удаления истекло или уже использовано. Отправь /delete заново.")
+		return d.showHistoryMenu(ctx, ev, "Это меню удаления истекло или уже использовано. Отправь /delete заново.")
 	}
 	status := consumeDeleteConfirmation(d, token, ev)
 	switch status {
 	case deleteConfirmationStale:
-		err := d.reply(ctx, ev.ChatID, "Это меню удаления истекло или уже использовано. Отправь /delete заново.")
-		d.removeDeleteMenu(ctx, ev.ChatID, ev.TelegramMessageID)
-		return err
+		return d.showHistoryMenu(ctx, ev, "Это меню удаления истекло или уже использовано. Отправь /delete заново.")
 	case deleteConfirmationWrongUser:
-		return d.reply(ctx, ev.ChatID, "Это меню удаления принадлежит другому пользователю. Отправь /delete самостоятельно.")
+		return d.showHistoryMenu(ctx, ev, "Это меню удаления принадлежит другому пользователю. Отправь /delete самостоятельно.")
 	case deleteConfirmationWrongMessage:
-		return d.reply(ctx, ev.ChatID, "Это меню удаления недействительно для этого чата или сообщения. Отправь /delete заново.")
+		return d.showHistoryMenu(ctx, ev, "Это меню удаления недействительно для этого чата или сообщения. Отправь /delete заново.")
 	}
 	if action == "cancel" {
-		err := d.reply(ctx, ev.ChatID, "Удаление истории отменено.")
-		d.removeDeleteMenu(ctx, ev.ChatID, ev.TelegramMessageID)
+		return d.showHistoryMenu(ctx, ev, "Удаление истории отменено.")
+	}
+	deleted, err := store.DeleteChatHistory(ctx, d.deps.DB, ev.ChatID)
+	if err != nil {
 		return err
 	}
-	deleted, deleteErr := store.DeleteChatHistory(ctx, d.deps.DB, ev.ChatID)
-	d.removeDeleteMenu(ctx, ev.ChatID, ev.TelegramMessageID)
-	if deleteErr != nil {
-		return deleteErr
-	}
-	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Удалено сообщений: %d. Настройки чата сохранены.", deleted))
+	return d.showHistoryMenu(ctx, ev, fmt.Sprintf("Удалено сообщений: %d. Настройки чата сохранены.", deleted))
 }
 
 func (d *Dispatcher) deleteHistory(ctx context.Context, ev Event, arg string) error {

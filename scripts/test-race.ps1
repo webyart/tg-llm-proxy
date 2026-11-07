@@ -20,6 +20,7 @@ param(
 )
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+. (Join-Path $PSScriptRoot 'DockerBuildLock.ps1')
 $image = 'tg-llm-proxy-test:latest'
 
 if (-not (Get-Command -Name docker -ErrorAction SilentlyContinue)) {
@@ -30,9 +31,12 @@ if (-not (Get-Command -Name docker -ErrorAction SilentlyContinue)) {
 Push-Location $repoRoot
 try {
     if (-not $SkipBuild) {
-        $build = (docker build --target test -t tg-llm-proxy-test . 2>&1 | Out-String)
-        if ($LASTEXITCODE -ne 0) {
-            Write-Output "test-race: docker build --target test exit $LASTEXITCODE : the last lines follow"
+        $build = (Invoke-DockerBuildWithLock -RepoRoot $repoRoot -Build {
+            docker build --target test -t $image . 2>&1 | Out-String
+        })
+        $buildExitCode = $LASTEXITCODE
+        if ($buildExitCode -ne 0) {
+            Write-Output "test-race: docker build --target test exit $buildExitCode : the last lines follow"
             Write-Output (($build -split "`r?`n" | Select-Object -Last 25) -join "`n")
             exit 1
         }

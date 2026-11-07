@@ -181,9 +181,13 @@ func (d *Dispatcher) ttsSpeedMenuControl(ctx context.Context, ev Event, action s
 	return d.showTTSSpeedMenu(ctx, ev, fmt.Sprintf("Скорость сохранена: %s×.", formatTTSSpeed(speed)))
 }
 
+func (d *Dispatcher) ttsActionReply(ctx context.Context, ev Event, text string) error {
+	return d.menuReply(ctx, ev, text, simpleBackMarkup("menu:more"))
+}
+
 func (d *Dispatcher) synthesizeSpeech(ctx context.Context, ev Event, arg string) error {
 	if !d.deps.Cfg.TTSEnabled {
-		return d.reply(ctx, ev.ChatID, msgTTSDisabled)
+		return d.ttsActionReply(ctx, ev, msgTTSDisabled)
 	}
 	text := strings.TrimSpace(arg)
 	if fields := strings.Fields(text); len(fields) > 0 && strings.EqualFold(fields[0], "speed") {
@@ -195,7 +199,7 @@ func (d *Dispatcher) synthesizeSpeech(ctx context.Context, ev Event, arg string)
 			return err
 		}
 		if answer == "" {
-			return d.reply(ctx, ev.ChatID, msgTTSNoAssistant)
+			return d.ttsActionReply(ctx, ev, msgTTSNoAssistant)
 		}
 		text = answer
 	}
@@ -207,14 +211,14 @@ func (d *Dispatcher) synthesizeSpeech(ctx context.Context, ev Event, arg string)
 		maxChars = 1000
 	}
 	if Runes(text) > int(maxChars) {
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Текст слишком длинный для озвучивания: максимум %d символов.", maxChars))
+		return d.ttsActionReply(ctx, ev, fmt.Sprintf("Текст слишком длинный для озвучивания: максимум %d символов.", maxChars))
 	}
 	sender, ok := d.deps.Replier.(AudioSender)
 	if !ok {
-		return d.reply(ctx, ev.ChatID, "Отправка аудио не поддерживается этим Telegram-адаптером.")
+		return d.ttsActionReply(ctx, ev, "Отправка аудио не поддерживается этим Telegram-адаптером.")
 	}
 	if d.deps.TTS == nil {
-		return d.reply(ctx, ev.ChatID, "Озвучивание не настроено в этом клиенте.")
+		return d.ttsActionReply(ctx, ev, "Озвучивание не настроено в этом клиенте.")
 	}
 	speed, err := d.ttsSpeed(ctx, ev.ChatID)
 	if err != nil {
@@ -230,13 +234,13 @@ func (d *Dispatcher) synthesizeSpeech(ctx context.Context, ev Event, arg string)
 			return err
 		}
 		if errors.Is(err, model.ErrTTSTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return d.reply(ctx, ev.ChatID, fmt.Sprintf("Сервис озвучивания не ответил за %d с. Попробуй ещё раз позже.", d.deps.Cfg.TTSTimeoutSeconds))
+			return d.ttsActionReply(ctx, ev, fmt.Sprintf("Сервис озвучивания не ответил за %d с. Попробуй ещё раз позже.", d.deps.Cfg.TTSTimeoutSeconds))
 		}
-		return d.reply(ctx, ev.ChatID, "Не удалось озвучить текст. Попробуй ещё раз позже.")
+		return d.ttsActionReply(ctx, ev, "Не удалось озвучить текст. Попробуй ещё раз позже.")
 	}
 	if err := sender.SendAudio(ctx, ev.ChatID, Audio{Name: "speech.mp3", Data: audio, MIME: "audio/mpeg"}); err != nil {
 		d.deps.Logger.Error("TTS audio delivery failed", "chat_id", ev.ChatID)
-		return d.reply(ctx, ev.ChatID, "Не удалось доставить аудио в Telegram. Попробуй ещё раз позже.")
+		return d.ttsActionReply(ctx, ev, "Не удалось доставить аудио в Telegram. Попробуй ещё раз позже.")
 	}
 	return nil
 }

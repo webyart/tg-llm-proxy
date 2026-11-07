@@ -52,6 +52,7 @@ function Invoke-Stage($name, $script, [string[]]$scriptArgs = @()) {
 Push-Location $repoRoot
 try {
     Invoke-Stage 'lint' 'lint.ps1'
+    Invoke-Stage 'docker build lock acceptance' 'test-docker-build-lock.ps1'
     Invoke-Stage 'unit + store' 'test.ps1'
 
     $maintenanceArgs = @()

@@ -20,6 +20,7 @@ param(
 )
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+. (Join-Path $PSScriptRoot 'DockerBuildLock.ps1')
 if (-not (Get-Command -Name docker -ErrorAction SilentlyContinue)) {
     Write-Output 'docker-build: docker is not on PATH — start Docker Desktop '
     exit 1
@@ -48,9 +49,12 @@ try {
         if ($NoCache) { $composeArgs += '--no-cache' }
         $composeArgs += @('bot', 'test')
     }
-    $out = (docker @composeArgs 2>&1 | Out-String)
-    if ($LASTEXITCODE -ne 0) {
-        Write-Output "docker-build: docker $($composeArgs -join ' ') exit $LASTEXITCODE  — the last lines:"
+    $out = (Invoke-DockerBuildWithLock -RepoRoot $repoRoot -Build {
+        docker @composeArgs 2>&1 | Out-String
+    })
+    $buildExitCode = $LASTEXITCODE
+    if ($buildExitCode -ne 0) {
+        Write-Output "docker-build: docker $($composeArgs -join ' ') exit $buildExitCode  — the last lines:"
         Write-Output (($out -split "`r?`n" | Select-Object -Last 25) -join "`n")
         exit 1
     }

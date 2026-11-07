@@ -186,7 +186,7 @@ func (d *Dispatcher) helpLines() []string {
 
 func (d *Dispatcher) ping(ctx context.Context, ev Event, arg string) error {
 	var up = time.Since(d.created).Round(time.Second)
-	return d.reply(ctx, ev.ChatID, fmt.Sprintf("pong %s ", up))
+	return d.menuReply(ctx, ev, fmt.Sprintf("pong %s ", up), refreshBackMarkup("menu:ping", "menu:status"))
 }
 
 // status — operational diagnostics for an allowed chat without a model call. LastVisibleMessage uses the same
@@ -264,13 +264,21 @@ func (d *Dispatcher) skip(ctx context.Context, ev Event, arg string) error {
 		return err
 	}
 	if rowID == 0 || role != store.RoleUser {
-		return d.reply(ctx, ev.ChatID, "Нет ожидающего ответа вопроса: пропускать нечего.")
+		text := "Нет ожидающего ответа вопроса: пропускать нечего."
+		if ev.MenuCallback {
+			return d.showMoreMenu(ctx, ev, text)
+		}
+		return d.reply(ctx, ev.ChatID, text)
 	}
 	if err := store.SetResumeSkip(ctx, d.deps.DB, ev.ChatID, rowID); err != nil {
 		return err
 	}
-	return d.reply(ctx, ev.ChatID, fmt.Sprintf(
-		"Автовосстановление вопроса id=%d отключено при следующих запусках. История сохранена; следующий вопрос будет обрабатываться как обычно.", rowID))
+	text := fmt.Sprintf(
+		"Автовосстановление вопроса id=%d отключено при следующих запусках. История сохранена; следующий вопрос будет обрабатываться как обычно.", rowID)
+	if ev.MenuCallback {
+		return d.showMoreMenu(ctx, ev, text)
+	}
+	return d.reply(ctx, ev.ChatID, text)
 }
 
 // unskip removes this chat's suppression without making an immediate model call. Startup still applies its
@@ -281,13 +289,21 @@ func (d *Dispatcher) unskip(ctx context.Context, ev Event, arg string) error {
 		return err
 	}
 	if !found {
-		return d.reply(ctx, ev.ChatID, "Нет отключённого автовосстановления для этого чата: изменений не требуется.")
+		text := "Нет отключённого автовосстановления для этого чата: изменений не требуется."
+		if ev.MenuCallback {
+			return d.showMoreMenu(ctx, ev, text)
+		}
+		return d.reply(ctx, ev.ChatID, text)
 	}
 	if err := store.ClearResumeSkip(ctx, d.deps.DB, ev.ChatID); err != nil {
 		return err
 	}
-	return d.reply(ctx, ev.ChatID, fmt.Sprintf(
-		"Автовосстановление вопроса id=%d снова разрешено. Модель сейчас не вызывается: попытка будет сделана при следующем перезапуске, если этот вопрос останется самым новым без ответа и не превысит RECOVERY_MAX_AGE_HOURS.", questionID))
+	text := fmt.Sprintf(
+		"Автовосстановление вопроса id=%d снова разрешено. Модель сейчас не вызывается: попытка будет сделана при следующем перезапуске, если этот вопрос останется самым новым без ответа и не превысит RECOVERY_MAX_AGE_HOURS.", questionID)
+	if ev.MenuCallback {
+		return d.showMoreMenu(ctx, ev, text)
+	}
+	return d.reply(ctx, ev.ChatID, text)
 }
 
 // learns the id to put into TELEGRAM_ALLOWED_USERS.
@@ -309,7 +325,7 @@ func (d *Dispatcher) whoami(ctx context.Context, ev Event, arg string) error {
 	} else {
 		lines = append(lines, "в allowlist: нет — добавь "+strconv.FormatInt(ev.UserID, 10)+" в "+AllowlistHint+" и перезапусти ")
 	}
-	return d.reply(ctx, ev.ChatID, strings.Join(lines, "\n"))
+	return d.menuReply(ctx, ev, strings.Join(lines, "\n"), simpleBackMarkup("menu:more"))
 }
 
 const HistoryDefault = 5
@@ -428,7 +444,7 @@ func (d *Dispatcher) modelMenuControl(ctx context.Context, ev Event, action stri
 	names, err := d.deps.Model.Models(ctx)
 	if err != nil {
 		d.logEvent(ctx, ev.UserID, store.EventModelError, "models:"+Sanitize(err, d.deps.Token))
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf(msgModelCheckFail, Sanitize(err, d.deps.Token)))
+		return d.showModelMenu(ctx, ev, fmt.Sprintf(msgModelCheckFail, Sanitize(err, d.deps.Token)))
 	}
 	if index >= len(names) {
 		return d.showModelMenu(ctx, ev, menuExpiredText)
@@ -766,13 +782,20 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 	return d.finishModelAnswer(ctx, replyCtx, ev, resp, modelErr, selectedModel, ragSources, documentTruncated, session)
 }
 
+func (d *Dispatcher) deliverModelResult(ctx context.Context, ev Event, text string) error {
+	if ev.MenuCallback {
+		return d.renderMenu(ctx, ev, text, simpleBackMarkup("menu:links"))
+	}
+	return d.Send(ctx, ev.ChatID, text)
+}
+
 func (d *Dispatcher) finishModelAnswer(ctx context.Context, replyCtx context.Context, ev Event, resp model.Response, modelErr error, selectedModel string, ragSources []string, documentTruncated bool, session *streamSession) error {
 	if errors.Is(modelErr, errNetworkApprovalPending) {
 		return nil
 	}
 	if notice, limited := modelLimitNotice(modelErr); limited {
 		if session == nil {
-			return d.Send(replyCtx, ev.ChatID, notice)
+			return d.deliverModelResult(replyCtx, ev, notice)
 		}
 		return session.deliver(replyCtx, d, notice)
 	}
@@ -820,18 +843,18 @@ func (d *Dispatcher) finishModelAnswer(ctx context.Context, replyCtx context.Con
 					Runes(resp.Content), edits, skipped, failures)
 			}
 			d.logEvent(auditCtx, ev.UserID, store.EventTimeout, detail)
-			return d.reply(ctx, ev.ChatID, fmt.Sprintf(msgTimeoutFormat, seconds, spent))
+			return d.deliverModelResult(ctx, ev, fmt.Sprintf(msgTimeoutFormat, seconds, spent))
 		}
 		if errors.Is(modelErr, model.ErrEmptyAnswer) {
 			d.logEvent(auditCtx, ev.UserID, store.EventModelError, "empty_answer")
-			return d.reply(ctx, ev.ChatID, msgEmptyAnswer)
+			return d.deliverModelResult(ctx, ev, msgEmptyAnswer)
 		}
 		if errors.Is(modelErr, model.ErrNoRoom) {
 			d.logEvent(auditCtx, ev.UserID, store.EventModelError, "no_room")
-			return d.reply(ctx, ev.ChatID, msgNoRoom)
+			return d.deliverModelResult(ctx, ev, msgNoRoom)
 		}
 		d.logEvent(auditCtx, ev.UserID, store.EventModelError, Sanitize(modelErr, d.deps.Token))
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf(msgModelError, Sanitize(modelErr, d.deps.Token)))
+		return d.deliverModelResult(ctx, ev, fmt.Sprintf(msgModelError, Sanitize(modelErr, d.deps.Token)))
 	}
 
 	var _, writeErr = store.Append(replyCtx, d.deps.DB, store.Message{
@@ -877,7 +900,7 @@ func (d *Dispatcher) finishModelAnswer(ctx context.Context, replyCtx context.Con
 		full = "Внимание: документ был обрезан по MAX_CONTEXT_CHARS перед отправкой модели.\n\n" + full
 	}
 	if session == nil {
-		return d.Send(replyCtx, ev.ChatID, full)
+		return d.deliverModelResult(replyCtx, ev, full)
 	}
 	// continues as new messages — a chat that followed one message being rewritten must not see it split in two.
 	return session.deliver(replyCtx, d, full)
@@ -888,7 +911,11 @@ func (d *Dispatcher) reset(ctx context.Context, ev Event, arg string) error {
 	if err != nil {
 		return err
 	}
-	return d.reply(ctx, ev.ChatID, fmt.Sprintf(msgResetFormat, hidden))
+	text := fmt.Sprintf(msgResetFormat, hidden)
+	if ev.MenuCallback {
+		return d.showRootMenu(ctx, ev, text)
+	}
+	return d.reply(ctx, ev.ChatID, text)
 }
 
 func (d *Dispatcher) history(ctx context.Context, ev Event, arg string) error {
@@ -899,7 +926,7 @@ func (d *Dispatcher) history(ctx context.Context, ev Event, arg string) error {
 	if trimmed := strings.TrimSpace(arg); trimmed != "" {
 		var n, err = strconv.Atoi(trimmed)
 		if err != nil || n <= 0 {
-			return d.reply(ctx, ev.ChatID, fmt.Sprintf("/history ждёт число: /history 10 (по умолчанию %d).", HistoryDefault))
+			return d.menuReply(ctx, ev, fmt.Sprintf("/history ждёт число: /history 10 (по умолчанию %d).", HistoryDefault), historyMenuMarkup())
 		}
 		if n > HistoryMax {
 			n = HistoryMax
@@ -911,6 +938,9 @@ func (d *Dispatcher) history(ctx context.Context, ev Event, arg string) error {
 		return err
 	}
 	if len(rows) == 0 {
+		if ev.MenuCallback {
+			return d.showHistoryMenu(ctx, ev, msgHistoryEmpty)
+		}
 		return d.reply(ctx, ev.ChatID, msgHistoryEmpty)
 	}
 	var lines = []string{fmt.Sprintf("Последние %d сообщений :", len(rows))}
@@ -920,7 +950,7 @@ func (d *Dispatcher) history(ctx context.Context, ev Event, arg string) error {
 		lines = append(lines, fmt.Sprintf("%d. %s: %s", i+1, row.Role, brief(row.Content, 120)))
 		i++
 	}
-	return d.reply(ctx, ev.ChatID, strings.Join(lines, "\n"))
+	return d.menuReply(ctx, ev, strings.Join(lines, "\n"), historyMenuMarkup())
 }
 
 func (d *Dispatcher) stats(ctx context.Context, ev Event, arg string) error {
@@ -944,7 +974,7 @@ func (d *Dispatcher) stats(ctx context.Context, ev Event, arg string) error {
 	if stats.LastAt != "" {
 		lines = append(lines, "Последнее сообщение: "+stats.LastAt+" ")
 	}
-	return d.reply(ctx, ev.ChatID, strings.Join(lines, "\n"))
+	return d.menuReply(ctx, ev, strings.Join(lines, "\n"), refreshBackMarkup("menu:stats", "menu:status"))
 }
 
 func replyModel(fromResponse string, configured string) string {

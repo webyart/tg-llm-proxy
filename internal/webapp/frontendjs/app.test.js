@@ -36,6 +36,19 @@ test("initial boot exchanges the launch and renders status without exceptions", 
   assert.equal(harness.requests[1].options.headers.get("Authorization"), "Bearer test-session");
 });
 
+test("menu button boot exchanges signed initData with an empty launch ticket", async () => {
+  const harness = await createHarness({ hash: "" });
+  assert.equal(harness.element("app").hidden, false);
+  assert.equal(harness.element("launch").hidden, true);
+  assert.equal(harness.requests.length, 2);
+  const exchange = harness.requests[0];
+  assert.equal(exchange.path, "/api/session");
+  assert.equal(exchange.options.method, "POST");
+  assert.equal(exchange.options.body, "signed-init-data");
+  assert.equal(exchange.options.headers.get("X-Launch-Ticket"), "");
+  assert.equal(harness.requests[1].path, "/api/status");
+});
+
 test("document Delete arms and cancels without fetch, then Confirm sends one empty POST despite double-click", async () => {
   const harness = await createHarness();
   await openTab(harness, "documents");

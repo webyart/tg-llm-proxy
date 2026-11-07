@@ -7,6 +7,8 @@ A stale, dead or malformed lease is removed and alerted instead of suppressing m
 Git in data/monitoring/container-alert.json. A changed failure alerts immediately; an unchanged failure repeats only
 after -RepeatAlertHours. -ContainerId supports an isolated fixture instead of the compose bot. When the running bot has
 MINIAPP_ENABLED=true, its loopback /healthz endpoint is queried inside that container; otherwise the probe is skipped.
+The Mini App probe uses BusyBox wget with a five-second timeout and up to three attempts, pausing two seconds between
+failures. Only the third consecutive failure changes state, preventing a transient probe error from flapping health alerts.
 
 Backup freshness uses the atomic data/monitoring/backup-verified.json receipt written after verified volume maintenance.
 Before the first receipt exists, timestamped bot-YYYYMMDD-HHMMSS.db files are accepted as legacy verified backups because
@@ -76,6 +78,41 @@ function Send-Alert([string]$Text) {
     if ($NoNotify) { return $true }
     & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'notify-telegram.ps1') -Message $Text
     return $LASTEXITCODE -eq 0
+}
+
+function Invoke-MiniAppProbe([string]$Cid) {
+    $failedAttempts = @()
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $probeOutput = (docker exec $Cid wget -T 5 --proxy off -qO- http://127.0.0.1:8084/healthz 2>&1 | Out-String).Trim()
+        $probeExitCode = $LASTEXITCODE
+        if ($probeExitCode -eq 0) {
+            return [pscustomobject]@{
+                Success = $true
+                Attempt = $attempt
+                FailedAttempts = $failedAttempts
+                Diagnostic = ''
+            }
+        }
+
+        $failedAttempts += [pscustomobject]@{
+            Attempt = $attempt
+            ExitCode = $probeExitCode
+            Output = $probeOutput
+        }
+        if ($attempt -lt 3) { Start-Sleep -Seconds 2 }
+    }
+
+    $lastFailure = $failedAttempts[-1]
+    $detail = ($lastFailure.Output -replace '\s+', ' ').Trim()
+    if (-not $detail) { $detail = 'no output' }
+    $diagnostic = "attempts=3; exit_codes=$($failedAttempts.ExitCode -join ','); last_output=$detail"
+    if ($diagnostic.Length -gt 300) { $diagnostic = $diagnostic.Substring(0, 300) }
+    return [pscustomobject]@{
+        Success = $false
+        Attempt = 3
+        FailedAttempts = $failedAttempts
+        Diagnostic = $diagnostic
+    }
 }
 
 $previous = $null
@@ -281,14 +318,14 @@ if ($healthy) {
         $status = 'miniapp-config-inspect-failed'
     }
     elseif ($miniAppSetting -eq 'true') {
-        if ($ContainerId) {
-            $null = docker exec $cid wget --proxy off -qO- http://127.0.0.1:8084/healthz 2>&1 | Out-String
+        $miniAppProbe = Invoke-MiniAppProbe $cid
+        if ($miniAppProbe.Success) {
+            Write-Output "watch_container: Mini App OK — GET /healthz attempt=$($miniAppProbe.Attempt)"
         }
         else {
-            $null = docker compose exec -T bot wget --proxy off -qO- http://127.0.0.1:8084/healthz 2>&1 | Out-String
+            $status = 'miniapp-probe-failed'
+            Write-Output "watch_container: Mini App probe failed — $($miniAppProbe.Diagnostic)"
         }
-        if ($LASTEXITCODE -ne 0) { $status = 'miniapp-probe-failed' }
-        else { Write-Output 'watch_container: Mini App OK — GET /healthz' }
     }
     else {
         Write-Output 'watch_container: Mini App monitoring disabled'

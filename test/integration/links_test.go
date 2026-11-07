@@ -91,12 +91,17 @@ func TestLinksFakeTelegramOptInSummaryAndDelete(t *testing.T) {
 		}})
 	}
 	callback(801, userID+1, confirm)
-	waitFor(t, "wrong-user save refusal", func() bool { return tgAPI.Calls("sendMessage") == 2 })
-	if targetRequests.Load() != 0 {
-		t.Fatal("wrong user authorized URL fetch")
+	waitFor(t, "wrong-user save refusal", func() bool {
+		return len(tgAPI.Edits()) == 1 && strings.Contains(tgAPI.Edits()[0].Text, "другому пользователю")
+	})
+	if targetRequests.Load() != 0 || tgAPI.Calls("sendMessage") != 1 || tgAPI.Edits()[0].MessageID != offer.MessageID {
+		t.Fatal("wrong user authorized URL fetch or received a replacement message")
 	}
 	callback(802, userID, confirm)
-	waitFor(t, "confirmed save", func() bool { return tgAPI.Calls("sendMessage") == 3 && targetRequests.Load() == 1 })
+	waitFor(t, "confirmed save", func() bool { return len(tgAPI.Edits()) == 2 && targetRequests.Load() == 1 })
+	if tgAPI.Calls("sendMessage") != 1 || tgAPI.Edits()[1].MessageID != offer.MessageID {
+		t.Fatalf("confirmed save edits=%+v sends=%d", tgAPI.Edits(), tgAPI.Calls("sendMessage"))
+	}
 	rows, err := store.ListSavedLinks(ctx, db, chatID, 20)
 	if err != nil || len(rows) != 1 || rows[0].CanonicalURL != "https://example.com:"+port+"/saved" || rows[0].Title != "Сохранённая страница" {
 		t.Fatalf("saved rows=%+v err=%v", rows, err)
@@ -107,14 +112,14 @@ func TestLinksFakeTelegramOptInSummaryAndDelete(t *testing.T) {
 	}
 
 	tgAPI.PushText(803, chatID, userID, "/links")
-	waitFor(t, "inline links list", func() bool { return tgAPI.Calls("sendMessage") == 4 })
-	list := tgAPI.Sent()[3]
+	waitFor(t, "inline links list", func() bool { return tgAPI.Calls("sendMessage") == 2 })
+	list := tgAPI.Sent()[1]
 	if !strings.Contains(list.Text, fmt.Sprintf("#%d", linkID)) || !strings.Contains(list.Text, "example.com") || !strings.Contains(list.ReplyMarkup, fmt.Sprintf("menu:link:summary:%d", linkID)) || !strings.Contains(list.ReplyMarkup, "menu:docs") {
 		t.Fatalf("links list=%+v markup=%s", list, list.ReplyMarkup)
 	}
 	tgAPI.PushText(804, chatID, userID, "/links search ПРИВЕТ")
-	waitFor(t, "Unicode links search", func() bool { return tgAPI.Calls("sendMessage") == 5 })
-	if search := tgAPI.Sent()[4].Text; !strings.Contains(search, "Сохранённая страница") || !strings.Contains(search, "Область поиска") {
+	waitFor(t, "Unicode links search", func() bool { return tgAPI.Calls("sendMessage") == 3 })
+	if search := tgAPI.Sent()[2].Text; !strings.Contains(search, "Сохранённая страница") || !strings.Contains(search, "Область поиска") {
 		t.Fatalf("search=%q", search)
 	}
 
@@ -122,23 +127,23 @@ func TestLinksFakeTelegramOptInSummaryAndDelete(t *testing.T) {
 		ID: "links-summary", Data: fmt.Sprintf("menu:link:summary:%d", linkID), From: models.User{ID: userID, Username: "tester"},
 		Message: models.MaybeInaccessibleMessage{Message: &models.Message{ID: list.MessageID, Date: int(time.Now().Unix()), Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate}}},
 	}})
-	waitFor(t, "stored-link summary", func() bool { return tgAPI.Calls("sendMessage") == 6 && strata.ChatCalls() == 1 })
-	if targetRequests.Load() != 1 || !strings.Contains(tgAPI.Sent()[5].Text, "Краткое резюме") {
-		t.Fatalf("summary target=%d reply=%q", targetRequests.Load(), tgAPI.Sent()[5].Text)
+	waitFor(t, "stored-link summary", func() bool { return len(tgAPI.Edits()) == 3 && strata.ChatCalls() == 1 })
+	if targetRequests.Load() != 1 || !strings.Contains(tgAPI.Edits()[2].Text, "Краткое резюме") || tgAPI.Edits()[2].MessageID != list.MessageID || tgAPI.Calls("sendMessage") != 3 {
+		t.Fatalf("summary target=%d edit=%+v sends=%d", targetRequests.Load(), tgAPI.Edits()[2], tgAPI.Calls("sendMessage"))
 	}
 	if body := strata.LastRequestBody(); strings.Contains(body, `"tools":`) || !strings.Contains(body, "недоверенные данные") || !strings.Contains(body, "Факты для краткого резюме") {
 		t.Fatalf("summary request=%s", body)
 	}
 
 	tgAPI.PushText(806, chatID, userID, fmt.Sprintf("/links delete %d", linkID))
-	waitFor(t, "text link deletion", func() bool { return tgAPI.Calls("sendMessage") == 7 })
+	waitFor(t, "text link deletion", func() bool { return tgAPI.Calls("sendMessage") == 4 })
 	if _, found, err := store.GetSavedLink(ctx, db, chatID, linkID); err != nil || found {
 		t.Fatalf("deleted link found=%v err=%v", found, err)
 	}
 	tgAPI.PushText(807, chatID, userID, fmt.Sprintf("/links summary %d", linkID))
-	waitFor(t, "missing-link summary error", func() bool { return tgAPI.Calls("sendMessage") == 8 })
-	if strata.ChatCalls() != 1 || targetRequests.Load() != 1 || !strings.Contains(tgAPI.Sent()[7].Text, "больше недоступны") {
-		t.Fatalf("missing summary model=%d target=%d reply=%q", strata.ChatCalls(), targetRequests.Load(), tgAPI.Sent()[7].Text)
+	waitFor(t, "missing-link summary error", func() bool { return tgAPI.Calls("sendMessage") == 5 })
+	if strata.ChatCalls() != 1 || targetRequests.Load() != 1 || !strings.Contains(tgAPI.Sent()[4].Text, "больше недоступны") {
+		t.Fatalf("missing summary model=%d target=%d reply=%q", strata.ChatCalls(), targetRequests.Load(), tgAPI.Sent()[4].Text)
 	}
 	secretLeak(t, "links run log", run.logs.String())
 	if strings.Contains(run.logs.String(), rawURL) {

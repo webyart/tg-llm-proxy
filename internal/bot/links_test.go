@@ -406,8 +406,8 @@ func TestBareURLOfferRequiresBoundConfirmationAndPreservesOrdinaryChat(t *testin
 	if err := dispatchMenuData(t, d, 100, 11, 700, cancel); err != nil {
 		t.Fatal(err)
 	}
-	if fixture.resolver.calls != 1 || !strings.Contains(r.joined(), "не загружалась") {
-		t.Fatalf("cancel fetched or gave wrong reply: DNS=%d reply=%q", fixture.resolver.calls, r.joined())
+	if fixture.resolver.calls != 1 || !strings.Contains(r.lastEdit().text, "не загружалась") {
+		t.Fatalf("cancel fetched or gave wrong reply: DNS=%d reply=%q", fixture.resolver.calls, r.lastEdit().text)
 	}
 	if err := dispatch(t, d, testEvent(100, 11, 1302, "Что находится по адресу "+raw+"?")); err != nil {
 		t.Fatal(err)

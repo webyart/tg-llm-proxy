@@ -159,15 +159,21 @@ func (a *authenticator) exchange(raw string, ticket string) (string, time.Time, 
 		return "", time.Time{}, ErrNotAllowed
 	}
 
+	launch := launchTicket{scope: scope{ChatID: userID, UserID: userID}}
 	a.mu.Lock()
-	launch, found := a.tickets[ticket]
-	if found {
-		delete(a.tickets, ticket)
-	}
-	a.pruneLocked(now)
-	if !found || !now.Before(launch.expiresAt) || launch.scope.UserID != userID {
-		a.mu.Unlock()
-		return "", time.Time{}, ErrInvalidTicket
+	if ticket == "" {
+		a.pruneLocked(now)
+	} else {
+		ticketLaunch, found := a.tickets[ticket]
+		if found {
+			delete(a.tickets, ticket)
+		}
+		a.pruneLocked(now)
+		if !found || !now.Before(ticketLaunch.expiresAt) || ticketLaunch.scope.UserID != userID {
+			a.mu.Unlock()
+			return "", time.Time{}, ErrInvalidTicket
+		}
+		launch = ticketLaunch
 	}
 	bearer, err := randomToken(32)
 	if err != nil {

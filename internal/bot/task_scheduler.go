@@ -153,6 +153,7 @@ func (d *Dispatcher) RunTaskScheduler(ctx context.Context) {
 			return
 		case <-passDone:
 			running = false
+			passDone = nil
 			if pending {
 				pending = false
 				startPass(d.now())
@@ -419,13 +420,7 @@ func (d *Dispatcher) promptTaskNetworkApproval(ctx context.Context, state *toolL
 	markup := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
 		menuRow(menuButton("Разрешить один раз", "menu:network:confirm:"+token), menuButton("Разрешить для задачи", "menu:network:scope:"+token), menuButton("Отмена", "menu:network:cancel:"+token)),
 	}}
-	sender, ok := d.deps.Replier.(interface {
-		SendMenuWithID(context.Context, int64, string, models.InlineKeyboardMarkup) (int64, error)
-	})
-	if !ok {
-		return model.Response{}, errors.New("task network approval requires a menu sender with message ids")
-	}
-	messageID, err := sender.SendMenuWithID(ctx, task.ChatID, Escape(text, d.deps.Cfg.ParseMode), markup)
+	messageID, err := d.sendNetworkApprovalMenu(ctx, state.metadata.event, text, markup)
 	if err != nil {
 		return model.Response{}, err
 	}
@@ -495,17 +490,17 @@ func (d *Dispatcher) taskNetworkApprovalControl(ctx context.Context, ev Event, o
 			return err
 		}
 		if !ok || cancelled.ID != taskID {
-			return d.reply(ctx, ev.ChatID, "Это подтверждение сетевого действия истекло или уже использовано.")
+			return d.showTaskMenu(ctx, ev, "Это подтверждение сетевого действия истекло или уже использовано.")
 		}
 		d.clearTaskNetworkScopes(ev.ChatID, taskID)
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Задача #%d отменена. Сетевое действие и будущие шаги не выполнены.", taskID))
+		return d.showTaskMenu(ctx, ev, fmt.Sprintf("Задача #%d отменена. Сетевое действие и будущие шаги не выполнены.", taskID))
 	}
 	claimed, ok, err := store.ConsumeTaskApproval(ctx, d.deps.DB, taskID, ev.ChatID, ev.UserID, ev.TelegramMessageID, token, d.now(), d.taskLease())
 	if err != nil {
 		return err
 	}
 	if !ok {
-		return d.reply(ctx, ev.ChatID, "Это подтверждение сетевого действия истекло или уже использовано.")
+		return d.showTaskMenu(ctx, ev, "Это подтверждение сетевого действия истекло или уже использовано.")
 	}
 	if operation == "scope" {
 		approved := pending.continuation.response.ToolCalls[pending.continuation.approvedCall]
@@ -513,9 +508,14 @@ func (d *Dispatcher) taskNetworkApprovalControl(ctx context.Context, ev Event, o
 			return d.failClaimedTask(ctx, claimed, errors.New("scoped approval does not match the task and tool"))
 		}
 	}
+	if err := d.showTaskMenu(ctx, ev, "Подтверждение принято. Выполняю разрешённое сетевое действие."); err != nil {
+		return err
+	}
 	stepCtx, cancel := d.taskStepTimeout(ctx)
 	defer cancel()
+	pending.continuation.metadata.event = ev
 	response, err := d.runToolLoop(stepCtx, pending.continuation)
+	pending.continuation.metadata.event.MenuCallback = false
 	if errors.Is(err, errNetworkApprovalPending) {
 		return nil
 	}

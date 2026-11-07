@@ -67,6 +67,7 @@ func (d *Dispatcher) RunReminderScheduler(ctx context.Context) {
 			return
 		case <-passDone:
 			running = false
+			passDone = nil
 			if pending {
 				pending = false
 				startPass(d.now())

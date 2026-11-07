@@ -1,6 +1,6 @@
 // WithInitialOffset из bot_state, WithHTTPClient(pollTimeout) и workers; обработка 429
 // TooManyRequestsError; middleware allowlist; middleware panic-recovery; middleware rate limit;
-// setMyCommands при старте».
+// setMyCommands и setChatMenuButton при старте».
 //
 // reply.go, which speak the Event/Replier vocabulary. This file only translates: models.Update →
 //
@@ -37,7 +37,7 @@ const (
 	// cap retried while the chat was still throttled and lost the tail. The per-chat lock stays held and the
 	// reply context still wins if its budget is shorter than the requested pause.
 	FloodSleepMax = 120 * time.Second
-	// PublishCommandsTimeout — setMyCommands is cosmetic, so it gets a short deadline instead of
+	// PublishCommandsTimeout — command and Mini App menu publication is cosmetic, so it gets a short deadline.
 	PublishCommandsTimeout = 5 * time.Second
 )
 
@@ -496,6 +496,9 @@ func Run(ctx context.Context, deps Deps, opts Options) (*Dispatcher, error) {
 	defer cancel()
 	if err := d.PublishCommands(menuCtx, tg); err != nil {
 		d.deps.Logger.Warn("the command menu was not published, the commands still work", "error", err)
+	}
+	if err := d.PublishMenuButton(menuCtx, tg); err != nil {
+		d.deps.Logger.Warn("the Telegram menu button was not published", "error", err)
 	}
 	if deps.Cfg.WebhookEnabled {
 		server, err := NewWebhookServer(tg, deps.Cfg.WebhookAddress(), deps.Cfg.WebhookPath, deps.Cfg.WebhookSecretToken)

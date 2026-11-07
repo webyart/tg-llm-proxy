@@ -13,7 +13,7 @@ import (
 func (d *Dispatcher) admin(ctx context.Context, ev Event, arg string) error {
 	if !d.deps.Cfg.IsAdmin(ev.UserID) {
 		d.logEvent(ctx, ev.UserID, store.EventDenied, "admin")
-		return d.reply(ctx, ev.ChatID, "Команда доступна только администраторам.")
+		return d.menuReply(ctx, ev, "Команда доступна только администраторам.", simpleBackMarkup("menu:more"))
 	}
 	stats, err := store.AdminStats(ctx, d.deps.DB)
 	if err != nil {
@@ -38,7 +38,7 @@ func (d *Dispatcher) admin(ctx context.Context, ev Event, arg string) error {
 	if stats.LastActive != "" {
 		lines = append(lines, "Последняя активность: "+stats.LastActive+" UTC")
 	}
-	return d.reply(ctx, ev.ChatID, strings.Join(lines, "\n"))
+	return d.menuReply(ctx, ev, strings.Join(lines, "\n"), refreshBackMarkup("menu:admin", "menu:more"))
 }
 
 func timeSince(start time.Time) string {

@@ -100,23 +100,30 @@ func (d *Dispatcher) CreateLink(ctx context.Context, chatID int64, userID int64,
 	return store.PutSavedLink(ctx, d.deps.DB, link)
 }
 
+func (d *Dispatcher) linkActionReply(ctx context.Context, ev Event, text string) error {
+	if ev.MenuCallback {
+		return d.showLinksMenu(ctx, ev, text)
+	}
+	return d.reply(ctx, ev.ChatID, text)
+}
+
 func (d *Dispatcher) addLink(ctx context.Context, ev Event, rawURL string) error {
 	saved, replaced, err := d.CreateLink(ctx, ev.ChatID, ev.UserID, rawURL)
 	if err != nil {
 		if errors.Is(err, store.ErrSavedLinkLimit) {
-			return d.reply(ctx, ev.ChatID, fmt.Sprintf("В чате уже %d ссылок. Сначала удали одну через /links delete <id>.", store.SavedLinkMaxPerChat))
+			return d.linkActionReply(ctx, ev, fmt.Sprintf("В чате уже %d ссылок. Сначала удали одну через /links delete <id>.", store.SavedLinkMaxPerChat))
 		}
 		if errors.Is(err, store.ErrSavedLinkInput) {
 			return err
 		}
-		return d.reply(ctx, ev.ChatID, "Не удалось сохранить ссылку: "+Sanitize(err, d.deps.Token))
+		return d.linkActionReply(ctx, ev, "Не удалось сохранить ссылку: "+Sanitize(err, d.deps.Token))
 	}
 	action := "сохранена"
 	if replaced {
 		action = "обновлена"
 	}
 	d.logEvent(ctx, ev.UserID, store.EventUsage, "links_add")
-	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Ссылка #%d %s: %s (%s). Модель при сохранении не вызывалась.", saved.ID, action, saved.Title, saved.CanonicalURL))
+	return d.linkActionReply(ctx, ev, fmt.Sprintf("Ссылка #%d %s: %s (%s). Модель при сохранении не вызывалась.", saved.ID, action, saved.Title, saved.CanonicalURL))
 }
 
 type linkSaveOffer struct {
@@ -227,21 +234,19 @@ func (d *Dispatcher) removeLinkSaveMenu(ctx context.Context, ev Event) {
 func (d *Dispatcher) linkSaveControl(ctx context.Context, ev Event, action string) error {
 	operation, token, ok := strings.Cut(strings.TrimPrefix(action, "menu:save:"), ":")
 	if !ok || operation != "confirm" && operation != "cancel" || !validMenuToken(token) {
-		return d.reply(ctx, ev.ChatID, "Это предложение сохранить ссылку истекло или уже использовано.")
+		return d.showLinksMenu(ctx, ev, "Это предложение сохранить ссылку истекло или уже использовано.")
 	}
 	pending, status := consumeLinkSaveOffer(d, token, ev)
 	switch status {
 	case deleteConfirmationStale:
-		d.removeLinkSaveMenu(ctx, ev)
-		return d.reply(ctx, ev.ChatID, "Это предложение сохранить ссылку истекло или уже использовано.")
+		return d.showLinksMenu(ctx, ev, "Это предложение сохранить ссылку истекло или уже использовано.")
 	case deleteConfirmationWrongUser:
-		return d.reply(ctx, ev.ChatID, "Это подтверждение принадлежит другому пользователю.")
+		return d.showLinksMenu(ctx, ev, "Это подтверждение принадлежит другому пользователю.")
 	case deleteConfirmationWrongMessage:
-		return d.reply(ctx, ev.ChatID, "Это подтверждение недействительно для этого чата или сообщения.")
+		return d.showLinksMenu(ctx, ev, "Это подтверждение недействительно для этого чата или сообщения.")
 	}
-	d.removeLinkSaveMenu(ctx, ev)
 	if operation == "cancel" {
-		return d.reply(ctx, ev.ChatID, "Сохранение отменено. Страница не загружалась и не сохранялась.")
+		return d.showLinksMenu(ctx, ev, "Сохранение отменено. Страница не загружалась и не сохранялась.")
 	}
 	return d.addLink(ctx, ev, pending.CanonicalURL)
 }
@@ -337,9 +342,9 @@ func (d *Dispatcher) linkDeleteControl(ctx context.Context, ev Event, action str
 	case deleteConfirmationStale:
 		return d.showLinksMenu(ctx, ev, menuExpiredText)
 	case deleteConfirmationWrongUser:
-		return d.reply(ctx, ev.ChatID, "Это подтверждение принадлежит другому пользователю.")
+		return d.showLinksMenu(ctx, ev, "Это подтверждение принадлежит другому пользователю.")
 	case deleteConfirmationWrongMessage:
-		return d.reply(ctx, ev.ChatID, "Это подтверждение недействительно для этого чата или сообщения.")
+		return d.showLinksMenu(ctx, ev, "Это подтверждение недействительно для этого чата или сообщения.")
 	}
 	if operation == "cancel" {
 		return d.showLinksMenu(ctx, ev, "Удаление ссылки отменено.")
@@ -522,7 +527,7 @@ func (d *Dispatcher) summaryLink(ctx context.Context, ev Event, id int64) error 
 		return err
 	}
 	if !found || strings.TrimSpace(link.Content) == "" {
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Ссылка #%d или её сохранённый текст больше недоступны в текущем чате. Сеть не запрашивалась.", id))
+		return d.linkActionReply(ctx, ev, fmt.Sprintf("Ссылка #%d или её сохранённый текст больше недоступны в текущем чате. Сеть не запрашивалась.", id))
 	}
 	selectedModel, err := d.modelName(ctx, ev.ChatID)
 	if err != nil {

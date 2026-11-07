@@ -316,7 +316,7 @@ async function createHarness(options = {}) {
   };
   sandbox.window = sandbox;
   sandbox.document = document;
-  sandbox.location = { hash: "#ticket=ticket-1", pathname: "/miniapp/", search: "?source=test" };
+  sandbox.location = { hash: options.hash === undefined ? "#ticket=ticket-1" : options.hash, pathname: "/miniapp/", search: "?source=test" };
   sandbox.history = { replaceState() {} };
   sandbox.Telegram = {
     WebApp: {

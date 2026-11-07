@@ -276,6 +276,9 @@ func main() {
 	if menuErr := dispatcher.PublishCommands(menuCtx, tg); menuErr != nil {
 		logger.Warn("setMyCommands refused, the menu of the client stays empty", "error", bot.Sanitize(menuErr, cfg.BotToken))
 	}
+	if menuErr := dispatcher.PublishMenuButton(menuCtx, tg); menuErr != nil {
+		logger.Warn("setChatMenuButton refused, the default Telegram menu button stays active", "error", bot.Sanitize(menuErr, cfg.BotToken))
+	}
 	cancelMenu()
 	var webhookServer *bot.WebhookServer
 	if cfg.WebhookEnabled {

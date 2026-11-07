@@ -175,9 +175,9 @@ func (d *Dispatcher) documentMenuControl(ctx context.Context, ev Event, action s
 		case deleteConfirmationStale:
 			return d.showDocumentsMenu(ctx, ev, menuExpiredText)
 		case deleteConfirmationWrongUser:
-			return d.reply(ctx, ev.ChatID, "Это подтверждение принадлежит другому пользователю.")
+			return d.showDocumentsMenu(ctx, ev, "Это подтверждение принадлежит другому пользователю.")
 		case deleteConfirmationWrongMessage:
-			return d.reply(ctx, ev.ChatID, "Это подтверждение недействительно для этого чата или сообщения.")
+			return d.showDocumentsMenu(ctx, ev, "Это подтверждение недействительно для этого чата или сообщения.")
 		}
 		if operation == "cancel" {
 			return d.showDocumentsMenu(ctx, ev, "Удаление документов отменено.")
@@ -315,20 +315,27 @@ func (d *Dispatcher) addDocument(ctx context.Context, ev Event) error {
 	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Документ %s сохранён с id=%d, частей: %d. Он будет использоваться при следующих вопросах.", name, id, chunks))
 }
 
+func (d *Dispatcher) documentActionReply(ctx context.Context, ev Event, text string) error {
+	if ev.MenuCallback {
+		return d.showDocumentsMenu(ctx, ev, text)
+	}
+	return d.reply(ctx, ev.ChatID, text)
+}
+
 func (d *Dispatcher) exportDocuments(ctx context.Context, ev Event) error {
 	documents, err := store.ExportRAGDocuments(ctx, d.deps.DB, ev.ChatID, ExportMaxBytes)
 	if err != nil {
 		return err
 	}
 	if len(documents) == 0 {
-		return d.reply(ctx, ev.ChatID, "Локальная база документов пуста.")
+		return d.documentActionReply(ctx, ev, "Локальная база документов пуста.")
 	}
 	data, err := json.MarshalIndent(map[string]any{"chat_id": ev.ChatID, "documents": documents}, "", "  ")
 	if err != nil {
 		return err
 	}
 	if len(data) > ExportMaxBytes {
-		return d.reply(ctx, ev.ChatID, "Экспорт RAG-базы превышает 5 МиБ.")
+		return d.documentActionReply(ctx, ev, "Экспорт RAG-базы превышает 5 МиБ.")
 	}
 	sender, ok := d.deps.Replier.(DocumentSender)
 	if !ok {

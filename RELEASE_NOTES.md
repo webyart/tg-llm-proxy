@@ -1,3 +1,35 @@
+# tg-llm-proxy v1.39.0
+
+## Docker build serialization
+
+- `docker-build.ps1`, `test.ps1` и `test-race.ps1` используют кроссплатформенный named mutex с именем по SHA-256 полного repo root и timeout 30 минут. Lock охватывает только image build; `go test` и `-SkipBuild` его не ожидают.
+- Добавлен `test-docker-build-lock.ps1`: реальные процессы проверяют ожидание release, последующий вход и отсутствие abandoned mutex после failed acquisition.
+
+## Independent edge gateway
+
+- Traefik v3.6 выделен из Telegram Compose в самостоятельный проект `C:\Kimi code\edge-gateway` с Compose project name `edge-gateway`. Сервис слушает только `127.0.0.1:8086:8080`; Telegram production по-прежнему запускается командой `docker compose -f docker-compose.yml -f compose.websearch.yaml -f compose.tts.yaml -f compose.production.yaml up -d`, но больше не создаёт gateway.
+- Telegram `bot` использует обычную Compose-сеть `default` и дополнительно подключается к external `edge-telegram` с alias `telegram-miniapp`. Whisper и SearxNG не подключаются к edge-сети и сохраняют исходящий доступ через `default`.
+- Dashboard `http://dashboard:8787` обслуживает `/` и все нераспознанные пути через `edge-dashboard`. Mini App `http://telegram-miniapp:8084` обслуживает `/miniapp` и `/miniapp/*` через `stripPrefix /miniapp` с `X-Forwarded-Prefix: /miniapp`. max `http://max-bot:8090` обслуживает `/max` и `/max/*` через `edge-max` без снятия префикса; `/max/healthz` переписывается в `/healthz`.
+- Используются только static file provider `/etc/traefik/traefik.yml` и `/etc/traefik/dynamic.yml`; Docker provider/socket отсутствуют. Встроенные Traefik API/dashboard не доступны на production entrypoint; локальный dashboard с Basic Auth на `127.0.0.1:8089`, Prometheus и Grafana описаны в `edge-gateway/README.md`. Зависимость от healthy `bot` и `host-gateway` удалены вместе с host-networking backends.
+- Gateway сохраняет non-root/read-only runtime, `cap_drop: ALL`, `no-new-privileges`, tmpfs, memory/CPU/PID limits и Docker log limits. Auth headers, cookies, Telegram `initData`, bearer sessions, токены и ключи не логируются.
+- Production `MINIAPP_PUBLIC_URL` остаётся `https://desktop-hvobbn7.tail66517e.ts.net/miniapp`. Прямые bot/Mini App/max listeners и health behavior не изменены: у max прямой `/healthz` = 200, а корень `/` = 404 допустим.
+- Acceptance перенесён в `edge-gateway/scripts/test-traefik.ps1`; изолированные сети проверяют network aliases, маршруты, health rewrite, hardening и отсутствие секретов в логах. Команды cutover и rollback находятся в `edge-gateway/README.md`.
+- Прежние `deploy/Caddyfile`, `scripts/test-gateway.ps1`, `deploy/traefik.yml` и `deploy/dynamic.yml` сохранены как исторические rollback-артефакты; старые Traefik bind-mounts остаются работоспособными для обратного запуска остановленного контейнера. Активным gateway является standalone Traefik.
+- В отдельном `edge-gateway` добавлены Prometheus rules для target/backend down, доли 5xx и p95 latency, шесть promtool-сценариев и alert-панель в Grafana. Alerts видимы в Prometheus и Grafana без внешних Telegram notifications.
+
+## Telegram menu and Mini App launch
+
+- Все навигационные и информационные inline callbacks редактируют исходное сообщение меню: Stats, Ping, History, Reset, Settings, Documents, Links, Reminders, Tasks, Admin и подтверждения. Обычные текстовые команды сохраняют прежнее поведение; при ошибке `EditMenu` replacement снизу больше не создаётся. Отдельные сообщения остаются только для export-документов, TTS-аудио и результатов запросов/задач.
+- Нижняя кнопка «Меню» публикуется через `setChatMenuButton` как `MenuButtonWebApp` и сразу открывает Mini App; при выключенном Mini App используется `MenuButtonCommands`.
+- Direct private launch использует подписанный Telegram `initData` без ticket и создаёт scope только с `ChatID=UserID` после проверок свежести и allowlist. Inline ticket с привязкой chat/user сохранён для group chats и остаётся одноразовым.
+- Регрессионная матрица покрывает все статические и динамические menu callbacks, отсутствие Send fallback при ошибке редактирования, payload Menu Button и ticketless Mini App authentication.
+- Mini App monitor больше не отправляет failure alert после одиночного transient probe error: используются прямой `docker exec` по проверенному ID вместо `docker compose exec` в среде Task Scheduler, timeout 5 секунд и до трёх попыток с паузой 2 секунды. Persistent failure содержит attempts/exit codes/короткую диагностику; acceptance проверяет два transient отказа с успешной третьей попыткой и стабильное recovery.
+
+## Scheduler CPU fix
+
+- Reminder и task schedulers обнуляют completion channel после завершения pass: закрытый канал больше не вызывает непрерывный busy-loop и потребление одного CPU в простое. Немедленный повторный pass при накопленном `pending` сохранён.
+- Регрессионные тесты проверяют блокировку scheduler после завершения pass и отдельный повторный запуск по `pending`.
+
 # tg-llm-proxy v1.38.0
 
 ## Traefik main gateway

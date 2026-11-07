@@ -3,7 +3,8 @@
 test-container-monitor.ps1 — isolated Docker acceptance for health, maintenance lease and backup freshness monitoring.
 
 Covers failure, suppression and recovery plus fresh/stale/dead-PID leases, legacy/receipt backup age checks and
-Mini App disabled/enabled probes. No alerts leave the host. The test refuses to run over an existing production maintenance lease.
+Mini App disabled/enabled probes, including transient retry and stable recovery. No alerts leave the host. The test
+refuses to run over an existing production maintenance lease.
 #>
 
 [CmdletBinding()]
@@ -151,21 +152,50 @@ printf 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 16\
     $healthResponseBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($healthResponse))
     docker exec $miniAppName sh -c "printf %s $healthResponseBase64 | base64 -d > /tmp/miniapp-health-response && chmod +x /tmp/miniapp-health-response"
     if ($LASTEXITCODE -ne 0) { throw 'could not create Mini App health fixture' }
-    docker exec -d $miniAppName nc -lk -p 8084 -e /tmp/miniapp-health-response
-    if ($LASTEXITCODE -ne 0) { throw 'could not start Mini App health fixture' }
-    $fixtureHealth = (docker exec $miniAppName wget --proxy off -qO- http://127.0.0.1:8084/healthz 2>&1 | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $fixtureHealth -ne '{"status":"ok"}') { throw "Mini App health fixture did not answer: $fixtureHealth" }
+    $flappingHealthResponse = @'
+#!/bin/sh
+attempts=0
+if [ -f /tmp/miniapp-health-attempts ]; then
+    attempts=$(cat /tmp/miniapp-health-attempts)
+fi
+attempts=$((attempts + 1))
+printf '%s\n' "$attempts" > /tmp/miniapp-health-attempts
+if [ "$attempts" -le 2 ]; then
+    exit 0
+fi
+exec /tmp/miniapp-health-response
+'@
+    $flappingHealthResponse = $flappingHealthResponse.Replace("`r`n", "`n")
+    $flappingHealthResponseBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($flappingHealthResponse))
+    docker exec $miniAppName sh -c "printf %s $flappingHealthResponseBase64 | base64 -d > /tmp/miniapp-health-flap && chmod +x /tmp/miniapp-health-flap"
+    if ($LASTEXITCODE -ne 0) { throw 'could not create flapping Mini App health fixture' }
+    docker exec -d $miniAppName nc -lk -p 8084 -e /tmp/miniapp-health-flap
+    if ($LASTEXITCODE -ne 0) { throw 'could not start flapping Mini App health fixture' }
     $miniAppRecovery = & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'watch_container.ps1') -ContainerId $miniAppName -StatePath $miniAppState @monitorArgs
     if ($LASTEXITCODE -ne 0 -or ($miniAppRecovery | Out-String) -notmatch 'Mini App OK') {
-        throw "Mini App health recovery was not detected: $($miniAppRecovery | Out-String)"
+        throw "Mini App recovery after two transient probe failures was not detected: $($miniAppRecovery | Out-String)"
     }
     if (($miniAppRecovery | Out-String) -notmatch 'recovered state=running') { throw 'Mini App recovery notification was not recognized' }
+    if (($miniAppRecovery | Out-String) -match 'state=miniapp-probe-failed|failure notification') {
+        throw "transient Mini App probe failures raised a failure alert: $($miniAppRecovery | Out-String)"
+    }
+    $miniAppAttempts = (docker exec $miniAppName cat /tmp/miniapp-health-attempts 2>&1 | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $miniAppAttempts -notmatch '^\d+$' -or [int]$miniAppAttempts -lt 3) {
+        throw "Mini App probe did not retry both transient failures; connections=$miniAppAttempts"
+    }
+    $miniAppStable = & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'watch_container.ps1') -ContainerId $miniAppName -StatePath $miniAppState @monitorArgs
+    if ($LASTEXITCODE -ne 0 -or ($miniAppStable | Out-String) -notmatch 'Mini App OK') {
+        throw "Mini App recovery was not stable: $($miniAppStable | Out-String)"
+    }
+    if (($miniAppStable | Out-String) -match 'state=miniapp-probe-failed|failure notification') {
+        throw "recovered Mini App raised another failure alert: $($miniAppStable | Out-String)"
+    }
     $recovery = & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'watch_container.ps1') -ContainerId $miniAppName -StatePath $state @monitorArgs
     if ($LASTEXITCODE -ne 0) { throw 'healthy isolated container must produce monitor exit 0' }
     if (($recovery | Out-String) -notmatch 'recovered state=running') { throw 'failure-to-healthy transition was not recognized' }
     $restartCount = (docker inspect --format '{{.RestartCount}}' $miniAppName | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $restartCount -ne '0') { throw 'Mini App monitoring restarted its container' }
-    Write-Output 'test-container-monitor: Mini App disabled, failure, suppression and recovery verified without restart'
+    Write-Output 'test-container-monitor: Mini App disabled, persistent failure/suppression, transient retries and stable recovery verified without restart'
     Write-Output 'test-container-monitor: GREEN — health, lease, backup freshness and suppression verified; no notifications sent'
 }
 catch {

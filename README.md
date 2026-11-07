@@ -289,6 +289,10 @@ Reverse proxy или туннель должен перенаправлять п
 
 `/start` и `/help` открывают секционное inline-меню: Ask/New context, History, Documents, Settings, Status, Help и More. History поддерживает последние сообщения, поиск, MD/JSON export и удаление; Documents — добавление, поиск через pending input, export, удаление документов и «Ссылки на потом» с list/search/summary/delete; Settings — Model, Persona и Stream. More содержит напоминания, многошаговые задачи, opt-in озвучку текста и `/usage` с дневной статистикой. Admin виден только администраторам.
 
+Все навигационные и информационные callback-кнопки редактируют исходное сообщение меню, включая Stats, Ping, History, Reset, подтверждения и Back. Обычные текстовые команды по-прежнему отправляют ответы отдельно. При ошибке редактирования бот не создаёт дублирующее меню снизу. Отдельные сообщения остаются только для export-документов, TTS-аудио и результатов выполнения запросов/задач.
+
+При включённом Mini App нижняя кнопка «Меню» рядом с полем ввода публикуется как `MenuButtonWebApp` и сразу открывает companion. При выключенном Mini App публикуется обычная кнопка команд.
+
 Меню напоминаний создаёт одноразовые записи через 10 минут, 1 час или завтра в 09:00 по `REMINDER_TIMEZONE`. Раздел «Недоставленные» показывает до 5 последних failed текущего чата: Retry снова активирует запись с нулевым `attempts`, Delete удаляет только failed текущего чата. Для одноразового напоминания после пятой ошибки доставки бот пытается отправить финальное уведомление (best-effort). Atomic claims, backoff и расчёт daily-времени с учётом DST не изменились.
 
 Ask, Search, Custom Persona и создание напоминания принимают следующий текст через pending input с TTL 2 минуты и кнопкой Cancel. Состояние привязано к chat/user/menu message и инвалидируется при рестарте. Все текстовые команды остаются доступными. Обычные запросы показывают Telegram `typing`, а streaming tools — только общие стадии без URL и поисковых запросов.
@@ -297,47 +301,37 @@ Ask, Search, Custom Persona и создание напоминания прин�
 
 More → Mini App открывает companion со Status, History, Documents, Links, Tasks, Reminders, Usage и Settings. Для включения задайте `MINIAPP_ENABLED=true` и HTTPS `MINIAPP_PUBLIC_URL`; внутри контейнера listener `0.0.0.0`, host-порт бота остаётся loopback-only `127.0.0.1:8084`.
 
-Начиная с v1.38.0 production с существующим dashboard, Mini App и max запускается всеми override-файлами одной командой:
+Production Telegram запускается всеми override-файлами одной командой:
 
 ```powershell
 docker compose -f docker-compose.yml -f compose.websearch.yaml -f compose.tts.yaml -f compose.production.yaml up -d
 ```
 
-`compose.production.yaml` сохраняет `MINIAPP_PUBLIC_URL=https://desktop-hvobbn7.tail66517e.ts.net/miniapp` и запускает основной gateway Traefik v3.6, закреплённый как `traefik:v3.6@sha256:31267173a15b4944e797a76ffd9c419707c8d8b32fe5b610f80cd0cfa05f372d`. Сервис `gateway` публикует только `127.0.0.1:8086:8080`: это единая точка входа для dashboard, Mini App и max.
+`compose.production.yaml` сохраняет `MINIAPP_PUBLIC_URL=https://desktop-hvobbn7.tail66517e.ts.net/miniapp`. Gateway больше не входит в этот Compose-проект: он находится в независимом проекте `C:\Kimi code\edge-gateway` с Compose project name `edge-gateway` и по-прежнему публикует только `127.0.0.1:8086:8080`.
 
-Маршруты gateway:
+Telegram `bot` одновременно подключён к обычной Compose-сети `default` и внешней `edge-telegram`, где имеет alias `telegram-miniapp`. Whisper и SearxNG остаются только на `default` и не подключаются к edge-сетям; их исходящий доступ для загрузки моделей и поисковых запросов сохранён. Перед запуском создайте `edge-telegram` по инструкции `edge-gateway/README.md`.
 
-- `/miniapp` и `/miniapp/*` → `http://bot:8084`. Middleware `stripPrefix` снимает `/miniapp`, а `X-Forwarded-Prefix: /miniapp` сохраняет публичный префикс. Static, `/miniapp/api/session` и остальные API используют тот же backend.
-- `/max` и `/max/*` → `http://host.docker.internal:8090`. Path передаётся без `stripPrefix` и других изменений.
-- `/` и все остальные пути → существующий dashboard `http://host.docker.internal:8787` (`127.0.0.1:8787` на хосте) как fallback без изменения path.
+Маршруты независимого Traefik:
+
+- `/miniapp` и `/miniapp/*` → `http://telegram-miniapp:8084`. Middleware `stripPrefix` снимает `/miniapp`, а `X-Forwarded-Prefix: /miniapp` сохраняет публичный префикс. Static, `/miniapp/api/session` и остальные API используют тот же backend.
+- `/max` и `/max/*` → `http://max-bot:8090` через external-сеть `edge-max`. Path передаётся без изменений, кроме `/max/healthz`, который переписывается в `/healthz`.
+- `/` и все остальные пути → dashboard `http://dashboard:8787` через external-сеть `edge-dashboard` как fallback без изменения path.
 
 Health и прямые listeners не меняются: bot health остаётся на `127.0.0.1:8080/healthz`, Mini App без gateway по-прежнему принимает запросы без префикса на `127.0.0.1:8084`, а прямой max на `127.0.0.1:8090` отвечает `/healthz` = 200; ответ 404 на его корне `/` допустим и не означает сбой gateway.
 
-Traefik использует только static file provider: `/etc/traefik/traefik.yml` и `/etc/traefik/dynamic.yml` монтируются read-only. Docker provider и Docker socket не используются. Встроенные Traefik API/dashboard не включены и не публикуются; маршрут `/` относится к приложению dashboard на порту 8787. Для `host.docker.internal` задан `host-gateway`, а запуск gateway зависит от healthy `bot`.
+Traefik использует только static file provider: `/etc/traefik/traefik.yml` и `/etc/traefik/dynamic.yml` монтируются read-only. Docker provider и Docker socket не используются. Встроенные Traefik API/dashboard не доступны на production entrypoint: локальный dashboard с Basic Auth работает на `127.0.0.1:8089`, а Prometheus/Grafana описаны в `edge-gateway/README.md`; маршрут `/` относится к приложению dashboard на порту 8787. У standalone gateway нет зависимости от Telegram `bot` или `host-gateway`: backends разрешаются через network aliases.
 
 Контейнер gateway работает non-root с read-only rootfs, `cap_drop: ALL`, `no-new-privileges` и tmpfs; заданы memory/CPU/PID limits и ротация Docker logs. Auth headers, cookies, Telegram `initData`, bearer sessions, токены и ключи не записываются в access/error logs. Логи не должны использоваться для вывода секретов при диагностике маршрутов.
 
-### Миграция с Caddy на Traefik
+### Запуск и миграция gateway
 
-Текущий Caddy на `127.0.0.1:8085` — только временный migration path и rollback, а не второй постоянный production gateway. На время миграции сохраните его маршрут и действующий Tailscale Funnel root → `8085`: не останавливайте Caddy и не переназначайте Funnel до проверки Traefik напрямую на `127.0.0.1:8086`.
+Создание трёх external-сетей, порядок пересоздания backends, cutover без остановки текущего процесса миграции и rollback описаны в `C:\Kimi code\edge-gateway\README.md`. Acceptance gateway находится там же: `C:\Kimi code\edge-gateway\scripts\test-traefik.ps1`. Он использует только временные контейнеры и сети, не читает `.env` и не пересоздаёт production services.
 
-1. Запустите production Compose командой выше. Traefik использует `8086`, поэтому не перехватывает текущий Caddy на `8085`.
-2. До переключения Funnel проверьте на `8086` dashboard `/`, Mini App `/miniapp` со static/session/API, max `/max`, health/direct behaviors и отсутствие секретов в логах.
-3. Только после целевых тестов main agent переключает production Funnel на новый gateway:
+`deploy/Caddyfile` и `scripts/test-gateway.ps1` сохранены только как исторические rollback-артефакты прежнего Caddy на `127.0.0.1:8085`. Прежние `deploy/traefik.yml` и `deploy/dynamic.yml` также оставлены для обратного запуска остановленного `tg-llm-proxy-gateway-1`: его bind-mounts ссылаются на эти файлы. Ни Caddy, ни старый Traefik не входят в текущий Compose и не являются активным gateway; production endpoint обслуживает standalone Traefik на `127.0.0.1:8086`.
 
-```powershell
-tailscale funnel --bg http://127.0.0.1:8086
-```
+Прямой запуск Mini App без любого gateway сохраняет прежнее поведение: reverse proxy/tunnel направляет публичный URL без `/miniapp` на `127.0.0.1:8084`, и префикс приложению не требуется.
 
-При необходимости отката до завершения миграции восстанавливается прежний маршрут:
-
-```powershell
-tailscale funnel --bg http://127.0.0.1:8085
-```
-
-После принятия Traefik и завершения наблюдения Caddy удаляется отдельным изменением. Прямой запуск Mini App без любого gateway сохраняет прежнее поведение: reverse proxy/tunnel направляет публичный URL без `/miniapp` на `127.0.0.1:8084`, и префикс приложению не требуется.
-
-Raw `initData` проверяется через Telegram HMAC и `auth_date`, launch ticket привязан к chat/user на 2 минуты, session — на 15 минут. Доступ проверяется при каждом запросе. Нет model keys, task plans/results или tool arguments. Настройки Model/Persona/Stream работают через те же store-операции и проверку allowlist, без прямых обращений браузера к STRATA. Интерфейс по умолчанию русский, есть переключатель RU/EN и адаптивная мобильная вёрстка без горизонтального скролла. `watch_container.ps1` дополнительно проверяет `/healthz` при включённом Mini App.
+Raw `initData` проверяется через Telegram HMAC и `auth_date`, session — на 15 минут. Inline launch ticket привязан к chat/user на 2 минуты и остаётся одноразовым. Direct launch через нижнюю кнопку работает без ticket только с private scope `ChatID=UserID`, полученным из подписанного `user.id`; client-supplied `chat_id` не используется. Доступ и allowlist проверяются при каждом запросе. Нет model keys, task plans/results или tool arguments. Настройки Model/Persona/Stream работают через те же store-операции и проверку allowlist, без прямых обращений браузера к STRATA. Интерфейс по умолчанию русский, есть переключатель RU/EN и адаптивная мобильная вёрстка без горизонтального скролла. `watch_container.ps1` дополнительно проверяет `/healthz` при включённом Mini App.
 
 History поддерживает поиск через `GET /api/history/search?q=...`, полный просмотр через `/api/history/item`, MD/JSON export с bearer fetch/Blob, удаление отдельных user/assistant сообщений и очистку с подтверждением. Links поддерживает добавление HTTPS-страниц через общий Dispatcher lifecycle, поиск, полный просмотр и delete/clear. Reminders поддерживает создание once/daily, Cancel active и Retry/Delete failed; Tasks — создание безопасного плана через общий Dispatcher lifecycle, Cancel/Resume/Delete/Clear. Settings при включённом TTS позволяет выбрать скорость 0.75/1/1.25/1.5 через `/api/settings/tts-speed` или вернуть 1. Bearer mutations ограничены 30/min/user, History export — 5/min/user с HTTP 429 и `Retry-After`.
 
@@ -352,7 +346,7 @@ Documents поддерживает поиск через `GET /api/documents/sea
 .\scripts\verify.ps1 -WithVolumeRestore   # + изолированная volume restore rehearsal
 .\scripts\verify.ps1 -SkipRace -SkipHealth
 .\scripts\test-maintenance.ps1 -WithVolumeRestore
-.\scripts\test-gateway.ps1                # изолированные Compose и HTTP gateway regressions
+..\edge-gateway\scripts\test-traefik.ps1   # изолированные Compose и HTTP gateway regressions
 ```
 
 Pipeline включает gofmt/vet, PowerShell parser, unit/store, fixture backup/restore/external-copy/rotate/prune/migration, loopback Telegram alerts, fake Telegram + fake STRATA, build, secret leak scan и Docker race. `-WithVolumeRestore` добавляет volume restore и container-monitor acceptance. Явные package roots исключают `zzscratch`; `go mod tidy -diff` проверяет module files без изменений. Docker base images и CI images/tools закреплены по digest/версии.
@@ -378,6 +372,8 @@ Pipeline включает gofmt/vet, PowerShell parser, unit/store, fixture back
 Host fallback сохраняет прежние `go test` и на Windows может снова вызвать firewall prompt; он не является стандартом для разработки или CI. Прямой host `go test ./...` также не заменяет штатные обёртки.
 
 Существующий race path не изменён: `scripts\test-race.ps1` по-прежнему собирает Docker target `test` и запускает `go test -race` в контейнере; `-Tagged` включает integration, `-SkipBuild` повторно использует race image. В `verify.ps1` для этого по-прежнему предусмотрен `-SkipRaceBuild`.
+
+`docker-build.ps1`, `test.ps1` и `test-race.ps1` сериализуют только Docker image builds кроссплатформенным named mutex, уникальным для полного repo root. Ожидание ограничено 30 минутами; `go test` и `-SkipBuild` lock не используют. Лёгкий двухпроцессный acceptance запускается через `.\scripts\test-docker-build-lock.ps1` и не требует Docker.
 
 GitLab `frontend` job дополнительно выполняет `node --check internal/webapp/static/app.js` и `node --test internal/webapp/frontendjs/*.test.js` в pinned Node 22 image. Это 11 executable DOM/fetch-сценариев фактического `app.js` без npm-зависимостей. При локальном Node 22 команды можно запустить теми же аргументами; на host без Node используется контейнерный вариант.
 
@@ -457,7 +453,7 @@ Maintenance чисто останавливает бота, копирует `/d
 .\scripts\notify-telegram.ps1 -Message 'tg-llm-proxy: test'
 ```
 
-Монитор проверяет bot и Whisper, называет сервис в failure state, отправляет алерт при сбое и восстановлении, повторяет неизменный failure не чаще одного раза в 6 часов и не перезапускает контейнер автоматически. Во время штатного clean-stop backup проверка пропускается только по свежему lease с живым PID; stale lease вызывает alert и восстанавливает проверки. Backup freshness по умолчанию ограничен 30 часами, подтверждённые копии записывают verification receipt. Дополнительно `watch_runtime.ps1` анализирует последние 10 минут логов: три ошибки Telegram, STRATA или Whisper/transcription вызывают алерт, повтор подавляется на 6 часов. Состояния хранятся в `data/monitoring`. Уведомления используют существующие token/allowlist, не принимают token аргументом и не печатают его.
+Монитор проверяет bot и Whisper, называет сервис в failure state, отправляет алерт при сбое и восстановлении, повторяет неизменный failure не чаще одного раза в 6 часов и не перезапускает контейнер автоматически. Mini App probe выполняется прямым `docker exec` по уже проверенному container ID без дополнительной зависимости от Compose в среде Task Scheduler, имеет timeout 5 секунд и до трёх попыток с паузой 2 секунды: failure устанавливается только после третьей последовательной ошибки, а лог содержит exit codes и сокращённую диагностику без секретов. Во время штатного clean-stop backup проверка пропускается только по свежему lease с живым PID; stale lease вызывает alert и восстанавливает проверки. Backup freshness по умолчанию ограничен 30 часами, подтверждённые копии записывают verification receipt. Дополнительно `watch_runtime.ps1` анализирует последние 10 минут логов: три ошибки Telegram, STRATA или Whisper/transcription вызывают алерт, повтор подавляется на 6 часов. Состояния хранятся в `data/monitoring`. Уведомления используют существующие token/allowlist, не принимают token аргументом и не печатают его.
 
 Speaches CPU/CUDA images закреплены по digest. Для NVIDIA GPU после настройки Docker GPU support используйте:
 

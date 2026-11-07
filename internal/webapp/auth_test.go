@@ -79,12 +79,47 @@ func TestInitDataAuthDateFreshnessAndShape(t *testing.T) {
 	}
 }
 
-func TestTicketScopeSingleUseAndSessionExpiry(t *testing.T) {
+func TestDirectLaunchUsesOwnPrivateScope(t *testing.T) {
+	auth := newAuthenticator("123:test", func(userID int64) bool { return userID == 1717 })
+	now := time.Unix(1700000000, 0)
+	auth.now = func() time.Time { return now }
+	raw := signedInitData(t, "123:test", 1717, now)
+	bearer, _, err := auth.exchange(raw, "")
+	if err != nil || bearer == "" {
+		t.Fatalf("direct exchange bearer=%q err=%v", bearer, err)
+	}
+	current, err := auth.authorizeBearer(bearer)
+	if err != nil || current.ChatID != 1717 || current.UserID != 1717 {
+		t.Fatalf("direct session scope=%+v err=%v", current, err)
+	}
+}
+
+func TestDirectLaunchRejectsDisallowedUser(t *testing.T) {
+	auth := newAuthenticator("123:test", func(int64) bool { return false })
+	now := time.Unix(1700000000, 0)
+	auth.now = func() time.Time { return now }
+	raw := signedInitData(t, "123:test", 1717, now)
+	if _, _, err := auth.exchange(raw, ""); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("disallowed direct launch err=%v", err)
+	}
+}
+
+func TestDirectLaunchRejectsInvalidInitData(t *testing.T) {
+	auth := newAuthenticator("123:test", func(int64) bool { return true })
+	now := time.Unix(1700000000, 0)
+	auth.now = func() time.Time { return now }
+	raw := signedInitData(t, "123:wrong", 1717, now)
+	if _, _, err := auth.exchange(raw, ""); !errors.Is(err, ErrInvalidInitData) {
+		t.Fatalf("invalid direct launch initData err=%v", err)
+	}
+}
+
+func TestGroupTicketScopeSingleUseAndSessionExpiry(t *testing.T) {
 	allowed := true
 	auth := newAuthenticator("123:test", func(int64) bool { return allowed })
 	now := time.Unix(1700000000, 0)
 	auth.now = func() time.Time { return now }
-	ticket, err := auth.NewLaunchTicket(4242, 1717)
+	ticket, err := auth.NewLaunchTicket(-4242, 1717)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +133,7 @@ func TestTicketScopeSingleUseAndSessionExpiry(t *testing.T) {
 		t.Fatalf("exchange bearer=%q err=%v", bearer, err)
 	}
 	current, err := auth.authorizeBearer(bearer)
-	if err != nil || current.ChatID != 4242 || current.UserID != 1717 {
+	if err != nil || current.ChatID != -4242 || current.UserID != 1717 {
 		t.Fatalf("session scope=%+v err=%v", current, err)
 	}
 	if _, _, err := auth.exchange(raw, ticket); !errors.Is(err, ErrInvalidTicket) {

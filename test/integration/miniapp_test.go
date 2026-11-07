@@ -65,6 +65,39 @@ func miniAppSettingsRequest(t *testing.T, baseURL string, method string, path st
 	return response.StatusCode, responseBody
 }
 
+func miniAppSessionExchange(t *testing.T, baseURL string, raw string, ticket string) (int, []byte) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/session", strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "text/plain")
+	if ticket != "" {
+		req.Header.Set("X-Launch-Ticket", ticket)
+	}
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response.StatusCode, body
+}
+
+func miniAppSessionToken(t *testing.T, body []byte) string {
+	t.Helper()
+	var session struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body, &session); err != nil || session.Token == "" {
+		t.Fatalf("session body=%s err=%v", body, err)
+	}
+	return session.Token
+}
+
 func TestMiniAppFakeTelegramLaunchAndSettingsAPI(t *testing.T) {
 	ctx := context.Background()
 	path := dbFile(t)
@@ -77,9 +110,17 @@ func TestMiniAppFakeTelegramLaunchAndSettingsAPI(t *testing.T) {
 	if _, err := store.Append(ctx, db, store.Message{ChatID: chatID, UserID: userID, Role: store.RoleUser, Content: "visible through Mini App"}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.Append(ctx, db, store.Message{ChatID: userID, UserID: userID, Role: store.RoleUser, Content: "private ticketless history"}); err != nil {
+		t.Fatal(err)
+	}
 	run := startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second}, 0)
 	if run.miniAppURL == "" {
 		t.Fatal("Mini App test server was not wired")
+	}
+	rawMenuButton, ok := tgAPI.MenuButton()
+	var menuButton models.MenuButton
+	if !ok || json.Unmarshal([]byte(rawMenuButton), &menuButton) != nil || menuButton.Type != models.MenuButtonTypeWebApp || menuButton.WebApp == nil || menuButton.WebApp.Text != "Меню" || menuButton.WebApp.WebApp.URL != run.miniAppURL {
+		t.Fatalf("Mini App menu button payload=%q present=%v decoded=%+v, want URL %q", rawMenuButton, ok, menuButton, run.miniAppURL)
 	}
 	defer func() {
 		if t.Failed() {
@@ -92,12 +133,28 @@ func TestMiniAppFakeTelegramLaunchAndSettingsAPI(t *testing.T) {
 	menuMessageID := tgAPI.Sent()[0].MessageID
 	tgAPI.FailNext("editMessageText", 400, "Bad Request: message not found", 0)
 	tgAPI.Push(models.Update{ID: 701, CallbackQuery: &models.CallbackQuery{
+		ID: "miniapp-launch-rejected", Data: "menu:more", From: models.User{ID: userID, Username: "tester"},
+		Message: models.MaybeInaccessibleMessage{Message: &models.Message{ID: menuMessageID, Date: int(time.Now().Unix()), Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate}}},
+	}})
+	waitFor(t, "rejected More menu edit", func() bool {
+		return tgAPI.Calls("answerCallbackQuery") == 1 && tgAPI.Calls("editMessageText") == 1
+	})
+	quiet()
+	if tgAPI.Calls("sendMessage") != 1 || len(tgAPI.Edits()) != 0 {
+		t.Fatalf("failed edit produced a duplicate: sends=%d edits=%+v", tgAPI.Calls("sendMessage"), tgAPI.Edits())
+	}
+	tgAPI.Push(models.Update{ID: 702, CallbackQuery: &models.CallbackQuery{
 		ID: "miniapp-launch", Data: "menu:more", From: models.User{ID: userID, Username: "tester"},
 		Message: models.MaybeInaccessibleMessage{Message: &models.Message{ID: menuMessageID, Date: int(time.Now().Unix()), Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate}}},
 	}})
-	waitFor(t, "More menu with WebApp button", func() bool { return tgAPI.Calls("sendMessage") == 2 })
+	waitFor(t, "More menu edited with WebApp button", func() bool {
+		return tgAPI.Calls("answerCallbackQuery") == 2 && len(tgAPI.Edits()) == 1
+	})
+	if tgAPI.Calls("sendMessage") != 1 || tgAPI.Edits()[0].MessageID != menuMessageID {
+		t.Fatalf("successful More navigation sends=%d edit=%+v", tgAPI.Calls("sendMessage"), tgAPI.Edits()[0])
+	}
 	var markup models.InlineKeyboardMarkup
-	if err := json.Unmarshal([]byte(tgAPI.Sent()[1].ReplyMarkup), &markup); err != nil {
+	if err := json.Unmarshal([]byte(tgAPI.Edits()[0].ReplyMarkup), &markup); err != nil {
 		t.Fatal(err)
 	}
 	launchURL := ""
@@ -117,20 +174,9 @@ func TestMiniAppFakeTelegramLaunchAndSettingsAPI(t *testing.T) {
 		ticket = value
 	}
 	raw := miniAppInitData(t, secretToken, userID, time.Now())
-	req, err := http.NewRequest(http.MethodPost, run.miniAppURL+"/api/session", strings.NewReader(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Content-Type", "text/plain")
-	req.Header.Set("X-Launch-Ticket", ticket)
-	response, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, _ := io.ReadAll(response.Body)
-	response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("session exchange status=%d body=%s", response.StatusCode, body)
+	sessionStatus, body := miniAppSessionExchange(t, run.miniAppURL, raw, ticket)
+	if sessionStatus != http.StatusOK {
+		t.Fatalf("session exchange status=%d body=%s", sessionStatus, body)
 	}
 	var session struct {
 		Token string `json:"token"`
@@ -147,8 +193,24 @@ func TestMiniAppFakeTelegramLaunchAndSettingsAPI(t *testing.T) {
 	}
 	historyBody, _ := io.ReadAll(historyResponse.Body)
 	historyResponse.Body.Close()
-	if historyResponse.StatusCode != http.StatusOK || !bytes.Contains(historyBody, []byte("visible through Mini App")) {
-		t.Fatalf("history status=%d body=%s", historyResponse.StatusCode, historyBody)
+	if historyResponse.StatusCode != http.StatusOK || !bytes.Contains(historyBody, []byte("visible through Mini App")) || bytes.Contains(historyBody, []byte("private ticketless history")) {
+		t.Fatalf("scoped history status=%d body=%s", historyResponse.StatusCode, historyBody)
+	}
+	ticketlessStatus, ticketlessBody := miniAppSessionExchange(t, run.miniAppURL, raw, "")
+	if ticketlessStatus != http.StatusOK {
+		t.Fatalf("ticketless session status=%d body=%s", ticketlessStatus, ticketlessBody)
+	}
+	ticketlessBearer := miniAppSessionToken(t, ticketlessBody)
+	ticketlessReq, _ := http.NewRequest(http.MethodGet, run.miniAppURL+"/api/history?limit=5", nil)
+	ticketlessReq.Header.Set("Authorization", "Bearer "+ticketlessBearer)
+	ticketlessResponse, err := http.DefaultClient.Do(ticketlessReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticketlessHistory, _ := io.ReadAll(ticketlessResponse.Body)
+	ticketlessResponse.Body.Close()
+	if ticketlessResponse.StatusCode != http.StatusOK || !bytes.Contains(ticketlessHistory, []byte("private ticketless history")) || bytes.Contains(ticketlessHistory, []byte("visible through Mini App")) {
+		t.Fatalf("ticketless private history status=%d body=%s", ticketlessResponse.StatusCode, ticketlessHistory)
 	}
 	if strata.ChatCalls() != 0 {
 		t.Fatalf("Mini App launch made %d model calls", strata.ChatCalls())
@@ -200,19 +262,12 @@ func TestMiniAppFakeTelegramLaunchAndSettingsAPI(t *testing.T) {
 		t.Fatal("settings changed chat history")
 	}
 
-	replayReq, _ := http.NewRequest(http.MethodPost, run.miniAppURL+"/api/session", strings.NewReader(raw))
-	replayReq.Header.Set("Content-Type", "text/plain")
-	replayReq.Header.Set("X-Launch-Ticket", ticket)
-	replayResponse, err := http.DefaultClient.Do(replayReq)
-	if err != nil {
-		t.Fatal(err)
-	}
-	replayResponse.Body.Close()
-	if replayResponse.StatusCode != http.StatusForbidden {
-		t.Fatalf("ticket replay status=%d", replayResponse.StatusCode)
+	replayStatus, _ := miniAppSessionExchange(t, run.miniAppURL, raw, ticket)
+	if replayStatus != http.StatusForbidden {
+		t.Fatalf("ticket replay status=%d", replayStatus)
 	}
 	logText := run.logs.String()
-	if strings.Contains(logText, raw) || strings.Contains(logText, session.Token) || strings.Contains(logText, ticket) || strings.Contains(logText, privatePersona) {
+	if strings.Contains(logText, raw) || strings.Contains(logText, session.Token) || strings.Contains(logText, ticketlessBearer) || strings.Contains(logText, ticket) || strings.Contains(logText, privatePersona) {
 		t.Fatalf("Mini App credentials reached logs: %s", logText)
 	}
 	secretLeak(t, "Mini App integration logs", logText)

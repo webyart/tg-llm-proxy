@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -210,6 +211,9 @@ func startBotWithURLReader(t *testing.T, ctx context.Context, cfg config.Config,
 	defer cancelMenu()
 	if menuErr := d.PublishCommands(menuCtx, tg); menuErr != nil {
 		t.Fatalf("setMyCommands: %v ", menuErr)
+	}
+	if menuErr := d.PublishMenuButton(menuCtx, tg); menuErr != nil {
+		t.Fatalf("setChatMenuButton: %v", menuErr)
 	}
 	var webhookServer *bot.WebhookServer
 	if cfg.WebhookEnabled {
@@ -1095,6 +1099,11 @@ func TestInlineMenuAndCallback(t *testing.T) {
 	var cfg = integrationEnv(t, path, strata.BaseURL(), map[string]string{"PARSE_MODE": "MarkdownV2"})
 	var db = openStore(t, path)
 	var run = startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second}, 0)
+	rawMenuButton, ok := tgAPI.MenuButton()
+	var menuButton models.MenuButton
+	if !ok || json.Unmarshal([]byte(rawMenuButton), &menuButton) != nil || menuButton.Type != models.MenuButtonTypeCommands || menuButton.Commands == nil {
+		t.Fatalf("disabled Mini App menu button payload=%q present=%v decoded=%+v", rawMenuButton, ok, menuButton)
+	}
 
 	tgAPI.PushText(180, chatID, userID, "/start")
 	waitFor(t, "the inline menu was sent", func() bool { return tgAPI.Calls("sendMessage") == 1 })
@@ -1130,26 +1139,30 @@ func TestInlineMenuAndCallback(t *testing.T) {
 			ID: menuMessageID, Date: int(time.Now().Unix()), Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate},
 		}},
 	}})
-	waitFor(t, "callback was answered and /ping ran", func() bool {
-		return tgAPI.Calls("answerCallbackQuery") == 2 && tgAPI.Calls("sendMessage") == 2
+	waitFor(t, "callback was answered and /ping edited the menu", func() bool {
+		return tgAPI.Calls("answerCallbackQuery") == 2 && len(tgAPI.Edits()) == 2
 	})
-	if !strings.Contains(tgAPI.Joined(), "pong") {
-		t.Fatalf("callback /ping must answer pong, got %q", tgAPI.Joined())
+	if edit := tgAPI.Edits()[1]; edit.MessageID != menuMessageID || !strings.Contains(edit.Text, "pong") || tgAPI.Calls("sendMessage") != 1 {
+		t.Fatalf("callback /ping edit=%+v sends=%d", edit, tgAPI.Calls("sendMessage"))
 	}
 	tgAPI.PushText(183, chatID, userID, "/persona")
-	waitFor(t, "persona menu was sent", func() bool { return tgAPI.Calls("sendMessage") == 3 })
-	if !strings.Contains(tgAPI.Sent()[2].ReplyMarkup, "persona:coder") {
-		t.Fatalf("persona response has no coder button: %q", tgAPI.Sent()[2].ReplyMarkup)
+	waitFor(t, "persona menu was sent", func() bool { return tgAPI.Calls("sendMessage") == 2 })
+	personaMessage := tgAPI.Sent()[1]
+	if !strings.Contains(personaMessage.ReplyMarkup, "persona:coder") {
+		t.Fatalf("persona response has no coder button: %q", personaMessage.ReplyMarkup)
 	}
 	tgAPI.Push(models.Update{ID: 184, CallbackQuery: &models.CallbackQuery{
 		ID: "cb-persona", Data: "persona:coder", From: models.User{ID: userID, Username: "tester"},
 		Message: models.MaybeInaccessibleMessage{Message: &models.Message{
-			ID: menuMessageID, Date: int(time.Now().Unix()), Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate},
+			ID: personaMessage.MessageID, Date: int(time.Now().Unix()), Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate},
 		}},
 	}})
 	waitFor(t, "persona callback selected coder", func() bool {
-		return tgAPI.Calls("answerCallbackQuery") == 3 && tgAPI.Calls("sendMessage") == 4
+		return tgAPI.Calls("answerCallbackQuery") == 3 && len(tgAPI.Edits()) == 3
 	})
+	if edit := tgAPI.Edits()[2]; edit.MessageID != personaMessage.MessageID || !strings.Contains(edit.Text, "coder") || tgAPI.Calls("sendMessage") != 2 {
+		t.Fatalf("persona callback edit=%+v sends=%d, want persona message %d", edit, tgAPI.Calls("sendMessage"), personaMessage.MessageID)
+	}
 	prompt, found, err := store.ChatPersona(context.Background(), db, chatID)
 	if err != nil || !found || !strings.Contains(prompt, "senior software engineer") {
 		t.Fatalf("persona callback did not persist coder: prompt=%q found=%v err=%v", prompt, found, err)

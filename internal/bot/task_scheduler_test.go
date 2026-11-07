@@ -3,6 +3,8 @@ package bot
 import (
 	"context"
 	"errors"
+	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -243,5 +245,115 @@ func TestTaskClaimRevalidationRejectsChangedState(t *testing.T) {
 				t.Fatalf("stale %s reached the model", test.name)
 			}
 		})
+	}
+}
+
+func requireTaskSchedulerBlocked(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	stable := 0
+	var stack string
+	buffer := make([]byte, 1<<20)
+	for time.Now().Before(deadline) {
+		n := runtime.Stack(buffer, true)
+		stack = string(buffer[:n])
+		passRunning := strings.Contains(stack, "bot/internal/bot.(*Dispatcher).processDueTasks(")
+		blocked := false
+		for _, goroutine := range strings.Split(stack, "\n\n") {
+			if !strings.Contains(goroutine, "bot/internal/bot.(*Dispatcher).RunTaskScheduler(") {
+				continue
+			}
+			header, _, _ := strings.Cut(goroutine, "\n")
+			blocked = !passRunning && strings.Contains(header, "[select")
+		}
+		if blocked {
+			stable++
+			if stable == 5 {
+				return
+			}
+		} else {
+			stable = 0
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("task scheduler did not stay blocked after its pass:\n%s", stack)
+}
+
+func TestTaskSchedulerBlocksAfterPassUntilWake(t *testing.T) {
+	m := taskTextModel("wake result", "wake synthesis")
+	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"}), m, &fakeReplier{}, testStore(t))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.RunTaskScheduler(ctx)
+	}()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("task scheduler did not stop")
+		}
+	}()
+
+	requireTaskSchedulerBlocked(t)
+	createSchedulerTask(t, d, 100, time.Now().UTC())
+	d.wakeTasks()
+	deadline := time.Now().Add(2 * time.Second)
+	for m.callCount() < 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if m.callCount() < 1 {
+		t.Fatal("task scheduler did not run after its wake")
+	}
+}
+
+func TestTaskSchedulerRunsPendingPassImmediately(t *testing.T) {
+	m := taskTextModel("first result", "first synthesis", "pending result", "pending synthesis")
+	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"}), m, &fakeReplier{}, testStore(t))
+	now := time.Now().UTC()
+	createSchedulerTask(t, d, 100, now)
+	release, lockStopped := holdSchedulerChatLock(t, d, 100)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.RunTaskScheduler(ctx)
+	}()
+	defer func() {
+		release()
+		<-lockStopped
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("task scheduler did not stop")
+		}
+	}()
+
+	_ = waitForClaimedTask(t, d, 100)
+	createSchedulerTask(t, d, 200, now)
+	d.wakeTasks()
+	wakeDeadline := time.Now().Add(2 * time.Second)
+	for len(d.taskWake) != 0 && time.Now().Before(wakeDeadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if len(d.taskWake) != 0 {
+		t.Fatal("task wake was not consumed while the first pass was blocked")
+	}
+	release()
+	pendingDeadline := time.Now().Add(500 * time.Millisecond)
+	pendingStarted := false
+	for !pendingStarted && time.Now().Before(pendingDeadline) {
+		task, found, err := store.CurrentTask(context.Background(), d.deps.DB, 200)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pendingStarted = found && task.Attempts > 0
+		time.Sleep(time.Millisecond)
+	}
+	if !pendingStarted {
+		t.Fatal("pending task pass waited for another tick")
 	}
 }

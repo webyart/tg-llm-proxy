@@ -150,6 +150,22 @@ func (d *Dispatcher) personaMenuControl(ctx context.Context, ev Event, action st
 func (d *Dispatcher) personaControl(ctx context.Context, ev Event, arg string) error {
 	action := strings.TrimSpace(arg)
 	lower := strings.ToLower(action)
+	if ev.MenuCallback && !strings.HasPrefix(lower, "menu") {
+		switch lower {
+		case "reset":
+			return d.personaMenuControl(ctx, ev, "menu:reset", "menu:reset")
+		case "custom":
+			return d.personaMenuControl(ctx, ev, "menu:custom", "menu:custom")
+		default:
+			for _, preset := range personaPresets {
+				if lower == preset.name {
+					action := "menu:set:" + preset.name
+					return d.personaMenuControl(ctx, ev, action, action)
+				}
+			}
+			return d.renderMenu(ctx, ev, "Неизвестная или истёкшая persona.", simpleBackMarkup("menu:persona"))
+		}
+	}
 	if strings.HasPrefix(lower, "menu") {
 		return d.personaMenuControl(ctx, ev, action, lower)
 	}

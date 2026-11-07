@@ -146,13 +146,18 @@ func TestNetworkApprovalResumesThroughTelegramCallbackEndToEnd(t *testing.T) {
 	if len(rows) != 2 || rows[0].Role != store.RoleUser || rows[1].Content != "Ответ после подтверждения" {
 		t.Fatalf("rows=%+v", rows)
 	}
+	sendsBeforeReplay := tgAPI.Calls("sendMessage")
 	tgAPI.Push(models.Update{ID: 706, CallbackQuery: &models.CallbackQuery{
 		ID: "network-replay", Data: callbackData, From: models.User{ID: userID, Username: "tester"},
 		Message: models.MaybeInaccessibleMessage{Message: &models.Message{ID: menuMessageID, Date: int(time.Now().Unix()), Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate}}},
 	}})
 	waitFor(t, "replayed approval rejection", func() bool {
-		return strings.Contains(tgAPI.Joined(), "истекло или уже использовано")
+		return strings.Contains(strings.Join(tgAPI.EditStrings(), "\n"), "истекло или уже использовано")
 	})
+	edits := tgAPI.Edits()
+	if len(edits) < 2 || edits[len(edits)-1].MessageID != menuMessageID || tgAPI.Calls("sendMessage") != sendsBeforeReplay {
+		t.Fatalf("replay rejection edits=%+v sends=%d", edits, tgAPI.Calls("sendMessage"))
+	}
 	if providerCalls.Load() != 1 || strata.ChatCalls() != 2 {
 		t.Fatalf("replayed callback executed again: provider=%d model=%d", providerCalls.Load(), strata.ChatCalls())
 	}

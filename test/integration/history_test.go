@@ -69,11 +69,18 @@ func TestExportSearchAndDeleteHistoryEndToEnd(t *testing.T) {
 	if callbackData == "" || menuMessageID == 0 {
 		t.Fatalf("delete callback or menu message id not found")
 	}
+	sendsBeforeConfirm := tgAPI.Calls("sendMessage")
 	tgAPI.Push(models.Update{ID: 504, CallbackQuery: &models.CallbackQuery{
 		ID: "delete-confirm", Data: callbackData, From: models.User{ID: userID, Username: "tester"},
 		Message: models.MaybeInaccessibleMessage{Message: &models.Message{ID: menuMessageID, Date: int(time.Now().Unix()), Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate}}},
 	}})
-	waitFor(t, "confirmed delete", func() bool { return strings.Contains(tgAPI.Joined(), "Удалено сообщений: 2") })
+	waitFor(t, "confirmed delete", func() bool {
+		return strings.Contains(strings.Join(tgAPI.EditStrings(), "\n"), "Удалено сообщений: 2")
+	})
+	edits := tgAPI.Edits()
+	if len(edits) != 1 || edits[0].MessageID != menuMessageID || tgAPI.Calls("sendMessage") != sendsBeforeConfirm {
+		t.Fatalf("delete confirmation edits=%+v sends=%d, want one edit of %d and no new message", edits, tgAPI.Calls("sendMessage"), menuMessageID)
+	}
 	rows, err := store.HistoryOfChat(context.Background(), db, chatID, 10)
 	if err != nil || len(rows) != 0 {
 		t.Fatalf("deleted history=%+v err=%v", rows, err)

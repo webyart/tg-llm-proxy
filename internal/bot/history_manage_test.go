@@ -22,7 +22,7 @@ type removedMenu struct {
 }
 
 type deleteMenuReplier struct {
-	fakeReplier
+	menuEditReplier
 	messageID int64
 	removed   []removedMenu
 }
@@ -42,6 +42,10 @@ func (r *deleteMenuReplier) RemoveMenu(ctx context.Context, chatID int64, messag
 	defer r.mu.Unlock()
 	r.removed = append(r.removed, removedMenu{chatID: chatID, messageID: messageID})
 	return nil
+}
+
+func (r *deleteMenuReplier) joined() string {
+	return strings.Join([]string{r.fakeReplier.joined(), r.editsJoined()}, "\n")
 }
 
 func deleteCallbacks(t *testing.T, r *deleteMenuReplier) (string, string) {
@@ -494,7 +498,7 @@ func TestDeleteTextConfirmationAndCancelRemainAvailable(t *testing.T) {
 	}
 }
 
-func TestDeleteConfirmationRemovesKeyboard(t *testing.T) {
+func TestDeleteConfirmationReplacesKeyboard(t *testing.T) {
 	d, r := newDeleteDispatcher(t, 201)
 	if err := dispatch(t, d, testEvent(201, 11, 1510, "/delete")); err != nil {
 		t.Fatal(err)
@@ -503,7 +507,8 @@ func TestDeleteConfirmationRemovesKeyboard(t *testing.T) {
 	if err := dispatchDeleteCallback(t, d, 201, 11, 700, cancel); err != nil {
 		t.Fatal(err)
 	}
-	if len(r.removed) != 1 || r.removed[0] != (removedMenu{chatID: 201, messageID: 700}) {
-		t.Fatalf("removed keyboards=%+v", r.removed)
+	edit := r.lastEdit()
+	if edit.messageID != 700 || !hasMenuCallback(edit.markup, "menu:history:5") || !hasMenuCallback(edit.markup, "menu:root") || len(r.removed) != 0 {
+		t.Fatalf("replacement edit=%+v removed keyboards=%+v", edit, r.removed)
 	}
 }

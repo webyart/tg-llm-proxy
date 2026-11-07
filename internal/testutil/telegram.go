@@ -33,10 +33,17 @@ type SentMessage struct {
 
 // whether the id and the parse mode came with them.
 type SentEdit struct {
-	ChatID    int64
-	MessageID int
-	Text      string
-	ParseMode string // «» means the request carried no parse_mode at all — what a half-written answer needs
+	ChatID      int64
+	MessageID   int
+	Text        string
+	ParseMode   string // «» means the request carried no parse_mode at all — what a half-written answer needs
+	ReplyMarkup string
+}
+
+type SentReplyMarkupEdit struct {
+	ChatID      int64
+	MessageID   int
+	ReplyMarkup string
 }
 
 // WebhookRegistration records setWebhook exactly as the fake Bot API received it.
@@ -74,22 +81,25 @@ type Telegram struct {
 	// and a test must not sit for a minute waiting for an empty batch.
 	MaxBlock time.Duration
 
-	mu          sync.Mutex
-	pending     []models.Update
-	delivered   []models.Update // confirmed by an offset — Replay puts them back
-	sent        []SentMessage
-	documents   []SentDocument
-	edits       []SentEdit   // the rewrites of
-	sentIDs     map[int]bool // the ids this fake handed out: an edit of an id it never gave is a wiring bug
-	calls       map[string]int
-	commands    []models.BotCommand
-	webhook     *WebhookRegistration
-	files       map[string]FakeFile
-	failures    []TelegramFailure
-	wrongTokens int
-	offsets     []string // the offset params the library sent, for the offset assertions of
-	wake        chan struct{}
-	nextSendID  int
+	mu               sync.Mutex
+	pending          []models.Update
+	delivered        []models.Update // confirmed by an offset — Replay puts them back
+	sent             []SentMessage
+	documents        []SentDocument
+	edits            []SentEdit // the rewrites of
+	replyMarkupEdits []SentReplyMarkupEdit
+	sentIDs          map[int]bool // the ids this fake handed out: an edit of an id it never gave is a wiring bug
+	calls            map[string]int
+	commands         []models.BotCommand
+	menuButton       string
+	menuButtonSet    bool
+	webhook          *WebhookRegistration
+	files            map[string]FakeFile
+	failures         []TelegramFailure
+	wrongTokens      int
+	offsets          []string // the offset params the library sent, for the offset assertions of
+	wake             chan struct{}
+	nextSendID       int
 }
 
 // NewTelegram — start the fake. The token is mandatory: the path check is what proves run.go passed
@@ -240,6 +250,20 @@ func (s *Telegram) EditStrings() []string {
 	return out
 }
 
+func (s *Telegram) ReplyMarkupEdits() []SentReplyMarkupEdit {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]SentReplyMarkupEdit, len(s.replyMarkupEdits))
+	copy(out, s.replyMarkupEdits)
+	return out
+}
+
+func (s *Telegram) MenuButton() (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.menuButton, s.menuButtonSet
+}
+
 func (s *Telegram) Commands() []models.BotCommand {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -340,8 +364,12 @@ func (s *Telegram) handle(w http.ResponseWriter, r *http.Request) {
 		s.handleSendDocument(w, r)
 	case "editMessageText":
 		s.handleEditMessageText(w, r)
+	case "editMessageReplyMarkup":
+		s.handleEditMessageReplyMarkup(w, r)
 	case "setMyCommands":
 		s.handleSetMyCommands(w, r)
+	case "setChatMenuButton":
+		s.handleSetChatMenuButton(w, r)
 	case "setWebhook":
 		s.handleSetWebhook(w, r)
 	case "answerCallbackQuery":
@@ -504,10 +532,11 @@ func (s *Telegram) handleEditMessageText(w http.ResponseWriter, r *http.Request)
 	var known = s.sentIDs[int(messageID)]
 	if known {
 		s.edits = append(s.edits, SentEdit{
-			ChatID:    chatID,
-			MessageID: int(messageID),
-			Text:      text,
-			ParseMode: r.FormValue("parse_mode"),
+			ChatID:      chatID,
+			MessageID:   int(messageID),
+			Text:        text,
+			ParseMode:   r.FormValue("parse_mode"),
+			ReplyMarkup: r.FormValue("reply_markup"),
 		})
 	}
 	s.mu.Unlock()
@@ -527,6 +556,52 @@ func (s *Telegram) handleEditMessageText(w http.ResponseWriter, r *http.Request)
 		Text:     text,
 		Entities: []models.MessageEntity{},
 	})
+}
+
+func (s *Telegram) handleEditMessageReplyMarkup(w http.ResponseWriter, r *http.Request) {
+	chatID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("chat_id")), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "chat_id is required", 0)
+		return
+	}
+	messageID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("message_id")), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "message_id is required", 0)
+		return
+	}
+	replyMarkup := r.FormValue("reply_markup")
+	if replyMarkup != "" {
+		var markup models.InlineKeyboardMarkup
+		if err := json.Unmarshal([]byte(replyMarkup), &markup); err != nil {
+			writeError(w, http.StatusBadRequest, "reply_markup must be valid JSON", 0)
+			return
+		}
+	}
+	s.mu.Lock()
+	known := s.sentIDs[int(messageID)]
+	if known {
+		s.replyMarkupEdits = append(s.replyMarkupEdits, SentReplyMarkupEdit{ChatID: chatID, MessageID: int(messageID), ReplyMarkup: replyMarkup})
+	}
+	s.mu.Unlock()
+	if !known {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("the fake never handed out message id %d to edit", messageID), 0)
+		return
+	}
+	writeOK(w, models.Message{ID: int(messageID), Date: int(time.Now().Unix()), EditDate: int(time.Now().Unix()), Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate}})
+}
+
+func (s *Telegram) handleSetChatMenuButton(w http.ResponseWriter, r *http.Request) {
+	raw := r.FormValue("menu_button")
+	var button models.MenuButton
+	if err := json.Unmarshal([]byte(raw), &button); err != nil {
+		writeError(w, http.StatusBadRequest, "menu_button must be valid JSON: "+err.Error(), 0)
+		return
+	}
+	s.mu.Lock()
+	s.menuButton = raw
+	s.menuButtonSet = true
+	s.mu.Unlock()
+	writeOK(w, true)
 }
 
 func (s *Telegram) handleSetWebhook(w http.ResponseWriter, r *http.Request) {

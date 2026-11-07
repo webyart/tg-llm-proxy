@@ -172,16 +172,20 @@ func (d *Dispatcher) sendMenu(ctx context.Context, chatID int64, text string) er
 }
 
 func (d *Dispatcher) renderMenu(ctx context.Context, ev Event, text string, markup models.InlineKeyboardMarkup) error {
-	if ev.TelegramMessageID > 0 {
-		if editor, ok := d.deps.Replier.(interface {
+	if ev.MenuCallback {
+		editor, ok := d.deps.Replier.(interface {
 			EditMenu(context.Context, int64, int64, string, models.InlineKeyboardMarkup) error
-		}); ok {
-			err := editor.EditMenu(ctx, ev.ChatID, ev.TelegramMessageID, Escape(text, d.deps.Cfg.ParseMode), markup)
-			if err == nil {
-				return nil
-			}
-			d.deps.Logger.Warn("failed to edit menu; sending a replacement", "chat_id", ev.ChatID, "message_id", ev.TelegramMessageID, "error", Sanitize(err, d.deps.Token))
+		})
+		if !ok {
+			return errors.New("telegram menu editor is unavailable")
 		}
+		if ev.TelegramMessageID <= 0 {
+			return errors.New("telegram menu callback has no message id")
+		}
+		if err := editor.EditMenu(ctx, ev.ChatID, ev.TelegramMessageID, Escape(text, d.deps.Cfg.ParseMode), markup); err != nil {
+			return errors.New(Sanitize(err, d.deps.Token))
+		}
+		return nil
 	}
 	if sender, ok := d.deps.Replier.(interface {
 		SendMenu(context.Context, int64, string, models.InlineKeyboardMarkup) error
@@ -189,6 +193,20 @@ func (d *Dispatcher) renderMenu(ctx context.Context, ev Event, text string, mark
 		return sender.SendMenu(ctx, ev.ChatID, Escape(text, d.deps.Cfg.ParseMode), markup)
 	}
 	return d.reply(ctx, ev.ChatID, text)
+}
+
+func (d *Dispatcher) menuReply(ctx context.Context, ev Event, text string, markup models.InlineKeyboardMarkup) error {
+	if ev.MenuCallback {
+		return d.renderMenu(ctx, ev, text, markup)
+	}
+	return d.reply(ctx, ev.ChatID, text)
+}
+
+func refreshBackMarkup(refresh string, destination string) models.InlineKeyboardMarkup {
+	return models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+		menuRow(menuButton("Обновить", refresh)),
+		menuRow(backButton(destination)),
+	}}
 }
 
 func (r *telegramReplier) SendMenuWithID(ctx context.Context, chatID int64, text string, markup models.InlineKeyboardMarkup) (int64, error) {
@@ -426,6 +444,7 @@ func (d *Dispatcher) callbackEventOf(upd *models.Update) (Event, bool) {
 		ChatType:          string(message.Chat.Type),
 		ChatTitle:         chatTitle(message.Chat),
 		Text:              text,
+		MenuCallback:      true,
 	}
 	if callback.From.ID != 0 {
 		ev.UserID = callback.From.ID
@@ -485,7 +504,7 @@ func (d *Dispatcher) showStatusMenu(ctx context.Context, ev Event) error {
 	return d.renderMenu(ctx, ev, text, statusMenuMarkup())
 }
 
-func (d *Dispatcher) showMoreMenu(ctx context.Context, ev Event) error {
+func (d *Dispatcher) showMoreMenu(ctx context.Context, ev Event, note ...string) error {
 	rows := [][]models.InlineKeyboardButton{}
 	rowID, role, err := store.LastVisibleMessage(ctx, d.deps.DB, ev.ChatID)
 	if err != nil {
@@ -523,7 +542,7 @@ func (d *Dispatcher) showMoreMenu(ctx context.Context, ev Event) error {
 		rows = append(rows, menuRow(menuButton("Админ", "menu:admin")))
 	}
 	rows = append(rows, menuRow(backButton("menu:root")))
-	return d.renderMenu(ctx, ev, "Дополнительные команды:", models.InlineKeyboardMarkup{InlineKeyboard: rows})
+	return d.renderMenu(ctx, ev, menuText("Дополнительные команды:", note), models.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
 
 func (d *Dispatcher) helpMenu(ctx context.Context, ev Event, action string) error {
@@ -674,11 +693,11 @@ func (d *Dispatcher) cancelPendingInputMenu(ctx context.Context, ev Event, token
 		}
 		if key.ChatID != ev.ChatID || key.UserID != ev.UserID {
 			set.mu.Unlock()
-			return d.reply(ctx, ev.ChatID, "Это меню ввода принадлежит другому пользователю или чату.")
+			return d.renderMenu(ctx, ev, "Это меню ввода принадлежит другому пользователю или чату.", simpleBackMarkup("menu:root"))
 		}
 		if pending.MessageID != 0 && pending.MessageID != ev.TelegramMessageID {
 			set.mu.Unlock()
-			return d.reply(ctx, ev.ChatID, "Это меню ввода недействительно для этого сообщения.")
+			return d.renderMenu(ctx, ev, "Это меню ввода недействительно для этого сообщения.", simpleBackMarkup("menu:root"))
 		}
 		delete(set.pending, key)
 		set.mu.Unlock()

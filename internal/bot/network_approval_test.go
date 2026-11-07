@@ -47,12 +47,22 @@ func latestNetworkCallbacks(t *testing.T, r *networkMenuReplier) (string, string
 	t.Helper()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(r.menus) == 0 {
+	if len(r.menus) == 0 && len(r.edits) == 0 {
 		t.Fatal("network approval menu was not sent")
 	}
-	markup := r.menus[len(r.menus)-1]
-	confirm := findMenuCallback(markup, "menu:network:confirm:")
-	cancel := findMenuCallback(markup, "menu:network:cancel:")
+	var markup models.InlineKeyboardMarkup
+	confirm := ""
+	cancel := ""
+	for index := len(r.edits) - 1; index >= 0 && confirm == ""; index-- {
+		markup = r.edits[index].markup
+		confirm = findMenuCallback(markup, "menu:network:confirm:")
+		cancel = findMenuCallback(markup, "menu:network:cancel:")
+	}
+	for index := len(r.menus) - 1; index >= 0 && confirm == ""; index-- {
+		markup = r.menus[index]
+		confirm = findMenuCallback(markup, "menu:network:confirm:")
+		cancel = findMenuCallback(markup, "menu:network:cancel:")
+	}
 	if confirm == "" || cancel == "" {
 		t.Fatalf("network approval buttons=%+v", markup)
 	}
@@ -301,6 +311,9 @@ func TestTwoIndependentApprovalsPauseWholeRoundUntilBothAreExact(t *testing.T) {
 	secondConfirm, _ := latestNetworkCallbacks(t, r)
 	if secondConfirm == firstConfirm {
 		t.Fatal("second exact action reused the first token")
+	}
+	if len(r.menus) != 1 || r.lastEdit().messageID != 700 {
+		t.Fatalf("second approval was sent below instead of editing: menus=%d edit=%+v", len(r.menus), r.lastEdit())
 	}
 	if err := dispatchMenuData(t, d, 100, 11, 700, secondConfirm); err != nil {
 		t.Fatal(err)

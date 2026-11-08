@@ -889,7 +889,7 @@ func TestStreamedAnswerUsesDraftsInPrivateChat(t *testing.T) {
 	// PARSE_MODE=MarkdownV2 because a streamed answer goes through the same escaping as any other one
 	// table: a faster cadence is refused by config, and the progress gate of the client follows it. The idle
 	var cfg = integrationEnv(t, path, strata.BaseURL(), map[string]string{
-		"PARSE_MODE": "MarkdownV2", "STREAMING_ENABLED": "true", "STREAM_EDIT_INTERVAL_MS": "250",
+		"PARSE_MODE": "MarkdownV2", "STREAMING_ENABLED": "true", "STREAM_DRAFTS_ENABLED": "true", "STREAM_EDIT_INTERVAL_MS": "250",
 		"STREAM_IDLE_TIMEOUT_SECONDS": "4",
 	})
 	var db = openStore(t, path)
@@ -1249,7 +1249,7 @@ func TestStreamFinalParseErrorFallsBackToPlainMessage(t *testing.T) {
 		StreamUsage:   true,
 	})
 	cfg := integrationEnv(t, path, strata.BaseURL(), map[string]string{
-		"PARSE_MODE": "MarkdownV2", "STREAMING_ENABLED": "true", "STREAM_IDLE_TIMEOUT_SECONDS": "4",
+		"PARSE_MODE": "MarkdownV2", "STREAMING_ENABLED": "true", "STREAM_DRAFTS_ENABLED": "true", "STREAM_IDLE_TIMEOUT_SECONDS": "4",
 	})
 	db := openStore(t, path)
 	run := startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second}, 0)

@@ -96,6 +96,10 @@ type streamSession struct {
 	editFailures int // rewrites Telegram refused
 	lastEdit     time.Time
 	muted        bool // the outgoing side of this chat gave up on the growing message
+	// turn is the number of the update that started this answer. deliver compares it with the chat's newest
+	// number: a larger one means the next question was already admitted, so its message sits below the
+	// placeholder (or draft) and editing that placeholder would leave the answer above the question it answers.
+	turn int64
 }
 
 // deliveryFailureBudget — how many refused Telegram calls this chat may collect before the session stops
@@ -232,8 +236,9 @@ func (d *Dispatcher) newStreamSession(ctx context.Context, chatID int64, sender 
 		interval = time.Duration(config.DefaultStreamEditIntervalMS) * time.Millisecond
 	}
 	var draft draftSender
-	if chatID > 0 {
-		// Drafts are private-chat only, and a sender opts in by implementing SendDraft.
+	if chatID > 0 && d.deps.Cfg.StreamDrafts {
+		// Drafts are private-chat only, opt-in (STREAM_DRAFTS_ENABLED) and a sender opts in by implementing
+		// SendDraft. A draft keeps the position where the answer started, so it is off unless asked for.
 		draft, _ = sender.(draftSender)
 	}
 	return &streamSession{
@@ -246,6 +251,7 @@ func (d *Dispatcher) newStreamSession(ctx context.Context, chatID int64, sender 
 		interval:   interval,
 		maxRunes:   int(d.deps.Cfg.MaxMessageChunk),
 		start:      time.Now(),
+		turn:       d.chatTurn(chatID),
 	}
 }
 
@@ -420,6 +426,24 @@ func (s *streamSession) headOf(text string, reserve int) string {
 	return strings.TrimRight(string(head), " \t\n\r")
 }
 
+// removePlaceholder drops the message this session was growing, when the transport can delete it. A draft-only
+// session has nothing to delete: the draft expires on its own after the answer is delivered as a real message.
+func (s *streamSession) removePlaceholder(ctx context.Context, d *Dispatcher) {
+	if !s.posted || s.messageID == 0 {
+		return
+	}
+	remover, ok := d.deps.Replier.(interface {
+		RemoveMenu(context.Context, int64, int64) error
+	})
+	if !ok {
+		return
+	}
+	if err := remover.RemoveMenu(ctx, s.chatID, s.messageID); err != nil {
+		d.deps.Logger.Debug("the stream placeholder could not be removed",
+			"chat_id", s.chatID, "error", Sanitize(err, d.deps.Token))
+	}
+}
+
 // flood is about.
 func (s *streamSession) due() bool {
 	return time.Since(s.lastEdit) >= s.interval
@@ -529,6 +553,14 @@ func (s *streamSession) deliver(ctx context.Context, d *Dispatcher, full string)
 	}
 	if len(chunks) == 0 {
 		return nil // an empty answer is the error of and never reaches this call
+	}
+	if s.turn > 0 && d.chatTurn(s.chatID) > s.turn {
+		// A newer update was admitted while this answer was being produced: the next question is already in
+		// the chat, below the placeholder (or draft) this session created. Editing that placeholder would put
+		// the finished answer ABOVE the question it answers, so the answer leaves as a new message — it lands
+		// below the newer question, which is where a reader expects it — and the placeholder is dropped.
+		s.removePlaceholder(ctx, d)
+		return d.Send(ctx, s.chatID, full)
 	}
 	if !s.posted || len(s.messageIDs) == 0 {
 		// A draft-only session has no real message to edit, so the whole answer — chunked exactly like any

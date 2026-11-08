@@ -78,7 +78,7 @@ func (r *draftReplier) draftIDs() []string {
 // answer as drafts and receives the finished answer as exactly one ordinary message: no placeholder, no
 // editMessageText.
 func TestStreamPrivateChatUsesDrafts(t *testing.T) {
-	var cfg = streamConfig(t, map[string]string{"STREAM_EDIT_INTERVAL_MS": "250"})
+	var cfg = streamConfig(t, map[string]string{"STREAM_EDIT_INTERVAL_MS": "250", "STREAM_DRAFTS_ENABLED": "true"})
 	var m = &fakeStreamModel{steps: []streamStep{
 		{reasoning: "Думаю.", wait: 300 * time.Millisecond},
 		{content: "Раз.", wait: 300 * time.Millisecond},
@@ -132,6 +132,7 @@ func TestStreamDraftFinalAnswerIsCompleteAndChunked(t *testing.T) {
 	var cfg = streamConfig(t, map[string]string{
 		"MAX_MESSAGE_CHUNK":       "64",
 		"STREAM_EDIT_INTERVAL_MS": "250",
+		"STREAM_DRAFTS_ENABLED":   "true",
 	})
 	var first = strings.Repeat("символ ", 10)
 	var answer = first + strings.Repeat("слово ", 30) + "Конец."
@@ -180,7 +181,7 @@ func TestStreamDraftFinalAnswerIsCompleteAndChunked(t *testing.T) {
 // TestStreamGroupChatNeverDrafts — groups and channels have negative chat ids, where Bot API drafts do not
 // exist: the answer keeps the placeholder-and-edits path.
 func TestStreamGroupChatNeverDrafts(t *testing.T) {
-	var cfg = streamConfig(t, map[string]string{"STREAM_EDIT_INTERVAL_MS": "250"})
+	var cfg = streamConfig(t, map[string]string{"STREAM_EDIT_INTERVAL_MS": "250", "STREAM_DRAFTS_ENABLED": "true"})
 	var m = &fakeStreamModel{steps: []streamStep{
 		{content: "Раз.", wait: 300 * time.Millisecond},
 		{content: " Два.", wait: 300 * time.Millisecond},
@@ -213,7 +214,7 @@ func TestStreamGroupChatNeverDrafts(t *testing.T) {
 // TestStreamDraftFailureFallsBackToEdits — a Bot API that refuses drafts must lose nothing: the first
 // refusal posts a real placeholder and the rest of the stream continues as edits; drafts are not retried.
 func TestStreamDraftFailureFallsBackToEdits(t *testing.T) {
-	var cfg = streamConfig(t, map[string]string{"STREAM_EDIT_INTERVAL_MS": "250"})
+	var cfg = streamConfig(t, map[string]string{"STREAM_EDIT_INTERVAL_MS": "250", "STREAM_DRAFTS_ENABLED": "true"})
 	var m = &fakeStreamModel{steps: []streamStep{
 		{reasoning: "Думаю.", wait: 300 * time.Millisecond},
 		{content: "Раз.", wait: 300 * time.Millisecond},

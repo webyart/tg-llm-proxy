@@ -36,6 +36,7 @@ var Env = []string{
 	"STREAM_EDIT_INTERVAL_MS",
 	"STREAM_IDLE_TIMEOUT_SECONDS",
 	"STREAM_TOTAL_DEADLINE_SECONDS",
+	"STREAM_DRAFTS_ENABLED",
 	"WEBHOOK_ENABLED",
 	"WEBHOOK_PUBLIC_URL",
 	"WEBHOOK_SECRET_TOKEN",
@@ -134,6 +135,9 @@ const DefaultReminderTimezone = "UTC"
 // behind a row, not behind a deploy). The other three are the budgets of one streamed answer, and the numbers
 // live volume holds measured 1m56s. A sustained one-second cadence reached a real Telegram retry_after=120
 const DefaultStreaming = false
+
+// DefaultStreamDrafts keeps the edit path: see the field comment for the ordering caveat of draft previews.
+const DefaultStreamDrafts = false
 const DefaultStreamEditIntervalMS = int64(5000)
 const DefaultStreamIdleSeconds = int64(30)
 const DefaultStreamTotalSeconds = int64(900)
@@ -175,10 +179,15 @@ type Config struct {
 	// rewritten as the model writes; StreamEditIntervalMS is the cadence of those rewrites; StreamIdleSeconds
 	// is the pause between two SSE events past which the stream is considered dead; StreamTotalSeconds is the
 	// ceiling of one streamed answer. The semantics of TimeoutSeconds and ReplyDeadlineSeconds do NOT change
-	Streaming                 bool
-	StreamEditIntervalMS      int64
-	StreamIdleSeconds         int64
-	StreamTotalSeconds        int64
+	Streaming            bool
+	StreamEditIntervalMS int64
+	StreamIdleSeconds    int64
+	StreamTotalSeconds   int64
+	// StreamDrafts makes private-chat streaming use Bot API draft messages instead of editing a placeholder.
+	// Off by default: a draft keeps the position where the answer started, so with a second question already in
+	// the chat the finished answer can appear ABOVE that question. The edit path has the same property, which is
+	// why deliver() sends the final message as a new one when a newer update arrived during the stream.
+	StreamDrafts              bool
 	WebhookEnabled            bool
 	WebhookPublicURL          string
 	WebhookSecretToken        string
@@ -610,6 +619,10 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	var streamTotal, badStreamTotal = Num(raw, "STREAM_TOTAL_DEADLINE_SECONDS", DefaultStreamTotalSeconds, 10, 3600)
 	cfg.StreamTotalSeconds = streamTotal
 	problems = Push(problems, badStreamTotal)
+
+	var streamDrafts, badStreamDrafts = Flag(raw, "STREAM_DRAFTS_ENABLED", DefaultStreamDrafts)
+	cfg.StreamDrafts = streamDrafts
+	problems = Push(problems, badStreamDrafts)
 	if streamTotal <= streamIdle {
 		problems = Push(problems, "ENV STREAM_TOTAL_DEADLINE_SECONDS is not greater than STREAM_IDLE_TIMEOUT_SECONDS: a stall detector may not outlive the answer it watches ")
 	}

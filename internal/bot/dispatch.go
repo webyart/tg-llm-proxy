@@ -172,6 +172,11 @@ type Dispatcher struct {
 	// functions at scrape time, and the queue counters below are updated around the chat lock.
 	metrics atomic.Pointer[metrics.Registry]
 	queues  chatQueues
+	// turns counts admitted updates per chat. streamSession records the value when it starts and compares it at
+	// delivery: a larger value means a newer update (usually the next question) was admitted while this answer
+	// was being produced, and a placeholder or draft sitting above that update must not be edited into the final
+	// answer — deliver() sends the answer as a new message instead.
+	turns chatTurns
 }
 
 // logger. A missing model client or replier is a wiring mistake and stays visible as one.
@@ -329,6 +334,12 @@ func isNewTaskGoal(arg string) bool {
 }
 
 func (d *Dispatcher) Dispatch(ctx context.Context, ev Event) error {
+	// Only a real incoming message starts a new user turn. A menu callback continues the current answer (an
+	// approval of a network tool, for example) and must not make the stream finalize as a new message. The turn
+	// counter is what lets deliver() notice that the NEXT question arrived mid-answer.
+	if !ev.MenuCallback && ev.TelegramMessageID > 0 {
+		d.noteChatTurn(ev.ChatID)
+	}
 	cmd, _ := d.commandFor(ev)
 	if !cmd.AlwaysAllowed && !d.deps.Cfg.Allows(ev.UserID) {
 		d.countUpdate("denied")
@@ -571,6 +582,35 @@ func (d *Dispatcher) countSendFailure() {
 		reg.Counter("telegram_send_failures_total", "Telegram replies that returned an error.").Add(nil, 1)
 	}
 }
+
+// chatTurns numbers the admitted updates of each chat, so a streaming answer can tell whether a newer update
+// arrived while it was being produced.
+type chatTurns struct {
+	mu     sync.Mutex
+	number map[int64]int64
+}
+
+func (t *chatTurns) next(chatID int64) int64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.number == nil {
+		t.number = map[int64]int64{}
+	}
+	t.number[chatID]++
+	return t.number[chatID]
+}
+
+func (t *chatTurns) current(chatID int64) int64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.number[chatID]
+}
+
+// noteChatTurn marks one admitted update and returns its number.
+func (d *Dispatcher) noteChatTurn(chatID int64) int64 { return d.turns.next(chatID) }
+
+// chatTurn is the number of the newest admitted update of the chat.
+func (d *Dispatcher) chatTurn(chatID int64) int64 { return d.turns.current(chatID) }
 
 // chatQueues counts updates that passed admission and still wait for their chat lock.
 type chatQueues struct {

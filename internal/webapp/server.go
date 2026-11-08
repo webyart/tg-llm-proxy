@@ -136,6 +136,15 @@ type LinkLifecycle interface {
 	CreateLink(ctx context.Context, chatID int64, userID int64, rawURL string) (store.SavedLink, bool, error)
 }
 
+// ChatBackend is the Mini App conversation surface. Production wiring is *bot.Dispatcher (see
+// New); tests inject a fake with SetChatBackend. Every method takes the chat and user from the
+// authenticated session — the client never supplies a chat id.
+type ChatBackend interface {
+	AnswerForMiniApp(ctx context.Context, chatID, userID int64, text string, emit func(bot.MiniAppStreamEvent) error) error
+	ResetContextForMiniApp(ctx context.Context, chatID, userID int64) error
+	SkipPendingForMiniApp(ctx context.Context, chatID, userID int64, skip bool) (bool, error)
+}
+
 type storeTaskLifecycle struct {
 	db *sql.DB
 }
@@ -172,6 +181,7 @@ type App struct {
 	handler       http.Handler
 	taskLifecycle TaskLifecycle
 	linkLifecycle LinkLifecycle
+	chat          ChatBackend
 	rateLimits    *perUserRateLimiter
 }
 
@@ -184,6 +194,15 @@ func New(cfg config.Config, db *sql.DB, client model.Client, logger *slog.Logger
 	app.linkLifecycle = unavailableLinkLifecycle{}
 	app.auth = newAuthenticator(cfg.BotToken, cfg.Allows)
 	app.rateLimits = newPerUserRateLimiter()
+	// The Mini App conversation runs through a dispatcher of its own rather than a second copy of
+	// the ask pipeline. main.go builds its Telegram dispatcher separately and does not pass its
+	// Locks/Limit here, so the two clients keep independent per-minute budgets and per-chat locks;
+	// the shared database keeps message ordering and the assistant row still appears only after a
+	// successful Response. A nil model client (some standalone deployments) leaves chat disabled
+	// without breaking the read-only endpoints.
+	if client != nil {
+		app.chat = bot.New(bot.Deps{Cfg: cfg, DB: db, Model: client, Logger: logger, Token: cfg.BotToken})
+	}
 	app.handler = securityHeaders(limitInFlight(recoverPanics(logger, http.HandlerFunc(app.route)), maxInFlight))
 	return app
 }
@@ -194,6 +213,10 @@ type responseRecorder struct {
 	http.ResponseWriter
 	wrote bool
 }
+
+// Unwrap lets http.ResponseController reach the real connection from behind this wrapper. The SSE
+// handler needs it for Flush and for its per-response write deadline.
+func (r *responseRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 func (r *responseRecorder) WriteHeader(status int) {
 	r.wrote = true
@@ -242,6 +265,12 @@ func (a *App) SetLinkLifecycle(lifecycle LinkLifecycle) {
 		lifecycle = unavailableLinkLifecycle{}
 	}
 	a.linkLifecycle = lifecycle
+}
+
+// SetChatBackend replaces the Mini App conversation backend. Production uses the dispatcher built
+// in New; the tests inject a fake so the HTTP contract can be checked without a model.
+func (a *App) SetChatBackend(backend ChatBackend) {
+	a.chat = backend
 }
 
 func (a *App) Handler() http.Handler {
@@ -345,6 +374,18 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 			}
 		}()
 	}
+	if req.URL.Path == "/api/messages" {
+		a.chatMessage(w, req, current)
+		return
+	}
+	if req.URL.Path == "/api/context/reset" {
+		a.resetChatContext(w, req, current)
+		return
+	}
+	if req.URL.Path == "/api/pending/skip" {
+		a.skipPendingChat(w, req, current)
+		return
+	}
 	if req.URL.Path == "/api/documents/search" {
 		a.searchDocuments(w, req, current)
 		return
@@ -447,6 +488,8 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 		a.tasks(w, req, current)
 	case "/api/usage":
 		a.usage(w, req, current)
+	case "/api/whoami":
+		a.miniAppWhoami(w, req, current)
 	default:
 		writeError(w, http.StatusNotFound, "not_found", "API endpoint not found.")
 	}
@@ -705,6 +748,71 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 func writeError(w http.ResponseWriter, status int, code string, message string) {
 	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
+}
+
+// chatStreamWriteBudget is the write deadline of one SSE answer. It matches the reply budget the
+// dispatcher uses (TG_REPLY_DEADLINE_SECONDS around the answer, plus
+// STREAM_TOTAL_DEADLINE_SECONDS when a stream is possible, which the per-chat setting can turn on
+// even when the global STREAMING_ENABLED is off) with a small delivery grace.
+//
+// The server-level WriteTimeout stays 10s: every JSON endpoint must keep failing fast, and raising
+// the listener timeout for the whole Mini App would let any slow request park a connection for a
+// quarter of an hour. Instead the chat handler calls http.ResponseController.SetWriteDeadline for
+// its own response, so only the event stream gets the long budget and a client that stops reading
+// is still bounded. Read/ReadHeader timeouts are untouched.
+func chatStreamWriteBudget(cfg config.Config) time.Duration {
+	seconds := cfg.ReplyDeadlineSeconds + cfg.StreamTotalSeconds
+	if seconds <= 0 {
+		seconds = 60
+	}
+	return time.Duration(seconds)*time.Second + 5*time.Second
+}
+
+// sseResponse writes one text/event-stream response. Headers are sent lazily, on the first event:
+// that way an admission failure (denied, rate limited, bad text) can still use the ordinary JSON
+// error envelope with a real status code.
+type sseResponse struct {
+	w         http.ResponseWriter
+	control   *http.ResponseController
+	started   bool
+	errorSeen bool
+}
+
+func newSSEResponse(w http.ResponseWriter) *sseResponse {
+	return &sseResponse{w: w, control: http.NewResponseController(w)}
+}
+
+func (s *sseResponse) begin() {
+	if s.started {
+		return
+	}
+	header := s.w.Header()
+	header.Set("Content-Type", "text/event-stream; charset=utf-8")
+	header.Set("X-Accel-Buffering", "no")
+	header.Set("Cache-Control", "no-store")
+	s.w.WriteHeader(http.StatusOK)
+	s.started = true
+	_ = s.flush()
+}
+
+func (s *sseResponse) flush() error {
+	err := s.control.Flush()
+	if err == nil || errors.Is(err, http.ErrNotSupported) {
+		return nil
+	}
+	return err
+}
+
+func (s *sseResponse) send(name string, value any) error {
+	s.begin()
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", name, data); err != nil {
+		return err
+	}
+	return s.flush()
 }
 
 type Server struct {

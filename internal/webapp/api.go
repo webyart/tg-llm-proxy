@@ -81,6 +81,228 @@ func nextID(count int, limit int, id int64) *int64 {
 	return &id
 }
 
+// chatBodyError mirrors the strict-JSON envelope of the settings endpoints for the chat routes.
+func chatBodyError(w http.ResponseWriter, status int) {
+	if status == http.StatusUnsupportedMediaType {
+		writeError(w, status, "content_type", "Send a strict application/json body.")
+		return
+	}
+	if status == http.StatusRequestEntityTooLarge {
+		writeError(w, status, "body_too_large", "Request body is too large.")
+		return
+	}
+	writeError(w, http.StatusBadRequest, "invalid_json", "Invalid JSON or unknown fields.")
+}
+
+// chatErrorMessage — the text shown for a failure after admission. Secrets are stripped and the
+// message is bounded; the stream never carries a provider body or an authenticated URL.
+func (a *App) chatErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := err.Error()
+	for _, secret := range []string{a.cfg.BotToken, a.cfg.StrataKey, a.cfg.WebhookSecretToken} {
+		if secret = strings.TrimSpace(secret); secret != "" {
+			text = strings.ReplaceAll(text, secret, "***")
+		}
+	}
+	text, _ = boundedText(text, 300)
+	if strings.TrimSpace(text) == "" {
+		return "The chat request could not be completed. Retry."
+	}
+	return text
+}
+
+// writeChatFailure maps the shared admission sentinels of the bot package to HTTP statuses. It is
+// only used before the first SSE event; after that the failure travels as an `event: error`.
+func (a *App) writeChatFailure(w http.ResponseWriter, operation string, code string, err error) {
+	var limited *bot.MiniAppRateLimitError
+	switch {
+	case errors.Is(err, bot.ErrMiniAppDenied):
+		writeError(w, http.StatusForbidden, "chat_forbidden", "The chat is available only to allowlisted users.")
+	case errors.As(err, &limited):
+		seconds := int64((limited.RetryAfter + time.Second - 1) / time.Second)
+		if seconds < 1 {
+			seconds = 1
+		}
+		w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "Too many requests. Try again later.")
+	case errors.Is(err, bot.ErrMiniAppEmptyText), errors.Is(err, bot.ErrMiniAppTextTooLong):
+		writeError(w, http.StatusBadRequest, "invalid_text", "Send a nonempty message of at most 2000 runes.")
+	case errors.Is(err, bot.ErrMiniAppUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "chat_unavailable", "The chat is unavailable in this Mini App deployment.")
+	case errors.Is(err, context.Canceled):
+		return
+	default:
+		a.logger.Error("Mini App chat action failed", "operation", operation, "error", a.chatErrorMessage(err))
+		writeError(w, http.StatusInternalServerError, code, "The chat action could not be completed. Retry.")
+	}
+}
+
+// chatMessage — POST /api/messages. The client sends `{"text":"..."}` and receives an SSE stream:
+//
+//	event: stage  {"stage":"thinking"|"read_url"|"web_search"}
+//	event: delta  {"text":"fragment"}
+//	event: done   {"text":"final answer, already stored in history"}
+//	event: error  {"code":"chat_failed","message":"safe text"}
+//
+// Admission failures are ordinary JSON errors with their real status, because no SSE header has
+// been written yet at that point.
+func (a *App) chatMessage(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.Method != http.MethodPost {
+		methodAllowed(w, http.MethodPost)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Message sending does not accept query parameters.")
+		return
+	}
+	var input struct {
+		Text string `json:"text"`
+	}
+	if status, ok := decodeSettingsJSON(req, &input); !ok {
+		chatBodyError(w, status)
+		return
+	}
+	text := strings.TrimSpace(input.Text)
+	if text == "" || !utf8.ValidString(text) {
+		writeError(w, http.StatusBadRequest, "invalid_text", "Send a nonempty message of at most 2000 runes.")
+		return
+	}
+	if len([]rune(text)) > bot.MiniAppMaxTextRunes || strings.ContainsRune(text, '\x00') {
+		writeError(w, http.StatusBadRequest, "text_too_long", "The message must be at most 2000 runes.")
+		return
+	}
+	if a.chat == nil {
+		writeError(w, http.StatusServiceUnavailable, "chat_unavailable", "The chat is unavailable in this Mini App deployment.")
+		return
+	}
+
+	// http.Server.WriteTimeout is 10s, which is shorter than one answer. Only this response gets a
+	// longer write deadline (see chatStreamWriteBudget in server.go); the listener stays at 10s.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(chatStreamWriteBudget(a.cfg)))
+	stream := newSSEResponse(w)
+	err := a.chat.AnswerForMiniApp(req.Context(), current.ChatID, current.UserID, text, func(event bot.MiniAppStreamEvent) error {
+		switch {
+		case event.Error != "":
+			stream.errorSeen = true
+			return stream.send("error", map[string]string{"code": "chat_failed", "message": event.Error})
+		case event.Stage != "":
+			return stream.send("stage", map[string]string{"stage": event.Stage})
+		case event.Done:
+			return stream.send("done", map[string]string{"text": event.Delta})
+		case event.Delta != "":
+			return stream.send("delta", map[string]string{"text": event.Delta})
+		default:
+			return nil
+		}
+	})
+	if err == nil {
+		if !stream.started {
+			// A backend that produced no events must not answer with an empty 200.
+			_ = stream.send("done", map[string]string{"text": ""})
+		}
+		return
+	}
+	if errors.Is(err, context.Canceled) && req.Context().Err() != nil {
+		return
+	}
+	if !stream.started {
+		a.writeChatFailure(w, "messages", "chat_failed", err)
+		return
+	}
+	// The dispatcher emits its own sanitized error event. A backend that failed without emitting
+	// one still gets a fallback, and neither path reports the failure twice.
+	if !stream.errorSeen {
+		stream.errorSeen = true
+		_ = stream.send("error", map[string]string{"code": "chat_failed", "message": a.chatErrorMessage(err)})
+	}
+}
+
+// resetChatContext — POST /api/context/reset, the Mini App /reset. The message rows stay; the
+// model simply stops seeing them (store.ClearChat moves the context watermark).
+func (a *App) resetChatContext(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.Method != http.MethodPost {
+		methodAllowed(w, http.MethodPost)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Context reset does not accept query parameters.")
+		return
+	}
+	if status, ok := emptySettingsBody(req); !ok {
+		if status == http.StatusRequestEntityTooLarge {
+			writeError(w, status, "body_too_large", "Request body is too large.")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid_body", "Context reset accepts an empty request body.")
+		return
+	}
+	if a.chat == nil {
+		writeError(w, http.StatusServiceUnavailable, "chat_unavailable", "The chat is unavailable in this Mini App deployment.")
+		return
+	}
+	if err := a.chat.ResetContextForMiniApp(req.Context(), current.ChatID, current.UserID); err != nil {
+		a.writeChatFailure(w, "context.reset", "chat_mutation_failed", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// skipPendingChat — POST /api/pending/skip `{"skip":true|false}`, the Mini App /skip and /unskip.
+// `changed` tells the UI whether there was a pending question to suppress (or a suppression to
+// clear), so "nothing to skip" is not an error.
+func (a *App) skipPendingChat(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.Method != http.MethodPost {
+		methodAllowed(w, http.MethodPost)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Pending recovery controls do not accept query parameters.")
+		return
+	}
+	var input struct {
+		Skip *bool `json:"skip"`
+	}
+	if status, ok := decodeSettingsJSON(req, &input); !ok {
+		chatBodyError(w, status)
+		return
+	}
+	if input.Skip == nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "The skip field is required.")
+		return
+	}
+	if a.chat == nil {
+		writeError(w, http.StatusServiceUnavailable, "chat_unavailable", "The chat is unavailable in this Mini App deployment.")
+		return
+	}
+	changed, err := a.chat.SkipPendingForMiniApp(req.Context(), current.ChatID, current.UserID, *input.Skip)
+	if err != nil {
+		a.writeChatFailure(w, "pending.skip", "chat_mutation_failed", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "changed": changed})
+}
+
+// miniAppWhoami — GET /api/whoami, the Mini App /whoami. It answers from the authenticated
+// session only, so a client cannot ask about another chat.
+func (a *App) miniAppWhoami(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.Method != http.MethodGet {
+		methodAllowed(w, http.MethodGet)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_query", "whoami does not accept query parameters.")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user_id":         current.UserID,
+		"chat_id":         current.ChatID,
+		"allowed":         a.cfg.Allows(current.UserID),
+		"deny_by_default": a.cfg.DenyByDefault,
+	})
+}
+
 func (a *App) status(w http.ResponseWriter, req *http.Request, current scope) {
 	var response struct {
 		Messages           int64  `json:"messages"`

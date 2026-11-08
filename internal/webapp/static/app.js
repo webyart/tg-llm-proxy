@@ -8,6 +8,19 @@
       launchText: "Откройте Mini App через «Ещё → Mini App» в меню бота. Ссылка запуска и подпись Telegram проверяются до показа данных чата.",
       navLabel: "Разделы чата", tabStatus: "Статус", tabHistory: "История", tabDocuments: "Документы",
       tabLinks: "Ссылки", tabTasks: "Задачи", tabReminders: "Напоминания", tabUsage: "Использование", tabSettings: "Настройки", refresh: "Обновить", loadOlder: "Показать ранее", loading: "Загрузка…",
+      tabChat: "Чат", chatTitle: "Диалог с моделью", chatIntro: "Сообщение проходит тот же конвейер, что и в Telegram: история чата, документы, лимиты и дневная квота.",
+      chatPlaceholder: "Напишите сообщение…", chatInputAria: "Текст сообщения", chatSend: "Отправить",
+      chatPending: "Модель отвечает…", chatThinking: "Модель думает…", chatReadingURL: "Читаю страницу…", chatSearching: "Ищу информацию…",
+      chatMessageEmpty: "Введите текст сообщения.", chatMessageTooLong: "Сообщение должно быть не длиннее 2000 символов.",
+      chatReset: "Очистить контекст", chatResetConfirm: "Подтвердить", chatResetWarning: "Очистить контекст диалога? История останется, но модель перестанет её видеть.",
+      chatResetDone: "Контекст очищен.", chatResetFailed: "Не удалось очистить контекст.",
+      chatSkip: "Не восстанавливать", chatUnskip: "Возобновить восстановление", chatSkipDone: "Автовосстановление вопроса отключено.",
+      chatUnskipDone: "Автовосстановление снова разрешено.", chatSkipNoop: "Ожидающего вопроса нет: изменений не требуется.",
+      chatSkipFailed: "Не удалось изменить автовосстановление.", chatFailed: "Не удалось получить ответ. Попробуйте ещё раз.",
+      chatStreamUnsupported: "Браузер не поддерживает потоковый ответ.", chatNetworkFailed: "Поток ответа прервался. Проверьте соединение и повторите попытку.",
+      chatIdentity: "user_id: {user} · chat_id: {chat}", chatForbidden: "Чат в Mini App доступен только пользователям из allowlist.",
+      chatInvalidText: "Отправьте непустое сообщение длиной до 2000 символов.", chatTooLongError: "Сообщение должно быть не длиннее 2000 символов.",
+      chatUnavailable: "Чат недоступен в этом развёртывании Mini App.", chatMutationFailed: "Не удалось изменить состояние чата.",
       sessionExpired: "Сессия истекла. Откройте Mini App заново из Telegram.",
       launchRequired: "Запустите страницу через «Ещё → Mini App» в Telegram.",
       verifyLaunch: "Проверяем запуск из Telegram…", launchFailed: "Не удалось проверить запуск. Откройте Mini App заново из Telegram.",
@@ -117,6 +130,19 @@
       launchText: "Open this Mini App with More → Mini App in the bot menu. The launch link and Telegram signature are checked before any chat data is shown.",
       navLabel: "Chat sections", tabStatus: "Status", tabHistory: "History", tabDocuments: "Documents",
       tabLinks: "Links", tabTasks: "Tasks", tabReminders: "Reminders", tabUsage: "Usage", tabSettings: "Settings", refresh: "Refresh", loadOlder: "Load older", loading: "Loading…",
+      tabChat: "Chat", chatTitle: "Chat with the model", chatIntro: "Each message runs through the same pipeline as in Telegram: chat history, documents, quotas, and daily limits.",
+      chatPlaceholder: "Type a message…", chatInputAria: "Message text", chatSend: "Send",
+      chatPending: "The model is answering…", chatThinking: "The model is thinking…", chatReadingURL: "Reading the page…", chatSearching: "Searching…",
+      chatMessageEmpty: "Enter a message.", chatMessageTooLong: "The message must be at most 2000 characters.",
+      chatReset: "Reset context", chatResetConfirm: "Confirm", chatResetWarning: "Reset the conversation context? History stays, but the model will no longer see it.",
+      chatResetDone: "Context reset.", chatResetFailed: "The context could not be reset.",
+      chatSkip: "Skip recovery", chatUnskip: "Resume recovery", chatSkipDone: "Automatic recovery of the pending question is disabled.",
+      chatUnskipDone: "Automatic recovery is allowed again.", chatSkipNoop: "There is no pending question, nothing to change.",
+      chatSkipFailed: "Recovery could not be changed.", chatFailed: "The answer could not be received. Try again.",
+      chatStreamUnsupported: "This browser cannot stream the answer.", chatNetworkFailed: "The answer stream broke. Check your connection and try again.",
+      chatIdentity: "user_id: {user} · chat_id: {chat}", chatForbidden: "The Mini App chat is available only to allowlisted users.",
+      chatInvalidText: "Send a nonempty message of at most 2000 characters.", chatTooLongError: "The message must be at most 2000 characters.",
+      chatUnavailable: "The chat is unavailable in this Mini App deployment.", chatMutationFailed: "The chat state could not be changed.",
       sessionExpired: "Session expired. Reopen the Mini App from Telegram.",
       launchRequired: "This page needs a launch from More → Mini App in Telegram.",
       verifyLaunch: "Verifying Telegram launch…", launchFailed: "Launch verification failed. Reopen the Mini App from Telegram.",
@@ -234,7 +260,8 @@
     task_not_deletable: "taskNotDeletable", document_mutation_failed: "documentMutationFailed",
     link_mutation_failed: "linkMutationFailed", reminder_mutation_failed: "reminderMutationFailed",
     history_mutation_failed: "historyMutationFailed", invalid_url: "linkInvalidURL", invalid_reminder: "reminderInvalid",
-    invalid_goal: "taskGoalInvalid",
+    invalid_goal: "taskGoalInvalid", chat_forbidden: "chatForbidden", invalid_text: "chatInvalidText", text_too_long: "chatTooLongError",
+    chat_unavailable: "chatUnavailable", chat_failed: "chatFailed", chat_mutation_failed: "chatMutationFailed",
   };
 
   function initialLanguage() {
@@ -289,8 +316,11 @@
   let historySearch = { query: "", active: false, items: [], truncated: false };
   let linkSearch = { query: "", active: false, items: [] };
   let view = { tab: "status", data: null, items: [] };
+  let chat = { messages: [], pending: false, streaming: false, suppressed: false, stage: "", errorText: "", resetArmed: false, identity: null };
+  let chatNodes = { log: null, answer: null, status: null };
 
   function resetArmedStates() {
+    chat.resetArmed = false;
     clearHistoryArmed = false;
     clearDocumentsArmed = false;
     clearLinksArmed = false;
@@ -1486,12 +1516,303 @@
     ui.content.appendChild(limits);
   }
 
+  function chatStageText(stage) {
+    if (stage === "read_url") return t("chatReadingURL");
+    if (stage === "web_search") return t("chatSearching");
+    if (stage === "thinking") return t("chatThinking");
+    return t("chatPending");
+  }
+
+  function chatMessageNode(message) {
+    const wrapper = element("article", message.role === "user" ? "chat-message chat-message-user" : "chat-message chat-message-assistant");
+    wrapper.appendChild(element("span", message.role === "assistant" ? "badge badge-success" : "badge", message.role === "assistant" ? t("assistant") : t("you")));
+    const body = element("div", "chat-text content", message.text);
+    wrapper.appendChild(body);
+    return { wrapper, body };
+  }
+
+  function scrollChat() {
+    if (!chatNodes.log) return;
+    chatNodes.log.scrollTop = chatNodes.log.scrollHeight;
+  }
+
+  function updateChatLive(answer) {
+    if (chatNodes.answer) chatNodes.answer.textContent = answer.text || "…";
+    if (chatNodes.status && chat.streaming) {
+      chatNodes.status.replaceChildren(element("span", "chat-pending", chatStageText(chat.stage)));
+    }
+    scrollChat();
+  }
+
+  function renderChat() {
+    ui.content.replaceChildren();
+    const section = element("section", "chat-panel");
+    section.appendChild(element("h3", "", t("chatTitle")));
+    section.appendChild(element("p", "meta", t("chatIntro")));
+    if (chat.identity) section.appendChild(element("p", "meta", t("chatIdentity", { user: chat.identity.user_id, chat: chat.identity.chat_id })));
+
+    const log = element("div", "chat-log");
+    log.setAttribute("role", "log");
+    log.setAttribute("aria-live", "polite");
+    log.setAttribute("aria-label", t("chatTitle"));
+    chatNodes = { log, answer: null, status: null };
+    if (!chat.messages.length) log.appendChild(element("p", "empty", t("emptyHistory")));
+    for (const message of chat.messages) {
+      const node = chatMessageNode(message);
+      if (chat.streaming && message === chat.messages[chat.messages.length - 1] && message.role === "assistant") {
+        node.wrapper.classList.add("chat-message-live");
+        chatNodes.answer = node.body;
+        if (!message.text) node.body.textContent = "…";
+      }
+      log.appendChild(node.wrapper);
+    }
+    section.appendChild(log);
+
+    const status = element("div", "chat-status");
+    status.setAttribute("role", "status");
+    if (chat.streaming) status.appendChild(element("span", "chat-pending", chatStageText(chat.stage)));
+    else if (chat.pending) status.appendChild(element("span", "badge", t("awaitingAnswer")));
+    if (chat.errorText) status.appendChild(element("p", "chat-error", chat.errorText));
+    chatNodes.status = status;
+    section.appendChild(status);
+
+    const form = element("form", "chat-form");
+    form.noValidate = true;
+    const input = element("textarea", "chat-input");
+    input.id = "chat-input";
+    input.rows = 2;
+    input.maxLength = 2000;
+    input.placeholder = t("chatPlaceholder");
+    input.setAttribute("aria-label", t("chatInputAria"));
+    input.disabled = chat.streaming;
+    const counter = element("div", "counter", "0 / 2000");
+    input.addEventListener("input", () => {
+      counter.textContent = `${Array.from(input.value).length} / 2000`;
+      input.setAttribute("aria-invalid", "false");
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        sendChat(input.value, input);
+      }
+    });
+    form.appendChild(formField(t("chatInputAria"), input, true));
+    const formActions = element("div", "form-actions");
+    const send = submitButton(t("chatSend"));
+    send.disabled = chat.streaming;
+    formActions.appendChild(send);
+    form.appendChild(formActions);
+    form.appendChild(counter);
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      sendChat(input.value, input);
+    });
+    section.appendChild(form);
+
+    if (chat.resetArmed) {
+      section.appendChild(inlineConfirmation(t("chatResetWarning"), t("chatResetConfirm"), performChatReset, () => {
+        chat.resetArmed = false;
+        renderChat();
+      }));
+    } else {
+      const controls = element("div", "chat-actions");
+      const reset = settingsButton(t("chatReset"), () => {
+        chat.resetArmed = true;
+        renderChat();
+      }, true);
+      reset.disabled = chat.streaming;
+      controls.appendChild(reset);
+      const skip = settingsButton(chat.suppressed ? t("chatUnskip") : t("chatSkip"), toggleChatSkip, true);
+      skip.disabled = chat.streaming || (!chat.pending && !chat.suppressed);
+      controls.appendChild(skip);
+      section.appendChild(controls);
+    }
+    ui.content.appendChild(section);
+    syncBusyState();
+    // syncBusyState may restore a previous disabled state after a global loading phase.
+    input.disabled = chat.streaming;
+    send.disabled = chat.streaming;
+    scrollChat();
+  }
+
+  function parseChatEvent(block) {
+    let name = "message";
+    const data = [];
+    for (const line of block.split("\n")) {
+      if (line.startsWith("event:")) name = line.slice(6).trim();
+      else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+    }
+    if (!data.length) return null;
+    try { return { name, data: JSON.parse(data.join("\n")) }; } catch (_) { return null; }
+  }
+
+  function finishChatError(message, pending) {
+    chat.streaming = false;
+    chat.stage = "";
+    chat.pending = pending;
+    chat.errorText = message;
+    const last = chat.messages[chat.messages.length - 1];
+    if (last && last.role === "assistant" && !last.text) chat.messages.pop();
+    showError(message);
+    if (activeTab === "chat") renderChat();
+  }
+
+  async function streamChat(text, answer) {
+    const headers = new Headers({ "Content-Type": "application/json", "Authorization": `Bearer ${session}` });
+    let response;
+    try {
+      response = await fetch(miniAppBase + "/api/messages", { method: "POST", headers, body: JSON.stringify({ text }), cache: "no-store" });
+    } catch (_) {
+      finishChatError(t("networkError"), false);
+      return;
+    }
+    if (!response.ok) {
+      let body = null;
+      try { body = await response.json(); } catch (_) { body = null; }
+      if (response.status === 401) {
+        expire(t("sessionExpired"));
+        return;
+      }
+      const code = body && body.error && body.error.code;
+      finishChatError(responseError(code, response.status), false);
+      return;
+    }
+    if (!response.body || typeof response.body.getReader !== "function") {
+      finishChatError(t("chatStreamUnsupported"), true);
+      return;
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let doneSeen = false;
+    try {
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        let boundary = buffer.indexOf("\n\n");
+        while (boundary >= 0) {
+          const event = parseChatEvent(buffer.slice(0, boundary));
+          buffer = buffer.slice(boundary + 2);
+          if (event) {
+            if (event.name === "delta") {
+              answer.text += typeof event.data.text === "string" ? event.data.text : "";
+              updateChatLive(answer);
+            } else if (event.name === "stage") {
+              chat.stage = typeof event.data.stage === "string" ? event.data.stage : "";
+              updateChatLive(answer);
+            } else if (event.name === "done") {
+              if (typeof event.data.text === "string") answer.text = event.data.text;
+              doneSeen = true;
+            } else if (event.name === "error") {
+              finishChatError(typeof event.data.message === "string" ? event.data.message : t("chatFailed"), true);
+              return;
+            }
+          }
+          boundary = buffer.indexOf("\n\n");
+        }
+      }
+    } catch (_) {
+      finishChatError(t("chatNetworkFailed"), true);
+      return;
+    }
+    if (!doneSeen) {
+      finishChatError(t("chatNetworkFailed"), true);
+      return;
+    }
+    chat.streaming = false;
+    chat.pending = false;
+    chat.stage = "";
+    chat.errorText = "";
+    if (activeTab === "chat") renderChat();
+  }
+
+  async function sendChat(value, control) {
+    if (chat.streaming || !session) return;
+    const text = String(value || "").trim();
+    const length = Array.from(text).length;
+    if (!length) {
+      invalidField(control, t("chatMessageEmpty"));
+      return;
+    }
+    if (length > 2000 || text.includes("\0")) {
+      invalidField(control, t("chatMessageTooLong"));
+      return;
+    }
+    control.setAttribute("aria-invalid", "false");
+    showError("");
+    showNotice("");
+    chat.errorText = "";
+    chat.stage = "";
+    chat.pending = true;
+    chat.streaming = true;
+    chat.messages.push({ role: "user", text });
+    const answer = { role: "assistant", text: "" };
+    chat.messages.push(answer);
+    renderChat();
+    await streamChat(text, answer);
+  }
+
+  async function performChatReset() {
+    if (loading || !session || chat.streaming) return;
+    setBusy(true);
+    showError("");
+    showNotice("");
+    let reset = false;
+    try {
+      await api("/api/context/reset", { method: "POST" });
+      reset = true;
+    } catch (error) {
+      showError(error.message || t("chatResetFailed"));
+    } finally {
+      setBusy(false);
+    }
+    if (!reset) return;
+    chat.resetArmed = false;
+    chat.messages = [];
+    chat.pending = false;
+    chat.streaming = false;
+    chat.stage = "";
+    chat.errorText = "";
+    chat.suppressed = false;
+    await load();
+    showNotice(t("chatResetDone"));
+  }
+
+  async function toggleChatSkip() {
+    if (loading || !session || chat.streaming) return;
+    const skip = !chat.suppressed;
+    setBusy(true);
+    showError("");
+    let data = null;
+    try {
+      data = await api("/api/pending/skip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skip }),
+      });
+    } catch (error) {
+      showError(error.message || t("chatSkipFailed"));
+    } finally {
+      setBusy(false);
+    }
+    if (!data) return;
+    if (data.changed) {
+      chat.suppressed = skip;
+      showNotice(skip ? t("chatSkipDone") : t("chatUnskipDone"));
+    } else {
+      showNotice(t("chatSkipNoop"));
+    }
+    await load();
+  }
+
   function renderView() {
     if (view.tab !== activeTab) return;
     if (activeTab === "status" && view.data) renderStatus(view.data);
     else if (activeTab === "settings" && view.data) renderSettings(view.data);
     else if (activeTab === "usage" && view.data) renderUsage(view.data);
     else if (activeTab === "reminders" && view.data) renderReminders(view.data);
+    else if (activeTab === "chat") renderChat();
     else if (!["status", "settings", "usage", "reminders"].includes(activeTab)) renderItems(activeTab, view.items);
   }
 
@@ -1542,6 +1863,26 @@
       } else if (activeTab === "reminders") {
         view = { tab: activeTab, data: await api("/api/reminders"), items: [] };
         renderReminders(view.data);
+        nextBefore = null;
+      } else if (activeTab === "chat") {
+        if (chat.streaming) {
+          // A switch of tabs must not throw away the answer that is arriving right now.
+          renderChat();
+        } else {
+          const status = await api("/api/status");
+          const history = await api("/api/history?limit=20");
+          const identity = await api("/api/whoami");
+          chat.pending = Boolean(status.pending);
+          chat.suppressed = Boolean(status.recovery_suppressed);
+          chat.identity = identity;
+          chat.stage = "";
+          chat.errorText = "";
+          chat.messages = (Array.isArray(history.items) ? history.items : [])
+            .filter((item) => item.role === "user" || item.role === "assistant")
+            .reverse()
+            .map((item) => ({ role: item.role, text: item.content }));
+          renderChat();
+        }
         nextBefore = null;
       } else {
         if (!append) view = { tab: activeTab, data: null, items: [] };

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -46,6 +47,7 @@ type ModelLister interface {
 // goroutine whose error only arrives after the bot has already started polling.
 type Server struct {
 	srv      *http.Server
+	host     string
 	port     int64
 	listener net.Listener
 	mux      *http.ServeMux
@@ -60,8 +62,19 @@ type Server struct {
 
 // bind, so the caller learns about a taken port at the moment it is about to claim the endpoint works.
 func New(port int64) *Server {
+	return NewOn("127.0.0.1", port)
+}
+
+// NewOn — the same listener on an explicit host. A container passes 0.0.0.0 so the published host port and the
+// edge gateway's Prometheus can reach /readyz and /metrics; the compose publish rule keeps the host side on
+// 127.0.0.1, so the address is still not reachable from outside the machine. Any other value is the caller's
+// mistake and fails at Listen with the address in the error.
+func NewOn(host string, port int64) *Server {
+	if host == "" {
+		host = "127.0.0.1"
+	}
 	mux := http.NewServeMux()
-	s := &Server{port: port, mux: mux, now: time.Now}
+	s := &Server{host: host, port: port, mux: mux, now: time.Now}
 	mux.HandleFunc(Path, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -185,7 +198,7 @@ func (s *Server) Listen() error {
 	if s.listener != nil {
 		return nil
 	}
-	var address = fmt.Sprintf("127.0.0.1:%d", s.port)
+	var address = net.JoinHostPort(s.host, strconv.FormatInt(s.port, 10))
 	var listener, err = net.Listen("tcp", address)
 	if err != nil {
 		return fmt.Errorf("health: HEALTH_PORT %d cannot be listened on (%w) —: the port of the table is taken by another process", s.port, err)

@@ -44,6 +44,11 @@ services:
       # inside kept listening on the .env value — `environment` wins over `env_file` in compose, so the two
       # sides cannot drift apart (§12 reliability).
       HEALTH_PORT: ${HEALTH_PORT:-8080}
+      # The listener binds all interfaces of the CONTAINER so the published host port and the edge gateway's
+      # Prometheus (host.docker.internal:${HEALTH_PORT}) can reach /healthz, /readyz and /metrics. The publish
+      # rule below is 127.0.0.1 on the host, so nothing on the machine's network gains access. Outside a
+      # container the default stays loopback (internal/config DefaultHealthListenHost).
+      HEALTH_LISTEN_HOST: 0.0.0.0
       WEBHOOK_LISTEN_HOST: ${WEBHOOK_LISTEN_HOST_CONTAINER:-0.0.0.0}
       WEBHOOK_PORT: ${WEBHOOK_PORT:-8082}
       MINIAPP_LISTEN_HOST: ${MINIAPP_LISTEN_HOST_CONTAINER:-0.0.0.0}

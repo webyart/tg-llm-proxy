@@ -89,6 +89,7 @@ func startupSummary(logger *slog.Logger, cfg config.Config) {
 		"webhook", cfg.WebhookEnabled,
 		"db_path", cfg.DBPath,
 		"health_port", cfg.HealthPort,
+		"health_listen_host", cfg.HealthListenHost,
 		"allowed_users", len(cfg.UserIDs),
 		"admin_users", len(cfg.AdminIDs),
 		"deny_by_default", cfg.DenyByDefault,
@@ -185,7 +186,7 @@ func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, l
 
 	// The health listener is bound before the bot starts: the compose HEALTHCHECK probes it and a taken
 	// port must fail the start, not sit next to a healthy-looking /healthz.
-	var healthServer = health.New(cfg.HealthPort)
+	var healthServer = health.NewOn(cfg.HealthListenHost, cfg.HealthPort)
 	healthServer.RegisterReadiness(db, client)
 	healthServer.Handle(health.MetricsPath, metrics.Handler(registry))
 	if listenErr := healthServer.Listen(); listenErr != nil {

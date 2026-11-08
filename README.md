@@ -97,7 +97,7 @@ docker compose logs -f bot
 
 ## Конфигурация
 
-Полный список из 57 ENV-строк и их значения по умолчанию находится в `.env.example`; строки `STREAMING_*`, `WEBHOOK_*` и `MINIAPP_*` описаны в одноимённых разделах ниже. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
+Полный список из 58 ENV-строк и их значения по умолчанию находится в `.env.example`; строки `STREAMING_*`, `WEBHOOK_*`, `MINIAPP_*` и `HEALTH_*` описаны в одноимённых разделах ниже. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
 
 ### Основные параметры
 
@@ -535,7 +535,7 @@ docker compose up -d
 
 ## Документы
 
-- `.env.example` — все настройки (57) с комментариями.
+- `.env.example` — все настройки (58) с комментариями.
 - `RELEASE_NOTES.md` — состав release candidate и результаты проверок.
 - `docs/adr/` — Architecture Decision Records: SQLite/один writer, long polling, fail-fast конфигурация, FTS5-индексы, Mini App только для приватных чатов, политика рестарта.
 - `deploy/README.md` — статус исторических конфигураций gateway в `deploy/` (не часть текущего Compose).

@@ -72,6 +72,7 @@ var Env = []string{
 	"MAX_MESSAGE_CHUNK",
 	"PARSE_MODE",
 	"HEALTH_PORT",
+	"HEALTH_LISTEN_HOST",
 	"LOG_LEVEL",
 }
 
@@ -121,6 +122,11 @@ const DefaultConcurrent = int64(2)
 const DefaultMaxChunk = int64(3500)
 const DefaultParseMode = "MarkdownV2"
 const DefaultHealthPort = int64(8080)
+
+// DefaultHealthListenHost — the health/metrics listener is loopback by default. A container sets 0.0.0.0 so the
+// published host port and the Prometheus of the edge gateway (through host.docker.internal) can reach it; the
+// compose publish rule keeps the host side on 127.0.0.1, so nothing becomes externally reachable either way.
+const DefaultHealthListenHost = "127.0.0.1"
 const DefaultLogLevel = "info"
 const DefaultReminderTimezone = "UTC"
 
@@ -211,6 +217,7 @@ type Config struct {
 	MaxMessageChunk           int64
 	ParseMode                 string
 	HealthPort                int64
+	HealthListenHost          string
 	LogLevel                  string
 }
 
@@ -711,6 +718,18 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	var port, badPort = Num(raw, "HEALTH_PORT", DefaultHealthPort, 1, PortMax)
 	cfg.HealthPort = port
 	problems = Push(problems, badPort)
+
+	var listenHost = strings.TrimSpace(raw["HEALTH_LISTEN_HOST"])
+	if listenHost == "" {
+		listenHost = DefaultHealthListenHost
+	}
+	switch listenHost {
+	case "127.0.0.1", "::1", "0.0.0.0":
+		cfg.HealthListenHost = listenHost
+	default:
+		cfg.HealthListenHost = DefaultHealthListenHost
+		problems = Push(problems, "ENV HEALTH_LISTEN_HOST must be 127.0.0.1, ::1 (loopback) or 0.0.0.0 (all interfaces of the container): the listener would otherwise bind an address nobody documented ")
+	}
 
 	var level, badLevel = Level(raw)
 	cfg.LogLevel = level

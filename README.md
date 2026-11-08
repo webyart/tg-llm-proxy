@@ -129,8 +129,8 @@ docker compose logs -f bot
 | `SPEECH_MAX_SECONDS` | 300 | лимит voice/audio/video note |
 | `DB_PATH` | `./data/bot.db` | host SQLite; в compose — `/data/bot.db` |
 | `TELEGRAM_ALLOWED_USERS` | пусто = deny by default | список user id через запятую |
-| `CONTEXT_MESSAGES` | 20 | размер окна истории |
-| `MAX_CONTEXT_CHARS` | 8000 | бюджет текста истории |
+| `CONTEXT_MESSAGES` | 20 | строк истории, из которых собираются ходы окна |
+| `MAX_CONTEXT_CHARS` | 8000 | бюджет текста истории: ход входит целиком или не входит; вопрос нового хода сохраняется всегда |
 | `MAX_INPUT_CHARS` | 4000 | ограничение входного текста |
 | `RAG_MAX_DOCUMENTS` | 20 | документов на чат; замена по имени не увеличивает usage |
 | `RAG_RESULT_LIMIT` | 3 | максимум фрагментов в model request |

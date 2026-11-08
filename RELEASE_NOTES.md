@@ -1,3 +1,18 @@
+# tg-llm-proxy v1.46.0
+
+## Bot monitoring in the edge gateway
+
+- Prometheus now scrapes the bot (`bot:8081/metrics`) from a job of its own. It joins the bot's docker network because the health port is published on host loopback only, so `host.docker.internal:8081` is not reachable from a container.
+- Six alert rules: `BotDown` (critical, 2m), `BotModelErrorRate` (>20% non-success over 5m), `BotModelLatencyP95` (>30s over 10m), `BotQueueBacklog` (sum `queue_depth` >10), `BotDatabaseGrowth` (>50 MiB/hour), `BotSchemaVersionChanged` (info). They come with promtool unit tests.
+- A provisioned «Bot overview» Grafana dashboard shows availability, requests by outcome, error share, p95 latency, retries, active handlers/model requests, queue depth, updates by result, tool calls, Telegram send failures, database size and schema version.
+- Verified live: the `bot` target is `up=1`, all six rules load in Prometheus, and the dashboard is provisioned. The changes live in the separate `edge-gateway` repository (`baefd61`).
+
+## Turn-aware context window
+
+- `BuildMessages` groups history rows into turns (a user row opens a turn, the assistant rows after it belong to it) and includes a turn whole or drops it whole instead of cutting per message. A window can no longer start with an assistant message, and an answer is never sent to the model without its question.
+- The newest turn is the exception: its question always survives (cut to the remaining budget when needed), while its assistant rows are cut or dropped first. The persona remains the first system message and is counted against the budget.
+- Eight table-driven tests cover the cut-in-the-middle turn, a one-rune budget, orphan assistant prefixes, multiple assistant rows per tool-loop turn, persona accounting and unchanged `MAX_INPUT_CHARS` truncation.
+
 # tg-llm-proxy v1.45.0
 
 ## Mini App: the section menu is a dropdown

@@ -15,12 +15,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"bot/internal/config"
+	"bot/internal/metrics"
 	"bot/internal/model"
 	"bot/internal/ratelimit"
 	"bot/internal/store"
@@ -166,6 +168,10 @@ type Dispatcher struct {
 	confirmationsOnce sync.Once
 	approvalScopes    *networkApprovalScopeSet
 	approvalOnce      sync.Once
+	// metrics is registered once by main after NewTelegram; the atomics above are read by gauge
+	// functions at scrape time, and the queue counters below are updated around the chat lock.
+	metrics atomic.Pointer[metrics.Registry]
+	queues  chatQueues
 }
 
 // logger. A missing model client or replier is a wiring mistake and stays visible as one.
@@ -325,13 +331,16 @@ func isNewTaskGoal(arg string) bool {
 func (d *Dispatcher) Dispatch(ctx context.Context, ev Event) error {
 	cmd, _ := d.commandFor(ev)
 	if !cmd.AlwaysAllowed && !d.deps.Cfg.Allows(ev.UserID) {
+		d.countUpdate("denied")
 		return d.dispatchDenied(ctx, ev, cmd)
 	}
 	if cmd.AlwaysAllowed && !d.bootstrapReplies.Allow(ratelimit.CoalesceKey{UserID: ev.UserID, ChatID: ev.ChatID, Action: cmd.Name}) {
+		d.countUpdate("suppressed")
 		d.persistOffset(ctx, ev.UpdateID)
 		return nil
 	}
 	if isPhotoAlbum(ev) {
+		d.countUpdate("album")
 		d.collectAlbum(ctx, ev)
 		return nil
 	}
@@ -352,20 +361,44 @@ func (d *Dispatcher) dispatchDenied(ctx context.Context, ev Event, cmd Command) 
 	return err
 }
 
-func (d *Dispatcher) runBounded(ctx context.Context, ev Event, acknowledge bool) error {
+func (d *Dispatcher) runBounded(ctx context.Context, ev Event, acknowledge bool) (err error) {
+	var result = "ok"
+	defer func() {
+		if err != nil && result == "ok" {
+			result = "error"
+		}
+		d.countUpdate(result)
+	}()
 	select {
 	case d.admission <- struct{}{}:
 		defer func() { <-d.admission }()
 	default:
+		result = "overloaded"
 		return d.dispatchOverloaded(ctx, ev)
 	}
+	// The update is counted as queued until it owns the chat lock: that is the number an operator sees in
+	// queue_depth{chat_id}, and it drains one step before the handler starts.
+	var tracked = d.metrics.Load() != nil
+	var started bool
+	if tracked {
+		d.setQueueDepth(ev.ChatID, d.queues.add(ev.ChatID, 1))
+	}
+	defer func() {
+		if tracked && !started {
+			d.setQueueDepth(ev.ChatID, d.queues.add(ev.ChatID, -1))
+		}
+	}()
 	queueCtx, cancel := context.WithTimeout(ctx, d.chatQueueTimeout)
 	defer cancel()
 	// `inChat` separates "never got the chat lock" (a busy chat) from an error the handler itself
 	// returned after the deadline. Only the first one may be answered as a busy chat.
 	var inChat bool
-	err := d.deps.Locks.WithChatBounded(queueCtx, ev.ChatID, perChatQueueCapacity, func() error {
+	err = d.deps.Locks.WithChatBounded(queueCtx, ev.ChatID, perChatQueueCapacity, func() error {
 		inChat = true
+		if tracked && !started {
+			started = true
+			d.setQueueDepth(ev.ChatID, d.queues.add(ev.ChatID, -1))
+		}
 		select {
 		case d.execution <- struct{}{}:
 			defer func() { <-d.execution }()
@@ -381,8 +414,10 @@ func (d *Dispatcher) runBounded(ctx context.Context, ev Event, acknowledge bool)
 	}
 	switch {
 	case errors.Is(err, ratelimit.ErrChatQueueFull), errors.Is(err, errExecutionSlotBusy):
+		result = "overloaded"
 		return d.dispatchOverloaded(ctx, ev)
 	case errors.Is(err, context.DeadlineExceeded) && !inChat:
+		result = "chat_busy"
 		return d.dispatchChatBusy(ctx, ev)
 	}
 	return err
@@ -460,7 +495,11 @@ func (d *Dispatcher) persistOffset(ctx context.Context, updateID int64) {
 }
 
 func (d *Dispatcher) reply(ctx context.Context, chatID int64, text string) error {
-	return d.Send(ctx, chatID, text)
+	var err = d.Send(ctx, chatID, text)
+	if err != nil {
+		d.countSendFailure()
+	}
+	return err
 }
 
 func (d *Dispatcher) logEvent(ctx context.Context, userID int64, kind string, detail string) {
@@ -487,3 +526,150 @@ func Sanitize(err error, token string) string {
 }
 
 func (d *Dispatcher) Registry() []Command { return d.commands }
+
+// SetMetrics registers the dispatcher metric families and wraps the model client, so a requested tool
+// call is counted where the answer is decoded. Call it once, after NewTelegram installed the real
+// replier and before Start; a second call keeps the first registry.
+func (d *Dispatcher) SetMetrics(reg *metrics.Registry) {
+	if reg == nil || !d.metrics.CompareAndSwap(nil, reg) {
+		return
+	}
+	reg.GaugeFunc("active_handlers", "Updates inside the handler chain right now.", func() float64 {
+		return float64(d.activeHandlers.Load())
+	})
+	reg.GaugeFunc("active_model_requests", "Model requests in flight right now.", func() float64 {
+		return float64(d.activeModelRequests.Load())
+	})
+	// Register the families eagerly so a fresh /metrics lists them at zero before the first update.
+	reg.Counter("updates_total", "Dispatched updates by result.")
+	reg.Counter("tool_calls_total", "Tool calls requested by the model, by tool name.")
+	reg.Counter("telegram_send_failures_total", "Telegram replies that returned an error.")
+	reg.Gauge("queue_depth", "Updates waiting for the per-chat lock, by chat.")
+	d.deps.Model = wrapModelMetrics(d.deps.Model, reg)
+}
+
+// countUpdate records one handled update; the result values are ok, error, denied, suppressed, album,
+// overloaded and chat_busy.
+func (d *Dispatcher) countUpdate(result string) {
+	if reg := d.metrics.Load(); reg != nil {
+		reg.Counter("updates_total", "Dispatched updates by result.").
+			Add(map[string]string{"result": result}, 1)
+	}
+}
+
+func (d *Dispatcher) setQueueDepth(chatID int64, depth int) {
+	if reg := d.metrics.Load(); reg != nil {
+		reg.Gauge("queue_depth", "Updates waiting for the per-chat lock, by chat.").
+			Set(map[string]string{"chat_id": strconv.FormatInt(chatID, 10)}, float64(depth))
+	}
+}
+
+// countSendFailure records a reply that the dispatcher itself sent and Telegram refused. Sends made by
+// handlers through d.Send bypass this helper; covering them would need a hook outside dispatch.go.
+func (d *Dispatcher) countSendFailure() {
+	if reg := d.metrics.Load(); reg != nil {
+		reg.Counter("telegram_send_failures_total", "Telegram replies that returned an error.").Add(nil, 1)
+	}
+}
+
+// chatQueues counts updates that passed admission and still wait for their chat lock.
+type chatQueues struct {
+	mu    sync.Mutex
+	depth map[int64]int
+}
+
+func (q *chatQueues) add(chatID int64, delta int) int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.depth == nil {
+		q.depth = map[int64]int{}
+	}
+	q.depth[chatID] += delta
+	var depth = q.depth[chatID]
+	if depth <= 0 {
+		delete(q.depth, chatID)
+		return 0
+	}
+	return depth
+}
+
+// metricsModel counts the tool calls of a successful answer. It implements Stream only when the wrapped
+// client does, so the Streamer assertion of the tool loop keeps its old answer.
+type metricsModel struct {
+	inner     model.Client
+	toolCalls *metrics.Counter
+}
+
+func (m *metricsModel) Complete(ctx context.Context, req model.Request) (model.Response, error) {
+	var response, err = m.inner.Complete(ctx, req)
+	if err == nil {
+		m.observe(response.ToolCalls)
+	}
+	return response, err
+}
+
+func (m *metricsModel) Models(ctx context.Context) ([]string, error) { return m.inner.Models(ctx) }
+
+func (m *metricsModel) observe(calls []model.ToolCall) {
+	for _, call := range calls {
+		m.toolCalls.Add(map[string]string{"tool": call.Name}, 1)
+	}
+}
+
+type metricsStreamModel struct {
+	*metricsModel
+	streamer model.Streamer
+}
+
+func (m *metricsStreamModel) Stream(ctx context.Context, req model.Request, h model.StreamHandler) (model.Response, error) {
+	var response, err = m.streamer.Stream(ctx, req, h)
+	if err == nil {
+		m.observe(response.ToolCalls)
+	}
+	return response, err
+}
+
+type metricsTranscribeModel struct {
+	*metricsModel
+	transcriber model.Transcriber
+}
+
+func (m *metricsTranscribeModel) Transcribe(ctx context.Context, req model.TranscriptionRequest) (string, error) {
+	return m.transcriber.Transcribe(ctx, req)
+}
+
+type metricsAllModel struct {
+	*metricsStreamModel
+	transcriber model.Transcriber
+}
+
+func (m *metricsAllModel) Transcribe(ctx context.Context, req model.TranscriptionRequest) (string, error) {
+	return m.transcriber.Transcribe(ctx, req)
+}
+
+// wrapModelMetrics keeps the optional interfaces of the client: the tool loop asks for Streamer and the
+// voice handler asks for Transcriber, and a wrapper that always answered both assertions would send a
+// client that supports neither down a path that fails at the call.
+func wrapModelMetrics(client model.Client, reg *metrics.Registry) model.Client {
+	if client == nil || reg == nil {
+		return client
+	}
+	var wrapped = &metricsModel{
+		inner:     client,
+		toolCalls: reg.Counter("tool_calls_total", "Tool calls requested by the model, by tool name."),
+	}
+	var streamer, isStreamer = client.(model.Streamer)
+	var transcriber, isTranscriber = client.(model.Transcriber)
+	switch {
+	case isStreamer && isTranscriber:
+		return &metricsAllModel{
+			metricsStreamModel: &metricsStreamModel{metricsModel: wrapped, streamer: streamer},
+			transcriber:        transcriber,
+		}
+	case isStreamer:
+		return &metricsStreamModel{metricsModel: wrapped, streamer: streamer}
+	case isTranscriber:
+		return &metricsTranscribeModel{metricsModel: wrapped, transcriber: transcriber}
+	}
+	return wrapped
+}

@@ -10,6 +10,7 @@ import (
 	"bot/internal/bot"
 	"bot/internal/config"
 	"bot/internal/health"
+	"bot/internal/metrics"
 	"bot/internal/model"
 	"bot/internal/store"
 	"bot/internal/webapp"
@@ -143,6 +144,7 @@ func main() {
 // run wires the process and blocks until the context is cancelled or a component that the bot cannot live
 // without stops. Everything it opens is closed on return; the caller owns the exit code.
 func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, logger *slog.Logger) error {
+	var registry = metrics.NewRegistry()
 	var db, err = store.Open(ctx, cfg.DBPath)
 	if err != nil {
 		return fmt.Errorf("store.Open: %w", err)
@@ -157,17 +159,8 @@ func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, l
 	}
 	fmt.Fprintln(out, "store is open:", cfg.DBPath, "journal_mode", journalMode, "foreign_keys", foreignKeys,
 		"migrations applied", len(store.MigrationSQL), "schema_version", schemaVersion)
+	store.RegisterMetrics(registry, cfg.DBPath, schemaVersion)
 	fmt.Fprintln(out, "program is running, PID", os.Getpid())
-
-	// The health listener is bound before anything else starts: the compose HEALTHCHECK probes it and a taken
-	// port must fail the start, not sit next to a healthy-looking /healthz.
-	var healthServer = health.New(cfg.HealthPort)
-	if listenErr := healthServer.Listen(); listenErr != nil {
-		return listenErr
-	}
-	var healthErr = make(chan error, 1)
-	go func() { healthErr <- healthServer.Run(ctx) }()
-	fmt.Fprintln(out, "health is listening on 127.0.0.1:", healthServer.Port(), health.Path)
 
 	var client, clientErr = model.New(model.Options{
 		ChatURL:             cfg.ChatURL,
@@ -179,6 +172,7 @@ func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, l
 		TranscriptionNoAuth: cfg.TranscriptionBase != cfg.StrataBase,
 		Timeout:             time.Duration(cfg.TimeoutSeconds) * time.Second,
 		MaxConcurrent:       int(cfg.MaxConcurrentRequests),
+		Metrics:             model.NewMetrics(registry),
 		Stream: model.StreamSettings{
 			Idle:     time.Duration(cfg.StreamIdleSeconds) * time.Second,
 			Total:    time.Duration(cfg.StreamTotalSeconds) * time.Second,
@@ -188,6 +182,20 @@ func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, l
 	if clientErr != nil {
 		return fmt.Errorf("model.New: %w", clientErr)
 	}
+
+	// The health listener is bound before the bot starts: the compose HEALTHCHECK probes it and a taken
+	// port must fail the start, not sit next to a healthy-looking /healthz.
+	var healthServer = health.New(cfg.HealthPort)
+	healthServer.RegisterReadiness(db, client)
+	healthServer.Handle(health.MetricsPath, metrics.Handler(registry))
+	if listenErr := healthServer.Listen(); listenErr != nil {
+		return listenErr
+	}
+	var healthErr = make(chan error, 1)
+	go func() { healthErr <- healthServer.Run(ctx) }()
+	fmt.Fprintln(out, "health is listening on 127.0.0.1:", healthServer.Port(), health.Path,
+		"readiness", health.ReadyPath, "metrics", health.MetricsPath)
+
 	var miniApp *webapp.App
 	if cfg.MiniAppEnabled {
 		miniApp = webapp.New(cfg, db, client, logger)
@@ -225,6 +233,10 @@ func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, l
 	if miniApp != nil {
 		miniApp.SetTaskLifecycle(dispatcher)
 		miniApp.SetLinkLifecycle(dispatcher)
+		// The Mini App answers through the SAME dispatcher the Telegram poller uses: the per-chat lock, the
+		// per-minute budget and the daily quota must be one set, or a Mini App message could run beside a
+		// Telegram question in the same chat and the user's limits would silently double.
+		miniApp.SetChatBackend(dispatcher)
 		var miniAppServer, listenErr = webapp.Listen(miniApp, cfg.MiniAppAddress())
 		if listenErr != nil {
 			return fmt.Errorf("Mini App listener: %w", listenErr)
@@ -241,6 +253,7 @@ func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, l
 	if tgErr != nil {
 		return fmt.Errorf("bot.New: %w", tgErr)
 	}
+	dispatcher.SetMetrics(registry)
 	var menuCtx, cancelMenu = context.WithTimeout(ctx, bot.PublishCommandsTimeout)
 	if menuErr := dispatcher.PublishCommands(menuCtx, tg); menuErr != nil {
 		logger.Warn("setMyCommands refused, the menu of the client stays empty", "error", bot.Sanitize(menuErr, cfg.BotToken))

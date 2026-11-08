@@ -1,7 +1,15 @@
 name: verify
 
 on:
+  # Tag pushes are filtered out on purpose. GitLab's `release` stage owns tag builds for this repository and
+  # runs the same commit; a GitHub run would duplicate windows-latest / docker-race work for a commit that a
+  # branch push already verified. If a tag ever needs GitHub verification, start this workflow manually on the
+  # tag ref — `workflow_dispatch` stays enabled, and `branches: '**'` keeps every branch push running.
   push:
+    branches:
+      - '**'
+    tags-ignore:
+      - 'v*'
   pull_request:
   workflow_dispatch:
 

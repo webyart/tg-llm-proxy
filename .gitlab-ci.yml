@@ -2,9 +2,13 @@ workflow:
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
     - if: '$CI_PIPELINE_SOURCE == "web"'
+    # Tags must be allowed explicitly: without this rule a `git push origin vX.Y.Z` creates no pipeline at
+    # all, so the release job below would never run. Only semantic-version tags are accepted.
+    - if: '$CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/'
 
 stages:
   - test
+  - release
 
 default:
   interruptible: true
@@ -12,7 +16,18 @@ default:
 variables:
   CGO_ENABLED: '0'
 
+# Tag pipelines must not repeat the whole test matrix: every heavy job below is restricted to branch
+# pipelines (and manual runs), while `coverage` and `release` are the only jobs a version tag needs. This keeps
+# the promise in README that tags do not spend shared minutes on the full suite — the suite already ran on the
+# merge to main, and the tag run proves the release image builds and is tagged.
+.tag-skip: &tag-skip
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: never
+    - when: on_success
+
 host-checks:
+  <<: *tag-skip
   stage: test
   image: golang:1.27-bookworm@sha256:dc0963f32053e4bc451d24d87e3892d42d01021b61f093e98eb95c0352bb84b0
   before_script:
@@ -31,6 +46,7 @@ host-checks:
     - pwsh -NoLogo -NoProfile -File scripts/verify.ps1 -SkipRace -SkipHealth
 
 docker-race:
+  <<: *tag-skip
   stage: test
   image: golang:1.27-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18
   before_script:
@@ -51,22 +67,32 @@ docker-race:
     - sh -c 'set -e; gofmt -l . > /tmp/f.txt; if [ -s /tmp/f.txt ]; then cat /tmp/f.txt; exit 1; fi; go vet -tags integration ./...; CGO_ENABLED=1 go test -race -tags integration ./... -count=1'
 
 govulncheck:
+  <<: *tag-skip
   stage: test
   image: golang:1.27-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18
   script:
     - go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
 frontend:
+  <<: *tag-skip
   stage: test
   image: node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d
   script:
     - node --check internal/webapp/static/app.js
     - node --test internal/webapp/frontendjs/*.test.js
 
-# The linters that find defects (errcheck, govet, ineffassign, staticcheck, unused). The job is advisory for
-# now: the repository has never been run through golangci-lint, so its first clean report has to be seen before
-# the job becomes blocking. Flip allow_failure to false in the commit that fixes the findings.
+# The linters that find defects (errcheck, govet, ineffassign, staticcheck, unused). The job stays advisory:
+# the repository has never been run through golangci-lint, and a red job with a known backlog would only
+# train people to ignore it. Exact evidence required before flipping `allow_failure` to false:
+#   1. a pipeline on THIS project's runner (not a developer workstation) against `main`, using the pinned
+#      v2.4.0 image, whose `golangci-lint run --timeout 5m ./...` log ends with zero issues;
+#   2. the job URL / commit SHA recorded in the commit that flips the flag, so the evidence is auditable.
+# A clean local run is not evidence: a different binary version or config resolution can pass locally and
+# fail on the runner. `--new-from-rev` is deliberately NOT added as a gate: it hides the existing backlog
+# (exactly what this job is meant to expose), needs a trustworthy base ref that tag pipelines do not have,
+# and would make the first clean report unrepresentative of the whole tree.
 golangci-lint:
+  <<: *tag-skip
   stage: test
   image: golangci/golangci-lint:v2.4.0-alpine
   allow_failure: true
@@ -97,6 +123,7 @@ coverage:
 # pipeline, so the check is enforced exactly where it can run. docs/gitlab-runner-wsl.md claims today's jobs need
 # no Docker while README claims the pipeline runs Docker checks — the probe makes both statements harmless.
 production-image:
+  <<: *tag-skip
   stage: test
   image: docker:27-cli
   script:
@@ -116,4 +143,105 @@ production-image:
       cat /tmp/start.txt
       test "$code" -eq 1
       grep -q "TELEGRAM_BOT_TOKEN is not set" /tmp/start.txt
+
+# Isolated restore rehearsal: a fixture database is backed up, restored into a throwaway `bot-data` volume of
+# the fixed project tg-llm-proxy-restore-rehearsal, ownership and read/write access are checked as the runtime
+# user, the file is copied back and every integrity/table/event counter is compared. The bot process is never
+# started and the production project/volume is never addressed.
+#
+# MANUAL, and deliberately so. The entry point `scripts/test-maintenance.ps1 -WithVolumeRestore` is Windows-first:
+# it builds `bin/dbfixture.exe` and writes a fake `docker.cmd` into a scratch directory to steer the script under
+# test, neither of which works inside a Linux job image (a Linux runner has no `cmd.exe`). Until a Windows
+# self-hosted runner is registered for this project, the drill stays a manual job an operator triggers on such a
+# runner; it is NOT silently green on Linux. `allow_failure: true` keeps an unrun rehearsal from blocking the
+# merge of unrelated changes, and the comment names the condition for making it blocking again.
+restore-drill:
+  stage: test
+  image: golang:1.27-bookworm@sha256:dc0963f32053e4bc451d24d87e3892d42d01021b61f093e98eb95c0352bb84b0
+  when: manual
+  allow_failure: true
+  before_script:
+    - |
+      if ! command -v pwsh >/dev/null 2>&1; then
+        if [ "$(id -u)" -ne 0 ]; then
+          echo "Install PowerShell on the self-hosted runner before CI" >&2
+          exit 1
+        fi
+        apt-get update
+        apt-get install -y --no-install-recommends wget ca-certificates
+        wget -q https://github.com/PowerShell/PowerShell/releases/download/v7.6.0/powershell_7.6.0-1.deb_amd64.deb -O /tmp/powershell.deb
+        apt-get install -y /tmp/powershell.deb
+      fi
+  script:
+    - |
+      if ! docker info > /dev/null 2>&1; then
+        echo "no Docker daemon on this runner: the isolated restore drill is skipped"
+        exit 0
+      fi
+    # test-volume-restore.ps1 and test-container-monitor.ps1 address the fixed local tag tg-llm-proxy-bot:latest,
+    # so the rehearsal builds the run target under exactly that name rather than the SHA tag of production-image.
+    - docker build --target run --build-arg BUILD_COMMIT="$CI_COMMIT_SHA" -t tg-llm-proxy-bot:latest .
+    - pwsh -NoLogo -NoProfile -File scripts/test-maintenance.ps1 -WithVolumeRestore
+
+# Tag-driven release. `workflow.rules` above admits only vMAJOR.MINOR.PATCH tags, and this job repeats the
+# filter so a tag pipeline that also matches another rule still cannot release: pushing `v1.41.0` is the
+# trigger, nothing else.
+#
+# What it produces: the run target built with BUILD_COMMIT=$CI_COMMIT_SHA and tagged with the git tag, then
+#   * release/image-inspect.json — full `docker image inspect` metadata (Id, config digest, entrypoint, env);
+#   * release/image-save.sha256  — SHA-256 of `docker save` output, i.e. a checksum of the exact image;
+#   * release/release.txt        — tag, commit and image Id in one line-per-field form;
+#   * release/coverage.out       — the test-stage coverage profile, kept with the release evidence.
+#
+# SBOM decision: no SBOM is produced. The image has no offline generator (`syft`, `trivy`, `grype` are not
+# installed and the job is not allowed to fetch tools at release time), `docker sbom` is a deprecated plugin
+# that the docker:27-cli image does not ship, and `docker buildx imagetools inspect` only reads a registry
+# manifest — it cannot inventory a local image's packages. Metadata plus a content checksum is the strongest
+# provenance available offline; adding syft later means pinning a syft image and piping `docker save` through
+# it, which changes this job deliberately rather than silently.
+#
+# The image is not pushed: the registry credential/scope decision is still open (docs/ROADMAP.md), and a tag
+# pipeline must not fail because a registry secret is absent. The artifacts identify the image precisely.
+release:
+  stage: release
+  image: docker:27-cli
+  # A release artifact must not disappear because a newer tag pipeline started; the default is interruptible.
+  interruptible: false
+  dependencies:
+    - coverage
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/'
+  script:
+    - |
+      if ! docker info > /dev/null 2>&1; then
+        echo "release requires a Docker daemon: the tag pipeline builds the production image" >&2
+        exit 1
+      fi
+    - docker build --target run --build-arg BUILD_COMMIT="$CI_COMMIT_SHA" -t "tg-llm-proxy-bot:$CI_COMMIT_TAG" -t tg-llm-proxy-bot:latest .
+    - mkdir -p release
+    - docker image inspect "tg-llm-proxy-bot:$CI_COMMIT_TAG" > release/image-inspect.json
+    - |
+      image_id=$(docker image inspect --format '{{.Id}}' "tg-llm-proxy-bot:$CI_COMMIT_TAG")
+      docker save "tg-llm-proxy-bot:$CI_COMMIT_TAG" | sha256sum | awk '{print $1}' > release/image-save.sha256
+      printf 'tag=%s\ncommit=%s\nimage_id=%s\n' "$CI_COMMIT_TAG" "$CI_COMMIT_SHA" "$image_id" > release/release.txt
+    - |
+      {
+        echo 'SBOM: not generated.'
+        echo 'Reason: no offline SBOM generator is installed in docker:27-cli; syft/trivy/grype would require a network'
+        echo 'fetch at release time and docker sbom/buildx imagetools cannot inventory a local image.'
+        echo 'Provenance kept instead: release/image-inspect.json, release/image-save.sha256, release/release.txt.'
+      } > release/sbom.txt
+    - |
+      if [ -f coverage.out ]; then
+        cp coverage.out release/coverage.out
+      else
+        echo "coverage.out is missing from the coverage job artifact" >&2
+        exit 1
+      fi
+  artifacts:
+    name: "tg-llm-proxy-$CI_COMMIT_TAG"
+    when: on_success
+    expire_in: 90 days
+    paths:
+      - release/
 

@@ -52,6 +52,8 @@ type Options struct {
 	Backoff             time.Duration
 	MaxConcurrent       int
 	HTTPClient          *http.Client
+	// Metrics is optional. nil keeps the client silent, which is what tests and short-lived helpers want.
+	Metrics *Metrics
 	// STREAM_IDLE_TIMEOUT_SECONDS, STREAM_TOTAL_DEADLINE_SECONDS and the progress cadence. A zero value means
 	// the defaults of stream.go — a client built by a test streams with those defaults and no test has to
 	Stream StreamSettings
@@ -72,6 +74,7 @@ type OpenAI struct {
 	sem                 chan struct{}
 	admitTimeout        time.Duration
 	stream              StreamSettings
+	metrics             *Metrics
 }
 
 // problem and is reported instead of producing a client that would fail on the first /ask.
@@ -114,12 +117,14 @@ func New(o Options) (*OpenAI, error) {
 		sem:                 make(chan struct{}, o.MaxConcurrent),
 		admitTimeout:        admissionTimeout,
 		stream:              withStreamDefaults(o.Stream),
+		metrics:             o.Metrics,
 	}, nil
 }
 
 // The returned Latency covers the whole call, retries and the wait for a free slot included,
-func (c *OpenAI) Complete(ctx context.Context, req Request) (Response, error) {
+func (c *OpenAI) Complete(ctx context.Context, req Request) (resp Response, err error) {
 	var start = time.Now()
+	defer func() { c.metrics.observe(err, time.Since(start)) }()
 
 	// The slot is the GPU: it stays busy for the whole call, and waiting for it is bounded by
 	// admissionTimeout so a saturated endpoint says so instead of burning the reply budget.
@@ -141,7 +146,7 @@ func (c *OpenAI) Complete(ctx context.Context, req Request) (Response, error) {
 	}
 	var attemptCtx, cancel = context.WithTimeout(ctx, budget)
 	defer cancel()
-	var body, model, err = c.marshalChatRequest(req, false, 1)
+	body, model, err := c.marshalChatRequest(req, false, 1)
 	if err != nil {
 		return Response{}, err
 	}
@@ -165,6 +170,7 @@ func (c *OpenAI) Complete(ctx context.Context, req Request) (Response, error) {
 		if deadline, ok := attemptCtx.Deadline(); ok && time.Until(deadline) <= wait {
 			return Response{}, fmt.Errorf("%w (retry %d of %d skipped: %s)", lastErr, attempt+1, c.attempts, TelegramBudgetNotice)
 		}
+		c.metrics.retryStarted()
 		select {
 		case <-attemptCtx.Done():
 			return Response{}, fmt.Errorf("%w: %s", attemptCtx.Err(), TelegramBudgetNotice)

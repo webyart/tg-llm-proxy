@@ -99,8 +99,9 @@ type StreamHandler struct {
 }
 
 // the first delivered delta a retry is forbidden: the user is already reading that text, and a second attempt
-func (c *OpenAI) Stream(ctx context.Context, req Request, h StreamHandler) (Response, error) {
+func (c *OpenAI) Stream(ctx context.Context, req Request, h StreamHandler) (resp Response, err error) {
 	var start = time.Now()
+	defer func() { c.metrics.observe(err, time.Since(start)) }()
 
 	// busy for all of it, and pretending otherwise would let a second answer start on the same GPU.
 	release, admitErr := c.acquire(ctx)
@@ -121,7 +122,7 @@ func (c *OpenAI) Stream(ctx context.Context, req Request, h StreamHandler) (Resp
 	}
 	var answerCtx, cancelAnswer = context.WithTimeout(ctx, total)
 	defer cancelAnswer()
-	var body, model, err = c.marshalChatRequest(req, true, 1)
+	body, model, err := c.marshalChatRequest(req, true, 1)
 	if err != nil {
 		return Response{}, err
 	}
@@ -155,6 +156,7 @@ func (c *OpenAI) Stream(ctx context.Context, req Request, h StreamHandler) (Resp
 		if deadline, ok := answerCtx.Deadline(); ok && time.Until(deadline) <= wait {
 			return resp, fmt.Errorf("%w (retry %d of %d skipped: %s)", lastErr, attempt+1, c.attempts, StreamNotice)
 		}
+		c.metrics.retryStarted()
 		select {
 		case <-answerCtx.Done():
 			return resp, fmt.Errorf("%w: %s", answerCtx.Err(), StreamNotice)

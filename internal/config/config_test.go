@@ -251,7 +251,7 @@ func TestRowOfTheAllowlistIsTelegramsName(t *testing.T) {
 		t.Error("Allows(42) = true, want false: one id in the row must not open the whole world")
 	}
 	if !RowIsSet(raw, "TELEGRAM_ALLOWED_USERS") {
-		t.Error("RowIsSet(TELEGRAM_ALLOWED_USERS) = false, want true: PrintMissing would lie about an unset row ")
+		t.Error("RowIsSet(TELEGRAM_ALLOWED_USERS) = false, want true: the row carries a value ")
 	}
 	if !HasRow("TELEGRAM_ALLOWED_USERS") {
 		t.Error("the name is not a row of Env, so the table and the loader disagree ")

@@ -82,5 +82,10 @@ func VerifyBackup(ctx context.Context, path string) error {
 	if len(missing) > 0 {
 		return fmt.Errorf("store.VerifyBackup: %q is not a bot backup: missing tables %s", path, strings.Join(missing, ", "))
 	}
+	// The same guard the runtime applies: a backup written by a newer release is reported by version
+	// instead of being restored over an older binary and failing later, at the first write.
+	if err := GuardSchemaVersion(ctx, db); err != nil {
+		return fmt.Errorf("store.VerifyBackup: %w", err)
+	}
 	return nil
 }

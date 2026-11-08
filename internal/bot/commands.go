@@ -789,6 +789,19 @@ func (d *Dispatcher) deliverModelResult(ctx context.Context, ev Event, text stri
 	return d.Send(ctx, ev.ChatID, text)
 }
 
+// finishReasonNotice — what the user must know when the provider stopped on its own, not when the bot lost
+// the tail. `length` is the context/output limit of the model, `content_filter` is the provider's own filter.
+func finishReasonNotice(reason string) string {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "length":
+		return "Внимание: ответ обрезан лимитом модели (finish_reason=length)."
+	case "content_filter":
+		return "Внимание: провайдер отфильтровал часть ответа (finish_reason=content_filter)."
+	default:
+		return ""
+	}
+}
+
 func (d *Dispatcher) finishModelAnswer(ctx context.Context, replyCtx context.Context, ev Event, resp model.Response, modelErr error, selectedModel string, ragSources []string, documentTruncated bool, session *streamSession) error {
 	if errors.Is(modelErr, errNetworkApprovalPending) {
 		return nil
@@ -893,6 +906,13 @@ func (d *Dispatcher) finishModelAnswer(ctx context.Context, replyCtx context.Con
 	)
 
 	var full = resp.Content + "\n\n" + latencyLine(resp, selectedModel)
+	// A provider that stopped on its own limit says so in finish_reason. Without this notice a truncated or
+	// filtered answer was stored and shown exactly like a complete one, and the user could not tell that the
+	// model was cut off rather than the bot losing the tail.
+	if notice := finishReasonNotice(resp.FinishReason); notice != "" {
+		full = notice + "\n\n" + full
+		d.logEvent(ctx, ev.UserID, store.EventModelError, "finish_reason "+brief(resp.FinishReason, 40))
+	}
 	if len(ragSources) > 0 {
 		full += "\n\nИсточники: " + strings.Join(ragSources, ", ")
 	}

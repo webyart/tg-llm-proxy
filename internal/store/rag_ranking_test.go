@@ -210,7 +210,9 @@ func TestRAGSearchDropsNonmatchingCandidates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readRAGSearchCorpus: %v", err)
 	}
-	if corpus.chunkCount != 3 || corpus.totalTokens != 8 || corpus.documents["needle"] != 1 {
+	// The index reads only the chunks a term points at: two of the three, and the token statistics of the
+	// scored set are computed over those two.
+	if corpus.chunkCount != 2 || corpus.totalTokens != 6 || corpus.totalChunks != 3 || corpus.documents["needle"] != 1 {
 		t.Fatalf("corpus statistics=%+v", corpus)
 	}
 	if len(corpus.candidates) != 2 {

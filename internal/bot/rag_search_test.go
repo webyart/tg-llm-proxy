@@ -143,21 +143,24 @@ func TestDocumentSearchTruncationAndAutomaticWarning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed chunks: %v", err)
 	}
+	// The FTS index covers the whole corpus, so the newest match is found without a truncation warning and the
+	// oldest chunk — outside the old 10 000-chunk window — is found too.
 	if err := dispatch(t, d, testEvent(340, 11, 1740, "/docs search recenttoken")); err != nil {
-		t.Fatalf("truncated search: %v", err)
+		t.Fatalf("search: %v", err)
 	}
 	reply := r.texts()[len(r.texts())-1]
-	for _, want := range []string{"корпус документов неполный", "10000 из 10001", "recenttoken newest"} {
-		if !strings.Contains(reply, want) {
-			t.Errorf("truncated search reply does not contain %q: %q", want, reply)
-		}
+	if !strings.Contains(reply, "recenttoken newest") {
+		t.Fatalf("search reply=%q", reply)
+	}
+	if strings.Contains(reply, "корпус документов неполный") {
+		t.Fatalf("a fully indexed corpus was reported as truncated: %q", reply)
 	}
 	if err := dispatch(t, d, testEvent(340, 11, 1741, "/docs search oldesttoken")); err != nil {
-		t.Fatalf("outside-window search: %v", err)
+		t.Fatalf("oldest-chunk search: %v", err)
 	}
 	reply = r.texts()[len(r.texts())-1]
-	if !strings.Contains(reply, "ничего не найдено") || !strings.Contains(reply, "10000 из 10001") {
-		t.Fatalf("outside-window search reply=%q", reply)
+	if !strings.Contains(reply, "oldesttoken") {
+		t.Fatalf("the oldest chunk of the corpus was not found: %q", reply)
 	}
 	messages, sources, err := d.addRAGContext(ctx, 340, 11, "recenttoken", []model.Message{{Role: model.RoleUser, Content: "recenttoken"}})
 	if err != nil {
@@ -166,27 +169,22 @@ func TestDocumentSearchTruncationAndAutomaticWarning(t *testing.T) {
 	if len(sources) != 1 || sources[0] != "large.txt" {
 		t.Fatalf("sources=%v", sources)
 	}
-	foundWarning := false
 	for _, message := range messages {
-		if message.Role == model.RoleSystem && strings.Contains(message.Content, "корпус документов неполный") && strings.Contains(message.Content, "10000 из 10001") {
-			foundWarning = true
+		if message.Role == model.RoleSystem && strings.Contains(message.Content, "корпус документов неполный") {
+			t.Fatalf("automatic RAG warned about a corpus it fully indexed: %+v", messages)
 		}
-	}
-	if !foundWarning {
-		t.Fatalf("automatic RAG warning missing: %+v", messages)
 	}
 	uses, err := store.CountEvents(ctx, db, store.EventUsage)
 	if err != nil || uses != 1 {
 		t.Fatalf("usage events=%d err=%v", uses, err)
 	}
-	unchanged := []model.Message{{Role: model.RoleUser, Content: "oldesttoken"}}
-	messages, sources, err = d.addRAGContext(ctx, 340, 11, "oldesttoken", unchanged)
-	if err != nil || len(messages) != len(unchanged) || messages[0].Content != unchanged[0].Content || len(sources) != 0 {
-		t.Fatalf("empty automatic RAG messages=%+v sources=%v err=%v", messages, sources, err)
+	messages, sources, err = d.addRAGContext(ctx, 340, 11, "oldesttoken", []model.Message{{Role: model.RoleUser, Content: "oldesttoken"}})
+	if err != nil || len(sources) != 1 || sources[0] != "large.txt" || len(messages) <= 1 {
+		t.Fatalf("automatic RAG for the oldest chunk messages=%+v sources=%v err=%v", messages, sources, err)
 	}
 	uses, err = store.CountEvents(ctx, db, store.EventUsage)
-	if err != nil || uses != 1 {
-		t.Fatalf("usage events after empty result=%d err=%v", uses, err)
+	if err != nil || uses != 2 {
+		t.Fatalf("usage events after the second retrieval=%d err=%v", uses, err)
 	}
 }
 

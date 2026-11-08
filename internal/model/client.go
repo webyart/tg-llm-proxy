@@ -87,6 +87,11 @@ var ErrNoRoom = errors.New("all model request slots are busy ")
 type APIError struct {
 	Status int
 	Body   string
+	// RetryAfter is what the provider asked to wait (Retry-After), 0 when it said nothing.
+	RetryAfter time.Duration
+	// Transient marks a failure the provider reported INSIDE a 200 response (an `error` object in the SSE
+	// stream). It is worth one more attempt only while no text has reached the user yet.
+	Transient bool
 }
 
 func (e *APIError) Error() string {
@@ -94,7 +99,7 @@ func (e *APIError) Error() string {
 }
 
 // «суммарный бюджет … не должен превышать»).
-func (e *APIError) Retryable() bool { return e.Status >= 500 }
+func (e *APIError) Retryable() bool { return e.Status >= 500 || e.Status == 429 || e.Transient }
 
 // stays free of secrets and of provider bodies at info level).
 func httpStatusClass(status int) string {
@@ -106,7 +111,7 @@ func httpStatusClass(status int) string {
 	case status == 404:
 		return "the endpoint path does not exist — check STRATA_BASE_URL "
 	case status == 429:
-		return "rate limited by the provider, not retried in v1"
+		return "rate limited by the provider, retried after Retry-After"
 	default:
 		return "client error, not retried"
 	}

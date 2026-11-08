@@ -60,7 +60,7 @@ func webappChatChunkCount(t *testing.T, app *App, chatID int64) int {
 func TestDocumentDeleteIsScopedUsesCanonicalIDAndDeletesChunks(t *testing.T) {
 	app, server := newTestApp(t)
 	bearer := launchSession(t, app, server)
-	otherBearer := launchSessionFor(t, app, server, testChatID+1, testUserID)
+	otherBearer := launchSessionFor(t, app, server, otherTestUserID, otherTestUserID)
 	created := createWebappDocument(t, app, testChatID, "current")
 	other := createWebappDocument(t, app, testChatID+1, "other")
 	path := fmt.Sprintf("/api/documents/%d/delete", created)

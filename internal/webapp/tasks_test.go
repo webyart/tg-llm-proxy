@@ -145,7 +145,7 @@ func TestTaskListShowsSanitizedFailureAndExpiry(t *testing.T) {
 func TestTaskCancelIsScopedAndRejectsWrongStatus(t *testing.T) {
 	app, server := newTestApp(t)
 	bearer := launchSession(t, app, server)
-	otherBearer := launchSessionFor(t, app, server, testChatID+1, testUserID)
+	otherBearer := launchSessionFor(t, app, server, otherTestUserID, otherTestUserID)
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	created := createWebappTask(t, app, testChatID, now)
 
@@ -174,7 +174,7 @@ func TestTaskCancelIsScopedAndRejectsWrongStatus(t *testing.T) {
 func TestTaskResumeIsLatestOnlyAndRejectsWrongScopeAndStatus(t *testing.T) {
 	app, server := newTestApp(t)
 	bearer := launchSession(t, app, server)
-	otherBearer := launchSessionFor(t, app, server, testChatID+1, testUserID)
+	otherBearer := launchSessionFor(t, app, server, otherTestUserID, otherTestUserID)
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	older := createWebappTask(t, app, testChatID, now)
 	if _, changed, err := store.CancelTask(context.Background(), app.db, testChatID, now); err != nil || !changed {
@@ -448,7 +448,7 @@ func webappTaskExists(t *testing.T, app *App, chatID int64, taskID int64) bool {
 func TestTaskDeleteAllowsTerminalOnlyAndIsScoped(t *testing.T) {
 	app, server := newTestApp(t)
 	bearer := launchSession(t, app, server)
-	otherBearer := launchSessionFor(t, app, server, testChatID+1, testUserID)
+	otherBearer := launchSessionFor(t, app, server, otherTestUserID, otherTestUserID)
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	terminal := make([]store.Task, 0, 3)
 	for index, status := range []string{store.TaskStatusCompleted, store.TaskStatusFailed, store.TaskStatusCancelled} {

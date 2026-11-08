@@ -27,7 +27,7 @@ func TestRunDryRunDoesNotDeleteOrBackUp(t *testing.T) {
 	}
 	backup := filepath.Join(t.TempDir(), "unused.db")
 	var output bytes.Buffer
-	if err := run(ctx, source, backup, 90, 0, 0, false, &output); err != nil {
+	if err := run(ctx, source, backup, retentionDays{events: 90}, false, true, &output); err != nil {
 		t.Fatalf("dry-run: %v", err)
 	}
 	if !strings.Contains(output.String(), "events_candidates=1") {
@@ -61,7 +61,7 @@ func TestRunApplyBacksUpBeforeDeleting(t *testing.T) {
 
 	backup := filepath.Join(t.TempDir(), "pre-prune.db")
 	var output bytes.Buffer
-	if err := run(ctx, source, backup, 90, 0, 0, true, &output); err != nil {
+	if err := run(ctx, source, backup, retentionDays{events: 90}, true, true, &output); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 	if err := store.VerifyBackup(ctx, backup); err != nil {
@@ -88,7 +88,7 @@ func TestRunApplyBacksUpBeforeDeleting(t *testing.T) {
 }
 
 func TestRunRejectsApplyWithoutBackup(t *testing.T) {
-	if err := run(context.Background(), "unused.db", "", 90, 0, 0, true, &bytes.Buffer{}); err == nil {
+	if err := run(context.Background(), "unused.db", "", retentionDays{events: 90}, true, true, &bytes.Buffer{}); err == nil {
 		t.Fatal("apply without a backup path must be refused before opening the source")
 	}
 }

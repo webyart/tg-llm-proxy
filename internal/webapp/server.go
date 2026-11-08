@@ -31,6 +31,7 @@ const (
 	contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors https://web.telegram.org"
 	mutationRateLimit     = 30
 	exportRateLimit       = 5
+	sessionRateLimit      = 6
 	rateLimitWindow       = time.Minute
 	maxRateLimitUsers     = 4096
 )
@@ -46,6 +47,7 @@ type rateLimitBucket struct {
 type rateLimitPrincipal struct {
 	mutation rateLimitBucket
 	export   rateLimitBucket
+	session  rateLimitBucket
 }
 
 type perUserRateLimiter struct {
@@ -63,11 +65,34 @@ func rateLimitBucketExpired(bucket rateLimitBucket, now time.Time) bool {
 }
 
 func (l *perUserRateLimiter) allow(userID int64, export bool) (bool, time.Duration) {
+	if export {
+		return l.allowBucket(userID, bucketExport, exportRateLimit)
+	}
+	return l.allowBucket(userID, bucketMutation, mutationRateLimit)
+}
+
+// allowSession bounds the cheapest way to create state: every POST /api/session adds a 15-minute entry to
+// the session table, and the table is global. Without a per-user budget one allowlisted account could fill
+// all maxTrackedPrincipals entries and keep every other user out of the Mini App for a quarter of an hour.
+func (l *perUserRateLimiter) allowSession(userID int64) (bool, time.Duration) {
+	return l.allowBucket(userID, bucketSession, sessionRateLimit)
+}
+
+type rateLimitBucketKind int
+
+const (
+	bucketMutation rateLimitBucketKind = iota
+	bucketExport
+	bucketSession
+)
+
+func (l *perUserRateLimiter) allowBucket(userID int64, kind rateLimitBucketKind, limit int) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
 	for id, principal := range l.principals {
-		if rateLimitBucketExpired(principal.mutation, now) && rateLimitBucketExpired(principal.export, now) {
+		if rateLimitBucketExpired(principal.mutation, now) && rateLimitBucketExpired(principal.export, now) &&
+			rateLimitBucketExpired(principal.session, now) {
 			delete(l.principals, id)
 		}
 	}
@@ -78,11 +103,14 @@ func (l *perUserRateLimiter) allow(userID int64, export bool) (bool, time.Durati
 		}
 		principal = rateLimitPrincipal{}
 	}
-	bucket := &principal.mutation
-	limit := mutationRateLimit
-	if export {
-		bucket = &principal.export
-		limit = exportRateLimit
+	var bucket *rateLimitBucket
+	switch kind {
+	case bucketExport:
+		bucket, limit = &principal.export, exportRateLimit
+	case bucketSession:
+		bucket = &principal.session
+	default:
+		bucket, limit = &principal.mutation, mutationRateLimit
 	}
 	if rateLimitBucketExpired(*bucket, now) {
 		*bucket = rateLimitBucket{startedAt: now}
@@ -156,8 +184,50 @@ func New(cfg config.Config, db *sql.DB, client model.Client, logger *slog.Logger
 	app.linkLifecycle = unavailableLinkLifecycle{}
 	app.auth = newAuthenticator(cfg.BotToken, cfg.Allows)
 	app.rateLimits = newPerUserRateLimiter()
-	app.handler = securityHeaders(limitInFlight(http.HandlerFunc(app.route), maxInFlight))
+	app.handler = securityHeaders(limitInFlight(recoverPanics(logger, http.HandlerFunc(app.route)), maxInFlight))
 	return app
+}
+
+// responseRecorder remembers whether anything reached the client, so the panic handler knows if a 500 can
+// still be sent.
+type responseRecorder struct {
+	http.ResponseWriter
+	wrote bool
+}
+
+func (r *responseRecorder) WriteHeader(status int) {
+	r.wrote = true
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *responseRecorder) Write(body []byte) (int, error) {
+	r.wrote = true
+	return r.ResponseWriter.Write(body)
+}
+
+// recoverPanics — one panic in one handler used to kill the connection with no JSON envelope at all, and
+// the mutation audit that had already started kept the 200 it began with. The response is now the same
+// error envelope the frontend understands, and only the panic type and length are logged: a panic message
+// can quote the user data that caused it.
+func recoverPanics(logger *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		var recorder = &responseRecorder{ResponseWriter: w}
+		defer func() {
+			var recovered = recover()
+			if recovered == nil {
+				return
+			}
+			logger.Error("the Mini App handler panicked",
+				"path", req.URL.Path, "method", req.Method,
+				"panic_type", fmt.Sprintf("%T", recovered),
+				"panic_length", len(fmt.Sprint(recovered)))
+			if recorder.wrote {
+				return
+			}
+			writeError(recorder, http.StatusInternalServerError, "internal_error", "The Mini App could not handle this request. Retry or reopen it from Telegram.")
+		}()
+		next.ServeHTTP(recorder, req)
+	})
 }
 
 func (a *App) SetTaskLifecycle(lifecycle TaskLifecycle) {
@@ -265,6 +335,14 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 		w = audited
 		defer func() {
 			a.logMiniAppMutation(req, current, operation, audited.status, audited.body)
+		}()
+		// A panic unwinds through middlewares, so the audit above would log the 200 it started with.
+		// Mark it as a server error here, then let recoverPanics build the response the client sees.
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				audited.status = http.StatusInternalServerError
+				panic(recovered)
+			}
 		}()
 	}
 	if req.URL.Path == "/api/documents/search" {
@@ -503,6 +581,15 @@ func (a *App) exchangeSession(w http.ResponseWriter, req *http.Request) {
 		}
 		writeError(w, http.StatusBadRequest, "invalid_body", "Request body could not be read.")
 		return
+	}
+	// The exchange creates a 15-minute session and the session table is global, so one allowlisted account
+	// could fill it and lock every other user out of the Mini App. The signed user id is read here only to
+	// apply that user's own budget; the verification that matters still happens inside exchange.
+	if userID, verifyErr := verifyInitData(string(body), a.auth.botToken, a.auth.now()); verifyErr == nil {
+		if allowed, retryAfter := a.rateLimits.allowSession(userID); !allowed {
+			writeRateLimited(w, retryAfter)
+			return
+		}
 	}
 	bearer, expiresAt, err := a.auth.exchange(string(body), req.Header.Get("X-Launch-Ticket"))
 	if err != nil {

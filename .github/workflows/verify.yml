@@ -13,6 +13,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # windows-latest has no Docker daemon, and the old job called verify.ps1, which runs the Docker-backed
+  # test.ps1 / smoke.ps1 / test-maintenance.ps1 stages — the job could only fail. The host-level stages below
+  # are the ones that genuinely run on a Windows runner; Docker stages live in the Linux jobs.
   windows-host:
     runs-on: windows-latest
     steps:
@@ -21,12 +24,23 @@ jobs:
         with:
           go-version: '1.27.3'
           cache: true
-      - name: Lint, unit, maintenance, integration and build
+      - name: Lint (gofmt, go vet, PowerShell parsing)
         shell: pwsh
-        run: ./scripts/verify.ps1 -SkipRace -SkipHealth
+        run: ./scripts/lint.ps1
+      - name: Unit and store tests on the host
+        shell: pwsh
+        run: ./scripts/test.ps1 -Host
+      - name: Docker build lock acceptance (no daemon needed)
+        shell: pwsh
+        run: ./scripts/test-docker-build-lock.ps1
+      - name: Build and empty-ENV refusal
+        shell: pwsh
+        run: ./scripts/build.ps1
         env:
           CGO_ENABLED: '0'
 
+  # The race detector needs cgo, and cgo needs a C toolchain: the repository runs it inside the test image, so
+  # this job only has to provide Docker.
   docker-race:
     runs-on: ubuntu-latest
     steps:
@@ -34,3 +48,26 @@ jobs:
       - name: Go vet and race tests, including integration
         shell: pwsh
         run: ./scripts/test-race.ps1 -Tagged
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax check and executable DOM tests of the Mini App
+        run: |
+          node --check internal/webapp/static/app.js
+          node --test internal/webapp/frontendjs/*.test.js
+
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: true
+      - name: Known vulnerabilities in the dependency graph
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...

@@ -18,17 +18,11 @@ func savedLinkFixture(chatID int64, number int) SavedLink {
 
 func TestSavedLinkMigration8PreservesSchema7Data(t *testing.T) {
 	ctx := context.Background()
-	db := reminderTestDB(t)
-	migrations := MigrationSQL
-	MigrationSQL = append([]string(nil), migrations[:7]...)
-	defer func() { MigrationSQL = migrations }()
-	if err := ApplySchema(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	db, restore := openMemoryAtVersion(t, 7)
 	if err := EnsureChat(ctx, db, 100, 11, "kept"); err != nil {
 		t.Fatal(err)
 	}
-	MigrationSQL = migrations
+	restore()
 	if err := ApplySchema(ctx, db); err != nil {
 		t.Fatal(err)
 	}

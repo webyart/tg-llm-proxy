@@ -96,7 +96,7 @@ func installManagementLifecycles(app *App) (*fakeManagementTaskLifecycle, *fakeM
 func TestHistoryManagementDeletesOnlyVisibleCurrentChatMessages(t *testing.T) {
 	app, server := newTestApp(t)
 	bearer := launchSession(t, app, server)
-	otherBearer := launchSessionFor(t, app, server, testChatID+1, testUserID)
+	otherBearer := launchSessionFor(t, app, server, otherTestUserID, otherTestUserID)
 	userID := appendWebappMessage(t, app, testChatID, store.RoleUser, "private user message")
 	assistantID := appendWebappMessage(t, app, testChatID, store.RoleAssistant, "private assistant message")
 	systemID := appendWebappMessage(t, app, testChatID, store.RoleSystem, "private system message")
@@ -190,7 +190,7 @@ func TestHistoryManagementStrictRoutesBodiesAndMethods(t *testing.T) {
 func TestLinkSearchMappingCapAndCreateLifecycle(t *testing.T) {
 	app, server := newTestApp(t)
 	bearer := launchSession(t, app, server)
-	otherBearer := launchSessionFor(t, app, server, testChatID+1, testUserID)
+	otherBearer := launchSessionFor(t, app, server, otherTestUserID, otherTestUserID)
 	now := time.Now().UTC()
 	for index := 0; index < 25; index++ {
 		_, _, err := store.PutSavedLink(context.Background(), app.db, store.SavedLink{
@@ -239,7 +239,7 @@ func TestLinkSearchMappingCapAndCreateLifecycle(t *testing.T) {
 	if err := json.Unmarshal(body, &created); err != nil || created.ID != 7201 || created.URL != "https://example.test/created" {
 		t.Fatalf("created link=%+v body=%s err=%v", created, body, err)
 	}
-	if links.calls != 1 || links.chatID != testChatID+1 || links.userID != testUserID || links.rawURL != "https://example.test/new" {
+	if links.calls != 1 || links.chatID != otherTestUserID || links.userID != otherTestUserID || links.rawURL != "https://example.test/new" {
 		t.Fatalf("link lifecycle calls=%d chat=%d user=%d url=%q", links.calls, links.chatID, links.userID, links.rawURL)
 	}
 }
@@ -275,7 +275,7 @@ func TestLinkSearchStrictQueryAndStoreFailure(t *testing.T) {
 
 func TestTaskCreateUsesLifecycleAndReturnsOnlyIDStatus(t *testing.T) {
 	app, server := newTestApp(t)
-	otherBearer := launchSessionFor(t, app, server, testChatID+1, testUserID)
+	otherBearer := launchSessionFor(t, app, server, otherTestUserID, otherTestUserID)
 	tasks, _ := installManagementLifecycles(app)
 	status, body := managementJSON(t, server, "/api/tasks", otherBearer, `{"goal":"  private task goal  "}`)
 	if status != http.StatusOK {
@@ -285,7 +285,7 @@ func TestTaskCreateUsesLifecycleAndReturnsOnlyIDStatus(t *testing.T) {
 	if err := json.Unmarshal(body, &response); err != nil || len(response) != 2 || response["id"] != float64(7101) || response["status"] != store.TaskStatusReady {
 		t.Fatalf("task create response=%s err=%v", body, err)
 	}
-	if strings.Contains(string(body), "private lifecycle goal") || tasks.calls != 1 || tasks.chatID != testChatID+1 || tasks.userID != testUserID || tasks.goal != "private task goal" {
+	if strings.Contains(string(body), "private lifecycle goal") || tasks.calls != 1 || tasks.chatID != otherTestUserID || tasks.userID != otherTestUserID || tasks.goal != "private task goal" {
 		t.Fatalf("task lifecycle calls=%d chat=%d user=%d goal=%q response=%s", tasks.calls, tasks.chatID, tasks.userID, tasks.goal, body)
 	}
 }
@@ -293,7 +293,7 @@ func TestTaskCreateUsesLifecycleAndReturnsOnlyIDStatus(t *testing.T) {
 func TestReminderCreateOnceDailyLocationAndScope(t *testing.T) {
 	app, server := newTestApp(t)
 	bearer := launchSession(t, app, server)
-	otherBearer := launchSessionFor(t, app, server, testChatID+1, testUserID)
+	otherBearer := launchSessionFor(t, app, server, otherTestUserID, otherTestUserID)
 	location := time.FixedZone("UTC+5", 5*60*60)
 	app.cfg.ReminderLocation = location
 
@@ -336,7 +336,7 @@ func TestReminderCreateOnceDailyLocationAndScope(t *testing.T) {
 	if err := app.db.QueryRowContext(context.Background(), `SELECT chat_id, user_id FROM reminders WHERE id = ?`, daily.ID).Scan(&chatID, &userID); err != nil {
 		t.Fatal(err)
 	}
-	if chatID != testChatID+1 || userID != testUserID {
+	if chatID != otherTestUserID || userID != otherTestUserID {
 		t.Fatalf("daily scope chat=%d user=%d", chatID, userID)
 	}
 

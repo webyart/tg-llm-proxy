@@ -31,6 +31,8 @@ var (
 	ErrInvalidTicket   = errors.New("Mini App launch ticket is invalid or expired")
 	ErrSessionExpired  = errors.New("Mini App session is invalid or expired")
 	ErrNotAllowed      = errors.New("Telegram user is not allowed")
+	// ErrPrivateOnly — the Mini App is a private-chat companion and issues no ticket for a group chat.
+	ErrPrivateOnly = errors.New("the Mini App is available only in private chats")
 )
 
 type scope struct {
@@ -78,6 +80,11 @@ func randomToken(bytes int) (string, error) {
 func (a *authenticator) NewLaunchTicket(chatID int64, userID int64) (string, error) {
 	if chatID == 0 || userID <= 0 || !a.authorize(userID) {
 		return "", ErrNotAllowed
+	}
+	// The session is scoped to the chat, so a group ticket would hand one member the history, documents and
+	// reminders of another. A private chat is the only place where the two scopes coincide.
+	if chatID != userID {
+		return "", ErrPrivateOnly
 	}
 	ticket, err := randomToken(16)
 	if err != nil {

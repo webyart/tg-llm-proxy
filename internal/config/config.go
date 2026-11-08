@@ -75,7 +75,8 @@ var Env = []string{
 	"LOG_LEVEL",
 }
 
-// ALLOWED_USER_IDS is not one any more (a test checks both, because `Env` is what PrintMissing walks and what a
+// ALLOWED_USER_IDS is not one any more (a test checks both, because `Env` is the table the startup summary and
+// the loader both read, and a renamed row must not stay in it under the old spelling).
 func HasRow(name string) bool {
 	var i = 0
 	for i < len(Env) {
@@ -485,7 +486,7 @@ func Legacy(raw map[string]string) []string {
 	for i < len(LegacyRows) {
 		var name = LegacyRows[i]
 		if strings.TrimSpace(raw[name]) != "" {
-			found = Push(found, fmt.Sprintf("ENV %s is not a row of the table of v1.1 : the value is ignored, the loader reads only the 29 rows of", name))
+			found = Push(found, fmt.Sprintf("ENV %s is not a row of the table of v1.1 : the value is ignored, the loader reads only the rows of internal/config.Env ", name))
 		}
 		i += 1
 	}
@@ -498,6 +499,11 @@ func Legacy(raw map[string]string) []string {
 func LoadFrom(raw map[string]string) (Config, []string) {
 	var cfg = Config{}
 	var problems = []string{}
+
+	// A secret may arrive as `<ROW>_FILE` instead of `<ROW>` (Docker secrets, systemd credentials). The expansion
+	// is part of the load, not of main, so every entry point — the bot, the CLIs, the tests — sees the same
+	// configuration and the same problems.
+	problems = append(problems, ExpandFileRows(raw, readSecretFile)...)
 
 	// v1.0 rows so that a stale .env or compose file cannot pretend to configure the bot.
 	var stale = Legacy(raw)

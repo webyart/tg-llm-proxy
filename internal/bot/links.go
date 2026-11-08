@@ -22,6 +22,11 @@ var (
 	errLinkNetworkBusy  = errors.New("слишком много одновременных сетевых чтений, попробуй позже")
 	errLinkNetworkLimit = errors.New("лимит сетевых чтений за минуту исчерпан, попробуй позже")
 	errLinkEmptyText    = errors.New("страница не содержит читаемого текста")
+	// errLinkReaderDisabled — the egress path is off; ErrLinkReaderDisabled is what leaves the package.
+	errLinkReaderDisabled = errors.New("чтение страниц выключено")
+	// ErrLinkReaderDisabled tells a caller (the Mini App answers 403, the bot prints the text) that saving
+	// a link reads the page and therefore obeys URL_READER_ENABLED and TOOLS_ENABLED.
+	ErrLinkReaderDisabled = fmt.Errorf("%w: сохранение ссылки читает страницу, нужны URL_READER_ENABLED=true и TOOLS_ENABLED=true", errLinkReaderDisabled)
 )
 
 func isLinkSummaryAction(action string) bool {
@@ -39,6 +44,12 @@ func bareHTTPSURL(text string) (string, bool) {
 }
 
 func (d *Dispatcher) fetchSavedLink(ctx context.Context, userID int64, rawURL string) (store.SavedLink, error) {
+	// The same policy switch the read_url tool obeys: an operator who turned the egress path off must not
+	// find it alive through «ссылки на потом». Without this check the Mini App and /links kept fetching
+	// arbitrary public pages while URL_READER_ENABLED=false said they could not.
+	if !d.deps.Cfg.ToolsEnabled || !d.deps.Cfg.URLReaderEnabled {
+		return store.SavedLink{}, ErrLinkReaderDisabled
+	}
 	canonical, err := canonicalHTTPSURL(rawURL)
 	if err != nil {
 		return store.SavedLink{}, err

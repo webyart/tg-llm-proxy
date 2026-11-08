@@ -268,7 +268,7 @@ func (r *telegramReplier) EditMenu(ctx context.Context, chatID int64, messageID 
 		params.ParseMode = ""
 		_, err = r.bot.EditMessageText(ctx, params)
 	}
-	if err != nil && strings.Contains(strings.ToLower(err.Error()), "message is not modified") {
+	if isNotModifiedError(err) {
 		return nil
 	}
 	return err
@@ -522,7 +522,11 @@ func (d *Dispatcher) showMoreMenu(ctx context.Context, ev Event, note ...string)
 	}
 	rows = append(rows, menuRow(menuButton("Напоминания", "menu:reminders")))
 	rows = append(rows, menuRow(menuButton("Задача", "menu:task")))
-	if d.deps.Cfg.MiniAppEnabled {
+	// The Mini App is a private-chat companion: its session is scoped to the chat, so in a group every
+	// allowlisted member would read (and could delete) the history, documents and reminders of the others.
+	// The switch lives here and in the ticket issuer, so neither a stale button nor a hand-made link can
+	// open it in a chat it does not belong to.
+	if d.deps.Cfg.MiniAppEnabled && ev.ChatID == ev.UserID {
 		button, ticketErr := d.miniAppButton(ev)
 		if ticketErr != nil {
 			return ticketErr

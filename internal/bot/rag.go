@@ -263,7 +263,9 @@ func ragCorpusWarning(result store.RAGSearchResult) string {
 	if !result.CorpusTruncated {
 		return ""
 	}
-	return fmt.Sprintf("Внимание: корпус документов неполный — просканированы только последние %d из %d фрагментов; более старые фрагменты не проверялись.", result.ScannedChunks, result.TotalChunks)
+	// Truncation now means "more chunks match the query than one search will score", not "the scan did not
+	// reach the whole corpus": the FTS index covers every chunk, and the cap is the candidate budget.
+	return fmt.Sprintf("Внимание: совпадений больше, чем помещается в один поиск — оценены первые %d из %d фрагментов корпуса.", result.ScannedChunks, result.TotalChunks)
 }
 
 func (d *Dispatcher) searchDocuments(ctx context.Context, ev Event, query string) error {

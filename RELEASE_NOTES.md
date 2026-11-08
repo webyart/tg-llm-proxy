@@ -1,3 +1,45 @@
+# tg-llm-proxy v1.40.0
+
+## Reliability (Sprint 1)
+
+- Watchdog стрима больше не может заблокировать чтение: отправка «пульса» стала неблокирующей, а при сработавшем watchdog цикл выходит немедленно. Раньше узкая гонка оставляла горутину, слот модели и per-chat lock занятыми до рестарта; регрессионный тест воспроизводит прежний дедлок.
+- Откат схемы запрещён: `store.GuardSchemaVersion` отказывает базе, которую мигрировал более новый бинарник, — в `ApplySchema`, `store.Open` и `VerifyBackup`. Откат образа теперь падает на старте с версиями в тексте, а не ломает INSERT в рантайме.
+- Дедупликация callback'ов больше не использует id меню-сообщения: второе модельное действие в том же меню (`/links menu:summary:N` после «Назад») больше не теряется молча.
+- Ожидание per-chat lock равно `TG_REPLY_DEADLINE_SECONDS` (2 с…3 мин) вместо фиксированных 2 с; «чат занят» и «очередь полна» различаются, а отказанный апдейт не подтверждается в `bot_state` и повторяется после рестарта.
+- Длины сообщений считаются в UTF-16 code units, как их считает Telegram: 2000 эмодзи больше не дают 400 «message is too long». «message is not modified» считается успехом и не глушит стрим.
+- Mini App: recover-middleware с JSON-конвертом и корректным статусом в аудите, per-user лимит на `/api/session`, создание задачи учитывает `RATE_LIMIT_PER_MINUTE`, Mini App доступен только в приватных чатах (`ErrPrivateOnly`).
+- Webhook без непустого секрета не поднимается; `/links add` и `POST /api/links` подчиняются `URL_READER_ENABLED` и `TOOLS_ENABLED`.
+- Миграция 012: индексы `messages(created_at)` и `chats(last_active_at)`; после prune выполняется `wal_checkpoint(TRUNCATE)`.
+
+## Data and model (Sprint 2)
+
+- Миграции 013–014: FTS5 external-content индексы `messages_fts` и `rag_chunks_fts` с триггерами синхронизации и однократным `rebuild` при открытии. `/search` ищет по всей истории чата (операторы FTS трактуются как текст, последнее слово — префикс), RAG-поиск получает кандидатов из индекса, сохраняя прежний Go-скоринг и совпадения по имени документа.
+- Экспорт истории больше не держит write-lock: чтение идёт по явному диапазону id без транзакции на пуле с `_txlock=immediate`.
+- Дневная квота возвращается, когда вызов модели или инструмента не дал результата; `/usage` показывает счётчики, по которым реально блокирует.
+- Retention расширен на `daily_quota_reservations`, терминальные `tasks`/`reminders` и `saved_links` (по умолчанию выключено), после удаления — `VACUUM`.
+- Модельный слой: `finish_reason` доходит до пользователя (`length`/`content_filter` дают notice), ошибка провайдера внутри 200-стрима распознаётся, многострочные `data:` склеиваются по спеке SSE, `Retry-After` и jitter используются при 429, ожидание слота ограничено `ErrNoRoom`, `stream_options.include_usage` запрашивается, обрабатывается только `choices[0]`, Transport запрещает редиректы.
+- README: 57 ENV-строк, честная семантика `STRATA_TIMEOUT_SECONDS`, `.env.example` больше не обещает fallback там, где загрузчик делает fail-fast.
+
+## Engineering (Sprint 3)
+
+- `main.go`: `main()` читает конфигурацию и вызывает `run()`; в `run()` нет `os.Exit`, база закрывается одним `defer`, ошибки возвращаются с контекстом. Вместо стены «ENV X is not set» — одна структурированная запись `configuration loaded` без секретов, плюс `miniapp_public_url` и предупреждение о корневом URL.
+- Два `sync.Map` уровня пакета заменены полями `Dispatcher` с ленивой инициализацией.
+- Секреты можно подавать файлом: `TELEGRAM_BOT_TOKEN_FILE`, `STRATA_API_KEY_FILE`, `WEBHOOK_SECRET_TOKEN_FILE` (абсолютный путь, ≤ 4 КиБ, конфликт ENV+файл — ошибка конфигурации).
+- CI: джоба `coverage` с порогом 70 % (измерено 77,7–94,4 % по пакетам), блокирующая джоба `production-image` со сборкой `--target run`, проверкой compose-оверлеев и пустого токена (на раннере без Docker — честный SKIP), advisory `golangci-lint`. GitHub Actions разделён: Windows выполняет host-этапы, добавлены `frontend` и `govulncheck`.
+- ADR-папка `docs/adr/` (шесть записей) вместо локального `PLAN.md`; `deploy/README.md` фиксирует статус исторических конфигураций gateway; Go-кэш вынесен из репозитория; `.gitignore` дополнен.
+
+## Incident: «no available server» в Mini App
+
+- Причина: `MINIAPP_PUBLIC_URL` без `/miniapp`, из-за чего Telegram открывал корень сайта, а `/` маршрутизируется на dashboard. Сам Mini App был исправен (`/miniapp/healthz` = 200 через шлюз).
+- Исправлено: значение конфигурации, предупреждение на старте, раздел диагностики в README. Проверено `getChatMenuButton` (URL с `/miniapp`), маршрутами шлюза и логами контейнера.
+
+## Deployment (2026-11-08)
+
+- Бэкап перед миграциями: `data/backups/pre-sprint-20261108-203534.db`.
+- Образ собран из этого дерева, контейнер пересоздан с overlay `websearch + tts + production`, миграции 12 → 14, `healthy`, `restarts=0`.
+- Проверено на копии production-базы: 238 сообщений, 3 RAG-чанка, FTS-строки совпадают, `integrity-check` обеих таблиц — ok, шесть триггеров, два маркера.
+- Поведенческие изменения для эксплуатации: `/links add` требует `URL_READER_ENABLED=true`; webhook требует непустой секрет; Mini App только в приватных чатах; схема 14 — откат на бинарник v1.39.0 заблокирован guard'ом, откатывайтесь вместе с бэкапом.
+
 # tg-llm-proxy v1.39.0
 
 ## Docker build serialization

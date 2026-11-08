@@ -317,12 +317,76 @@ type ragSearchCorpus struct {
 	totalTokens int
 }
 
+// ragDocumentsMatchingTerms — ids of the chat's documents whose NAME mentions one of the terms. The name is
+// part of the score, so a chunk of a document named after the question must stay a candidate even when its own
+// text does not repeat the word.
+func ragDocumentsMatchingTerms(ctx context.Context, db *sql.DB, chatID int64, terms []string) ([]int64, error) {
+	var wanted = make(map[string]bool, len(terms))
+	for _, term := range terms {
+		wanted[term] = true
+	}
+	rows, err := db.QueryContext(ctx, `SELECT id, name FROM rag_documents WHERE chat_id = ?`, chatID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, err
+		}
+		for _, token := range lexicalTokens(name) {
+			if wanted[token] {
+				ids = append(ids, id)
+				break
+			}
+		}
+	}
+	return ids, rows.Err()
+}
+
+// placeholders — "?,?,?" for an IN clause of n values.
+func placeholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
+}
+
+// readRAGSearchCorpus loads the chunks a query can plausibly match. Before the FTS index it loaded the newest
+// 10 000 chunks of the chat and tokenized every one of them in Go on every question; now the inverted index
+// picks the candidates (a superset of what the scorer accepts, because each term is asked for as a prefix) and
+// the same scorer runs over them only.
 func readRAGSearchCorpus(ctx context.Context, db *sql.DB, chatID int64, terms []string) (ragSearchCorpus, error) {
-	rows, err := db.QueryContext(ctx, `
-		SELECT c.id, c.document_id, d.name, c.content, totals.total_chunks FROM rag_chunks c
+	var totalChunks int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM rag_chunks WHERE chat_id = ?`, chatID).Scan(&totalChunks); err != nil {
+		return ragSearchCorpus{}, err
+	}
+	var expression, ok = ragSearchExpression(terms)
+	if !ok {
+		return ragSearchCorpus{documents: map[string]int{}, totalChunks: totalChunks}, nil
+	}
+	var nameDocuments, nameErr = ragDocumentsMatchingTerms(ctx, db, chatID, terms)
+	if nameErr != nil {
+		return ragSearchCorpus{}, nameErr
+	}
+
+	var query = `SELECT c.id, c.document_id, d.name, c.content FROM rag_chunks c
 		JOIN rag_documents d ON d.id = c.document_id
-		CROSS JOIN (SELECT COUNT(*) AS total_chunks FROM rag_chunks WHERE chat_id = ?) totals
-		WHERE c.chat_id = ? ORDER BY c.id DESC LIMIT ?`, chatID, chatID, ragSearchChunkScanLimit)
+		WHERE c.chat_id = ? AND (c.id IN (SELECT rowid FROM rag_chunks_fts WHERE rag_chunks_fts MATCH ?)`
+	var args = []any{chatID, expression}
+	if len(nameDocuments) > 0 {
+		query += ` OR c.document_id IN (` + placeholders(len(nameDocuments)) + `)`
+		for _, id := range nameDocuments {
+			args = append(args, id)
+		}
+	}
+	query += `) ORDER BY c.id DESC LIMIT ?`
+	args = append(args, ragSearchChunkScanLimit)
+
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return ragSearchCorpus{}, err
 	}
@@ -331,10 +395,10 @@ func readRAGSearchCorpus(ctx context.Context, db *sql.DB, chatID int64, terms []
 	for index, term := range terms {
 		termIndexes[term] = index
 	}
-	corpus := ragSearchCorpus{documents: map[string]int{}}
+	corpus := ragSearchCorpus{documents: map[string]int{}, totalChunks: totalChunks}
 	for rows.Next() {
 		var row ragScoredChunk
-		if err := rows.Scan(&row.id, &row.DocumentID, &row.Name, &row.Content, &corpus.totalChunks); err != nil {
+		if err := rows.Scan(&row.id, &row.DocumentID, &row.Name, &row.Content); err != nil {
 			return ragSearchCorpus{}, err
 		}
 		row.tokens, row.occurred = lexicalTokenOccurrences(row.Content, termIndexes)

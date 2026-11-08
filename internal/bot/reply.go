@@ -32,9 +32,60 @@ func Escape(text string, parseMode string) string {
 	}
 }
 
-// Telegram counts symbols, so `len([]rune)` is the measure and a byte cut would split кириллица).
-// A whitespace boundary inside the last fifth of the chunk is preferred; if none exists the chunk is
-// текст»).
+// MessageUnits — the length Telegram actually measures. Limits and entity offsets are counted in UTF-16
+// code units, not in runes: a character outside the BMP (an emoji, a rarer CJK ideograph) costs two. A
+// chunk sized in runes therefore overflows a 4096-unit message with 2049+ emoji, and Telegram answers
+// «message is too long» for text that looked short in Go.
+func MessageUnits(text string) int { return unitsOf([]rune(text)) }
+
+// unitsOf — UTF-16 code units of a rune slice.
+func unitsOf(runes []rune) int {
+	var units = 0
+	for _, r := range runes {
+		units++
+		if r > 0xFFFF {
+			units++
+		}
+	}
+	return units
+}
+
+// cutRunesToUnits — the longest prefix of runes that fits maxUnits UTF-16 units, cut on a rune boundary.
+func cutRunesToUnits(runes []rune, maxUnits int) []rune {
+	var units = 0
+	var i = 0
+	for i < len(runes) {
+		var next = units + 1
+		if runes[i] > 0xFFFF {
+			next++
+		}
+		if next > maxUnits {
+			return runes[:i]
+		}
+		units = next
+		i++
+	}
+	return runes
+}
+
+// unitPrefix — cumulative UTF-16 units: prefix[i] is the unit count of runes[:i]. One pass, so the cut
+// below does not re-measure every candidate.
+func unitPrefix(runes []rune) []int {
+	var prefix = make([]int, len(runes)+1)
+	var i = 0
+	for i < len(runes) {
+		prefix[i+1] = prefix[i] + 1
+		if runes[i] > 0xFFFF {
+			prefix[i+1]++
+		}
+		i++
+	}
+	return prefix
+}
+
+// Chunk — the budget is Telegram's: `maxRunes` names the row of .env, and the row is measured in the
+// units Telegram counts. A whitespace boundary inside the last fifth of the chunk is preferred; if none
+// exists the chunk is cut hard at the budget.
 func Chunk(text string, maxRunes int) []string {
 	return chunk([]rune(text), maxRunes, false)
 }
@@ -53,45 +104,56 @@ func chunk(runes []rune, maxRunes int, escapeAware bool) []string {
 	if len(runes) == 0 {
 		return nil
 	}
-	if len(runes) <= maxRunes {
+	var prefix = unitPrefix(runes)
+	var total = prefix[len(runes)]
+	if total <= maxRunes {
 		return []string{string(runes)}
 	}
 
 	var out = []string{}
-	var rest = runes
+	var start = 0
 	var window = maxRunes / 5
 	if window < 1 {
 		window = 1
 	}
-	for len(rest) > 0 {
-		if len(rest) <= maxRunes {
-			out = append(out, string(rest))
+	for start < len(runes) {
+		var base = prefix[start]
+		if total-base <= maxRunes {
+			out = append(out, string(runes[start:]))
 			break
 		}
-		var cut = maxRunes
-		var limit = maxRunes - window
-		if limit < 0 {
-			limit = 0
+		// end — the first rune boundary past the budget; cut below never exceeds it.
+		var end = start
+		for end < len(runes) && prefix[end+1]-base <= maxRunes {
+			end++
 		}
-		var i = maxRunes - 1
-		for i > limit {
-			if unicode.IsSpace(rest[i]) {
+		if end == start {
+			// One character costs more than the whole budget. It still has to leave, or the loop
+			// would never advance.
+			end = start + 1
+		}
+		var floorUnits = maxRunes - window
+		var cut = end
+		var i = end - 1
+		for i > start {
+			if prefix[i]-base < floorUnits {
+				break
+			}
+			if unicode.IsSpace(runes[i]) {
+				cut = i + 1
 				break
 			}
 			i--
 		}
-		if i > limit {
-			cut = i + 1
-		}
-		if escapeAware && cut > 1 && trailingEscapes(rest[:cut])%2 == 1 {
+		if escapeAware && cut > start+1 && trailingEscapes(runes[start:cut])%2 == 1 {
 			// The chunk would end in the middle of an escape pair — move the pair to the next chunk.
 			cut--
 		}
-		out = append(out, string(rest[:cut]))
-		rest = rest[cut:]
+		out = append(out, string(runes[start:cut]))
+		start = cut
 		// the whitespace the cut landed on belongs to no chunk
-		for len(rest) > 0 && unicode.IsSpace(rest[0]) {
-			rest = rest[1:]
+		for start < len(runes) && unicode.IsSpace(runes[start]) {
+			start++
 		}
 	}
 	if escapeAware && len(out) > 0 {
@@ -234,6 +296,13 @@ const TruncatedMarker = "… (текст обрезан по MAX_INPUT_CHARS)"
 
 func isParseEntitiesError(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "can't parse entities")
+}
+
+// isNotModifiedError — Telegram answers 400 «message is not modified» when an edit repeats the text that
+// is already in the message. That is an edit that succeeded, not a delivery failure: counting it as one
+// silenced a healthy stream after three harmless 400s, leaving a placeholder on screen forever.
+func isNotModifiedError(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "message is not modified")
 }
 
 func plainForParseFallback(text string, parseMode string) string {

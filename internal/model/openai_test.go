@@ -296,8 +296,9 @@ func TestEveryAttemptFailsWritesOnlyEvents(t *testing.T) {
 }
 
 // TestClientErrorIsNotRetried — a 4xx repeats nothing: a wrong key or a wrong path cannot succeed on
+// the second attempt. 429 is the one exception and has a test of its own: the provider named a wait.
 func TestClientErrorIsNotRetried(t *testing.T) {
-	for _, status := range []int{400, 401, 403, 404, 429} {
+	for _, status := range []int{400, 401, 403, 404} {
 		var fake = testutil.NewStrata(t, "", testutil.StrataReply{Status: status})
 		var c = clientFor(t, fake, Options{Attempts: 3, Backoff: 5 * time.Millisecond})
 

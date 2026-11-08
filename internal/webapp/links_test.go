@@ -45,7 +45,7 @@ func webappLinkExists(t *testing.T, app *App, chatID int64, linkID int64) bool {
 func TestLinkDeleteIsScopedAndUsesCanonicalID(t *testing.T) {
 	app, server := newTestApp(t)
 	bearer := launchSession(t, app, server)
-	otherBearer := launchSessionFor(t, app, server, testChatID+1, testUserID)
+	otherBearer := launchSessionFor(t, app, server, otherTestUserID, otherTestUserID)
 	created := createWebappLink(t, app, testChatID, "current")
 	other := createWebappLink(t, app, testChatID+1, "other")
 	path := fmt.Sprintf("/api/links/%d/delete", created.ID)

@@ -26,7 +26,7 @@ func TestMutationRateLimitIsPerUserAndDoesNotLimitReads(t *testing.T) {
 	otherUserID := testUserID + 1
 	app.auth.authorize = func(userID int64) bool { return userID == testUserID || userID == otherUserID }
 	bearer := launchSession(t, app, server)
-	otherBearer := launchSessionFor(t, app, server, testChatID+1, otherUserID)
+	otherBearer := launchSessionFor(t, app, server, otherUserID, otherUserID)
 
 	for index := 0; index < mutationRateLimit; index++ {
 		status, body := putSettings(t, server.URL, "/api/settings/stream", bearer, `{"enabled":true}`)

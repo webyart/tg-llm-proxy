@@ -9,6 +9,8 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"errors"
+	"fmt"
 )
 
 //go:embed migrations/001_init.sql
@@ -44,9 +46,18 @@ var DailyQuotaReservationsSQL string
 //go:embed migrations/011_message_user_attribution.sql
 var MessageUserAttributionSQL string
 
+//go:embed migrations/012_hot_path_indexes.sql
+var HotPathIndexesSQL string
+
+//go:embed migrations/013_message_search_index.sql
+var MessageSearchIndexSQL string
+
+//go:embed migrations/014_rag_search_index.sql
+var RAGSearchIndexSQL string
+
 // MigrationSQL is the ordered, append-only migration history. The slice index plus one is the permanent schema
 // version recorded in schema_migrations; existing entries must never be edited after deployment.
-var MigrationSQL = []string{InitSQL, ChatSettingsSQL, ChatStreamingSQL, ChatPersonasSQL, RAGDocumentsSQL, EventIndexesSQL, RemindersSQL, SavedLinksSQL, TasksSQL, DailyQuotaReservationsSQL, MessageUserAttributionSQL}
+var MigrationSQL = []string{InitSQL, ChatSettingsSQL, ChatStreamingSQL, ChatPersonasSQL, RAGDocumentsSQL, EventIndexesSQL, RemindersSQL, SavedLinksSQL, TasksSQL, DailyQuotaReservationsSQL, MessageUserAttributionSQL, HotPathIndexesSQL, MessageSearchIndexSQL, RAGSearchIndexSQL}
 
 // SchemaVersion returns the newest applied migration, or zero for a pre-versioning backup.
 func SchemaVersion(ctx context.Context, db *sql.DB) (int, error) {
@@ -62,4 +73,27 @@ func SchemaVersion(ctx context.Context, db *sql.DB) (int, error) {
 		return 0, err
 	}
 	return version, nil
+}
+
+// ErrSchemaDowngrade — the database carries a schema version this binary does not know.
+var ErrSchemaDowngrade = errors.New("the database schema is newer than this binary")
+
+// SupportedSchemaVersion — the newest migration compiled into this binary.
+func SupportedSchemaVersion() int { return len(MigrationSQL) }
+
+// GuardSchemaVersion refuses a database that a newer release already migrated.
+//
+// Without this check a rollback of the image silently ran against a schema it does not know: the extra
+// columns are invisible to the older code, and the first INSERT that omits a NOT NULL column of the new
+// schema fails at request time instead of at start time. The failure belongs to the start, where an
+// operator can act on it — with the version numbers, in one line.
+func GuardSchemaVersion(ctx context.Context, db *sql.DB) error {
+	version, err := SchemaVersion(ctx, db)
+	if err != nil {
+		return fmt.Errorf("store: the schema version could not be read: %w", err)
+	}
+	if supported := len(MigrationSQL); version > supported {
+		return fmt.Errorf("%w: the database is at version %d, this binary supports %d — a newer release migrated it; deploy that release or restore a backup it wrote", ErrSchemaDowngrade, version, supported)
+	}
+	return nil
 }

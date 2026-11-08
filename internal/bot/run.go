@@ -431,6 +431,11 @@ func (r *telegramReplier) EditStreamMessage(ctx context.Context, chatID int64, m
 		}
 		err = fallbackErr
 	}
+	if isNotModifiedError(err) {
+		// The message already carries exactly this text: the rewrite did its job. Counting the harmless
+		// 400 as a failure used to mute a perfectly healthy stream after three of them.
+		return nil
+	}
 	return err
 }
 

@@ -1,5 +1,8 @@
 module bot
 
+// A full patch version in the go line is the minimum toolchain: Go refuses anything older. It does not CAP the
+// compiler — a newer local Go still wins — so CI pins the exact one through its image (golang:1.27-alpine and
+// actions/setup-go), which is why a redundant `toolchain go1.27.3` line is not kept here (go mod tidy removes it).
 go 1.27.3
 
 require (

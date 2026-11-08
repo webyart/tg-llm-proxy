@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"strconv"
-	"strings"
 )
 
 func ExportMessages(ctx context.Context, db *sql.DB, chatID int64, max int) ([]Message, error) {
@@ -40,13 +39,13 @@ func StreamExportMessagesBounded(ctx context.Context, db *sql.DB, chatID int64, 
 	if max <= 0 {
 		return MessageExportWindow{}, false, errors.New("export limit must be positive")
 	}
-	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return MessageExportWindow{}, false, err
-	}
-	defer tx.Rollback()
+	// No transaction here on purpose. The runtime DSN sets `_txlock=immediate`, so ANY transaction of this pool
+	// begins by taking the write lock — a 10 000-row export in one transaction froze every write of the bot for
+	// its whole duration. The export is instead a sequence of short reads bounded by an explicit id range: the
+	// range is fixed by the window queries below, so the file still describes one contiguous slice of history,
+	// and under WAL each statement sees a consistent snapshot without blocking writers.
 	var total int64
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM (SELECT id FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?)`, chatID, max+1).Scan(&total); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM (SELECT id FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?)`, chatID, max+1).Scan(&total); err != nil {
 		return MessageExportWindow{}, false, err
 	}
 	window := MessageExportWindow{}
@@ -54,17 +53,17 @@ func StreamExportMessagesBounded(ctx context.Context, db *sql.DB, chatID int64, 
 		if err := onWindow(window, false); err != nil {
 			return window, false, err
 		}
-		return window, false, tx.Commit()
+		return window, false, nil
 	}
 	windowCount := total
 	if windowCount > int64(max) {
 		windowCount = int64(max)
 	}
 	window.Count = int(windowCount)
-	if err := tx.QueryRowContext(ctx, `SELECT id, created_at FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT 1`, chatID).Scan(&window.NewestID, &window.NewestCreatedAt); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT id, created_at FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT 1`, chatID).Scan(&window.NewestID, &window.NewestCreatedAt); err != nil {
 		return MessageExportWindow{}, false, err
 	}
-	if err := tx.QueryRowContext(ctx, `SELECT id, created_at FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?`, chatID, windowCount-1).Scan(&window.OldestID, &window.OldestCreatedAt); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT id, created_at FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?`, chatID, windowCount-1).Scan(&window.OldestID, &window.OldestCreatedAt); err != nil {
 		return MessageExportWindow{}, false, err
 	}
 	truncated := total > int64(max)
@@ -73,14 +72,14 @@ func StreamExportMessagesBounded(ctx context.Context, db *sql.DB, chatID int64, 
 	}
 	if contentLimit > 0 {
 		var oversized int64
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE chat_id = ? AND id >= ? AND id <= ? AND length(content) > ?`, chatID, window.OldestID, window.NewestID, contentLimit).Scan(&oversized); err != nil {
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE chat_id = ? AND id >= ? AND id <= ? AND length(content) > ?`, chatID, window.OldestID, window.NewestID, contentLimit).Scan(&oversized); err != nil {
 			return window, truncated, err
 		}
 		if oversized > 0 {
 			return window, truncated, ErrExportContentTooLarge
 		}
 	}
-	rows, err := tx.QueryContext(ctx, `
+	rows, err := db.QueryContext(ctx, `
 		SELECT id, chat_id, role,
 			CASE WHEN ? > 0 AND length(content) > ? THEN '' ELSE content END,
 			tokens_in, tokens_out, model, latency_ms, telegram_message_id, created_at, length(content)
@@ -102,9 +101,6 @@ func StreamExportMessagesBounded(ctx context.Context, db *sql.DB, chatID int64, 
 		return window, truncated, err
 	}
 	if err := rows.Close(); err != nil {
-		return window, truncated, err
-	}
-	if err := tx.Commit(); err != nil {
 		return window, truncated, err
 	}
 	return window, truncated, nil
@@ -142,34 +138,41 @@ func scanExportMessage(rows *sql.Rows, contentLimit int64) (Message, error) {
 	return row, nil
 }
 
+// SearchMessages — full-text search over the history of one chat.
+//
+// It used to read the newest 10 000 messages of the chat and call strings.Contains on each one: every search
+// cost tens of megabytes and a full scan, and a match older than the window could not be found at all. The
+// FTS5 index (see fts.go) answers the same question from the index alone, in the whole history.
 func SearchMessages(ctx context.Context, db *sql.DB, chatID int64, query string, limit int) ([]Message, error) {
-	needle := strings.ToLower(strings.TrimSpace(query))
-	if needle == "" {
+	var expression, ok = messageSearchExpression(query)
+	if !ok {
 		return []Message{}, nil
 	}
 	if limit <= 0 {
 		return []Message{}, nil
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, chat_id, user_id, role, content, tokens_in, tokens_out, model, latency_ms, telegram_message_id, created_at
-		FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT 10000`, chatID)
+		SELECT m.id, m.chat_id, m.user_id, m.role, m.content, m.tokens_in, m.tokens_out, m.model, m.latency_ms, m.telegram_message_id, m.created_at
+		FROM messages_fts
+		JOIN messages m ON m.id = messages_fts.rowid
+		WHERE messages_fts MATCH ? AND m.chat_id = ?
+		ORDER BY m.id DESC LIMIT ?`, expression, chatID, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	matches := make([]Message, 0, limit)
-	for len(matches) < limit && rows.Next() {
-		row, err := scanSearchMessage(rows)
-		if err != nil {
-			return nil, err
+	for rows.Next() {
+		row, scanErr := scanSearchMessage(rows)
+		if scanErr != nil {
+			return nil, scanErr
 		}
-		if strings.Contains(strings.ToLower(row.Content), needle) {
-			matches = append(matches, row)
-		}
+		matches = append(matches, row)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	// Oldest first: the caller prints the result in conversation order.
 	for i, j := 0, len(matches)-1; i < j; i, j = i+1, j-1 {
 		matches[i], matches[j] = matches[j], matches[i]
 	}

@@ -43,7 +43,15 @@ func TestSchemaVersionAdoptsAPreVersioningDatabaseWithoutLosingRows(t *testing.T
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(ctx, `CREATE TABLE chats (chat_id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL)`); err != nil {
+	// A pre-versioning database is one this project's own first schema wrote: `chats` already carries the
+	// columns later migrations index and read, and only `schema_migrations` is missing.
+	if _, err := db.ExecContext(ctx, `CREATE TABLE chats (
+		chat_id        INTEGER PRIMARY KEY,
+		user_id        INTEGER NOT NULL,
+		title          TEXT NOT NULL DEFAULT '',
+		created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+		last_active_at TEXT NOT NULL DEFAULT (datetime('now'))
+	)`); err != nil {
 		t.Fatalf("create old schema: %v", err)
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO chats (chat_id, user_id) VALUES (42, 7)`); err != nil {
@@ -91,30 +99,20 @@ func TestMigrationFailureRollsBackStatementsAndVersion(t *testing.T) {
 
 func TestEventIndexesUpgradePreservesVersion5Data(t *testing.T) {
 	ctx := context.Background()
-	db, err := OpenMemory(ctx, t.Name())
-	if err != nil {
-		t.Fatalf("OpenMemory: %v", err)
-	}
-	defer db.Close()
+	db, restore := openMemoryAtVersion(t, 5)
 
-	migrations := MigrationSQL
-	MigrationSQL = append([]string(nil), migrations[:5]...)
-	defer func() { MigrationSQL = migrations }()
-	if err := ApplySchema(ctx, db); err != nil {
-		t.Fatalf("apply version 5 schema: %v", err)
-	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO events (id, user_id, kind, detail, created_at)
 		VALUES (23, 7, 'usage', 'rag', '2026-01-02 03:04:05')`); err != nil {
 		t.Fatalf("seed version 5 event: %v", err)
 	}
 
-	MigrationSQL = migrations
+	restore()
 	if err := ApplySchema(ctx, db); err != nil {
 		t.Fatalf("upgrade version 5 schema: %v", err)
 	}
 	version, err := SchemaVersion(ctx, db)
-	if err != nil || version != len(migrations) {
-		t.Fatalf("upgraded SchemaVersion=%d err=%v, want %d", version, err, len(migrations))
+	if err != nil || version != len(MigrationSQL) {
+		t.Fatalf("upgraded SchemaVersion=%d err=%v, want %d", version, err, len(MigrationSQL))
 	}
 	var event struct {
 		id        int64
@@ -171,18 +169,8 @@ func TestEventIndexesUpgradePreservesVersion5Data(t *testing.T) {
 
 func TestAccountingMigrationsPreserveHistoryAndAddDailyIndexes(t *testing.T) {
 	ctx := context.Background()
-	db, err := OpenMemory(ctx, t.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db, restore := openMemoryAtVersion(t, 9)
 
-	migrations := MigrationSQL
-	MigrationSQL = append([]string(nil), migrations[:9]...)
-	defer func() { MigrationSQL = migrations }()
-	if err := ApplySchema(ctx, db); err != nil {
-		t.Fatalf("apply version 9: %v", err)
-	}
 	if err := EnsureChat(ctx, db, -100, 11, "group"); err != nil {
 		t.Fatal(err)
 	}
@@ -192,13 +180,13 @@ func TestAccountingMigrationsPreserveHistoryAndAddDailyIndexes(t *testing.T) {
 		t.Fatalf("seed historical assistant: %v", err)
 	}
 
-	MigrationSQL = migrations
+	restore()
 	if err := ApplySchema(ctx, db); err != nil {
 		t.Fatalf("apply accounting migrations: %v", err)
 	}
 	version, err := SchemaVersion(ctx, db)
-	if err != nil || version != 11 {
-		t.Fatalf("SchemaVersion=%d err=%v, want 11", version, err)
+	if err != nil || version != len(MigrationSQL) {
+		t.Fatalf("SchemaVersion=%d err=%v, want %d", version, err, len(MigrationSQL))
 	}
 	var historicalUser int64
 	if err := db.QueryRowContext(ctx, `SELECT user_id FROM messages WHERE content = 'historical unknown owner'`).Scan(&historicalUser); err != nil || historicalUser != 0 {

@@ -50,15 +50,22 @@ func TestRAGSearchDetailedReportsTruncatedCorpus(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
+	// The FTS index answers "which chunks mention needle" from the inverted index, so the whole 10 001-chunk
+	// corpus is searchable and only the two matching chunks are scored. That is the change: the old code
+	// loaded the newest 10 000 chunks, never saw the oldest match, and reported the corpus as truncated.
 	detailed, err := SearchRAGChunksDetailed(ctx, db, 130, "needle", 5, 2000)
 	if err != nil {
 		t.Fatalf("SearchRAGChunksDetailed: %v", err)
 	}
-	if detailed.TotalChunks != ragSearchChunkScanLimit+1 || detailed.ScannedChunks != ragSearchChunkScanLimit || !detailed.CorpusTruncated {
+	if detailed.TotalChunks != ragSearchChunkScanLimit+1 || detailed.ScannedChunks != 2 || detailed.CorpusTruncated {
 		t.Fatalf("unexpected corpus statistics: %+v", detailed)
 	}
-	if len(detailed.Chunks) != 1 || detailed.Chunks[0].Name != "recent.txt" {
-		t.Fatalf("unexpected newest-window results: %+v", detailed.Chunks)
+	if len(detailed.Chunks) != 2 {
+		t.Fatalf("both matching chunks must be found in the whole corpus: %+v", detailed.Chunks)
+	}
+	var names = []string{detailed.Chunks[0].Name, detailed.Chunks[1].Name}
+	if names[0] != "old.txt" && names[1] != "old.txt" {
+		t.Fatalf("the oldest matching chunk is missing: %+v", detailed.Chunks)
 	}
 	compatible, err := SearchRAGChunks(ctx, db, 130, "needle", 5, 2000)
 	if err != nil || len(compatible) != len(detailed.Chunks) || compatible[0] != detailed.Chunks[0] {
@@ -74,9 +81,9 @@ func TestRAGSearchDetailedReportsTruncatedCorpus(t *testing.T) {
 	}
 	exact, err := SearchRAGChunksDetailed(ctx, db, 130, "needle", 5, 2000)
 	if err != nil {
-		t.Fatalf("exact-limit search: %v", err)
+		t.Fatalf("search after deletion: %v", err)
 	}
-	if exact.TotalChunks != ragSearchChunkScanLimit || exact.ScannedChunks != ragSearchChunkScanLimit || exact.CorpusTruncated {
-		t.Fatalf("exact-limit corpus statistics: %+v", exact)
+	if exact.TotalChunks != ragSearchChunkScanLimit || exact.ScannedChunks != 1 || exact.CorpusTruncated {
+		t.Fatalf("corpus statistics after deletion: %+v", exact)
 	}
 }

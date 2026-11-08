@@ -216,7 +216,10 @@ func TestSearchMessagesEarlyLateAndNoMatch(t *testing.T) {
 	}
 }
 
-func TestSearchMessagesNewest10000AndExactLimit(t *testing.T) {
+// TestSearchMessagesCoversTheWholeHistoryAndExactLimit — the FTS index replaced a scan of the newest 10 000
+// messages, so a match at the very beginning of a long chat is now found, and `limit` still caps the newest
+// matches, returned oldest first.
+func TestSearchMessagesCoversTheWholeHistoryAndExactLimit(t *testing.T) {
 	ctx := context.Background()
 	db, err := OpenMemory(ctx, "history_search_window_"+t.Name())
 	if err != nil {
@@ -235,8 +238,8 @@ func TestSearchMessagesNewest10000AndExactLimit(t *testing.T) {
 	})
 
 	matches, err := SearchMessages(ctx, db, 75, "outside", 10)
-	if err != nil || len(matches) != 0 {
-		t.Fatalf("oldest row escaped newest-10000 scope: matches=%+v err=%v", matches, err)
+	if err != nil || len(matches) != 1 || matches[0].ID != 1 {
+		t.Fatalf("the oldest row of a long chat was not found: matches=%+v err=%v", matches, err)
 	}
 	matches, err = SearchMessages(ctx, db, 75, "needle", 3)
 	if err != nil {

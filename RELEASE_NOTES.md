@@ -1,3 +1,24 @@
+# tg-llm-proxy v1.43.0
+
+## Mini App: mobile-first redesign
+
+- The Mini App is usable on a 320–400 px phone: compact header, a scrollable segmented tab bar instead of an overflowing row, content that scrolls in its own region, a composer pinned above the safe-area inset, an auto-growing textarea and 44 px touch targets. The language select is styled as a pill (`appearance: none`, custom chevron) instead of a native control that ignored the theme.
+- Chat answers render Markdown in the Mini App (`**bold**`, *italic*, inline code, fenced code blocks, lists, blockquotes, links) with HTML escaping first; partial Markdown during a stream renders without broken tags. Telegram already formatted these answers — the Mini App now matches.
+- 👍/👎 work on assistant messages in the chat tab, not only in history: the SSE `done` event carries the stored message id and the buttons call the existing feedback endpoint.
+
+## Message ordering when the next question arrives mid-answer
+
+- A streaming placeholder (or draft) keeps the position where the answer started, so a final edit could leave the answer ABOVE a question typed while the answer was being produced. The dispatcher now counts admitted incoming messages per chat; if the next one arrived during the stream, the finished answer is sent as a new message below it and the placeholder is removed. Callbacks (approvals) do not count as a new turn.
+- `STREAM_DRAFTS_ENABLED` (default false) makes Bot API draft previews opt-in: a draft cannot be deleted from the chat, so it stays at its starting position until Telegram expires it. The edit path remains the default.
+
+## RAG candidates ranked by SQLite
+
+- RAG lookup asks SQLite for the best FTS5 `bm25()` matches (limit 300) instead of scoring a wide slice in Go; document-name matches keep a reserved place and an invalid FTS expression degrades to the name search. Benchmark on 10k matching chunks: ~2–3× faster, 32× less memory, 30× fewer allocations. No migration.
+
+## Testing
+
+- Unit and integration suites are run in the Docker test image (`docker build --target test`, `docker run … go test`), not by executing `webapp.test` on the Windows host.
+
 # tg-llm-proxy v1.42.0
 
 ## Feedback on answers (Sprint 6)

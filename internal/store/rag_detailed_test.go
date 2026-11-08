@@ -38,7 +38,7 @@ func TestRAGSearchDetailedReportsTruncatedCorpus(t *testing.T) {
 		tx.Rollback()
 		t.Fatalf("LastInsertId: %v", err)
 	}
-	filler := make([]string, ragSearchChunkScanLimit-1)
+	filler := make([]string, ragCandidateLimit*10)
 	for index := range filler {
 		filler[index] = fmt.Sprintf("ordinary unrelated filler %d", index)
 	}
@@ -50,14 +50,14 @@ func TestRAGSearchDetailedReportsTruncatedCorpus(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	// The FTS index answers "which chunks mention needle" from the inverted index, so the whole 10 001-chunk
-	// corpus is searchable and only the two matching chunks are scored. That is the change: the old code
-	// loaded the newest 10 000 chunks, never saw the oldest match, and reported the corpus as truncated.
+	// The FTS index answers "which chunks mention needle" from the inverted index, so the whole
+	// ragCandidateLimit*10+1-chunk corpus is searchable and only the two matching chunks are scored. That is
+	// the change: the old code loaded the newest chunks, never saw the oldest match, and reported truncation.
 	detailed, err := SearchRAGChunksDetailed(ctx, db, 130, "needle", 5, 2000)
 	if err != nil {
 		t.Fatalf("SearchRAGChunksDetailed: %v", err)
 	}
-	if detailed.TotalChunks != ragSearchChunkScanLimit+1 || detailed.ScannedChunks != 2 || detailed.CorpusTruncated {
+	if detailed.TotalChunks != ragCandidateLimit*10+2 || detailed.ScannedChunks != 2 || detailed.CorpusTruncated {
 		t.Fatalf("unexpected corpus statistics: %+v", detailed)
 	}
 	if len(detailed.Chunks) != 2 {
@@ -83,7 +83,7 @@ func TestRAGSearchDetailedReportsTruncatedCorpus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("search after deletion: %v", err)
 	}
-	if exact.TotalChunks != ragSearchChunkScanLimit || exact.ScannedChunks != 1 || exact.CorpusTruncated {
+	if exact.TotalChunks != ragCandidateLimit*10+1 || exact.ScannedChunks != 1 || exact.CorpusTruncated {
 		t.Fatalf("corpus statistics after deletion: %+v", exact)
 	}
 }

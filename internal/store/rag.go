@@ -23,9 +23,23 @@ const (
 )
 
 const (
-	ragSearchChunkScanLimit = 10000
+	// ragCandidateLimit bounds how many chunks the Go scorer reads. bm25() ranks every matching chunk in SQL,
+	// so the cap keeps the best candidates instead of the newest rows: 300 is far above the handful a question
+	// returns, yet bounded on a 10 000-chunk corpus. It is also the reported "scored chunks" ceiling.
+	ragCandidateLimit       = 300
 	ragChunkInsertBatchSize = 100
 )
+
+// ragFTSCandidateQuery is the bm25-ranked branch of the candidate union. MATCH and the chat filter are bound
+// parameters; user text never reaches the SQL string. ORDER BY rank is ascending because FTS5's bm25() is
+// negative and more negative means a better match.
+const ragFTSCandidateQuery = `SELECT c.id, c.document_id, d.name, c.content, bm25(rag_chunks_fts) AS rank
+	FROM rag_chunks_fts
+	JOIN rag_chunks c ON c.id = rag_chunks_fts.rowid
+	JOIN rag_documents d ON d.id = c.document_id
+	WHERE rag_chunks_fts MATCH ? AND c.chat_id = ?
+	ORDER BY rank
+	LIMIT ?`
 
 // BM25-lite weights of SearchRAGChunks. ragB is 1 so chunk length is normalised in full: a chunk
 // gains only from the terms it actually covers, never from repeating one term. ragScoreScale keeps
@@ -355,10 +369,11 @@ func placeholders(n int) string {
 	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }
 
-// readRAGSearchCorpus loads the chunks a query can plausibly match. Before the FTS index it loaded the newest
-// 10 000 chunks of the chat and tokenized every one of them in Go on every question; now the inverted index
-// picks the candidates (a superset of what the scorer accepts, because each term is asked for as a prefix) and
-// the same scorer runs over them only.
+// readRAGSearchCorpus loads the chunks the Go scorer will rank. The FTS5 branch asks the database for the
+// bm25-best chunks of the chat, so a 10 000-chunk corpus is no longer tokenized in Go on every question. The
+// name branch is a separate union: a chunk whose own text does not mention the term still matters when its
+// document is named after the question, and name matches are rare enough to reserve room for them. When both
+// branches together exceed ragCandidateLimit, the weakest bm25 tail gives way first.
 func readRAGSearchCorpus(ctx context.Context, db *sql.DB, chatID int64, terms []string) (ragSearchCorpus, error) {
 	var totalChunks int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM rag_chunks WHERE chat_id = ?`, chatID).Scan(&totalChunks); err != nil {
@@ -373,65 +388,150 @@ func readRAGSearchCorpus(ctx context.Context, db *sql.DB, chatID int64, terms []
 		return ragSearchCorpus{}, nameErr
 	}
 
-	var query = `SELECT c.id, c.document_id, d.name, c.content FROM rag_chunks c
-		JOIN rag_documents d ON d.id = c.document_id
-		WHERE c.chat_id = ? AND (c.id IN (SELECT rowid FROM rag_chunks_fts WHERE rag_chunks_fts MATCH ?)`
-	var args = []any{chatID, expression}
-	if len(nameDocuments) > 0 {
-		query += ` OR c.document_id IN (` + placeholders(len(nameDocuments)) + `)`
-		for _, id := range nameDocuments {
-			args = append(args, id)
+	ftsCandidates, err := readRAGFTSCandidates(ctx, db, chatID, expression)
+	if err != nil {
+		if !ragCandidateExpressionRejected(err) {
+			return ragSearchCorpus{}, err
 		}
+		// A search must not fail because the index rejected the expression: the name union can still answer.
+		ftsCandidates = nil
 	}
-	query += `) ORDER BY c.id DESC LIMIT ?`
-	args = append(args, ragSearchChunkScanLimit)
-
-	rows, err := db.QueryContext(ctx, query, args...)
+	nameCandidates, err := readRAGNameCandidates(ctx, db, nameDocuments, ftsCandidates)
 	if err != nil {
 		return ragSearchCorpus{}, err
 	}
-	defer rows.Close()
+	if len(nameCandidates) > ragCandidateLimit {
+		nameCandidates = nameCandidates[:ragCandidateLimit]
+	}
+	if budget := ragCandidateLimit - len(nameCandidates); len(ftsCandidates) > budget {
+		ftsCandidates = ftsCandidates[:budget]
+	}
+
 	termIndexes := make(map[string]int, len(terms))
 	for index, term := range terms {
 		termIndexes[term] = index
 	}
 	corpus := ragSearchCorpus{documents: map[string]int{}, totalChunks: totalChunks}
+	for _, row := range ftsCandidates {
+		ragAccumulateCandidate(&corpus, row, terms, termIndexes)
+	}
+	for _, row := range nameCandidates {
+		ragAccumulateCandidate(&corpus, row, terms, termIndexes)
+	}
+	return corpus, nil
+}
+
+// readRAGFTSCandidates runs the bm25-ranked candidate query. A database written before the index migration (or
+// a broken MATCH expression) is reported through ragCandidateExpressionRejected, not as a search failure.
+func readRAGFTSCandidates(ctx context.Context, db *sql.DB, chatID int64, expression string) ([]ragScoredChunk, error) {
+	rows, err := db.QueryContext(ctx, ragFTSCandidateQuery, expression, chatID, ragCandidateLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var candidates []ragScoredChunk
+	for rows.Next() {
+		var row ragScoredChunk
+		var rank float64
+		if err := rows.Scan(&row.id, &row.DocumentID, &row.Name, &row.Content, &rank); err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, row)
+	}
+	return candidates, rows.Err()
+}
+
+// ragNameCandidateQuery is the second branch of the candidate union: every chunk of a name-matching document.
+// The IN list is placeholders only; document ids are bound arguments. The chat filter is not repeated here
+// because ragDocumentsMatchingTerms already selected the ids from this chat, and the document_id index of
+// rag_chunks is what the plan can use without walking every chunk of the chat.
+func ragNameCandidateQuery(documentIDs int) string {
+	return `SELECT c.id, c.document_id, d.name, c.content FROM rag_chunks c
+		JOIN rag_documents d ON d.id = c.document_id
+		WHERE c.document_id IN (` + placeholders(documentIDs) + `)
+		ORDER BY c.id DESC LIMIT ?`
+}
+
+// readRAGNameCandidates returns the chunks of documents whose name mentions a term, excluding the chunks the
+// FTS branch already selected. It is the second branch of the candidate union.
+func readRAGNameCandidates(ctx context.Context, db *sql.DB, documentIDs []int64, already []ragScoredChunk) ([]ragScoredChunk, error) {
+	if len(documentIDs) == 0 {
+		return nil, nil
+	}
+	var seen = make(map[int]bool, len(already))
+	for _, row := range already {
+		seen[row.id] = true
+	}
+	var query = ragNameCandidateQuery(len(documentIDs))
+	var args = make([]any, 0, len(documentIDs)+1)
+	for _, id := range documentIDs {
+		args = append(args, id)
+	}
+	args = append(args, ragCandidateLimit)
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var candidates []ragScoredChunk
 	for rows.Next() {
 		var row ragScoredChunk
 		if err := rows.Scan(&row.id, &row.DocumentID, &row.Name, &row.Content); err != nil {
-			return ragSearchCorpus{}, err
+			return nil, err
 		}
-		row.tokens, row.occurred = lexicalTokenOccurrences(row.Content, termIndexes)
-		nameTerms := uint32(0)
-		for _, token := range lexicalTokens(row.Name) {
-			index, wanted := termIndexes[token]
-			if !wanted {
-				continue
-			}
-			bit := uint32(1) << index
-			if nameTerms&bit == 0 {
-				row.nameHits++
-				nameTerms |= bit
-				row.matchedTerms |= bit
-			}
+		if seen[row.id] {
+			continue
 		}
-		for index, term := range terms {
-			if row.occurred[term] > 0 {
-				corpus.documents[term]++
-				row.matchedTerms |= uint32(1) << index
-			}
+		seen[row.id] = true
+		candidates = append(candidates, row)
+	}
+	return candidates, rows.Err()
+}
+
+// ragAccumulateCandidate tokenizes one SQL-selected chunk and adds its term statistics to the corpus. Every
+// selected chunk is counted, but only a chunk with an exact token or name hit becomes a scored candidate.
+func ragAccumulateCandidate(corpus *ragSearchCorpus, row ragScoredChunk, terms []string, termIndexes map[string]int) {
+	row.tokens, row.occurred = lexicalTokenOccurrences(row.Content, termIndexes)
+	nameTerms := uint32(0)
+	for _, token := range lexicalTokens(row.Name) {
+		index, wanted := termIndexes[token]
+		if !wanted {
+			continue
 		}
-		corpus.chunkCount++
-		corpus.totalTokens += row.tokens
-		if len(row.occurred) > 0 || row.nameHits > 0 {
-			row.textTokens = lexicalTokens(row.Content)
-			corpus.candidates = append(corpus.candidates, row)
+		bit := uint32(1) << index
+		if nameTerms&bit == 0 {
+			row.nameHits++
+			nameTerms |= bit
+			row.matchedTerms |= bit
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return ragSearchCorpus{}, err
+	for index, term := range terms {
+		if row.occurred[term] > 0 {
+			corpus.documents[term]++
+			row.matchedTerms |= uint32(1) << index
+		}
 	}
-	return corpus, nil
+	corpus.chunkCount++
+	corpus.totalTokens += row.tokens
+	if len(row.occurred) > 0 || row.nameHits > 0 {
+		row.textTokens = lexicalTokens(row.Content)
+		corpus.candidates = append(corpus.candidates, row)
+	}
+}
+
+// ragCandidateExpressionRejected distinguishes an index that cannot answer this MATCH expression (malformed
+// FTS5, a literal the query parser cuts short, or a schema older than migration 014) from a database failure:
+// only the former degrades to name matches.
+func ragCandidateExpressionRejected(err error) bool {
+	var message = strings.ToLower(err.Error())
+	for _, marker := range []string{"no such table: rag_chunks_fts", "unterminated string", "unrecognized token"} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return strings.Contains(message, "fts5") &&
+		(strings.Contains(message, "syntax") || strings.Contains(message, "malformed") || strings.Contains(message, "unrecognized"))
 }
 
 func lexicalTokenCount(text string) int {
@@ -447,9 +547,10 @@ func SearchRAGChunks(ctx context.Context, db *sql.DB, chatID int64, query string
 	return result.Chunks, nil
 }
 
-// SearchRAGChunksDetailed ranks at most the newest 10000 chunks of one chat with BM25-lite scoring
-// computed in Go. The corpus has no FTS index, so token occurrence and document-frequency counts are
-// collected in one pass; the result reports when that scan does not cover the whole chat corpus.
+// SearchRAGChunksDetailed ranks the bm25-best chunks of one chat with the BM25-lite scoring computed in Go.
+// SQL selects at most ragCandidateLimit candidates (and their token statistics); the same formula, phrase and
+// name bonuses, coverage floor and truncation rules still apply, so quality safeguards are unchanged. The
+// result reports when the candidate cap did not cover every matching chunk of the chat.
 func SearchRAGChunksDetailed(ctx context.Context, db *sql.DB, chatID int64, query string, limit int, maxRunes int) (RAGSearchResult, error) {
 	result := RAGSearchResult{Chunks: []RAGChunk{}}
 	query = ragQueryPrefix(query)
@@ -462,8 +563,8 @@ func SearchRAGChunksDetailed(ctx context.Context, db *sql.DB, chatID int64, quer
 		return RAGSearchResult{}, err
 	}
 	result.TotalChunks = corpus.totalChunks
-	result.ScannedChunks = corpus.chunkCount
-	result.CorpusTruncated = corpus.chunkCount == ragSearchChunkScanLimit && corpus.totalChunks > corpus.chunkCount
+	result.ScannedChunks = len(corpus.candidates)
+	result.CorpusTruncated = corpus.chunkCount == ragCandidateLimit && corpus.totalChunks > corpus.chunkCount
 	if corpus.chunkCount == 0 {
 		return result, nil
 	}

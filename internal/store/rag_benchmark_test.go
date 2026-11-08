@@ -7,6 +7,10 @@ import (
 	"testing"
 )
 
+// benchmarkRAGCorpusChunks keeps the synthetic corpora at the size the old scan budget used, so the SQL-side
+// benchmark numbers are comparable with the pre-bm25 implementation.
+const benchmarkRAGCorpusChunks = 10000
+
 func BenchmarkSearchRAGChunksManyIrrelevant(b *testing.B) {
 	ctx := context.Background()
 	db, err := OpenMemory(ctx, "rag_benchmark_many_irrelevant")
@@ -51,7 +55,7 @@ func BenchmarkSearchRAGChunksManyIrrelevant(b *testing.B) {
 		if err != nil {
 			b.Fatalf("SearchRAGChunksDetailed: %v", err)
 		}
-		if result.TotalChunks != 10000 || result.ScannedChunks != 10000 || result.CorpusTruncated {
+		if result.TotalChunks != benchmarkRAGCorpusChunks || result.ScannedChunks != 1 || result.CorpusTruncated {
 			b.Fatalf("unexpected corpus statistics: %+v", result)
 		}
 		if len(result.Chunks) != 1 || result.Chunks[0].Name != "match.txt" {
@@ -109,7 +113,7 @@ func BenchmarkSearchRAGChunksAllMatch10000(b *testing.B) {
 	if _, _, err := PutRAGDocument(ctx, db, 903, 11, "all-match.txt", "needle seed chunk"); err != nil {
 		b.Fatalf("PutRAGDocument: %v", err)
 	}
-	chunks := make([]string, ragSearchChunkScanLimit)
+	chunks := make([]string, benchmarkRAGCorpusChunks)
 	for index := range chunks {
 		chunks[index] = fmt.Sprintf("needle all match transcript %d", index)
 	}
@@ -135,8 +139,13 @@ func BenchmarkSearchRAGChunksAllMatch10000(b *testing.B) {
 		if err != nil {
 			b.Fatalf("SearchRAGChunksDetailed: %v", err)
 		}
-		if result.TotalChunks != ragSearchChunkScanLimit || len(result.Chunks) != 5 || result.Chunks[0].Content != "needle all match transcript 9999" {
+		if result.TotalChunks != benchmarkRAGCorpusChunks || result.ScannedChunks != ragCandidateLimit || !result.CorpusTruncated || len(result.Chunks) != 5 {
 			b.Fatalf("unexpected result: %+v", result)
+		}
+		for _, chunk := range result.Chunks {
+			if !strings.HasPrefix(chunk.Content, "needle all match transcript ") {
+				b.Fatalf("unexpected ranked chunk: %+v", chunk)
+			}
 		}
 	}
 }
@@ -151,7 +160,7 @@ func BenchmarkSearchRAGChunksCyrillicHeavy(b *testing.B) {
 	if _, _, err := PutRAGDocument(ctx, db, 904, 11, "кириллица.txt", "ИГОЛКА в нужном фрагменте"); err != nil {
 		b.Fatalf("PutRAGDocument: %v", err)
 	}
-	chunks := make([]string, ragSearchChunkScanLimit)
+	chunks := make([]string, benchmarkRAGCorpusChunks)
 	chunks[0] = "ИГОЛКА в нужном фрагменте"
 	content := strings.Repeat("Обычная совершенно посторонняя лексика ", 20)
 	for index := 1; index < len(chunks); index++ {

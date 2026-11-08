@@ -18,7 +18,7 @@ Telegram-бот-прокси между пользователями и лока
 - «Ссылки на потом»: сохранение страниц, поиск и резюме без повторной загрузки.
 - Многошаговые read-only задачи с планом, прогрессом и подтверждениями сетевых действий.
 - Opt-in `/tts` для русской речи через существующий Speaches sidecar и Telegram `sendAudio`.
-- Версионированные миграции через `schema_migrations` (текущая схема — версия 11).
+- Версионированные миграции через `schema_migrations` (текущая схема — версия 14).
 - Backup/restore, ротация копий и age-based retention с dry-run по умолчанию.
 - Безопасное восстановление Docker named volume.
 - Docker multi-stage build, non-root runtime, healthcheck, build commit и ротация логов 10 MB × 5.
@@ -97,7 +97,7 @@ docker compose logs -f bot
 
 ## Конфигурация
 
-Полный список из 44 ENV-строк и их значения по умолчанию находится в `.env.example`. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
+Полный список из 57 ENV-строк и их значения по умолчанию находится в `.env.example`; строки `STREAMING_*`, `WEBHOOK_*` и `MINIAPP_*` описаны в одноимённых разделах ниже. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
 
 ### Основные параметры
 
@@ -109,7 +109,7 @@ docker compose logs -f bot
 | `STRATA_TRANSCRIPTION_MODEL` | `Systran/faster-whisper-small` | модель для `/audio/transcriptions` |
 | `TRANSCRIPTION_BASE_URL` | `STRATA_BASE_URL`; в compose — Whisper | отдельный transcription endpoint |
 | `STRATA_API_KEY` | пусто | ключ endpoint, если требуется |
-| `STRATA_TIMEOUT_SECONDS` | 60 | таймаут одной попытки модели |
+| `STRATA_TIMEOUT_SECONDS` | 60 | общий бюджет всех попыток одной модели (не таймаут одной попытки) |
 | `TG_REPLY_DEADLINE_SECONDS` | 90 | общий бюджет ответа; должен быть больше timeout |
 | `RECOVERY_MAX_AGE_HOURS` | 24 | максимальный возраст unanswered-вопроса для автоматического recovery; `0` отключает лимит |
 | `REMINDER_TIMEZONE` | `UTC` | IANA timezone для напоминаний, например `Europe/Moscow` |
@@ -242,7 +242,7 @@ WEBHOOK_PATH=/telegram/webhook
 
 Reverse proxy или туннель должен перенаправлять публичный URL на `http://127.0.0.1:8082/telegram/webhook` с тем же path. В compose listener доступен только через loopback host. Не публикуйте его напрямую в интернет.
 
-При старте listener поднимается до `setWebhook`. Secret header проверяется до чтения body, затем метод POST, JSON и размер тела до 1 MiB. In-flight requests ограничены 16, headers — 16 КиБ. Pending updates не удаляются, `getUpdates` не запускается. Для возврата к polling сначала вызовите Telegram `deleteWebhook`.
+При старте listener поднимается до `setWebhook`. Secret header проверяется до чтения body, затем метод POST, JSON и размер тела до 1 MiB. Пустой `WEBHOOK_SECRET_TOKEN` не создаёт listener вообще (fail-closed): без секрета эндпоинт принимал бы поддельные update'ы от кого угодно. In-flight requests ограничены 16, headers — 16 КиБ. Pending updates не удаляются, `getUpdates` не запускается. Для возврата к polling сначала вызовите Telegram `deleteWebhook`.
 
 ### Защита от перегрузки
 
@@ -250,7 +250,7 @@ Reverse proxy или туннель должен перенаправлять п
 - Denied/bootstrap/overload replies coalesce, а отклонённая работа не скачивает вложения, не вызывает модель и не создаёт command/history rows.
 - Streaming ограничен 100000 runes, tool argument — 16384 runes, один ответ — 64 Telegram-сообщениями.
 - Model work — `3 × RATE_LIMIT_PER_MINUTE` на пользователя; network tools — 8/мин/user и 4 global in flight.
-- RAG использует до 32 значимых RU/EN терминов из 4000 runes запроса, Unicode token boundaries и sentence-aware chunks. Поиск сканирует последние 10000 фрагментов чата; при большем корпусе `/docs search` и automatic RAG context явно сообщают о truncation. Export сериализуется инкрементально с остановкой на 5 МиБ.
+- RAG использует до 32 значимых RU/EN терминов из 4000 runes запроса, Unicode token boundaries и sentence-aware chunks. Кандидаты отбирает FTS5-индекс (`rag_chunks_fts`) по всей базе чата, поэтому корпус больше не сканируется целиком; при числе совпадений выше лимита `/docs search` и automatic RAG context явно сообщают об усечении. Экспорт истории читает явный диапазон id без длинной транзакции, поэтому не блокирует записи бота, и сериализуется инкрементально с остановкой на 5 МиБ.
 - Compose resource backstops: bot 512MiB/1 CPU/128 PIDs, Whisper 4GiB/4 CPU/256 PIDs, SearxNG 1GiB/1 CPU/128 PIDs.
 
 ## Команды бота
@@ -268,12 +268,12 @@ Reverse proxy или туннель должен перенаправлять п
 | `/history [N]` | последние N сообщений, по умолчанию 5 |
 | `/remind <время> <текст>` | `через 1 минуту`, `через 2 часа` или `каждый день 09:00` по `REMINDER_TIMEZONE`; текст до 500 runes |
 | `/reminders` | список и inline-меню активных напоминаний; `cancel <id>` или `delete <id>` отменяет активную запись; в меню есть создание и до 5 недоставленных с Retry/Delete |
-| `/links` | сохранённые ссылки; `add <url>`, `search <текст>`, `summary <id>`, `delete <id>` |
+| `/links` | сохранённые ссылки; `add <url>`, `search <текст>`, `summary <id>`, `delete <id>`; `add` читает страницу, поэтому работает только при `URL_READER_ENABLED=true` и `TOOLS_ENABLED=true` |
 | `/task <цель>` | read-only задача из 1–3 шагов с прогрессом; без аргумента — статус, `/task cancel` — отмена, `/task resume <id>` — возобновление только последней failed/cancelled текущего чата с сохранением прогресса, `/task clear` — очистка списка с подтверждением |
 | `/tts <текст>` | opt-in озвучка через Speaches и `sendAudio`; `/tts last` — последний ответ ассистента, `/tts speed [0.75\|1\|1.25\|1.5]` — скорость чата; по умолчанию выключено |
 | `/docs` | RAG-база; `/docs add`, `search <query>`, `export`, `delete <id>` и `clear`; поиск показывает до 3 фрагментов с document id и score |
 | `/export [md\|json]` | экспорт последних 10000 сообщений с явным truncation warning и ID/time window |
-| `/search <текст>` | до 20 совпадений среди последних 10000 сообщений; область указана в ответе |
+| `/search <текст>` | до 20 совпадений по всей истории чата через FTS5-индекс; префиксный поиск по последнему слову, операторы FTS трактуются как текст |
 | `/delete` | одноразовые Confirm/Cancel с TTL 5 минут, привязкой к пользователю и сообщению; настройки сохраняются |
 | `/model [check]` | модель, endpoint и проверка доступности |
 | `/model select <id>` | выбрать модель текущего чата из `GET /models` |
@@ -298,6 +298,8 @@ Reverse proxy или туннель должен перенаправлять п
 Ask, Search, Custom Persona и создание напоминания принимают следующий текст через pending input с TTL 2 минуты и кнопкой Cancel. Состояние привязано к chat/user/menu message и инвалидируется при рестарте. Все текстовые команды остаются доступными. Обычные запросы показывают Telegram `typing`, а streaming tools — только общие стадии без URL и поисковых запросов.
 
 ## Telegram Mini App (opt-in)
+
+Mini App доступен **только в приватных чатах**: его сессия привязана к чату, поэтому в группе кнопка не публикуется, а тикет не выдаётся (`ErrPrivateOnly`).
 
 More → Mini App открывает companion со Status, History, Documents, Links, Tasks, Reminders, Usage и Settings. Для включения задайте `MINIAPP_ENABLED=true` и HTTPS `MINIAPP_PUBLIC_URL`; внутри контейнера listener `0.0.0.0`, host-порт бота остаётся loopback-only `127.0.0.1:8084`.
 
@@ -327,7 +329,7 @@ Traefik использует только static file provider: `/etc/traefik/tr
 
 Создание трёх external-сетей, порядок пересоздания backends, cutover без остановки текущего процесса миграции и rollback описаны в `C:\Kimi code\edge-gateway\README.md`. Acceptance gateway находится там же: `C:\Kimi code\edge-gateway\scripts\test-traefik.ps1`. Он использует только временные контейнеры и сети, не читает `.env` и не пересоздаёт production services.
 
-`deploy/Caddyfile` и `scripts/test-gateway.ps1` сохранены только как исторические rollback-артефакты прежнего Caddy на `127.0.0.1:8085`. Прежние `deploy/traefik.yml` и `deploy/dynamic.yml` также оставлены для обратного запуска остановленного `tg-llm-proxy-gateway-1`: его bind-mounts ссылаются на эти файлы. Ни Caddy, ни старый Traefik не входят в текущий Compose и не являются активным gateway; production endpoint обслуживает standalone Traefik на `127.0.0.1:8086`.
+`deploy/Caddyfile` и `scripts/test-gateway.ps1` сохранены только как исторические rollback-артефакты прежнего Caddy на `127.0.0.1:8085`. Прежние `deploy/traefik.yml` и `deploy/dynamic.yml` также оставлены для обратного запуска остановленного `tg-llm-proxy-gateway-1`: его bind-mounts ссылаются на эти файлы. Ни Caddy, ни старый Traefik не входят в текущий Compose и не являются активным gateway; production endpoint обслуживает standalone Traefik на `127.0.0.1:8086`. Статус каждого файла и то, чего у старого gateway нет (TLS, Docker provider, hardening), описаны в `deploy/README.md`.
 
 Прямой запуск Mini App без любого gateway сохраняет прежнее поведение: reverse proxy/tunnel направляет публичный URL без `/miniapp` на `127.0.0.1:8084`, и префикс приложению не требуется.
 
@@ -338,6 +340,18 @@ History поддерживает поиск через `GET /api/history/search?
 Mini App использует современную responsive-навигацию, карточки, badges, inline creation forms с валидацией, loading/notices, focus-visible и reduced-motion transitions. Управление с клавиатуры поддерживает ArrowLeft/ArrowRight/Home/End; разрушительные действия требуют inline Confirm/Cancel.
 
 Documents поддерживает поиск через `GET /api/documents/search?q=...` с corpus truncation warning, удаление отдельного документа вместе с RAG-фрагментами через `POST /api/documents/{id}/delete` и очистку базы текущего чата через `POST /api/documents/clear`. Links позволяет удалить отдельную ссылку через `POST /api/links/{id}/delete` или очистить весь список текущего чата через `POST /api/links/clear`. Tasks показывает для failed sanitized error и expiry. Cancel отменяет active, Resume возобновляет последнюю failed/cancelled через общий TaskLifecycle; network approvals остаются только в Telegram. Отдельная terminal задача удаляется через `POST /api/tasks/{id}/delete`; active нужно сначала отменить. Для любого непустого списка доступна общая очистка через `POST /api/tasks/clear`. Reminders показывает active/failed и поддерживает Cancel active, Retry/Delete failed. Все удаления и очистки требуют отдельного inline Confirm/Cancel и строгого пустого POST body без query params. Loading/mutations показывают индикатор и блокируют повторные действия. Успешные mutations создают best-effort `miniapp_mutation` audit только с operation/chat_id/numeric id/count, без текстов. Вкладка Usage получает данные через `GET /api/usage` и показывает за UTC-сутки model calls и tokens по моделям, вызовы calculator/RAG/read_url/web_search, дневные limits/remaining; для unlimited `remaining` равен `null`. Вкладка не содержит текстов запросов, целей задач и event detail.
+
+### «no available server» в Mini App
+
+Этот текст — ответ Traefik, а не бота: роутер отдал 503, потому что у его сервиса нет доступных backend'ов. Проверяйте по порядку:
+
+1. `curl -i http://127.0.0.1:8086/miniapp/healthz` — **200** значит, что шлюз видит контейнер бота; **503** значит, что active health check сервиса `miniapp` (`/healthz`, каждые 10 с) не проходит: контейнер не в сети `edge-telegram`, listener не на `0.0.0.0:8084` или `MINIAPP_ENABLED=false`. Прямой probe `http://127.0.0.1:8084/healthz` при этом может отвечать 200 — это проверка через публикацию порта, а не из сети шлюза.
+2. `MINIAPP_PUBLIC_URL` обязан содержать публичный префикс, под которым шлюз отдаёт Mini App: с Traefik это `https://host/miniapp`. Если путь пустой (`https://host`), Telegram открывает корень сайта, а `/` маршрутизируется на dashboard — при остановленном dashboard это и есть страница «no available server». При старте бот пишет `miniapp_public_url` и предупреждает `MINIAPP_PUBLIC_URL has no path`.
+3. После правки `MINIAPP_PUBLIC_URL` контейнер нужно **пересоздать**: меню-кнопку (`setChatMenuButton`) и inline-кнопки бот публикует при старте, поэтому старый процесс продолжает отдавать старый URL. Уже отправленные в чат кнопки содержат URL на момент отправки — открывайте Mini App из обновлённой нижней кнопки меню.
+
+```powershell
+docker compose -f docker-compose.yml -f compose.production.yaml up -d --force-recreate bot
+```
 
 ## Проверка проекта
 
@@ -388,7 +402,7 @@ Release CI — `.gitlab-ci.yml`: Docker unit/integration checks, race и `govuln
 .\scripts\db_inspect.ps1 -Integrity
 ```
 
-`schema_version=0` означает backup до версионирования; при следующем writable `store.Open` он автоматически становится 11 без изменения прикладных строк.
+`schema_version=0` означает backup до версионирования; при следующем writable `store.Open` он автоматически становится 14 без изменения прикладных строк.
 
 ### Backup и scratch restore
 
@@ -513,6 +527,7 @@ docker compose up -d
 ## Безопасность
 
 - `.env` и `.env.*` исключены из Git и Docker context; шаблон `.env.example` остаётся tracked. Не помещайте реальные секреты в другие файлы.
+- Секреты можно подавать файлом вместо ENV: `TELEGRAM_BOT_TOKEN_FILE`, `STRATA_API_KEY_FILE`, `WEBHOOK_SECRET_TOKEN_FILE` (Docker secrets, systemd credentials, mounted Kubernetes secret). Путь обязан быть абсолютным, файл читается один раз на старте (до 4 КиБ, завершающий перевод строки срезается), а одновременное значение в ENV и в файле отклоняется как ошибка конфигурации — precedence не угадывается.
 - `smoke.ps1` проверяет Telegram token, STRATA key и webhook secret без вывода значений.
 - На production Windows ACL проекта должны разрешать запись только владельцу/service account и администраторам. Текущий хост ограничен владельцем, SYSTEM и Administrators; при переносе проекта повторите проверку ACL, особенно для scheduler-скриптов и backup.
 - Runtime контейнер имеет read-only rootfs, no capabilities и `no-new-privileges`; `/data` остаётся записываемым volume.
@@ -520,6 +535,9 @@ docker compose up -d
 
 ## Документы
 
-- `.env.example` — все настройки (44) с комментариями.
+- `.env.example` — все настройки (57) с комментариями.
 - `RELEASE_NOTES.md` — состав release candidate и результаты проверок.
+- `docs/adr/` — Architecture Decision Records: SQLite/один writer, long polling, fail-fast конфигурация, FTS5-индексы, Mini App только для приватных чатов, политика рестарта.
+- `deploy/README.md` — статус исторических конфигураций gateway в `deploy/` (не часть текущего Compose).
+- `docs/CODE_REVIEW_2026-11-08.md` — код-ревью v1.39.0 и статус трёх спринтов.
 - `PLAN.md` — локальный подробный план и история изменений (gitignored).

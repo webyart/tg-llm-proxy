@@ -43,9 +43,15 @@ func NewWebhookServer(tg *tgbot.Bot, address string, path string, secretToken ..
 	if len(secretToken) > 1 {
 		return nil, errors.New("webhook accepts at most one secret token")
 	}
+	// Fail closed, like every other authentication path in the project: a listener without the secret
+	// header accepts a forged update from anyone who can reach the port, and only the config loader
+	// stood between that and production. The check belongs here, where the listener is created.
 	secret := ""
 	if len(secretToken) == 1 {
-		secret = secretToken[0]
+		secret = strings.TrimSpace(secretToken[0])
+	}
+	if secret == "" {
+		return nil, errors.New("webhook needs a non-empty secret token (WEBHOOK_SECRET_TOKEN): without it the listener would accept forged updates")
 	}
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
@@ -61,7 +67,7 @@ func NewWebhookServer(tg *tgbot.Bot, address string, path string, secretToken ..
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		if secret != "" && subtle.ConstantTimeCompare([]byte(req.Header.Get(webhookSecretHeader)), []byte(secret)) != 1 {
+		if subtle.ConstantTimeCompare([]byte(req.Header.Get(webhookSecretHeader)), []byte(secret)) != 1 {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}

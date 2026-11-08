@@ -22,6 +22,16 @@ Desktop.ini
 *.orig
 *.tmp
 .vscode/
+.idea/
+
+# Go/test artifacts and local secrets that must never be committed
+*.test
+*.out
+*.prof
+coverage.out
+coverage.html
+*.key
+*.pem
 
 # scratch — local verification output (env-setting scripts, run logs), never committed
 zzscratch/

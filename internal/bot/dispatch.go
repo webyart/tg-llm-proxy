@@ -11,6 +11,8 @@ package bot
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -98,13 +100,38 @@ type Deps struct {
 const (
 	updateQueueCapacity  = 32
 	perChatQueueCapacity = 4
-	updateQueueTimeout   = 2 * time.Second
-	deniedReplyWindow    = 30 * time.Second
-	bootstrapReplyWindow = 5 * time.Second
-	overloadReplyWindow  = 2 * time.Second
-	coalescerMaxKeys     = 4096
-	msgOverloaded        = "Бот перегружен: очередь заполнена. Попробуй ещё раз через несколько секунд."
+	// updateQueueTimeoutMin/Max bound the wait an update may spend on ITS OWN chat lock. The minimum is
+	// the old fixed 2 s; the maximum keeps a stop from being indistinguishable from a hung process.
+	updateQueueTimeoutMin = 2 * time.Second
+	updateQueueTimeoutMax = 3 * time.Minute
+	deniedReplyWindow     = 30 * time.Second
+	bootstrapReplyWindow  = 5 * time.Second
+	overloadReplyWindow   = 2 * time.Second
+	coalescerMaxKeys      = 4096
+	msgOverloaded         = "Бот перегружен: очередь заполнена. Попробуй ещё раз через несколько секунд."
+	msgChatBusy           = "Предыдущий ответ в этом чате ещё не готов. Повтори запрос чуть позже."
 )
+
+// errExecutionSlotBusy — the chat lock was acquired but no global handler slot freed in time. It is a
+// saturation of the whole bot, not of one chat, and it is named separately so the two cases can be
+// answered with two different texts.
+var errExecutionSlotBusy = errors.New("bot: no global handler slot freed inside the wait budget")
+
+// chatQueueTimeoutFor — how long an update of one chat waits for that chat's lock. The lock is held for
+// the whole answer (STRATA_TIMEOUT_SECONDS plus delivery, up to STREAM_TOTAL_DEADLINE_SECONDS), so the
+// old fixed 2 s expired on every second message of a chat that was still answering: the update was then
+// reported as an overload and acknowledged, which made Telegram drop it for good. The wait is now the
+// reply budget of the chat itself.
+func chatQueueTimeoutFor(replyDeadlineSeconds int64) time.Duration {
+	var budget = time.Duration(replyDeadlineSeconds) * time.Second
+	if budget < updateQueueTimeoutMin {
+		return updateQueueTimeoutMin
+	}
+	if budget > updateQueueTimeoutMax {
+		return updateQueueTimeoutMax
+	}
+	return budget
+}
 
 type chatLockHeldContextKey struct{}
 
@@ -122,6 +149,8 @@ type Dispatcher struct {
 	deniedReplies       *ratelimit.Coalescer
 	bootstrapReplies    *ratelimit.Coalescer
 	overloadReplies     *ratelimit.Coalescer
+	chatBusyReplies     *ratelimit.Coalescer
+	chatQueueTimeout    time.Duration
 	modelWork           *ratelimit.Limiter
 	networkWork         *ratelimit.Limiter
 	outboundTools       chan struct{}
@@ -129,6 +158,14 @@ type Dispatcher struct {
 	activeHandlers      atomic.Int64
 	now                 func() time.Time
 	taskWake            chan struct{}
+	// The two sets of pending user decisions used to be package-level sync.Maps keyed by the *Dispatcher. A
+	// global keyed by a pointer leaks one entry per dispatcher for the life of the process (every test creates
+	// one), and the state it holds — approvals and their continuations — was invisible in the struct that owns
+	// it. They are fields now; the Once values let the accessors stay lazy for a Dispatcher built as a literal.
+	confirmations     *networkConfirmationSet
+	confirmationsOnce sync.Once
+	approvalScopes    *networkApprovalScopeSet
+	approvalOnce      sync.Once
 }
 
 // logger. A missing model client or replier is a wiring mistake and stays visible as one.
@@ -148,6 +185,8 @@ func New(deps Deps) *Dispatcher {
 		deniedReplies:    ratelimit.NewCoalescer(deniedReplyWindow, coalescerMaxKeys),
 		bootstrapReplies: ratelimit.NewCoalescer(bootstrapReplyWindow, coalescerMaxKeys),
 		overloadReplies:  ratelimit.NewCoalescer(overloadReplyWindow, coalescerMaxKeys),
+		chatBusyReplies:  ratelimit.NewCoalescer(overloadReplyWindow, coalescerMaxKeys),
+		chatQueueTimeout: chatQueueTimeoutFor(deps.Cfg.ReplyDeadlineSeconds),
 		modelWork:        ratelimit.New(int(deps.Cfg.RateLimitPerMinute) * modelWorkPerQuestion),
 		networkWork:      ratelimit.New(networkWorkPerMinute),
 		outboundTools:    make(chan struct{}, globalOutboundToolLimit),
@@ -155,6 +194,10 @@ func New(deps Deps) *Dispatcher {
 		taskWake:         make(chan struct{}, 1),
 	}
 	d.configureAdmission(int(deps.Cfg.MaxConcurrentRequests))
+	// Warm both sets so the normal path never takes the Once: a nil set in the struct would still work through
+	// the accessors, but building them here makes the ownership obvious.
+	networkConfirmationsFor(d)
+	networkApprovalScopesFor(d)
 	d.commands = d.registry()
 	var i = 0
 	for i < len(d.commands) {
@@ -316,14 +359,18 @@ func (d *Dispatcher) runBounded(ctx context.Context, ev Event, acknowledge bool)
 	default:
 		return d.dispatchOverloaded(ctx, ev)
 	}
-	queueCtx, cancel := context.WithTimeout(ctx, updateQueueTimeout)
+	queueCtx, cancel := context.WithTimeout(ctx, d.chatQueueTimeout)
 	defer cancel()
+	// `inChat` separates "never got the chat lock" (a busy chat) from an error the handler itself
+	// returned after the deadline. Only the first one may be answered as a busy chat.
+	var inChat bool
 	err := d.deps.Locks.WithChatBounded(queueCtx, ev.ChatID, perChatQueueCapacity, func() error {
+		inChat = true
 		select {
 		case d.execution <- struct{}{}:
 			defer func() { <-d.execution }()
 		case <-queueCtx.Done():
-			return queueCtx.Err()
+			return fmt.Errorf("%w: %w", errExecutionSlotBusy, queueCtx.Err())
 		}
 		d.activeHandlers.Add(1)
 		defer d.activeHandlers.Add(-1)
@@ -332,8 +379,26 @@ func (d *Dispatcher) runBounded(ctx context.Context, ev Event, acknowledge bool)
 	if ctx.Err() != nil {
 		return err
 	}
-	if err == ratelimit.ErrChatQueueFull || err == context.DeadlineExceeded {
+	switch {
+	case errors.Is(err, ratelimit.ErrChatQueueFull), errors.Is(err, errExecutionSlotBusy):
 		return d.dispatchOverloaded(ctx, ev)
+	case errors.Is(err, context.DeadlineExceeded) && !inChat:
+		return d.dispatchChatBusy(ctx, ev)
+	}
+	return err
+}
+
+// dispatchChatBusy — the chat was still answering when the wait budget of this update expired.
+//
+// The update is deliberately NOT acknowledged: bot_state keeps the previous offset, so a restart
+// replays it instead of the message being lost for good, and the text names the real reason — the chat
+// is busy with its own previous answer, the queue is not full.
+func (d *Dispatcher) dispatchChatBusy(ctx context.Context, ev Event) error {
+	var err error
+	if d.chatBusyReplies.Allow(ratelimit.CoalesceKey{ChatID: ev.ChatID}) {
+		d.deps.Logger.Warn("the chat is still answering the previous update",
+			"chat_id", ev.ChatID, "update_id", ev.UpdateID, "waited", d.chatQueueTimeout)
+		err = d.reply(ctx, ev.ChatID, msgChatBusy)
 	}
 	return err
 }

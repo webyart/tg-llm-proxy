@@ -103,7 +103,7 @@ func TestHistorySearchLimitTruncationAndStrictQuery(t *testing.T) {
 	}
 }
 
-func TestHistorySearchReportsOnlyTheTenThousandMessageWindow(t *testing.T) {
+func TestHistorySearchCoversTheWholeHistory(t *testing.T) {
 	app, server := newTestApp(t)
 	bearer := launchSession(t, app, server)
 	oldestID := appendWebappMessage(t, app, testChatID, store.RoleUser, "needle outside the newest window")
@@ -142,23 +142,25 @@ func TestHistorySearchReportsOnlyTheTenThousandMessageWindow(t *testing.T) {
 		}
 		return status, response.Items, response.Truncated
 	}
+	// The FTS index covers the whole history, so the oldest message of a 10 001-message chat is found and the
+	// response no longer reports a window it did not scan.
 	_, items, truncated := readSearch()
-	if !truncated || len(items) != 0 {
-		t.Fatalf("10001-message search items=%d truncated=%v", len(items), truncated)
+	if truncated || len(items) != 1 || items[0].ID != oldestID {
+		t.Fatalf("whole-history search items=%+v truncated=%v", items, truncated)
 	}
 	if _, err := app.db.ExecContext(context.Background(), `DELETE FROM messages WHERE id = (SELECT MAX(id) FROM messages WHERE chat_id = ?)`, testChatID); err != nil {
 		t.Fatal(err)
 	}
 	_, items, truncated = readSearch()
 	if truncated || len(items) != 1 || items[0].ID != oldestID {
-		t.Fatalf("10000-message search items=%+v truncated=%v", items, truncated)
+		t.Fatalf("search after deletion items=%+v truncated=%v", items, truncated)
 	}
 }
 
 func TestHistoryAndLinkItemsReturnFullContentOnlyFromCurrentChat(t *testing.T) {
 	app, server := newTestApp(t)
 	bearer := launchSession(t, app, server)
-	otherBearer := launchSessionFor(t, app, server, testChatID+1, testUserID)
+	otherBearer := launchSessionFor(t, app, server, otherTestUserID, otherTestUserID)
 	messageContent := strings.Repeat("сообщение ", maxHistoryRunes) + "конец"
 	messageID := appendWebappMessage(t, app, testChatID, store.RoleAssistant, messageContent)
 	otherMessageID := appendWebappMessage(t, app, testChatID+1, store.RoleUser, "другой чат")

@@ -96,11 +96,14 @@ type networkConfirmationSet struct {
 	pending map[string]networkConfirmation
 }
 
-var dispatcherNetworkConfirmations sync.Map
-
+// networkConfirmationsFor — the pending confirmations of this dispatcher. It used to be a package-level
+// sync.Map keyed by the *Dispatcher, which leaked one entry per dispatcher and kept approval state (and the
+// continuations hanging off it) outside the struct that owns it.
 func networkConfirmationsFor(d *Dispatcher) *networkConfirmationSet {
-	set, _ := dispatcherNetworkConfirmations.LoadOrStore(d, &networkConfirmationSet{pending: map[string]networkConfirmation{}})
-	return set.(*networkConfirmationSet)
+	d.confirmationsOnce.Do(func() {
+		d.confirmations = &networkConfirmationSet{pending: map[string]networkConfirmation{}}
+	})
+	return d.confirmations
 }
 
 const (
@@ -246,10 +249,19 @@ func (d *Dispatcher) callModel(ctx context.Context, userID int64, req model.Requ
 	}
 	d.activeModelRequests.Add(1)
 	defer d.activeModelRequests.Add(-1)
+	var response model.Response
+	var callErr error
 	if session != nil {
-		return streamer.Stream(ctx, req, session.handler())
+		response, callErr = streamer.Stream(ctx, req, session.handler())
+	} else {
+		response, callErr = d.deps.Model.Complete(ctx, req)
 	}
-	return d.deps.Model.Complete(ctx, req)
+	if callErr != nil && (session == nil || !session.sawText()) {
+		// Nothing reached the user: the reservation did not buy an answer, so it goes back. Without this a
+		// provider that was down for a minute could spend a user's whole daily budget on failed calls.
+		d.releaseDailyModelCall(ctx, userID)
+	}
+	return response, callErr
 }
 
 func (d *Dispatcher) executeNetworkTool(ctx context.Context, userID int64, call model.ToolCall) (string, bool, error) {
@@ -276,19 +288,28 @@ func (d *Dispatcher) executeNetworkTool(ctx context.Context, userID int64, call 
 	case d.outboundTools <- struct{}{}:
 		defer func() { <-d.outboundTools }()
 	default:
+		d.releaseDailyNetworkToolCall(ctx, userID)
 		return outboundToolBusyErrorJSON, false, nil
 	}
 	if !d.networkWork.Allow(userID) {
+		d.releaseDailyNetworkToolCall(ctx, userID)
 		return networkWorkBudgetErrorJSON, false, nil
 	}
 	switch call.Name {
 	case "read_url":
 		result, err := executeURLReader(ctx, call)
+		if err != nil {
+			d.releaseDailyNetworkToolCall(ctx, userID)
+		}
 		return result, true, err
 	case "web_search":
 		result, err := executeWebSearch(ctx, d.deps.Cfg, call)
+		if err != nil {
+			d.releaseDailyNetworkToolCall(ctx, userID)
+		}
 		return result, true, err
 	default:
+		d.releaseDailyNetworkToolCall(ctx, userID)
 		return "", false, errors.New("unknown tool")
 	}
 }

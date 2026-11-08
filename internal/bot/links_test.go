@@ -44,7 +44,7 @@ func TestLinksAddCanonicalizesAndStoresOnlySuccessfulReads(t *testing.T) {
 	m := &fakeModel{response: model.Response{Content: "не нужен"}}
 	r := &fakeReplier{}
 	db := testStore(t)
-	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"}), m, r, db)
+	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "URL_READER_ENABLED": "true"}), m, r, db)
 	d.deps.URLReader = fixture.client
 
 	if err := dispatch(t, d, testEvent(100, 11, 1000, "/links add HTTPS://EXAMPLE.COM.:443/start#fragment")); err != nil {
@@ -91,7 +91,7 @@ func TestDispatcherCreateLinkReturnsReplacementAndScopesChats(t *testing.T) {
 	fixture := newSavedLinkTestServer(t)
 	m := &fakeModel{response: model.Response{Content: "не нужен"}}
 	db := testStore(t)
-	d := newTestDispatcher(t, testConfig(t, nil), m, nil, db)
+	d := newTestDispatcher(t, testConfig(t, map[string]string{"URL_READER_ENABLED": "true"}), m, nil, db)
 	d.deps.URLReader = fixture.client
 	ctx := context.Background()
 
@@ -147,7 +147,7 @@ func TestDispatcherCreateLinkPreservesOutboundLimits(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newSavedLinkTestServer(t)
 			db := testStore(t)
-			d := newTestDispatcher(t, testConfig(t, nil), &fakeModel{}, nil, db)
+			d := newTestDispatcher(t, testConfig(t, map[string]string{"URL_READER_ENABLED": "true"}), &fakeModel{}, nil, db)
 			d.deps.URLReader = fixture.client
 			test.exhaust(d)
 			link, replaced, err := d.CreateLink(context.Background(), 100, 11, fixture.url+"/refresh")
@@ -169,7 +169,7 @@ func TestLinksReaddingRefreshesExistingRow(t *testing.T) {
 	fixture := newSavedLinkTestServer(t)
 	db := testStore(t)
 	r := &fakeReplier{}
-	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"}), &fakeModel{}, r, db)
+	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "URL_READER_ENABLED": "true"}), &fakeModel{}, r, db)
 	d.deps.URLReader = fixture.client
 	if err := dispatch(t, d, testEvent(100, 11, 1100, "/links add "+fixture.url+"/refresh")); err != nil {
 		t.Fatal(err)
@@ -190,7 +190,7 @@ func TestLinksReaddingRefreshesExistingRow(t *testing.T) {
 func TestLinksListSearchAndDocumentsNavigation(t *testing.T) {
 	r := &menuEditReplier{}
 	db := testStore(t)
-	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"}), nil, r, db)
+	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "URL_READER_ENABLED": "true"}), nil, r, db)
 	for _, link := range []store.SavedLink{
 		{ChatID: 100, UserID: 11, Title: "Проект АВРОРА", CanonicalURL: "https://example.com/one", Content: "Первый текст"},
 		{ChatID: 100, UserID: 11, Title: "Другой", CanonicalURL: "https://example.org/two", Content: "Нужный ЁЖИК"},
@@ -248,7 +248,7 @@ func TestLinksListSearchAndDocumentsNavigation(t *testing.T) {
 func TestLinksDeleteConfirmationBindingStaleAndChatIsolation(t *testing.T) {
 	r := &networkMenuReplier{}
 	db := testStore(t)
-	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11,12"}), nil, r, db)
+	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11,12", "URL_READER_ENABLED": "true"}), nil, r, db)
 	first, _, err := store.PutSavedLink(context.Background(), db, store.SavedLink{ChatID: 100, UserID: 11, Title: "first", CanonicalURL: "https://example.com/first", Content: "first"})
 	if err != nil {
 		t.Fatal(err)
@@ -358,7 +358,7 @@ func TestBareURLOfferRequiresBoundConfirmationAndPreservesOrdinaryChat(t *testin
 	m := &fakeModel{response: model.Response{Content: "Обычный ответ"}}
 	r := &networkMenuReplier{}
 	db := testStore(t)
-	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11,12"}), m, r, db)
+	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11,12", "URL_READER_ENABLED": "true"}), m, r, db)
 	d.deps.URLReader = fixture.client
 	raw := fixture.url + "/refresh"
 	if err := dispatch(t, d, testEvent(100, 11, 1300, raw)); err != nil {
@@ -418,7 +418,7 @@ func TestBareURLOfferRequiresBoundConfirmationAndPreservesOrdinaryChat(t *testin
 }
 
 func TestLinkCallbackWhitelistRejectsURLsAndMalformedIDs(t *testing.T) {
-	d := newTestDispatcher(t, testConfig(t, nil), nil, &fakeReplier{}, testStore(t))
+	d := newTestDispatcher(t, testConfig(t, map[string]string{"URL_READER_ENABLED": "true"}), nil, &fakeReplier{}, testStore(t))
 	for _, data := range []string{
 		"menu:link:summary:0", "menu:link:summary:-1", "menu:link:delete:abc",
 		"menu:link:summary:https://example.com", "menu:link:save:confirm:bad",

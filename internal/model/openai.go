@@ -13,9 +13,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -27,6 +29,13 @@ const (
 	DefaultTimeout       = 60 * time.Second
 	BodyLimit            = 300
 	TelegramBudgetNotice = "the budget of STRATA_TIMEOUT_SECONDS is spent — the answer is not retried again "
+	// admissionTimeout bounds the wait for a free model slot. Without it the wait lasted until the caller's
+	// whole reply budget expired, so a user whose request never reached the model was told the model timed
+	// out — and ErrNoRoom, the error with its own message on the bot side, was unreachable code.
+	admissionTimeout = 15 * time.Second
+	// maxRetryWait caps one backoff pause; a provider asking for more than this gets the cap, and the
+	// per-attempt budget check below refuses the retry instead of spending the user's whole deadline.
+	maxRetryWait = 30 * time.Second
 )
 
 // the model, the budget, the retry shape and the GPU concurrency gate.
@@ -61,6 +70,7 @@ type OpenAI struct {
 	backoff             time.Duration
 	client              *http.Client
 	sem                 chan struct{}
+	admitTimeout        time.Duration
 	stream              StreamSettings
 }
 
@@ -87,7 +97,7 @@ func New(o Options) (*OpenAI, error) {
 	if o.HTTPClient == nil {
 		// The per-attempt deadline comes from the context budget below, so the transport itself
 		// stays open-ended; a client-side http.Client timeout would fight with the retry budget.
-		o.HTTPClient = http.DefaultClient
+		o.HTTPClient = defaultHTTPClient()
 	}
 	return &OpenAI{
 		chatURL:             strings.TrimSpace(o.ChatURL),
@@ -102,6 +112,7 @@ func New(o Options) (*OpenAI, error) {
 		backoff:             o.Backoff,
 		client:              o.HTTPClient,
 		sem:                 make(chan struct{}, o.MaxConcurrent),
+		admitTimeout:        admissionTimeout,
 		stream:              withStreamDefaults(o.Stream),
 	}, nil
 }
@@ -110,15 +121,13 @@ func New(o Options) (*OpenAI, error) {
 func (c *OpenAI) Complete(ctx context.Context, req Request) (Response, error) {
 	var start = time.Now()
 
-	// for a slot consumes the budget too, so the wait is interruptible by the caller's context.
-	if cap(c.sem) > 0 {
-		select {
-		case c.sem <- struct{}{}:
-			defer func() { <-c.sem }()
-		case <-ctx.Done():
-			return Response{}, ctx.Err()
-		}
+	// The slot is the GPU: it stays busy for the whole call, and waiting for it is bounded by
+	// admissionTimeout so a saturated endpoint says so instead of burning the reply budget.
+	release, admitErr := c.acquire(ctx)
+	if admitErr != nil {
+		return Response{}, admitErr
 	}
+	defer release()
 
 	var budget = c.timeout
 	if deadline, ok := ctx.Deadline(); ok {
@@ -152,7 +161,7 @@ func (c *OpenAI) Complete(ctx context.Context, req Request) (Response, error) {
 		if attempt == c.attempts {
 			break
 		}
-		var wait = c.backoff * time.Duration(1<<(attempt-1)) // exponential,
+		var wait = retryWait(lastErr, c.backoff, attempt)
 		if deadline, ok := attemptCtx.Deadline(); ok && time.Until(deadline) <= wait {
 			return Response{}, fmt.Errorf("%w (retry %d of %d skipped: %s)", lastErr, attempt+1, c.attempts, TelegramBudgetNotice)
 		}
@@ -225,11 +234,18 @@ type chatToolDefinition struct {
 	Function chatToolFunction `json:"function"`
 }
 
+type chatStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
 type chatRequest struct {
 	Model    string               `json:"model"`
 	Messages []chatMessage        `json:"messages"`
 	Stream   bool                 `json:"stream"`
 	Tools    []chatToolDefinition `json:"tools,omitempty"`
+	// StreamOptions asks the provider to put usage into the stream; without it a streaming provider that
+	// follows the OpenAI API sends no usage at all and every streamed answer was accounted as "unknown".
+	StreamOptions *chatStreamOptions `json:"stream_options,omitempty"`
 }
 
 type chatChoice struct {
@@ -273,13 +289,100 @@ func (c *OpenAI) marshalChatRequest(req Request, stream bool, attempt int) ([]by
 		return nil, "", fmt.Errorf("the model of (STRATA_MODEL) is not set, attempt %d", attempt)
 	}
 
-	body, err := json.Marshal(chatRequest{Model: model, Messages: toWire(req.Messages), Stream: stream, Tools: toWireTools(req.Tools)})
+	var request = chatRequest{Model: model, Messages: toWire(req.Messages), Stream: stream, Tools: toWireTools(req.Tools)}
+	if stream {
+		request.StreamOptions = &chatStreamOptions{IncludeUsage: true}
+	}
+	body, err := json.Marshal(request)
 	if err != nil {
 		return nil, "", err
 	}
 	return body, model, nil
 }
 
+// defaultHTTPClient — a tuned transport plus one policy the default client does not have: a redirect is
+// NOT followed. A 301/302 turns POST into GET and drops Authorization on a cross-host hop, so a misrouted
+// STRATA_BASE_URL would answer with an HTML page instead of an error; refusing the redirect turns the 3xx
+// into an APIError the caller can read.
+func defaultHTTPClient() *http.Client {
+	var transport = http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = 32
+	transport.MaxIdleConnsPerHost = 8
+	transport.IdleConnTimeout = 90 * time.Second
+	transport.TLSHandshakeTimeout = 10 * time.Second
+	return &http.Client{
+		Transport: transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+// retryWait — how long to wait before the next attempt: the provider's Retry-After when it named one,
+// otherwise exponential backoff. The jitter keeps two chats that failed on the same 5xx from retrying in
+// lockstep against an endpoint that is already struggling.
+func retryWait(err error, base time.Duration, attempt int) time.Duration {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.RetryAfter > 0 {
+		if apiErr.RetryAfter > maxRetryWait {
+			return maxRetryWait
+		}
+		return apiErr.RetryAfter
+	}
+	if base <= 0 {
+		base = DefaultBackoff
+	}
+	var wait = base * time.Duration(1<<uint(attempt-1))
+	if wait > maxRetryWait {
+		wait = maxRetryWait
+	}
+	var jitterBound = int64(wait / 2)
+	if jitterBound <= 0 {
+		return wait
+	}
+	return wait + time.Duration(rand.Int64N(jitterBound))
+}
+
+// retryAfterHeader — seconds or an HTTP date, 0 when absent or unparseable.
+func retryAfterHeader(value string) time.Duration {
+	var trimmed = strings.TrimSpace(value)
+	if trimmed == "" {
+		return 0
+	}
+	if seconds, err := strconv.ParseInt(trimmed, 10, 64); err == nil {
+		if seconds <= 0 {
+			return 0
+		}
+		return time.Duration(seconds) * time.Second
+	}
+	if when, err := http.ParseTime(trimmed); err == nil {
+		if wait := time.Until(when); wait > 0 {
+			return wait
+		}
+	}
+	return 0
+}
+
+// acquire — one model slot. A saturated endpoint answers ErrNoRoom inside admissionTimeout instead of
+// holding the caller's reply budget; a cancellation of the caller still wins.
+func (c *OpenAI) acquire(ctx context.Context) (func(), error) {
+	if cap(c.sem) == 0 {
+		return func() {}, nil
+	}
+	var admitCtx, cancel = context.WithTimeout(ctx, c.admitTimeout)
+	defer cancel()
+	select {
+	case c.sem <- struct{}{}:
+		return func() { <-c.sem }, nil
+	case <-admitCtx.Done():
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, ErrNoRoom
+	}
+}
+
+// attempt — one chat.completion request. Decode is separate so a unit test can feed it a payload.
 func (c *OpenAI) attempt(ctx context.Context, body []byte, model string, attempt int) (Response, error) {
 	var httpReq, buildErr = http.NewRequestWithContext(ctx, http.MethodPost, c.chatURL, bytes.NewReader(body))
 	if buildErr != nil {
@@ -310,7 +413,11 @@ func (c *OpenAI) attempt(ctx context.Context, body []byte, model string, attempt
 		return Response{}, readErr
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return Response{}, &APIError{Status: res.StatusCode, Body: Flatten(string(payload), BodyLimit)}
+		return Response{}, &APIError{
+			Status:     res.StatusCode,
+			Body:       Flatten(string(payload), BodyLimit),
+			RetryAfter: retryAfterHeader(res.Header.Get("Retry-After")),
+		}
 	}
 	return Decode(res.StatusCode, payload, model, attempt)
 }
@@ -326,16 +433,24 @@ func Decode(status int, payload []byte, model string, attempt int) (Response, er
 	if len(parsed.Choices) == 0 {
 		return Response{}, ErrEmptyAnswer
 	}
-	var content = ""
-	if parsed.Choices[0].Message.Content != nil {
-		content = *parsed.Choices[0].Message.Content
+	var choice = parsed.Choices[0]
+	for _, candidate := range parsed.Choices {
+		if candidate.Index == 0 {
+			choice = candidate
+			break
+		}
 	}
-	toolCalls := fromWireToolCalls(parsed.Choices[0].Message.ToolCalls)
+	var content = ""
+	if choice.Message.Content != nil {
+		content = *choice.Message.Content
+	}
+	toolCalls := fromWireToolCalls(choice.Message.ToolCalls)
 	if strings.TrimSpace(content) == "" && len(toolCalls) == 0 {
 		return Response{}, ErrEmptyAnswer // an empty answer without tool calls is an error, never a stored row
 	}
 
-	var out = Response{Content: content, Model: parsed.Model, Attempts: attempt, ToolCalls: toolCalls}
+	var out = Response{Content: content, Model: parsed.Model, Attempts: attempt, ToolCalls: toolCalls,
+		FinishReason: choice.FinishReason}
 	if out.Model == "" {
 		out.Model = model
 	}

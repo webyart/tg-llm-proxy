@@ -62,3 +62,58 @@ frontend:
   script:
     - node --check internal/webapp/static/app.js
     - node --test internal/webapp/frontendjs/*.test.js
+
+# The linters that find defects (errcheck, govet, ineffassign, staticcheck, unused). The job is advisory for
+# now: the repository has never been run through golangci-lint, so its first clean report has to be seen before
+# the job becomes blocking. Flip allow_failure to false in the commit that fixes the findings.
+golangci-lint:
+  stage: test
+  image: golangci/golangci-lint:v2.4.0-alpine
+  allow_failure: true
+  script:
+    - golangci-lint run --timeout 5m ./...
+
+# Total statement coverage of the internal packages. Measured on 2026-11-08: bot 79.5%, config 94.4%,
+# health 86.5%, model 88.2%, ratelimit 92.3%, store 77.7%, webapp 86.1% — the floor is well below the weakest
+# package so ordinary churn does not trip it, while a package that loses its tests does.
+coverage:
+  stage: test
+  image: golang:1.27-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18
+  script:
+    - go test -count=1 -timeout 20m -coverprofile=coverage.out ./internal/...
+    - total=$(go tool cover -func=coverage.out | tail -1 | awk '{print substr($3, 1, length($3) - 1)}')
+    - echo "total coverage ${total}%"
+    - awk -v total="$total" 'BEGIN { if (total + 0 < 70) { print "coverage " total "% is below the 70% floor"; exit 1 } }'
+  artifacts:
+    when: always
+    paths:
+      - coverage.out
+
+# The run stage of the image is what production actually executes, and nothing else in this pipeline builds it:
+# every other job uses `--target test`. The empty-token case is the cheapest end-to-end assertion — it needs no
+# network and proves the binary starts, validates configuration and exits with code 1.
+#
+# Blocking. The first step probes the daemon: on a runner without Docker the job reports SKIP instead of a red
+# pipeline, so the check is enforced exactly where it can run. docs/gitlab-runner-wsl.md claims today's jobs need
+# no Docker while README claims the pipeline runs Docker checks — the probe makes both statements harmless.
+production-image:
+  stage: test
+  image: docker:27-cli
+  script:
+    - |
+      if ! docker info > /dev/null 2>&1; then
+        echo "no Docker daemon on this runner: the production image check is skipped"
+        exit 0
+      fi
+    - docker build --target run -t tg-llm-proxy-run:"$CI_COMMIT_SHA" .
+    - docker compose -f docker-compose.yml config -q
+    - docker compose -f docker-compose.yml -f compose.websearch.yaml -f compose.tts.yaml -f compose.production.yaml config -q
+    - |
+      set +e
+      docker run --rm -e TELEGRAM_BOT_TOKEN= tg-llm-proxy-run:"$CI_COMMIT_SHA" > /tmp/start.txt 2>&1
+      code=$?
+      set -e
+      cat /tmp/start.txt
+      test "$code" -eq 1
+      grep -q "TELEGRAM_BOT_TOKEN is not set" /tmp/start.txt
+

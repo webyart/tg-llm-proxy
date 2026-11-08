@@ -50,6 +50,19 @@ try {
         }
         Write-Output $build.Trim()
     }
+    # The base compose joins an external network that belongs to the edge-gateway project (its README creates
+    # it there). On a clean machine `docker compose up` therefore fails with "network edge-telegram not found";
+    # creating it here is what makes this deploy self-contained without copying the gateway into the repository.
+    $networkCheck = (docker network inspect edge-telegram 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0) {
+        $created = (docker network create edge-telegram 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0) {
+            Write-Output "docker-up: docker network create edge-telegram exit $LASTEXITCODE — $($created.Trim())"
+            exit 1
+        }
+        Write-Output 'docker-up: created the external network edge-telegram'
+    }
+
     $composeArgs = @('compose', 'up', '-d')
     $out = (docker @composeArgs 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 0) {

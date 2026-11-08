@@ -37,6 +37,36 @@ func ReserveDailyQuota(ctx context.Context, db *sql.DB, userID int64, now time.T
 	return true, nil
 }
 
+// ReleaseDailyQuota returns one reservation that never turned into work: a provider that is down, a call
+// that timed out before answering, or a tool that failed before reaching the network must not spend the
+// user's daily budget. `used` has a CHECK (used > 0), so the last reservation is deleted rather than set
+// to zero, in one transaction with the decrement of the others.
+func ReleaseDailyQuota(ctx context.Context, db *sql.DB, userID int64, now time.Time, class string) error {
+	if userID <= 0 || class != DailyQuotaModel && class != DailyQuotaNetworkTools {
+		return fmt.Errorf("invalid daily quota release")
+	}
+	day := utcDayStart(now).Format("2006-01-02")
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("release %s quota for %s: begin: %w", class, day, err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM daily_quota_reservations
+		WHERE user_id = ? AND day = ? AND class = ? AND used = 1`, userID, day, class); err != nil {
+		return fmt.Errorf("release %s quota for %s: delete the last reservation: %w", class, day, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE daily_quota_reservations SET used = used - 1
+		WHERE user_id = ? AND day = ? AND class = ? AND used > 1`, userID, day, class); err != nil {
+		return fmt.Errorf("release %s quota for %s: decrement: %w", class, day, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("release %s quota for %s: commit: %w", class, day, err)
+	}
+	return nil
+}
+
 func DailyQuotaUsed(ctx context.Context, db *sql.DB, userID int64, now time.Time, class string) (int64, error) {
 	if userID <= 0 || class != DailyQuotaModel && class != DailyQuotaNetworkTools {
 		return 0, fmt.Errorf("invalid daily quota lookup")

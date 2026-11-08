@@ -22,20 +22,14 @@ func reminderTestDB(t *testing.T) *sql.DB {
 
 func TestReminderMigrationPreservesSchema6DataAndIndexes(t *testing.T) {
 	ctx := context.Background()
-	db := reminderTestDB(t)
-	migrations := MigrationSQL
-	MigrationSQL = append([]string(nil), migrations[:6]...)
-	defer func() { MigrationSQL = migrations }()
-	if err := ApplySchema(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	db, restore := openMemoryAtVersion(t, 6)
 	if err := EnsureChat(ctx, db, 100, 11, "kept"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO events (user_id, kind, detail, created_at) VALUES (11, 'usage', 'schema6', '2026-01-02 03:04:05')`); err != nil {
 		t.Fatal(err)
 	}
-	MigrationSQL = migrations
+	restore()
 	if err := ApplySchema(ctx, db); err != nil {
 		t.Fatal(err)
 	}

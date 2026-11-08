@@ -132,7 +132,7 @@ func TestReminderListIsScopedBoundedAndHasNoLeaseState(t *testing.T) {
 func TestReminderActionsAreScopedAndEnforceState(t *testing.T) {
 	app, server := newTestApp(t)
 	bearer := launchSession(t, app, server)
-	otherBearer := launchSessionFor(t, app, server, testChatID+1, testUserID)
+	otherBearer := launchSessionFor(t, app, server, otherTestUserID, otherTestUserID)
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	active := createWebappReminder(t, app, testChatID, "cancel active", store.ReminderCadenceOnce, now.Add(time.Hour))
 	retryMe := createWebappReminder(t, app, testChatID, "retry failed", store.ReminderCadenceOnce, now)

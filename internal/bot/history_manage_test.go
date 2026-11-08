@@ -134,7 +134,7 @@ func TestExportAndSearchHistoryWithoutModel(t *testing.T) {
 	if err := dispatch(t, d, testEvent(200, 11, 1501, "/search мир")); err != nil {
 		t.Fatalf("search: %v", err)
 	}
-	if !strings.Contains(r.joined(), "Привет МИР") || !strings.Contains(r.joined(), "последние 10000 сообщений") || !strings.Contains(r.joined(), "до 20 совпадений") || m.callCount() != 0 {
+	if !strings.Contains(r.joined(), "Привет МИР") || !strings.Contains(r.joined(), "вся история чата") || !strings.Contains(r.joined(), "до 20 совпадений") || m.callCount() != 0 {
 		t.Fatalf("search reply=%q model calls=%d", r.joined(), m.callCount())
 	}
 }
@@ -185,15 +185,25 @@ func TestExportAndSearchDescribeTruncatedWindow(t *testing.T) {
 		t.Fatalf("search: %v", err)
 	}
 	searchReply := r.texts()[len(r.texts())-1]
-	if !strings.Contains(searchReply, "Найдено сообщений: 20") || !strings.Contains(searchReply, "последние 10000 сообщений") || !strings.Contains(searchReply, "до 20 совпадений") || !strings.Contains(searchReply, "не проверялись") {
+	// The FTS index answers over the whole history, so the reply no longer warns about an unscanned tail; it
+	// does say that the newest matches were shown when more exist.
+	if !strings.Contains(searchReply, "Найдено сообщений: 20") || !strings.Contains(searchReply, "вся история чата") ||
+		!strings.Contains(searchReply, "до 20 совпадений") || !strings.Contains(searchReply, "Показаны самые новые совпадения") {
 		t.Fatalf("search scope=%q", searchReply)
 	}
-	if err := dispatch(t, d, testEvent(202, 11, 1523, "/search oldest-only")); err != nil {
-		t.Fatalf("search outside window: %v", err)
+	if err := dispatch(t, d, testEvent(202, 11, 1523, "/search absent-nowhere")); err != nil {
+		t.Fatalf("search without matches: %v", err)
 	}
 	outsideReply := r.texts()[len(r.texts())-1]
-	if !strings.Contains(outsideReply, "Совпадений не найдено") || !strings.Contains(outsideReply, "последние 10000 сообщений") || !strings.Contains(outsideReply, "не проверялись") {
-		t.Fatalf("outside-window reply=%q", outsideReply)
+	if !strings.Contains(outsideReply, "Совпадений не найдено") || !strings.Contains(outsideReply, "вся история чата") {
+		t.Fatalf("empty search reply=%q", outsideReply)
+	}
+	// A message older than the export window is still findable: that is exactly what the index changed.
+	if err := dispatch(t, d, testEvent(202, 11, 1524, "/search oldest-only")); err != nil {
+		t.Fatalf("search the oldest row: %v", err)
+	}
+	if oldestReply := r.texts()[len(r.texts())-1]; !strings.Contains(oldestReply, "Найдено сообщений: 1") {
+		t.Fatalf("the oldest message of the chat was not found: %q", oldestReply)
 	}
 }
 

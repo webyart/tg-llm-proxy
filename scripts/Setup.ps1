@@ -16,8 +16,23 @@ foreach ($dir in $gitDirs) {
 }
 
 $env:GOPROXY = 'https://proxy.golang.org,direct'
-$env:GOCACHE = Join-Path $repoRoot '.cache\gocache'
-$env:GOPATH = Join-Path $repoRoot '.cache\gopath'
+# The Go caches live outside the checkout: a repo-local .cache/ grew to 1.65 GB and made every recursive walk
+# (gofmt -l ., the secret scan, git status) pay for it. The platform cache home is the right place, and the
+# repository-local path stays as a fallback for an environment without one.
+$cacheRoot = ''
+if ($env:LOCALAPPDATA) {
+    $cacheRoot = Join-Path $env:LOCALAPPDATA 'tg-llm-proxy'
+} elseif ($env:XDG_CACHE_HOME) {
+    $cacheRoot = Join-Path $env:XDG_CACHE_HOME 'tg-llm-proxy'
+} elseif ($HOME) {
+    $cacheRoot = Join-Path $HOME '.cache' 'tg-llm-proxy'
+}
+if (-not $cacheRoot) {
+    $cacheRoot = Join-Path $repoRoot '.cache'
+}
+$env:GOCACHE = Join-Path $cacheRoot 'gocache'
+$env:GOPATH = Join-Path $cacheRoot 'gopath'
+New-Item -ItemType Directory -Force -Path $env:GOCACHE, $env:GOPATH | Out-Null
 
 Write-Output "Setup: git-dirs added to PATH (if existed)"
 Write-Output "GOPROXY=$env:GOPROXY"

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -71,7 +72,7 @@ func TestCountsReportIsOneKeyValuePairPerLine(t *testing.T) {
 		"open_mode=mode_ro",
 		"journal_mode=wal",
 		"integrity=ok",
-		"schema_version=11",
+		"schema_version=" + fmt.Sprint(store.SupportedSchemaVersion()),
 		"last_update_id=920551547",
 		"bot_state_offset_found=true",
 		"table_bot_state=1",

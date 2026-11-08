@@ -23,11 +23,13 @@ type networkApprovalScopeSet struct {
 	scopes map[networkApprovalScope]bool
 }
 
-var dispatcherNetworkApprovalScopes sync.Map
-
+// networkApprovalScopesFor — the "allow for this task" scopes of this dispatcher, kept on the struct for the
+// same reason as the confirmations: a global keyed by a pointer is state nobody can inspect or free.
 func networkApprovalScopesFor(d *Dispatcher) *networkApprovalScopeSet {
-	set, _ := dispatcherNetworkApprovalScopes.LoadOrStore(d, &networkApprovalScopeSet{scopes: map[networkApprovalScope]bool{}})
-	return set.(*networkApprovalScopeSet)
+	d.approvalOnce.Do(func() {
+		d.approvalScopes = &networkApprovalScopeSet{scopes: map[networkApprovalScope]bool{}}
+	})
+	return d.approvalScopes
 }
 
 func networkScopeExplanation(call model.ToolCall) string {

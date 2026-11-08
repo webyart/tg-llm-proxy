@@ -387,10 +387,11 @@ func (s *streamSession) headOf(text string, reserve int) string {
 	if room < 0 {
 		room = 0
 	}
-	if len(runes) <= room {
+	var head = cutRunesToUnits(runes, room)
+	if len(head) == len(runes) {
 		return text
 	}
-	return strings.TrimRight(string(runes[:room]), " \t\n\r")
+	return strings.TrimRight(string(head), " \t\n\r")
 }
 
 // flood is about.
@@ -509,14 +510,7 @@ func (s *streamSession) broken(ctx context.Context, d *Dispatcher, reason string
 // Telegram refuses for length leaves the user with the placeholder of «Модель думает…» forever.
 func (s *streamSession) brokenView(reason string) string {
 	var notice = fitNotice(msgStreamBroken, reason, s.maxRunes)
-	var runes = []rune(s.currentAnswer())
-	var keep = s.maxRunes - Runes(notice)
-	if keep < 0 {
-		keep = 0
-	}
-	if len(runes) > keep {
-		runes = runes[:keep]
-	}
+	var runes = cutRunesToUnits([]rune(s.currentAnswer()), s.maxRunes-unitsOf([]rune(notice)))
 	return strings.TrimRight(string(runes), " \t\n\r") + notice
 }
 

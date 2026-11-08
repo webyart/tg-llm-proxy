@@ -27,6 +27,14 @@ func (d *Dispatcher) stored(next HandlerFunc) HandlerFunc {
 			return next(ctx, ev, cmd)
 		}
 		var tgID = ev.TelegramMessageID
+		if ev.MenuCallback {
+			// A menu message id is reused by EVERY action of that menu. Writing it into
+			// messages.telegram_message_id puts the second model action of the same menu into the
+			// UNIQUE(chat_id, telegram_message_id) conflict below, where it is read as "this update
+			// was already answered" and dropped without an answer or an error. A callback carries no
+			// message of its own, so it gets no message identity — only real messages do.
+			tgID = 0
+		}
 		var _, err = store.Append(ctx, d.deps.DB, store.Message{
 			ChatID:            ev.ChatID,
 			UserID:            ev.UserID,

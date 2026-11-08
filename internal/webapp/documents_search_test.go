@@ -116,7 +116,7 @@ func TestDocumentSearchIsChatScopedAndUsesTelegramCaps(t *testing.T) {
 	}
 }
 
-func TestDocumentSearchReportsTruncatedCorpus(t *testing.T) {
+func TestDocumentSearchCoversTheWholeCorpus(t *testing.T) {
 	app, server := newTestApp(t)
 	bearer := launchSession(t, app, server)
 	ctx := context.Background()
@@ -165,16 +165,29 @@ func TestDocumentSearchReportsTruncatedCorpus(t *testing.T) {
 
 	status, body, _ := apiRequest(t, server, http.MethodGet, "/api/documents/search?q=needle", bearer)
 	if status != http.StatusOK {
-		t.Fatalf("truncated search status=%d body=%s", status, body)
+		t.Fatalf("search status=%d body=%s", status, body)
 	}
 	decoded := decodeDocumentSearch(t, body)
-	if decoded.Corpus.Scanned != 10000 || decoded.Corpus.Total != 10001 || !decoded.Corpus.Truncated {
-		t.Fatalf("truncated search corpus=%+v", decoded.Corpus)
+	// The index reads only the two matching chunks out of 10 001, and the corpus is fully searchable.
+	if decoded.Corpus.Scanned != 2 || decoded.Corpus.Total != 10001 || decoded.Corpus.Truncated {
+		t.Fatalf("search corpus=%+v", decoded.Corpus)
 	}
-	if len(decoded.Items) != 1 || decoded.Items[0].DocumentID != recentID || decoded.Items[0].DocumentID == oldID {
-		t.Fatalf("truncated search items=%+v recent=%d old=%d", decoded.Items, recentID, oldID)
+	if len(decoded.Items) != 2 {
+		t.Fatalf("both matching documents must be found: %+v", decoded.Items)
 	}
-	if strings.Contains(string(body), "oldest-secret") || strings.Contains(string(body), "oldest chunk") {
-		t.Fatalf("search returned a chunk outside the scan window: %s", body)
+	var seenOld, seenRecent bool
+	for _, item := range decoded.Items {
+		switch item.DocumentID {
+		case oldID:
+			seenOld = true
+		case recentID:
+			seenRecent = true
+		}
+	}
+	if !seenOld || !seenRecent {
+		t.Fatalf("search items=%+v old=%d recent=%d", decoded.Items, oldID, recentID)
+	}
+	if !strings.Contains(string(body), "oldest chunk") {
+		t.Fatalf("the oldest matching chunk of the corpus is missing: %s", body)
 	}
 }

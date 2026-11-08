@@ -21,10 +21,14 @@ import (
 	"bot/internal/store"
 )
 
-const (
-	testChatID = int64(4242)
-	testUserID = int64(1717)
-)
+// A private Telegram chat is the only chat a Mini App session may belong to, and in a private chat the chat
+// id IS the user id. The tests therefore use one id for both; otherTestUserID is a second private chat, used
+// to prove that one session cannot read the data of another.
+const testUserID = int64(1717)
+
+const testChatID = testUserID
+
+const otherTestUserID = testUserID + 1
 
 type fakeModelClient struct {
 	mu            sync.Mutex
@@ -57,10 +61,12 @@ func (f *fakeModelClient) Models(ctx context.Context) ([]string, error) {
 
 func newTestApp(t *testing.T) (*App, *httptest.Server) {
 	t.Helper()
-	cfg, problems := config.LoadFrom(map[string]string{
-		"TELEGRAM_BOT_TOKEN": "123:test", "TELEGRAM_ALLOWED_USERS": strconv.FormatInt(testUserID, 10),
-		"MINIAPP_ENABLED": "true", "MINIAPP_PUBLIC_URL": "https://example.test/app",
-	})
+	var raw = map[string]string{}
+	raw["TELEGRAM_BOT_TOKEN"] = "123:test"
+	raw["TELEGRAM_ALLOWED_USERS"] = strconv.FormatInt(testUserID, 10) + "," + strconv.FormatInt(otherTestUserID, 10)
+	raw["MINIAPP_ENABLED"] = "true"
+	raw["MINIAPP_PUBLIC_URL"] = "https://example.test/app"
+	cfg, problems := config.LoadFrom(raw)
 	if len(problems) != 0 {
 		t.Fatalf("config: %v", problems)
 	}

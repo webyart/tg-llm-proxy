@@ -605,6 +605,12 @@ func TestUpdatesWithoutMessageSurviveTheHandler(t *testing.T) {
 	}
 	var k = 0
 	for k < len(counts) {
+		// The FTS5 index and its shadow tables (messages_fts*, search_index_meta) are schema, not conversation:
+		// opening the database creates them, and their bookkeeping rows are not a reply to an update.
+		if strings.HasPrefix(counts[k].Name, "messages_fts") || strings.HasPrefix(counts[k].Name, "rag_chunks_fts") || counts[k].Name == "search_index_meta" {
+			k++
+			continue
+		}
 		if counts[k].Name != "schema_migrations" && counts[k].Rows != 0 {
 			t.Fatalf("an update without a message must write nothing : %s has %d rows", counts[k].Name, counts[k].Rows)
 		}

@@ -1,7 +1,9 @@
-// entry — the program entry point of the module
-// (`signal.NotifyContext`); the DoD of that day is «go build проходит; при пустом токене — ясная ошибка
-// и код выхода 1».
-
+// entry — the program entry point of the module.
+//
+// The file is deliberately thin: main() reads the configuration, builds one logger and calls run(), which
+// owns the whole lifecycle (database, health listener, model client, dispatcher, transports, schedulers).
+// run() returns an error instead of calling os.Exit from the middle, so every resource it opened is closed by
+// a deferred call on every path, and a failed start can be tested instead of only observed in production.
 package main
 
 import (
@@ -13,9 +15,10 @@ import (
 	"bot/internal/webapp"
 	"context"
 	"errors"
-
 	"fmt"
+	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -23,104 +26,18 @@ import (
 	"time"
 )
 
-// The signal set that stops the program: Ctrl-C on Windows and the SIGTERM a process supervisor sends
-// without it the container is SIGKILLed when Docker's stop grace ends — 10 s by default, because
+// The signal set that stops the program: Ctrl-C on Windows and the SIGTERM a process supervisor sends —
+// without it the container is SIGKILLed when Docker's stop grace ends (10 s by default).
 var stopSignals = []os.Signal{os.Interrupt, syscall.SIGTERM}
 
 var buildCommit = "dev"
 
-// per line: the program's own report of what it read. The token is hidden, only its length is printed
-func PrintConfig(cfg config.Config) {
-	fmt.Println("TELEGRAM_BOT_TOKEN", "is set, length", len(cfg.BotToken), "")
-	fmt.Println("STRATA_API_KEY", "is set, length", len(cfg.StrataKey), "")
-	fmt.Println("STRATA_BASE_URL", cfg.StrataBase, "")
-	fmt.Println("STRATA_MODEL", cfg.StrataModel, "")
-	fmt.Println("STRATA_TRANSCRIPTION_MODEL", cfg.TranscriptionModel, "")
-	fmt.Println("TRANSCRIPTION_BASE_URL", cfg.TranscriptionBase, "")
-	fmt.Println("STRATA_MODELS_URL", cfg.ModelsURL, "")
-	fmt.Println("STRATA_CHAT_COMPLETIONS_URL", cfg.ChatURL, "")
-	fmt.Println("STRATA_TIMEOUT_SECONDS", cfg.TimeoutSeconds, "")
-	fmt.Println("TG_REPLY_DEADLINE_SECONDS", cfg.ReplyDeadlineSeconds, "")
-	fmt.Println("RECOVERY_MAX_AGE_HOURS", cfg.RecoveryMaxAgeHours, "")
-	fmt.Println("MEDIA_MAX_MB", cfg.MediaMaxBytes/(1<<20), "")
-	fmt.Println("SPEECH_MAX_SECONDS", cfg.SpeechMaxSeconds, "")
-	fmt.Println("TTS_ENABLED", cfg.TTSEnabled, "")
-	fmt.Println("TTS_MODEL", cfg.TTSModel, "")
-	fmt.Println("TTS_MAX_CHARS", cfg.TTSMaxChars, "")
-	fmt.Println("TTS_TIMEOUT_SECONDS", cfg.TTSTimeoutSeconds, "")
-	fmt.Println("TOOLS_ENABLED", cfg.ToolsEnabled, "")
-	fmt.Println("URL_READER_ENABLED", cfg.URLReaderEnabled, "")
-	fmt.Println("WEB_SEARCH_ENABLED", cfg.WebSearchEnabled, "")
-	fmt.Println("RAG_MAX_DOCUMENTS", cfg.RAGMaxDocuments, "")
-	fmt.Println("RAG_RESULT_LIMIT", cfg.RAGResultLimit, "")
-	fmt.Println("RAG_MAX_CONTEXT_CHARS", cfg.RAGMaxContextChars, "")
-	fmt.Println("STREAMING_ENABLED", cfg.Streaming, "")
-	fmt.Println("STREAM_EDIT_INTERVAL_MS", cfg.StreamEditIntervalMS, "")
-	fmt.Println("STREAM_IDLE_TIMEOUT_SECONDS", cfg.StreamIdleSeconds, "")
-	fmt.Println("STREAM_TOTAL_DEADLINE_SECONDS", cfg.StreamTotalSeconds, "")
-	fmt.Println("WEBHOOK_ENABLED", cfg.WebhookEnabled, "")
-	if cfg.WebhookEnabled {
-		fmt.Println("WEBHOOK_PUBLIC_URL", cfg.WebhookPublicURL)
-		fmt.Println("WEBHOOK_LISTEN", cfg.WebhookAddress(), cfg.WebhookPath)
-		fmt.Println("WEBHOOK_SECRET_TOKEN is set, length", len(cfg.WebhookSecretToken), "")
-	}
-	fmt.Println("MINIAPP_ENABLED", cfg.MiniAppEnabled, "")
-	if cfg.MiniAppEnabled {
-		fmt.Println("MINIAPP_PUBLIC_URL", cfg.MiniAppPublicURL)
-		fmt.Println("MINIAPP_LISTEN", cfg.MiniAppAddress())
-	}
-	fmt.Println("DB_PATH", cfg.DBPath, "")
-	fmt.Println("REMINDER_TIMEZONE", cfg.ReminderTimezone, "")
-	fmt.Println("CONTEXT_MESSAGES", cfg.ContextMessages, "")
-	fmt.Println("MAX_CONTEXT_CHARS", cfg.MaxContextChars, "")
-	fmt.Println("MAX_INPUT_CHARS", cfg.MaxInputChars, "")
-	fmt.Println("SYSTEM_PROMPT is set, length", len(cfg.SystemPrompt), "")
-	fmt.Println("RATE_LIMIT_PER_MINUTE", cfg.RateLimitPerMinute, "")
-	fmt.Println("MAX_CONCURRENT_MODEL_REQUESTS", cfg.MaxConcurrentRequests, "")
-	fmt.Println("PROXY_FREE_TEXT", cfg.FreeText, "")
-	fmt.Println("MAX_MESSAGE_CHUNK", cfg.MaxMessageChunk, "")
-	fmt.Println("PARSE_MODE", cfg.ParseMode, "")
-	fmt.Println("HEALTH_PORT", cfg.HealthPort, "")
-	fmt.Println("LOG_LEVEL", cfg.LogLevel, "")
-	if cfg.DenyByDefault {
-		// has one name — the name a real .env carries; the old spelling is refused by name in LoadFrom).
-		fmt.Println("TELEGRAM_ALLOWED_USERS is empty : the bot is closed, deny by default, only /start and /whoami answer ")
-		fmt.Println("TELEGRAM_ADMIN_USERS", len(cfg.AdminIDs), "entries")
-		return
-	}
-	fmt.Println("TELEGRAM_ALLOWED_USERS", len(cfg.UserIDs), "entries ")
-	fmt.Println("TELEGRAM_ADMIN_USERS", len(cfg.AdminIDs), "entries")
-}
+// pollerWait bounds how long shutdown waits for one goroutine to notice the cancelled context. A stop that
+// never finishes cannot be told apart from a hung process, so the wait is a window, not a promise.
+var pollerWait = 3 * time.Second
 
-// loader for «валидация, понятные сообщения об ошибках», and this message names the variable and the
-// cannot come from a second spelling that the loader would have to know about.
-func PrintMissing(raw map[string]string) {
-	var names = config.Env
-	var i = 0
-	for i < len(names) {
-		if !config.RowIsSet(raw, names[i]) {
-			fmt.Println("ENV variable", names[i], "is not set ")
-		}
-		i += 1
-	}
-}
-
-// «internal/config: ENV → Config, валидация, понятные сообщения об ошибках»).
-func LoadConfig() (config.Config, []string, map[string]string) {
-	var entries = os.Environ()
-	var raw = map[string]string{}
-	var entry = 0
-	for entry < len(entries) {
-		var pair = strings.Split(entries[entry], "=")
-		if len(pair) > 1 {
-			raw[pair[0]] = strings.Join(pair[1:], "=")
-		}
-		entry += 1
-	}
-	var cfg, problems = config.LoadFrom(raw)
-	return cfg, problems, raw
-}
-
+// logLevel maps the LOG_LEVEL row to a slog level. An unknown value is the loader's problem (it names the row
+// and falls back to info), and this function follows the same fallback silently.
 func logLevel(name string) slog.Level {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "error":
@@ -134,65 +51,124 @@ func logLevel(name string) slog.Level {
 	}
 }
 
-var pollerWait = 3 * time.Second
+// LoadConfig reads the process ENV once and hands the raw map to the loader. The map is returned as well
+// because the loader reports problems by row name and the caller prints them together.
+func LoadConfig() (config.Config, []string, map[string]string) {
+	var entries = os.Environ()
+	var raw = map[string]string{}
+	for _, entry := range entries {
+		var pair = strings.Split(entry, "=")
+		if len(pair) > 1 {
+			raw[pair[0]] = strings.Join(pair[1:], "=")
+		}
+	}
+	var cfg, problems = config.LoadFrom(raw)
+	return cfg, problems, raw
+}
+
+// startupSummary logs the configuration an operator asks about first. Secrets are never printed — only their
+// presence and length — and rows that are simply unset are not listed: the previous version printed one
+// "is not set" line per optional row on every start, which buried the six lines that mattered.
+func startupSummary(logger *slog.Logger, cfg config.Config) {
+	logger.Info("configuration loaded",
+		"token_set", cfg.BotToken != "",
+		"token_length", len(cfg.BotToken),
+		"strata_base", cfg.StrataBase,
+		"model", cfg.StrataModel,
+		"transcription_model", cfg.TranscriptionModel,
+		"timeout_seconds", cfg.TimeoutSeconds,
+		"reply_deadline_seconds", cfg.ReplyDeadlineSeconds,
+		"streaming", cfg.Streaming,
+		"tools_enabled", cfg.ToolsEnabled,
+		"url_reader", cfg.URLReaderEnabled,
+		"web_search", cfg.WebSearchEnabled,
+		"tts", cfg.TTSEnabled,
+		"miniapp", cfg.MiniAppEnabled,
+		"miniapp_public_url", cfg.MiniAppPublicURL,
+		"webhook", cfg.WebhookEnabled,
+		"db_path", cfg.DBPath,
+		"health_port", cfg.HealthPort,
+		"allowed_users", len(cfg.UserIDs),
+		"admin_users", len(cfg.AdminIDs),
+		"deny_by_default", cfg.DenyByDefault,
+		"rate_limit_per_minute", cfg.RateLimitPerMinute,
+		"max_concurrent_requests", cfg.MaxConcurrentRequests,
+	)
+	// The URL above is what Telegram stores as the menu button and pastes into every WebApp button. A root URL
+	// behind a path-prefix gateway opens the gateway's fallback route instead of the Mini App — the symptom is
+	// Traefik's «no available server» with a perfectly healthy bot behind it. This warning names the two
+	// values an operator has to compare.
+	if cfg.MiniAppEnabled {
+		var parsed, parseErr = url.Parse(cfg.MiniAppPublicURL)
+		if parseErr != nil || parsed.Host == "" {
+			logger.Warn("MINIAPP_PUBLIC_URL is not an absolute URL; the Mini App button will not open", "url", cfg.MiniAppPublicURL)
+		} else if parsed.Path == "" || parsed.Path == "/" {
+			logger.Warn("MINIAPP_PUBLIC_URL has no path: if a gateway routes the Mini App under a prefix, Telegram will open that prefix's fallback route instead — use e.g. https://host/miniapp",
+				"url", cfg.MiniAppPublicURL, "example_suffix", "/miniapp")
+		}
+	}
+}
 
 func main() {
-	// log/slog: the JSON log layer of the bot arrives with the bot itself; the start messages День 1 asks for
-	// с graceful shutdown (`signal.NotifyContext`).
-	// copies it into every connection at Connect), so it is set here, before the first sql.Open —
+	// The strict-pragma switch is process-wide state that the store copies into every connection at Connect,
+	// so it is set before the first sql.Open.
 	store.EnableStrictPragmas()
 	fmt.Println("build commit", buildCommit)
+
 	var ctx, cancel = signal.NotifyContext(context.Background(), stopSignals...)
-	var cfg, problems, raw = LoadConfig()
-	PrintMissing(raw)
+	defer cancel()
+	var cfg, problems, _ = LoadConfig()
 	if len(problems) > 0 {
-		// DoD "a missing token must exit with code 1").
-		var bad = 0
-		for bad < len(problems) {
-			fmt.Println("configuration problem:", problems[bad])
-			bad += 1
+		// The loader names every broken row exactly once and does not stop at the first: the start exits with
+		// code 1 and prints the whole list, so a wrong .env is fixed in one pass.
+		for _, problem := range problems {
+			fmt.Println("configuration problem:", problem)
 		}
 		if cfg.BotToken == "" {
-			// mandatory row the configuration is not printed at all.
-			fmt.Println("ENV TELEGRAM_BOT_TOKEN is not set: the start falls with a clear error and the configuration is not printed ")
+			fmt.Println("ENV TELEGRAM_BOT_TOKEN is not set: the start falls with a clear error and the configuration is not printed")
 		}
-		fmt.Println("the loader resolved 1 configuration out of the table and found", len(problems), "problem(s): every broken row is named once, the loader does not stop at the first one ")
+		fmt.Println("the loader resolved the configuration and found", len(problems), "problem(s)")
 		os.Exit(1)
 	}
-	PrintConfig(cfg)
-	// go:embed put into the binary. A failure stops the start with exit code 1 — the same rule as a
-	var db, openErr = store.Open(ctx, cfg.DBPath)
-	if openErr != nil {
-		fmt.Println("store.Open:", openErr, "")
+
+	var logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel(cfg.LogLevel)}))
+	startupSummary(logger, cfg)
+	if err := run(ctx, cfg, buildCommit, os.Stdout, logger); err != nil {
+		logger.Error("the bot stopped with an error", "error", bot.Sanitize(err, cfg.BotToken))
+		fmt.Fprintln(os.Stderr, "bot:", bot.Sanitize(err, cfg.BotToken))
 		os.Exit(1)
 	}
+}
+
+// run wires the process and blocks until the context is cancelled or a component that the bot cannot live
+// without stops. Everything it opens is closed on return; the caller owns the exit code.
+func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, logger *slog.Logger) error {
+	var db, err = store.Open(ctx, cfg.DBPath)
+	if err != nil {
+		return fmt.Errorf("store.Open: %w", err)
+	}
+	defer db.Close()
+
 	var journalMode, modeErr = store.Pragma(ctx, db, store.JournalModePragma)
 	var foreignKeys, keysErr = store.Pragma(ctx, db, store.ForeignKeysPragma)
 	var schemaVersion, schemaErr = store.SchemaVersion(ctx, db)
 	if modeErr != nil || keysErr != nil || schemaErr != nil {
-		fmt.Println("store.Pragma/SchemaVersion:", modeErr, keysErr, schemaErr, "")
-		db.Close()
-		os.Exit(1)
+		return fmt.Errorf("store.Pragma/SchemaVersion: journal=%v keys=%v schema=%v", modeErr, keysErr, schemaErr)
 	}
-	fmt.Println("store is open:", cfg.DBPath, "journal_mode", journalMode, "foreign_keys", foreignKeys,
-		"migrations applied", len(store.MigrationSQL), "schema_version", schemaVersion, "")
-	fmt.Println("program is running, PID", os.Getpid(), "")
-	// compose HEALTHCHECK probes (wget on 127.0.0.1) and what keeps the container process alive
+	fmt.Fprintln(out, "store is open:", cfg.DBPath, "journal_mode", journalMode, "foreign_keys", foreignKeys,
+		"migrations applied", len(store.MigrationSQL), "schema_version", schemaVersion)
+	fmt.Fprintln(out, "program is running, PID", os.Getpid())
+
+	// The health listener is bound before anything else starts: the compose HEALTHCHECK probes it and a taken
+	// port must fail the start, not sit next to a healthy-looking /healthz.
 	var healthServer = health.New(cfg.HealthPort)
-	// День 4 has already burned the timeout — and instead of a container that reports healthy while
 	if listenErr := healthServer.Listen(); listenErr != nil {
-		fmt.Println(listenErr, "")
-		db.Close()
-		os.Exit(1)
+		return listenErr
 	}
 	var healthErr = make(chan error, 1)
-	go func() {
-		healthErr <- healthServer.Run(ctx)
-	}()
-	fmt.Println("health is listening on 127.0.0.1:", healthServer.Port(), health.Path, "")
-	var logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel(cfg.LogLevel)}))
-	var miniApp *webapp.App
-	var miniAppErr chan error
+	go func() { healthErr <- healthServer.Run(ctx) }()
+	fmt.Fprintln(out, "health is listening on 127.0.0.1:", healthServer.Port(), health.Path)
+
 	var client, clientErr = model.New(model.Options{
 		ChatURL:             cfg.ChatURL,
 		ModelsURL:           cfg.ModelsURL,
@@ -203,7 +179,6 @@ func main() {
 		TranscriptionNoAuth: cfg.TranscriptionBase != cfg.StrataBase,
 		Timeout:             time.Duration(cfg.TimeoutSeconds) * time.Second,
 		MaxConcurrent:       int(cfg.MaxConcurrentRequests),
-		// client is the cadence of the chat: a thinking model may refresh the placeholder no more often than
 		Stream: model.StreamSettings{
 			Idle:     time.Duration(cfg.StreamIdleSeconds) * time.Second,
 			Total:    time.Duration(cfg.StreamTotalSeconds) * time.Second,
@@ -211,31 +186,26 @@ func main() {
 		},
 	})
 	if clientErr != nil {
-		fmt.Println("model.New:", clientErr, "")
-		db.Close()
-		os.Exit(1)
+		return fmt.Errorf("model.New: %w", clientErr)
 	}
+	var miniApp *webapp.App
 	if cfg.MiniAppEnabled {
 		miniApp = webapp.New(cfg, db, client, logger)
 	}
 	var synthesizer model.SpeechSynthesizer
 	if cfg.TTSEnabled {
-		ttsClient, ttsErr := model.NewTTS(model.TTSOptions{
+		var ttsClient, ttsErr = model.NewTTS(model.TTSOptions{
 			URL: cfg.TTSURL, Model: cfg.TTSModel, Voice: cfg.TTSVoice,
 			Timeout: time.Duration(cfg.TTSTimeoutSeconds) * time.Second, MaxChars: int(cfg.TTSMaxChars),
 		})
 		if ttsErr != nil {
-			fmt.Println("model.NewTTS:", ttsErr, "")
-			db.Close()
-			os.Exit(1)
+			return fmt.Errorf("model.NewTTS: %w", ttsErr)
 		}
 		synthesizer = ttsClient
 	}
 	var startOffset, offsetFound, offsetErr = store.LastUpdateID(ctx, db)
 	if offsetErr != nil {
-		fmt.Println("store.LastUpdateID:", offsetErr, "")
-		db.Close()
-		os.Exit(1)
+		return fmt.Errorf("store.LastUpdateID: %w", offsetErr)
 	}
 	var dispatcher = bot.New(bot.Deps{
 		Cfg:            cfg,
@@ -245,32 +215,31 @@ func main() {
 		Logger:         logger,
 		Token:          cfg.BotToken,
 		StartOffset:    startOffset,
-		BuildCommit:    buildCommit,
+		BuildCommit:    commit,
 		MiniAppTickets: miniApp,
 		Offset: func(writeCtx context.Context, updateID int64) error {
 			return store.SetLastUpdateID(writeCtx, db, updateID)
 		},
 	})
+	var miniAppErr chan error
 	if miniApp != nil {
 		miniApp.SetTaskLifecycle(dispatcher)
 		miniApp.SetLinkLifecycle(dispatcher)
-		miniAppServer, listenErr := webapp.Listen(miniApp, cfg.MiniAppAddress())
+		var miniAppServer, listenErr = webapp.Listen(miniApp, cfg.MiniAppAddress())
 		if listenErr != nil {
-			fmt.Println("Mini App listener:", listenErr, "")
-			db.Close()
-			os.Exit(1)
+			return fmt.Errorf("Mini App listener: %w", listenErr)
 		}
 		defer miniAppServer.Close()
 		miniAppErr = make(chan error, 1)
 		go func() { miniAppErr <- miniAppServer.Run(ctx) }()
-		fmt.Println("Mini App is listening on", miniAppServer.URL(), "public URL", cfg.MiniAppPublicURL, "")
+		fmt.Fprintln(out, "Mini App is listening on", miniAppServer.URL(), "public URL", cfg.MiniAppPublicURL)
 	}
-	// is what answers 401 on a wrong token. A process that cannot poll must not sit next to a healthz that
+
+	// NewTelegram replaces the replier and the attachment downloader with the transport implementations, so it
+	// has to run after bot.New and before any update can arrive.
 	var tg, tgErr = dispatcher.NewTelegram(bot.Options{WebhookSecretToken: cfg.WebhookSecretToken})
 	if tgErr != nil {
-		fmt.Println("bot.New:", tgErr, "")
-		db.Close()
-		os.Exit(1)
+		return fmt.Errorf("bot.New: %w", tgErr)
 	}
 	var menuCtx, cancelMenu = context.WithTimeout(ctx, bot.PublishCommandsTimeout)
 	if menuErr := dispatcher.PublishCommands(menuCtx, tg); menuErr != nil {
@@ -280,22 +249,20 @@ func main() {
 		logger.Warn("setChatMenuButton refused, the default Telegram menu button stays active", "error", bot.Sanitize(menuErr, cfg.BotToken))
 	}
 	cancelMenu()
+
 	var webhookServer *bot.WebhookServer
 	if cfg.WebhookEnabled {
 		var err error
 		webhookServer, err = bot.NewWebhookServer(tg, cfg.WebhookAddress(), cfg.WebhookPath, cfg.WebhookSecretToken)
 		if err != nil {
-			fmt.Println("webhook listener:", err, "(the local address must be free before setWebhook, exit code 1)")
-			db.Close()
-			os.Exit(1)
+			return fmt.Errorf("webhook listener: %w", err)
 		}
 		defer webhookServer.Close()
 		if err := dispatcher.ConfigureWebhook(ctx, tg); err != nil {
-			fmt.Println("setWebhook:", err, "")
-			db.Close()
-			os.Exit(1)
+			return fmt.Errorf("setWebhook: %w", err)
 		}
 	}
+
 	var reminderDone = make(chan struct{})
 	go func() {
 		defer close(reminderDone)
@@ -306,13 +273,14 @@ func main() {
 		defer close(taskDone)
 		dispatcher.RunTaskScheduler(ctx)
 	}()
+
 	// Start owns polling, or Run owns the webhook workers and listener. Either way an unexpected return means
 	// this bot can no longer receive updates and the process must not remain a healthy-looking shell.
 	var botDone = make(chan struct{}, 1)
 	go func() {
 		if webhookServer != nil {
-			if err := webhookServer.Run(ctx); err != nil {
-				logger.Error("webhook transport stopped", "error", bot.Sanitize(err, cfg.BotToken))
+			if webhookErr := webhookServer.Run(ctx); webhookErr != nil {
+				logger.Error("webhook transport stopped", "error", bot.Sanitize(webhookErr, cfg.BotToken))
 			}
 		} else {
 			tg.Start(ctx)
@@ -323,93 +291,69 @@ func main() {
 		}
 	}()
 	if webhookServer != nil {
-		fmt.Println("bot is accepting Telegram webhooks on", webhookServer.URL(), "public URL", cfg.WebhookPublicURL,
+		fmt.Fprintln(out, "bot is accepting Telegram webhooks on", webhookServer.URL(), "public URL", cfg.WebhookPublicURL,
 			"bot_state last_update_id", startOffset, "found", offsetFound)
 	} else {
-		fmt.Println("bot is polling Telegram, bot_state last_update_id", startOffset, "found", offsetFound, "")
+		fmt.Fprintln(out, "bot is polling Telegram, bot_state last_update_id", startOffset, "found", offsetFound)
 	}
-	// walk: the stop left the offset at 920551679 with the interrupted update numbered 920551680, and the
-	// restarted poller asked Telegram for exactly that id and got empty batches for 9.5 minutes — Telegram
-	// re-delivers only what never reached the client. The scan of resume.go asks the database instead, and it
-	// runs next to the polling goroutine rather than before it: a model that spends its whole
-	// STRATA_TIMEOUT_SECONDS on a question from the previous run must not delay the first getUpdates of this
-	// update from answering it twice.
+
+	// The startup scan answers questions a previous process left unanswered. It runs next to the poller rather
+	// than before it: a model that spends its whole timeout on an old question must not delay the first
+	// getUpdates of this run.
 	var resumeDone = make(chan struct{})
 	go func() {
 		defer close(resumeDone)
 		var answered, pending, resumeErr = dispatcher.ResumeInterruptedQuestions(ctx)
 		if resumeErr != nil && !errors.Is(resumeErr, context.Canceled) {
-			logger.Error("the startup scan of stopped", "answered", answered, "pending", pending,
+			logger.Error("the startup scan of unanswered questions failed", "answered", answered, "pending", pending,
 				"error", bot.Sanitize(resumeErr, cfg.BotToken))
 			return
 		}
 		if answered > 0 || pending > 0 {
-			fmt.Println("the start of the process of answered", answered,
-				"stored question(s) of that had no answer of, left", pending,
+			fmt.Fprintln(out, "the startup scan answered", answered, "stored question(s), left", pending,
 				"still without an answer (the next start of the process tries them again)")
 		}
 	}()
 
-	// os/signal: NotifyContext is installed before anything starts, so Ctrl+C / SIGTERM can never be
-	// call). The wait below is on the context, not on a fixed window — the process stays running until a stop
-	// signal arrives — and a health listener that dies takes the run down with a clear error instead of a
 	var stoppedBySignal = true
 	select {
 	case <-ctx.Done():
 	case <-botDone:
-		// a chance to bring it back.
-		fmt.Println("the Telegram transport stopped without a stop signal, exit code 1 ")
-		cancel()
-		db.Close()
-		os.Exit(1)
+		fmt.Fprintln(out, "the Telegram transport stopped without a stop signal, exit code 1")
+		return errors.New("the Telegram transport stopped without a stop signal")
 	case err := <-healthErr:
 		if err != nil {
-			fmt.Println("health:", err, "")
-			db.Close()
-			os.Exit(1)
+			return fmt.Errorf("health: %w", err)
 		}
 		stoppedBySignal = false
 	case err := <-miniAppErr:
 		if err != nil {
-			fmt.Println("Mini App:", err, "")
-			db.Close()
-			os.Exit(1)
+			return fmt.Errorf("Mini App: %w", err)
 		}
 		stoppedBySignal = false
 	}
-	cancel()
-	fmt.Println("stopped by signal", stoppedBySignal, "")
-	// The line an operator looks for when a container is stopped: the process left on a signal, not because
-	// is bounded by pollerWait: a stop that never finishes cannot be told apart from a hung process, and
-	var pollerGone = false
+	fmt.Fprintln(out, "stopped by signal", stoppedBySignal)
+	// The line an operator looks for when a container is stopped: the process left on a signal, not because a
+	// listener died. The waits below are bounded by pollerWait for the reason above.
+	fmt.Fprintln(out, "poller stopped", waitClosed(botDone))
+	if !waitClosed(reminderDone) {
+		fmt.Fprintln(out, "reminder scheduler was still stopping when the process left")
+	}
+	if !waitClosed(taskDone) {
+		fmt.Fprintln(out, "task scheduler was still stopping when the process left")
+	}
+	if !waitClosed(resumeDone) {
+		fmt.Fprintln(out, "the startup scan was still answering when the process left")
+	}
+	return nil
+}
+
+// waitClosed reports whether ch was closed (or delivered its one value) inside the shutdown window.
+func waitClosed(ch <-chan struct{}) bool {
 	select {
-	case <-botDone:
-		pollerGone = true
+	case <-ch:
+		return true
 	case <-time.After(pollerWait):
+		return false
 	}
-	fmt.Println("poller stopped", pollerGone, "")
-	select {
-	case <-reminderDone:
-	case <-time.After(pollerWait):
-		fmt.Println("reminder scheduler was still stopping when the process left")
-	}
-	select {
-	case <-taskDone:
-	case <-time.After(pollerWait):
-		fmt.Println("task scheduler was still stopping when the process left")
-	}
-	// the database stays open for that goroutine too — bounded by the same pollerWait window, because a stop
-	// Response), which is the state the next start of the process picks up again.
-	var resumeGone = false
-	select {
-	case <-resumeDone:
-		resumeGone = true
-	case <-time.After(pollerWait):
-	}
-	if !resumeGone {
-		fmt.Println("the startup scan of was still answering when the process left ")
-	}
-	db.Close()
-	fmt.Println("stopped by signal ")
-	os.Exit(0)
 }

@@ -68,6 +68,10 @@ services:
       - no-new-privileges:true
     tmpfs:
       - /tmp
+    # `unless-stopped` on purpose, not `on-failure:N`: a chat bot must come back from a transient outage by
+    # itself, and a configuration error already fails in under a second with the row named. A persistent crash
+    # loop is caught by scripts/watch_container.ps1 (alert, no auto-restart), not by giving up on the service —
+    # see docs/adr/0006-restart-policy.md.
     restart: unless-stopped
     logging:
       driver: local

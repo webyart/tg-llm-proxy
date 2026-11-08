@@ -182,6 +182,21 @@ func TestUsageCommandAndMenuRenderOnlyAggregates(t *testing.T) {
 		d.logEvent(context.Background(), 11, store.EventUsage, detail)
 	}
 	d.logEvent(context.Background(), 12, store.EventUsage, "read_url")
+	// The daily limits are enforced on daily_quota_reservations, and /usage reports that table. The fixture
+	// therefore reserves what two model calls and two network tools would have reserved.
+	for _, class := range []struct {
+		name  string
+		limit int64
+	}{
+		{name: store.DailyQuotaModel, limit: 3},
+		{name: store.DailyQuotaNetworkTools, limit: 2},
+	} {
+		for i := 0; i < 2; i++ {
+			if _, err := store.ReserveDailyQuota(context.Background(), db, 11, d.now(), class.name, class.limit); err != nil {
+				t.Fatalf("ReserveDailyQuota(%s): %v", class.name, err)
+			}
+		}
+	}
 
 	if err := dispatch(t, d, testEvent(100, 11, 801, "/usage")); err != nil {
 		t.Fatalf("/usage: %v", err)

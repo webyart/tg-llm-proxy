@@ -181,11 +181,15 @@ func TestUpdateFloodBoundsExecutionAndKeepsAcceptedFIFO(t *testing.T) {
 	waitAdmission(t, func() bool { return runtime.NumGoroutine() <= baseline+2 })
 }
 
-func TestQueueDeadlineRejectsBeforeModelSideEffects(t *testing.T) {
+// TestChatWaitDeadlineRejectsBeforeModelSideEffects — the wait for a busy chat is bounded, and when the
+// budget expires the update is refused BEFORE any model or storage side effect, with the text that names
+// a busy chat (not a full queue: the queue has room, the chat does not).
+func TestChatWaitDeadlineRejectsBeforeModelSideEffects(t *testing.T) {
 	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "MAX_CONCURRENT_MODEL_REQUESTS": "1"})
 	m := newBlockingAdmissionModel()
 	r := &fakeReplier{}
 	d := newTestDispatcher(t, cfg, m, r, testStore(t))
+	d.chatQueueTimeout = 150 * time.Millisecond // the production budget is the reply deadline; the test does not wait it
 	t.Cleanup(m.unblock)
 	firstDone := make(chan struct{})
 	go func() {
@@ -194,13 +198,13 @@ func TestQueueDeadlineRejectsBeforeModelSideEffects(t *testing.T) {
 	}()
 	awaitAdmissionSignal(t, m.started)
 	if err := d.Dispatch(context.Background(), testEvent(100, 11, 2, "второй")); err != nil {
-		t.Fatalf("expired queued Dispatch must be handled as overload: %v", err)
+		t.Fatalf("expired queued Dispatch must be handled as a busy chat: %v", err)
 	}
 	if got := m.callCount(); got != 1 {
 		t.Fatalf("model calls = %d, want only the first", got)
 	}
-	if got := r.count(); got != 1 || !strings.Contains(r.joined(), "очередь заполнена") {
-		t.Fatalf("queue deadline replies = %d, text = %q", got, r.joined())
+	if got := r.count(); got != 1 || !strings.Contains(r.joined(), msgChatBusy) {
+		t.Fatalf("busy-chat replies = %d, text = %q", got, r.joined())
 	}
 	m.unblock()
 	awaitAdmissionSignal(t, firstDone)

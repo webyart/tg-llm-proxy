@@ -114,12 +114,12 @@ func TestDirectLaunchRejectsInvalidInitData(t *testing.T) {
 	}
 }
 
-func TestGroupTicketScopeSingleUseAndSessionExpiry(t *testing.T) {
+func TestTicketScopeSingleUseAndSessionExpiry(t *testing.T) {
 	allowed := true
 	auth := newAuthenticator("123:test", func(int64) bool { return allowed })
 	now := time.Unix(1700000000, 0)
 	auth.now = func() time.Time { return now }
-	ticket, err := auth.NewLaunchTicket(-4242, 1717)
+	ticket, err := auth.NewLaunchTicket(1717, 1717)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestGroupTicketScopeSingleUseAndSessionExpiry(t *testing.T) {
 		t.Fatalf("exchange bearer=%q err=%v", bearer, err)
 	}
 	current, err := auth.authorizeBearer(bearer)
-	if err != nil || current.ChatID != -4242 || current.UserID != 1717 {
+	if err != nil || current.ChatID != 1717 || current.UserID != 1717 {
 		t.Fatalf("session scope=%+v err=%v", current, err)
 	}
 	if _, _, err := auth.exchange(raw, ticket); !errors.Is(err, ErrInvalidTicket) {
@@ -146,18 +146,25 @@ func TestGroupTicketScopeSingleUseAndSessionExpiry(t *testing.T) {
 	}
 }
 
+func TestGroupTicketIsRefused(t *testing.T) {
+	auth := newAuthenticator("123:test", func(int64) bool { return true })
+	if _, err := auth.NewLaunchTicket(-100500, 1717); !errors.Is(err, ErrPrivateOnly) {
+		t.Fatalf("group ticket err=%v, want ErrPrivateOnly", err)
+	}
+}
+
 func TestTicketRejectsWrongUserAndExpiry(t *testing.T) {
 	auth := newAuthenticator("123:test", func(int64) bool { return true })
 	now := time.Unix(1700000000, 0)
 	auth.now = func() time.Time { return now }
-	ticket, err := auth.NewLaunchTicket(4242, 1717)
+	ticket, err := auth.NewLaunchTicket(1717, 1717)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := auth.exchange(signedInitData(t, "123:test", 9999, now), ticket); !errors.Is(err, ErrInvalidTicket) {
 		t.Fatalf("wrong user err=%v", err)
 	}
-	ticket, err = auth.NewLaunchTicket(4242, 1717)
+	ticket, err = auth.NewLaunchTicket(1717, 1717)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +179,7 @@ func TestEverySessionRequestRechecksCurrentAllowlist(t *testing.T) {
 	auth := newAuthenticator("123:test", func(int64) bool { return allowed })
 	now := time.Unix(1700000000, 0)
 	auth.now = func() time.Time { return now }
-	ticket, _ := auth.NewLaunchTicket(4242, 1717)
+	ticket, _ := auth.NewLaunchTicket(1717, 1717)
 	bearer, _, err := auth.exchange(signedInitData(t, "123:test", 1717, now), ticket)
 	if err != nil {
 		t.Fatal(err)

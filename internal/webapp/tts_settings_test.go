@@ -29,7 +29,7 @@ func readTTSSettings(t *testing.T, serverURL string, bearer string) settingsResp
 func TestTTSSpeedSettingsDefaultsPersistenceResetAndChatIsolation(t *testing.T) {
 	app, server := newTestApp(t)
 	bearer := launchSession(t, app, server)
-	otherBearer := launchSessionFor(t, app, server, testChatID+1, testUserID)
+	otherBearer := launchSessionFor(t, app, server, otherTestUserID, otherTestUserID)
 
 	settings := readTTSSettings(t, server.URL, bearer)
 	if settings.TTS.Enabled || settings.TTS.Current != 1 || settings.TTS.Default != 1 || !reflect.DeepEqual(settings.TTS.Choices, []float64{0.75, 1, 1.25, 1.5}) {

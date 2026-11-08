@@ -27,6 +27,10 @@ const (
 
 var ErrTaskPlan = errors.New("task plan failed strict validation")
 
+// ErrTaskRateLimited — one of the two model budgets of the user is spent. Planning a task is a model call,
+// so a task created from the Mini App must be refused with the same numbers the bot refuses /ask with.
+var ErrTaskRateLimited = errors.New("the per-minute model budget of this user is spent")
+
 type TaskPlanStep struct {
 	Description string `json:"description"`
 }
@@ -106,6 +110,13 @@ func (e *taskPlanningError) Error() string { return e.cause.Error() }
 func (e *taskPlanningError) Unwrap() error { return e.cause }
 
 func (d *Dispatcher) CreateTask(ctx context.Context, chatID int64, userID int64, goal string) (store.Task, error) {
+	// This is the entry point of a second client (the Mini App), which does not pass through the command
+	// middleware. Without this check, creating a task from there reached the model while /ask in the same
+	// minute was refused. The bot's own /task handler comes through createTask directly and has already
+	// been charged by the middleware, so the budget is checked exactly once per entry point.
+	if !d.deps.Limit.Allow(userID) {
+		return store.Task{}, ErrTaskRateLimited
+	}
 	var created store.Task
 	err := d.deps.Locks.WithChat(ctx, chatID, func() error {
 		var err error
@@ -209,6 +220,9 @@ func (d *Dispatcher) task(ctx context.Context, ev Event, arg string) error {
 	created, plan, err := d.createTask(ctx, ev.ChatID, ev.UserID, ev.ChatTitle, action)
 	if errors.Is(err, store.ErrTaskGoal) {
 		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Цель задачи должна быть непустой и не длиннее %d символов.", store.TaskMaxGoalRunes))
+	}
+	if errors.Is(err, ErrTaskRateLimited) {
+		return d.reply(ctx, ev.ChatID, modelWorkBudgetErrorText)
 	}
 	var active *taskActiveError
 	if errors.As(err, &active) {

@@ -304,28 +304,24 @@ func (d *Dispatcher) searchHistory(ctx context.Context, ev Event, arg string) er
 	if query == "" {
 		return d.reply(ctx, ev.ChatID, "Нужен текст поиска: /search <текст>.")
 	}
-	rows, truncated, err := historyWindow(ctx, d, ev.ChatID)
+	// One extra row is asked for only to tell the user whether older matches exist; the FTS index answers the
+	// query over the whole history, so there is no window to warn about any more.
+	matches, err := store.SearchMessages(ctx, d.deps.DB, ev.ChatID, query, SearchRowLimit+1)
 	if err != nil {
 		return err
 	}
-	needle := strings.ToLower(query)
-	matches := make([]store.Message, 0, SearchRowLimit)
-	for i := len(rows) - 1; i >= 0 && len(matches) < SearchRowLimit; i-- {
-		if strings.Contains(strings.ToLower(rows[i].Content), needle) {
-			matches = append(matches, rows[i])
-		}
-	}
-	for i, j := 0, len(matches)-1; i < j; i, j = i+1, j-1 {
-		matches[i], matches[j] = matches[j], matches[i]
-	}
-	scope := fmt.Sprintf("Область поиска: последние %d сообщений; вывод — до %d совпадений.", ExportRowLimit, SearchRowLimit)
+	var truncated = len(matches) > SearchRowLimit
 	if truncated {
-		scope += fmt.Sprintf(" Внимание: сообщения старше последних %d не проверялись.", ExportRowLimit)
+		// The result is oldest first: keep the newest SearchRowLimit matches.
+		matches = matches[len(matches)-SearchRowLimit:]
 	}
 	if len(matches) == 0 {
-		return d.reply(ctx, ev.ChatID, "Совпадений не найдено. "+scope)
+		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Совпадений не найдено. Область поиска: вся история чата; вывод — до %d совпадений.", SearchRowLimit))
 	}
-	lines := []string{fmt.Sprintf("Найдено сообщений: %d. %s", len(matches), scope)}
+	var lines = []string{fmt.Sprintf("Найдено сообщений: %d. Область поиска: вся история чата; вывод — до %d совпадений.", len(matches), SearchRowLimit)}
+	if truncated {
+		lines[0] += " Показаны самые новые совпадения."
+	}
 	for _, row := range matches {
 		lines = append(lines, fmt.Sprintf("%d. %s · %s: %s", row.ID, row.Role, row.CreatedAt, brief(row.Content, 160)))
 	}

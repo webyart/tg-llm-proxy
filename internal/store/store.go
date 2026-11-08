@@ -81,6 +81,12 @@ func openDSN(ctx context.Context, dsn, describe string, memory bool) (*sql.DB, e
 		db.Close()
 		return nil, fmt.Errorf("store.Open: the schema of could not be applied to %q (%w)", describe, err)
 	}
+	// The search index is a runtime artifact of the schema (see ensureSearchIndexes): the FTS table comes from
+	// a migration, the triggers and the one-time rebuild do not fit the lexical statement splitter.
+	if err := ensureSearchIndexes(ctx, db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store.Open: %w", err)
+	}
 	return db, nil
 }
 
@@ -165,6 +171,12 @@ func ApplySchema(ctx context.Context, db *sql.DB) error {
 		applied_at TEXT NOT NULL DEFAULT (datetime('now'))
 	)`); err != nil {
 		return fmt.Errorf("schema_migrations bootstrap failed: %w", err)
+	}
+	// A database written by a newer release is refused before a single migration is applied: the
+	// embedded history stops at the version this binary was built with, and running the old code
+	// against a newer schema is how a rollback corrupts data instead of failing loudly.
+	if err := GuardSchemaVersion(ctx, db); err != nil {
+		return err
 	}
 	for index, migration := range MigrationSQL {
 		version := index + 1

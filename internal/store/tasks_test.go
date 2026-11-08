@@ -30,17 +30,11 @@ func newStoreTask(chatID int64, now time.Time) Task {
 
 func TestTaskMigration9PreservesDataAndIndexes(t *testing.T) {
 	ctx := context.Background()
-	db := taskTestDB(t)
-	migrations := MigrationSQL
-	MigrationSQL = append([]string(nil), migrations[:8]...)
-	defer func() { MigrationSQL = migrations }()
-	if err := ApplySchema(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	db, restore := openMemoryAtVersion(t, 8)
 	if err := EnsureChat(ctx, db, 100, 11, "kept"); err != nil {
 		t.Fatal(err)
 	}
-	MigrationSQL = migrations
+	restore()
 	if err := ApplySchema(ctx, db); err != nil {
 		t.Fatal(err)
 	}

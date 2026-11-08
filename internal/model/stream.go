@@ -103,14 +103,11 @@ func (c *OpenAI) Stream(ctx context.Context, req Request, h StreamHandler) (Resp
 	var start = time.Now()
 
 	// busy for all of it, and pretending otherwise would let a second answer start on the same GPU.
-	if cap(c.sem) > 0 {
-		select {
-		case c.sem <- struct{}{}:
-			defer func() { <-c.sem }()
-		case <-ctx.Done():
-			return Response{}, ctx.Err()
-		}
+	release, admitErr := c.acquire(ctx)
+	if admitErr != nil {
+		return Response{}, admitErr
 	}
+	defer release()
 
 	var total = c.stream.Total
 	if deadline, ok := ctx.Deadline(); ok {
@@ -154,7 +151,7 @@ func (c *OpenAI) Stream(ctx context.Context, req Request, h StreamHandler) (Resp
 		if attempt == c.attempts {
 			break
 		}
-		var wait = c.backoff * time.Duration(1<<(attempt-1))
+		var wait = retryWait(lastErr, c.backoff, attempt)
 		if deadline, ok := answerCtx.Deadline(); ok && time.Until(deadline) <= wait {
 			return resp, fmt.Errorf("%w (retry %d of %d skipped: %s)", lastErr, attempt+1, c.attempts, StreamNotice)
 		}
@@ -187,6 +184,12 @@ type chatChunk struct {
 		PromptTokens     int `json:"prompt_tokens"`
 		CompletionTokens int `json:"completion_tokens"`
 	} `json:"usage"`
+	// Error — a failure a provider reports INSIDE a 200 stream. It used to be dropped with the rest of the
+	// unknown fields, so a failed answer looked like an empty one or, worse, like a short answer.
+	Error *struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	} `json:"error"`
 	Choices []struct {
 		Index int `json:"index"`
 		Delta struct {
@@ -199,10 +202,43 @@ type chatChunk struct {
 	} `json:"choices"`
 }
 
+// errStreamDone — the `[DONE]` sentinel and the caller-stopped delta both end the read loop through the
+// same error channel of the event parser.
+var errStreamDone = errors.New("stream sentinel received")
+
+// deltaStopError — the caller's Delta callback refused the text; it is not a provider failure and must not
+// be retried, so it keeps its own type on the way out of the parser.
+type deltaStopError struct {
+	cause error
+}
+
+func (e *deltaStopError) Error() string { return e.cause.Error() }
+func (e *deltaStopError) Unwrap() error { return e.cause }
+
+// beatStall tells the idle watchdog that another SSE line arrived. It never blocks: once the watchdog
+// has given up (its timer fired and it left the select below), the channel has no reader left, and a
+// plain send on a full buffer parks the reading goroutine forever — with the model slot and the chat
+// lock it holds. A closed `stalled` is therefore checked first and reported as a stall.
+func beatStall(beat chan<- struct{}, stalled <-chan struct{}) bool {
+	select {
+	case <-stalled:
+		return true
+	default:
+	}
+	select {
+	case beat <- struct{}{}:
+	default:
+		// one beat is already queued: the watchdog will reset its timer when it takes it, and a
+		// second one would add nothing it could act on.
+	}
+	return false
+}
+
 // streamAttempt — one SSE round trip. The bool it returns says whether any answer text reached the handler:
 func (c *OpenAI) streamAttempt(ctx context.Context, body []byte, model string, attempt int, h StreamHandler) (Response, bool, error) {
 	// this client may set, so the deadline lives in a context that a watchdog goroutine cancels, and every
 	// fires only on a real stall — and then it costs the answer, not the budget of the next one.
+	var attemptStart = time.Now()
 	var stallCtx, cancelStall = context.WithCancel(ctx)
 	defer cancelStall()
 	var beat = make(chan struct{}, 1)
@@ -251,7 +287,11 @@ func (c *OpenAI) streamAttempt(ctx context.Context, body []byte, model string, a
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		var payload, _ = io.ReadAll(io.LimitReader(res.Body, 1<<16))
-		return Response{}, false, &APIError{Status: res.StatusCode, Body: Flatten(string(payload), BodyLimit)}
+		return Response{}, false, &APIError{
+			Status:     res.StatusCode,
+			Body:       Flatten(string(payload), BodyLimit),
+			RetryAfter: retryAfterHeader(res.Header.Get("Retry-After")),
+		}
 	}
 	// endpoint behind an OpenAI-compatible layer once already). Reading it as SSE would end in ErrEmptyAnswer —
 	// a text about an empty model answer for what is really a problem of transport.
@@ -268,7 +308,6 @@ func (c *OpenAI) streamAttempt(ctx context.Context, body []byte, model string, a
 		reasoning   int
 		finish      string
 		toolCalls   = map[int]*collectedStreamToolCall{}
-		limitErr    error
 	)
 	var lastProgress time.Time
 	var progress = func() {
@@ -283,33 +322,28 @@ func (c *OpenAI) streamAttempt(ctx context.Context, body []byte, model string, a
 			Model:          response.Model,
 			ReasoningRunes: reasoning,
 			ContentRunes:   answerRunes,
+			Elapsed:        time.Since(attemptStart),
 		})
 	}
 
 	var scanner = bufio.NewScanner(res.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), StreamLineLimit)
-scan:
-	for scanner.Scan() {
-		beat <- struct{}{} // the watchdog: something arrived, the stall clock restarts
-		var line = strings.TrimRight(scanner.Text(), "\r")
-		switch {
-		case line == "" || strings.HasPrefix(line, ":") || strings.HasPrefix(line, "event:"):
-			// SSE keeps events apart with an empty line; a `:` line is a keepalive comment (measured: 2–3 per
-			// answer); `event:` names an event kind this API does not use. None of them carries an answer.
-			continue
-		case strings.HasPrefix(line, "data:"):
-			// the one line shape of the OpenAI-compatible stream
-		default:
-			continue // anything else belongs to no event this client knows
-		}
 
-		var data = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	// One SSE event may span several `data:` lines (the spec joins them with "\n"), so the payload is
+	// collected until the blank line that ends the event. A provider that reports a failure inside a 200
+	// stream puts {"error":…} in the same place an answer would be — that used to be dropped silently.
+	var pending []string
+	var streamErr error
+	var process = func(data string) error {
 		if data == "[DONE]" {
-			break // the sentinel of the stream
+			return errStreamDone
 		}
 		var chunk chatChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue // one broken line of a provider must not throw away the answer next to it
+			return nil // one broken event must not throw away the answer next to it
+		}
+		if chunk.Error != nil && strings.TrimSpace(chunk.Error.Message) != "" {
+			return &APIError{Status: http.StatusOK, Body: Flatten(chunk.Error.Message, BodyLimit), Transient: true}
 		}
 		if chunk.Model != "" {
 			response.Model = chunk.Model
@@ -320,13 +354,15 @@ scan:
 			response.TokensIn, response.TokensOut = &in, &out
 		}
 		for _, choice := range chunk.Choices {
+			if choice.Index != 0 {
+				continue // only the first completion is this request's answer
+			}
 			if choice.FinishReason != nil && *choice.FinishReason != "" {
 				finish = *choice.FinishReason // `length` here means the model ran out of context
 			}
 			for _, call := range choice.Delta.ToolCalls {
 				if call.Index < 0 || call.Index >= StreamToolCallLimit {
-					limitErr = fmt.Errorf("%w: tool call index %d is outside 0..%d", ErrStreamLimit, call.Index, StreamToolCallLimit-1)
-					break scan
+					return fmt.Errorf("%w: tool call index %d is outside 0..%d", ErrStreamLimit, call.Index, StreamToolCallLimit-1)
 				}
 				current := toolCalls[call.Index]
 				argumentRunes := utf8.RuneCountInString(call.Function.Arguments)
@@ -335,8 +371,7 @@ scan:
 					usedRunes = current.argumentRunes
 				}
 				if argumentRunes > StreamToolArgumentLimit-usedRunes {
-					limitErr = fmt.Errorf("%w: tool call %d arguments exceed %d runes", ErrStreamLimit, call.Index, StreamToolArgumentLimit)
-					break scan
+					return fmt.Errorf("%w: tool call %d arguments exceed %d runes", ErrStreamLimit, call.Index, StreamToolArgumentLimit)
 				}
 				if current == nil {
 					current = &collectedStreamToolCall{}
@@ -361,21 +396,60 @@ scan:
 			var delta = *choice.Delta.Content
 			deltaRunes := utf8.RuneCountInString(delta)
 			if deltaRunes > StreamAnswerLimit-answerRunes {
-				limitErr = fmt.Errorf("%w: answer content exceeds %d runes", ErrStreamLimit, StreamAnswerLimit)
-				break scan
+				return fmt.Errorf("%w: answer content exceeds %d runes", ErrStreamLimit, StreamAnswerLimit)
 			}
 			answer.WriteString(delta)
 			answerRunes += deltaRunes
 			delivered = true
 			if h.Delta != nil {
 				if err := h.Delta(delta); err != nil {
-					response.Content, response.ReasoningRunes, response.FinishReason = answer.String(), reasoning, finish
-					return response, true, err // the caller stopped the stream itself: no retry,
+					// the caller stopped the stream itself: no retry, and the text it already has stays
+					return &deltaStopError{cause: err}
 				}
 			}
 		}
 		if lastProgress.IsZero() {
 			progress() // the first event started the stream: the placeholder may be posted now
+		}
+		return nil
+	}
+
+scan:
+	for scanner.Scan() {
+		if beatStall(beat, stalled) {
+			break scan // the watchdog gave up on this stream: stop reading a body nobody waits for
+		}
+		var line = strings.TrimRight(scanner.Text(), "\r")
+		if line == "" {
+			if len(pending) == 0 {
+				continue
+			}
+			var data = strings.Join(pending, "\n")
+			pending = pending[:0]
+			if err := process(data); err != nil {
+				if errors.Is(err, errStreamDone) {
+					break scan
+				}
+				streamErr = err
+				break scan
+			}
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, ":"), strings.HasPrefix(line, "event:"):
+			// a `:` line is a keepalive comment (measured: 2–3 per answer); `event:` names an event kind
+			// this API does not use. None of them carries an answer.
+			continue
+		case strings.HasPrefix(line, "data:"):
+			pending = append(pending, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		default:
+			continue // anything else belongs to no event this client knows
+		}
+	}
+	if streamErr == nil && len(pending) > 0 {
+		// a provider that closes the stream without the trailing blank line still sent one event
+		if err := process(strings.Join(pending, "\n")); err != nil && !errors.Is(err, errStreamDone) {
+			streamErr = err
 		}
 	}
 	var scanErr = scanner.Err()
@@ -393,8 +467,12 @@ scan:
 			response.ToolCalls = append(response.ToolCalls, collected.call)
 		}
 	}
-	if limitErr != nil {
-		return response, delivered, limitErr
+	var deltaStop *deltaStopError
+	if errors.As(streamErr, &deltaStop) {
+		return response, true, deltaStop.cause
+	}
+	if streamErr != nil {
+		return response, delivered, streamErr
 	}
 
 	select {

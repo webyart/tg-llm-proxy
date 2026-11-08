@@ -206,17 +206,17 @@ func (a *App) searchHistory(w http.ResponseWriter, req *http.Request, current sc
 		writeError(w, http.StatusBadRequest, "invalid_query", "Use exactly one nonempty q of at most 4000 runes.")
 		return
 	}
-	rows, err := store.SearchMessages(req.Context(), a.db, current.ChatID, query, bot.SearchRowLimit)
+	rows, err := store.SearchMessages(req.Context(), a.db, current.ChatID, query, bot.SearchRowLimit+1)
 	if err != nil {
 		a.queryFailed(w, "history search", err)
 		return
 	}
-	var corpusTruncated bool
-	if err := a.db.QueryRowContext(req.Context(), `
-		SELECT EXISTS (SELECT 1 FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?)`,
-		current.ChatID, bot.ExportRowLimit).Scan(&corpusTruncated); err != nil {
-		a.queryFailed(w, "history search window", err)
-		return
+	// `truncated` now means "older matches were left out", not "the search looked at a window": the FTS index
+	// covers the whole history, so there is no unscanned tail to warn about.
+	corpusTruncated := len(rows) > bot.SearchRowLimit
+	if corpusTruncated {
+		// SearchMessages answers oldest first, so the newest limit matches are the TAIL of the slice.
+		rows = rows[len(rows)-bot.SearchRowLimit:]
 	}
 	items := make([]historyItem, 0, len(rows))
 	for _, row := range rows {
@@ -643,6 +643,10 @@ func (a *App) createLink(w http.ResponseWriter, req *http.Request, current scope
 		writeLifecycleUnavailable(w)
 		return
 	}
+	if errors.Is(err, bot.ErrLinkReaderDisabled) {
+		writeError(w, http.StatusForbidden, "url_reader_disabled", "Saving a link reads the page; the URL reader is disabled in this deployment.")
+		return
+	}
 	if errors.Is(err, store.ErrSavedLinkLimit) {
 		writeError(w, http.StatusConflict, "link_limit", "The saved link limit for this chat has been reached.")
 		return
@@ -848,6 +852,11 @@ func (a *App) createTask(w http.ResponseWriter, req *http.Request, current scope
 	created, err := a.taskLifecycle.CreateTask(req.Context(), current.ChatID, current.UserID, goal)
 	if errors.Is(err, errLifecycleUnavailable) {
 		writeLifecycleUnavailable(w)
+		return
+	}
+	if errors.Is(err, bot.ErrTaskRateLimited) {
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "The per-minute model budget of this user is spent. Retry after a minute.")
 		return
 	}
 	if errors.Is(err, store.ErrTaskActive) {

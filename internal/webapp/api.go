@@ -355,6 +355,27 @@ type historyItem struct {
 	Content   string `json:"content"`
 	Truncated bool   `json:"truncated"`
 	CreatedAt string `json:"created_at"`
+	// Feedback — the current user's rating of this assistant answer: 1, -1 or 0 when unrated.
+	Feedback int `json:"feedback"`
+}
+
+// attachHistoryFeedback fills the current user's ratings of the given page in one query.
+func (a *App) attachHistoryFeedback(req *http.Request, current scope, items []historyItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	ratings, err := store.MessageFeedbackFor(req.Context(), a.db, current.ChatID, current.UserID, ids)
+	if err != nil {
+		return err
+	}
+	for i := range items {
+		items[i].Feedback = ratings[items[i].ID]
+	}
+	return nil
 }
 
 func (a *App) history(w http.ResponseWriter, req *http.Request, current scope) {
@@ -390,6 +411,10 @@ func (a *App) history(w http.ResponseWriter, req *http.Request, current scope) {
 	if len(items) > page.Limit {
 		next = nextID(len(items), page.Limit, items[page.Limit-1].ID)
 		items = items[:page.Limit]
+	}
+	if err := a.attachHistoryFeedback(req, current, items); err != nil {
+		a.queryFailed(w, "history feedback", err)
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_before_id": next})
 }
@@ -445,6 +470,10 @@ func (a *App) searchHistory(w http.ResponseWriter, req *http.Request, current sc
 		item := historyItem{ID: row.ID, Role: row.Role, Content: row.Content, CreatedAt: row.CreatedAt}
 		item.Content, item.Truncated = boundedText(item.Content, maxHistoryRunes)
 		items = append(items, item)
+	}
+	if err := a.attachHistoryFeedback(req, current, items); err != nil {
+		a.queryFailed(w, "history search feedback", err)
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "truncated": corpusTruncated})
 }
@@ -594,7 +623,65 @@ func (a *App) historyControl(w http.ResponseWriter, req *http.Request, current s
 		a.clearHistory(w, req, current)
 		return
 	}
+	if messageID, ok := feedbackMessageID(req.URL.Path); ok {
+		a.messageFeedback(w, req, current, messageID)
+		return
+	}
 	a.deleteHistory(w, req, current)
+}
+
+// feedbackMessageID parses /api/history/{id}/feedback with the same canonical-id rule as /delete.
+func feedbackMessageID(path string) (int64, bool) {
+	if !strings.HasPrefix(path, "/api/history/") || !strings.HasSuffix(path, "/feedback") {
+		return 0, false
+	}
+	raw := strings.TrimSuffix(strings.TrimPrefix(path, "/api/history/"), "/feedback")
+	if raw == "" || strings.Contains(raw, "/") {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 || strconv.FormatInt(id, 10) != raw {
+		return 0, false
+	}
+	return id, true
+}
+
+// messageFeedback — POST /api/history/{id}/feedback {"value":1|-1}. The chat and the user come only
+// from the authenticated session; the body cannot name another chat.
+func (a *App) messageFeedback(w http.ResponseWriter, req *http.Request, current scope, messageID int64) {
+	if req.Method != http.MethodPost {
+		methodAllowed(w, http.MethodPost)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Feedback does not accept query parameters.")
+		return
+	}
+	var input struct {
+		Value *int `json:"value"`
+	}
+	if status, ok := decodeSettingsJSON(req, &input); !ok {
+		chatBodyError(w, status)
+		return
+	}
+	if input.Value == nil || (*input.Value != 1 && *input.Value != -1) {
+		writeError(w, http.StatusBadRequest, "invalid_body", "The feedback value must be 1 or -1.")
+		return
+	}
+	if _, err := store.SetMessageFeedback(req.Context(), a.db, current.ChatID, current.UserID, messageID, *input.Value); err != nil {
+		switch {
+		case errors.Is(err, store.ErrFeedbackNotFound):
+			writeError(w, http.StatusNotFound, "not_found", "Message not found.")
+		case errors.Is(err, store.ErrFeedbackNotAllowed):
+			writeError(w, http.StatusForbidden, "feedback_forbidden", "Only an assistant message of this chat can be rated.")
+		case errors.Is(err, store.ErrFeedbackValue):
+			writeError(w, http.StatusBadRequest, "invalid_body", "The feedback value must be 1 or -1.")
+		default:
+			a.historyMutationFailed(w, req, "feedback", err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "value": *input.Value})
 }
 
 type documentItem struct {

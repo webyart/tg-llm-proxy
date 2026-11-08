@@ -43,6 +43,9 @@ const (
 	CommandReminders = "reminders"
 	CommandTask      = "task"
 	CommandTTS       = "tts"
+	CommandFeedback  = "feedback"
+	// CommandFeedbackAlias — the short spelling of the same handler.
+	CommandFeedbackAlias = "fb"
 )
 
 // answer to be exact («Модель не ответила за 60 с, попробуй ещё раз»).
@@ -136,6 +139,8 @@ func (d *Dispatcher) registry() []Command {
 		{Name: CommandSearch, Description: "поиск по истории: /search <текст>", NeedsArgs: true, Handler: d.searchHistory},
 		{Name: CommandDelete, Description: "удаление истории с подтверждением", Handler: d.deleteHistory},
 		{Name: CommandStats, Description: "счётчики чата: сообщения, токены, ошибки", Handler: d.stats},
+		{Name: CommandFeedback, Description: "оценка последнего ответа: up или down", Handler: d.feedback},
+		{Name: CommandFeedbackAlias, Description: "то же, что /feedback: up или down", Handler: d.feedback},
 		{Name: CommandUsage, Description: "использование модели и инструментов за UTC-сутки", Handler: d.usage},
 		{Name: CommandWhoAmI, Description: "user_id и chat_id для TELEGRAM_ALLOWED_USERS", AlwaysAllowed: true, Handler: d.whoami},
 		{Name: CommandAdmin, Description: "агрегированные метрики для администратора", Handler: d.admin},
@@ -988,6 +993,11 @@ func (d *Dispatcher) stats(ctx context.Context, ev Event, arg string) error {
 	if stats.Timeouts > 0 {
 		lines = append(lines, fmt.Sprintf("Таймаутов модели: %d ", stats.Timeouts))
 	}
+	var up, down, feedbackErr = store.MessageFeedbackCounts(ctx, d.deps.DB, ev.ChatID)
+	if feedbackErr != nil {
+		return feedbackErr
+	}
+	lines = append(lines, fmt.Sprintf("Оценки: 👍 %d / 👎 %d", up, down))
 	if stats.Model != "" {
 		lines = append(lines, "Модель: "+stats.Model)
 	}

@@ -69,6 +69,9 @@
       historyExportMD: "Скачать Markdown", historyExportJSON: "Скачать JSON",
       historyExportReady: "Экспорт истории подготовлен.", historyExportFailed: "Не удалось экспортировать историю.",
       historyExportEmpty: "Нет сообщений для экспорта.", historyExportTooLarge: "Экспорт истории превышает 5 МиБ.",
+      feedbackUp: "👍 Полезно", feedbackDown: "👎 Не полезно",
+      feedbackSaved: "Оценка сохранена.", feedbackFailed: "Не удалось сохранить оценку.",
+      feedbackForbidden: "Оценить можно только ответ ассистента в этом чате.",
       showFullContent: "Показать полностью", fullContentFailed: "Не удалось загрузить полный текст.",
       activeReminders: "Активные напоминания", failedReminders: "Недоставленные напоминания",
       emptyActiveReminders: "Активных напоминаний нет.", emptyFailedReminders: "Недоставленных напоминаний нет.",
@@ -191,6 +194,9 @@
       historyExportMD: "Download Markdown", historyExportJSON: "Download JSON",
       historyExportReady: "History export is ready.", historyExportFailed: "History export failed.",
       historyExportEmpty: "There are no messages to export.", historyExportTooLarge: "History export exceeds 5 MiB.",
+      feedbackUp: "👍 Helpful", feedbackDown: "👎 Not helpful",
+      feedbackSaved: "Feedback saved.", feedbackFailed: "The feedback could not be saved.",
+      feedbackForbidden: "Only an assistant answer in this chat can be rated.",
       showFullContent: "Show full text", fullContentFailed: "The full text could not be loaded.",
       activeReminders: "Active reminders", failedReminders: "Failed reminders",
       emptyActiveReminders: "No active reminders.", emptyFailedReminders: "No failed reminders.",
@@ -260,6 +266,7 @@
     task_not_deletable: "taskNotDeletable", document_mutation_failed: "documentMutationFailed",
     link_mutation_failed: "linkMutationFailed", reminder_mutation_failed: "reminderMutationFailed",
     history_mutation_failed: "historyMutationFailed", invalid_url: "linkInvalidURL", invalid_reminder: "reminderInvalid",
+    feedback_forbidden: "feedbackForbidden",
     invalid_goal: "taskGoalInvalid", chat_forbidden: "chatForbidden", invalid_text: "chatInvalidText", text_too_long: "chatTooLongError",
     chat_unavailable: "chatUnavailable", chat_failed: "chatFailed", chat_mutation_failed: "chatMutationFailed",
   };
@@ -569,6 +576,19 @@
     control.addEventListener("input", () => control.setAttribute("aria-invalid", "false"));
   }
 
+  function historyFeedbackButton(label, active, handler) {
+    const button = settingsButton(label, handler, !active);
+    button.setAttribute("aria-pressed", String(active));
+    return button;
+  }
+
+  function appendHistoryFeedback(wrapper, item) {
+    const actions = element("div", "task-actions");
+    actions.appendChild(historyFeedbackButton(t("feedbackUp"), item.feedback === 1, () => rateFeedback(item, 1)));
+    actions.appendChild(historyFeedbackButton(t("feedbackDown"), item.feedback === -1, () => rateFeedback(item, -1)));
+    wrapper.appendChild(actions);
+  }
+
   function appendHistoryContent(wrapper, item) {
     const role = element("div", "role");
     role.appendChild(element("span", item.role === "assistant" ? "badge badge-success" : "badge", item.role === "user" ? t("you") : t("assistant")));
@@ -579,6 +599,7 @@
       actions.appendChild(settingsButton(t("showFullContent"), () => loadFullContent("history", item.id)));
       wrapper.appendChild(actions);
     }
+    if (item.role === "assistant") appendHistoryFeedback(wrapper, item);
   }
 
   function renderHistorySearch() {
@@ -1041,6 +1062,34 @@
       renderItems("history", view.items);
     } catch (error) {
       showError(error.message || t("historySearchFailed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function updateStoredFeedback(id, value) {
+    for (const items of [view.items, historySearch.items]) {
+      for (const entry of items) {
+        if (entry.id === id) entry.feedback = value;
+      }
+    }
+  }
+
+  async function rateFeedback(item, value) {
+    if (loading || !session) return;
+    setBusy(true);
+    showError("");
+    try {
+      const data = await api(`/api/history/${item.id}/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value }),
+      });
+      updateStoredFeedback(item.id, Number(data.value) === -1 ? -1 : 1);
+      renderItems("history", view.items);
+      showNotice(t("feedbackSaved"));
+    } catch (error) {
+      showError(error.message || t("feedbackFailed"));
     } finally {
       setBusy(false);
     }

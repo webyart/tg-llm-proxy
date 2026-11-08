@@ -13,6 +13,7 @@ import (
 	tgbot "github.com/go-telegram/bot"
 
 	"bot/internal/model"
+	"bot/internal/store"
 )
 
 type typingReplier struct {
@@ -274,5 +275,168 @@ func TestTelegramSendTypingUsesTypingChatAction(t *testing.T) {
 	}
 	if action != "typing" || chatID != "100" {
 		t.Fatalf("sendChatAction action=%q chat_id=%q", action, chatID)
+	}
+}
+
+// The command rates the newest assistant answer, the short alias reaches the same handler, and a
+// second click replaces the first rating.
+func TestFeedbackRatesTheNewestAssistantMessage(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	var r = &fakeReplier{}
+	var db = testStore(t)
+	var d = newTestDispatcher(t, cfg, nil, r, db)
+	var ctx = context.Background()
+
+	if err := dispatch(t, d, testEvent(100, 11, 500, "/feedback up")); err != nil {
+		t.Fatalf("/feedback without an assistant answer: %v", err)
+	}
+	if !strings.Contains(r.joined(), "нет ответа модели") {
+		t.Fatalf("/feedback of a fresh chat must say there is nothing to rate, got %q", r.joined())
+	}
+
+	if _, err := store.Append(ctx, db, store.Message{ChatID: 100, UserID: 11, Role: store.RoleUser, Content: "вопрос"}); err != nil {
+		t.Fatalf("Append user: %v", err)
+	}
+	first, err := store.Append(ctx, db, store.Message{ChatID: 100, UserID: 11, Role: store.RoleAssistant, Content: "первый ответ"})
+	if err != nil {
+		t.Fatalf("Append first assistant: %v", err)
+	}
+
+	if err := dispatch(t, d, testEvent(100, 11, 501, "/feedback up")); err != nil {
+		t.Fatalf("/feedback up: %v", err)
+	}
+	if !strings.Contains(r.joined(), "Спасибо! Оценка сохранена: 👍") {
+		t.Fatalf("/feedback up must confirm with 👍, got %q", r.joined())
+	}
+	var ratings map[int64]int
+	if ratings, err = store.MessageFeedbackFor(ctx, db, 100, 11, []int64{first}); err != nil || ratings[first] != 1 {
+		t.Fatalf("rating after /feedback up = %v err=%v, want 1", ratings, err)
+	}
+
+	if _, err := store.Append(ctx, db, store.Message{ChatID: 100, UserID: 11, Role: store.RoleUser, Content: "ещё вопрос"}); err != nil {
+		t.Fatalf("Append second user: %v", err)
+	}
+	second, err := store.Append(ctx, db, store.Message{ChatID: 100, UserID: 11, Role: store.RoleAssistant, Content: "второй ответ"})
+	if err != nil {
+		t.Fatalf("Append second assistant: %v", err)
+	}
+
+	// The alias `/fb` with the emoji argument must rate the NEWEST answer.
+	if err := dispatch(t, d, testEvent(100, 11, 502, "/fb 👎")); err != nil {
+		t.Fatalf("/fb 👎: %v", err)
+	}
+	if !strings.Contains(r.joined(), "Спасибо! Оценка сохранена: 👎") {
+		t.Fatalf("/fb 👎 must confirm with 👎, got %q", r.joined())
+	}
+	if ratings, err = store.MessageFeedbackFor(ctx, db, 100, 11, []int64{first, second}); err != nil {
+		t.Fatalf("MessageFeedbackFor: %v", err)
+	}
+	if ratings[first] != 1 || ratings[second] != -1 {
+		t.Fatalf("ratings = %v, want the first 👍 and the second 👎", ratings)
+	}
+
+	// A repeated click replaces the value and says so.
+	if err := dispatch(t, d, testEvent(100, 11, 503, "/feedback up")); err != nil {
+		t.Fatalf("/feedback up replacement: %v", err)
+	}
+	if !strings.Contains(r.joined(), "Спасибо! Оценка сохранена: 👍") {
+		t.Fatalf("replacement must confirm with 👍, got %q", r.joined())
+	}
+	if ratings, err = store.MessageFeedbackFor(ctx, db, 100, 11, []int64{second}); err != nil || ratings[second] != 1 {
+		t.Fatalf("rating after replacement = %v err=%v, want 1", ratings, err)
+	}
+	// The same value again is not an error, it just confirms the stored rating.
+	if err := dispatch(t, d, testEvent(100, 11, 504, "/feedback up")); err != nil {
+		t.Fatalf("/feedback up repeated: %v", err)
+	}
+	if !strings.Contains(r.joined(), "Оценка уже стоит: 👍") {
+		t.Fatalf("repeated rating must say it is already stored, got %q", r.joined())
+	}
+}
+
+// An unknown argument is a usage error: it must not be reported as a rating and must not write one.
+func TestFeedbackUnknownArgumentIsUsageError(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	var r = &fakeReplier{}
+	var db = testStore(t)
+	var d = newTestDispatcher(t, cfg, nil, r, db)
+	var ctx = context.Background()
+
+	if _, err := store.Append(ctx, db, store.Message{ChatID: 100, UserID: 11, Role: store.RoleAssistant, Content: "ответ"}); err != nil {
+		t.Fatalf("Append assistant: %v", err)
+	}
+	if err := dispatch(t, d, testEvent(100, 11, 510, "/feedback sideways")); err != nil {
+		t.Fatalf("/feedback with an unknown argument: %v", err)
+	}
+	var text = r.joined()
+	for _, want := range []string{"/feedback up", "/feedback down"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("the usage error must show %q, got %q", want, text)
+		}
+	}
+	if strings.Contains(text, "сохранена") || strings.Contains(text, "уже стоит") {
+		t.Fatalf("an unknown argument must not be reported as a rating, got %q", text)
+	}
+	if up, down, err := store.MessageFeedbackCounts(ctx, db, 100); err != nil || up != 0 || down != 0 {
+		t.Fatalf("unknown argument wrote feedback %d/%d err=%v", up, down, err)
+	}
+}
+
+// `/feedback` without an argument prints both counters and the usage line.
+func TestFeedbackWithoutArgumentPrintsCounts(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	var r = &fakeReplier{}
+	var db = testStore(t)
+	var d = newTestDispatcher(t, cfg, nil, r, db)
+	var ctx = context.Background()
+
+	if _, err := store.Append(ctx, db, store.Message{ChatID: 100, UserID: 11, Role: store.RoleAssistant, Content: "первый ответ"}); err != nil {
+		t.Fatalf("Append first assistant: %v", err)
+	}
+	if err := dispatch(t, d, testEvent(100, 11, 520, "/feedback up")); err != nil {
+		t.Fatalf("/feedback up: %v", err)
+	}
+	if _, err := store.Append(ctx, db, store.Message{ChatID: 100, UserID: 11, Role: store.RoleAssistant, Content: "второй ответ"}); err != nil {
+		t.Fatalf("Append second assistant: %v", err)
+	}
+	if err := dispatch(t, d, testEvent(100, 11, 521, "/feedback down")); err != nil {
+		t.Fatalf("/feedback down: %v", err)
+	}
+
+	if err := dispatch(t, d, testEvent(100, 11, 522, "/feedback")); err != nil {
+		t.Fatalf("/feedback without an argument: %v", err)
+	}
+	var text = r.joined()
+	for _, want := range []string{"Оценки: 👍 1 / 👎 1", "/feedback up", "/feedback down"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("/feedback without an argument must show %q, got %q", want, text)
+		}
+	}
+}
+
+// /stats keeps the feedback visible: the DoD of the sprint reads «фидбэк виден в /stats».
+func TestStatsIncludesFeedbackCounts(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	var r = &fakeReplier{}
+	var db = testStore(t)
+	var d = newTestDispatcher(t, cfg, nil, r, db)
+	var ctx = context.Background()
+
+	var messageID, err = store.Append(ctx, db, store.Message{ChatID: 100, UserID: 11, Role: store.RoleAssistant, Content: "ответ"})
+	if err != nil {
+		t.Fatalf("Append assistant: %v", err)
+	}
+	if _, err := store.SetMessageFeedback(ctx, db, 100, 11, messageID, 1); err != nil {
+		t.Fatalf("SetMessageFeedback 👍: %v", err)
+	}
+	if _, err := store.SetMessageFeedback(ctx, db, 100, 12, messageID, -1); err != nil {
+		t.Fatalf("SetMessageFeedback 👎: %v", err)
+	}
+
+	if err := dispatch(t, d, testEvent(100, 11, 530, "/stats")); err != nil {
+		t.Fatalf("/stats: %v", err)
+	}
+	if !strings.Contains(r.joined(), "Оценки: 👍 1 / 👎 1") {
+		t.Fatalf("/stats must show the feedback counts, got %q", r.joined())
 	}
 }

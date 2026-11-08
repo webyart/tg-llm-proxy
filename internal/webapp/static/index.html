@@ -19,18 +19,21 @@
           <p data-i18n="headerSubtitle">Данные чата и его настройки</p>
         </div>
       </div>
-      <div class="header-actions">
-        <div class="language-field">
-          <label class="language-label" for="language" data-i18n="languageLabel">Язык</label>
-          <select id="language" class="language-select" data-i18n-aria="languageLabel" aria-label="Язык">
-            <option value="ru">RU</option>
-            <option value="en">EN</option>
-          </select>
-        </div>
-        <button id="logout" class="secondary logout-button" type="button" data-i18n="closeSession" hidden>Закрыть сессию</button>
-      </div>
     </div>
   </header>
+  <!-- The language and the session control live in Settings now: the header keeps only the brand, so the tab bar
+       stays high on a phone. The nodes stay in the document (their listeners are bound once in app.js) and are
+       moved into the Settings panel on every render. -->
+  <div id="account-controls" hidden>
+    <div class="language-field">
+      <label class="language-label" for="language" data-i18n="languageLabel">Язык</label>
+      <select id="language" class="language-select" data-i18n-aria="languageLabel" aria-label="Язык">
+        <option value="ru">RU</option>
+        <option value="en">EN</option>
+      </select>
+    </div>
+    <button id="logout" class="secondary logout-button" type="button" data-i18n="closeSession">Закрыть сессию</button>
+  </div>
   <main>
     <div id="error" role="alert" hidden></div>
     <div id="notice" role="status" hidden></div>
@@ -41,11 +44,11 @@
     </section>
     <div id="app" hidden>
       <nav id="tabs" class="tabs" role="tablist" data-i18n-aria="navLabel" aria-label="Разделы чата">
-        <button id="tab-chat" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="chat">
+        <button id="tab-chat" type="button" role="tab" aria-selected="true" aria-controls="content" tabindex="0" data-tab="chat" class="active">
           <span class="tab-label tab-label-full" data-i18n="tabChat">Чат</span>
           <span class="tab-label tab-label-short" data-i18n="tabChatShort">Чат</span>
         </button>
-        <button id="tab-status" type="button" role="tab" aria-selected="true" aria-controls="content" tabindex="0" data-tab="status" class="active">
+        <button id="tab-status" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="status">
           <span class="tab-label tab-label-full" data-i18n="tabStatus">Статус</span>
           <span class="tab-label tab-label-short" data-i18n="tabStatusShort">Статус</span>
         </button>

@@ -24,8 +24,8 @@ test("initial boot exchanges the launch and renders status without exceptions", 
   assert.equal(harness.element("error").hidden, true);
   assert.equal(harness.document.documentElement.lang, "ru");
   assert.equal(harness.document.title, "Бот — компаньон");
-  assert.match(harness.element("content").textContent, /Последняя активность|Сообщения/);
-  assert.equal(harness.requests.length, 2);
+  assert.equal(harness.element("tab-chat").getAttribute("aria-selected"), "true");
+  assert.equal(harness.requests.length, 4);
   const exchange = harness.requests[0];
   assert.equal(exchange.path, "/api/session");
   assert.equal(exchange.options.method, "POST");
@@ -33,6 +33,8 @@ test("initial boot exchanges the launch and renders status without exceptions", 
   assert.equal(exchange.options.headers.get("X-Launch-Ticket"), "ticket-1");
   assert.equal(exchange.options.headers.get("Content-Type"), "text/plain");
   assert.equal(harness.requests[1].path, "/api/status");
+  assert.equal(harness.requests[2].path, "/api/history?limit=20");
+  assert.equal(harness.requests[3].path, "/api/whoami");
   assert.equal(harness.requests[1].options.headers.get("Authorization"), "Bearer test-session");
 });
 
@@ -40,7 +42,7 @@ test("menu button boot exchanges signed initData with an empty launch ticket", a
   const harness = await createHarness({ hash: "" });
   assert.equal(harness.element("app").hidden, false);
   assert.equal(harness.element("launch").hidden, true);
-  assert.equal(harness.requests.length, 2);
+  assert.equal(harness.requests.length, 4);
   const exchange = harness.requests[0];
   assert.equal(exchange.path, "/api/session");
   assert.equal(exchange.options.method, "POST");
@@ -667,6 +669,8 @@ test("miniapp base prefixes session, central API and history export fetches", as
   assert.deepEqual(harness.requests.map((request) => request.path), [
     "/miniapp/api/session",
     "/miniapp/api/status",
+    "/miniapp/api/history?limit=20",
+    "/miniapp/api/whoami",
   ]);
 
   await openTab(harness, "history");

@@ -1,3 +1,15 @@
+# tg-llm-proxy v1.44.0
+
+## Mini App: header, tabs, toasts and settings
+
+- The header keeps only the brand: the language selector and «Закрыть сессию» moved into a new Settings section
+  («Язык и сессия»). The nodes persist across renders, so the selected language and their listeners survive tab
+  switches; the language control is a styled pill with `appearance: none` and a custom chevron.
+- The tab bar now sits directly under the compact header and a tab opens as a page: clicking it scrolls the
+  content to the top. Chat is the first screen on launch instead of Status.
+- Confirmation and error toasts are smaller, sit at the very top with `pointer-events: none` (taps pass through
+  to the menu underneath) and disappear after 10 seconds instead of covering the tab bar.
+
 # tg-llm-proxy v1.43.0
 
 ## Mini App: mobile-first redesign

@@ -114,6 +114,7 @@
       errorNotFound: "Страница или API не найдены.",
       sourceChat: "настройка этого чата", sourceGlobal: "общая настройка", current: "Текущее",
       globalDefault: "Глобальное значение", customText: "пользовательский текст", modelTitle: "Модель",
+    accountTitle: "Язык и сессия", accountHint: "Язык интерфейса и закрытие текущей сессии Mini App.",
       availableModels: "Доступные модели провайдера", noModels: "Провайдер не сообщил ни одной модели",
       useModel: "Применить модель", resetDefault: "Сбросить к общей",
       modelsTruncated: "Показаны первые 50 моделей. Обновите, чтобы снова проверить endpoint.",
@@ -242,6 +243,7 @@
       errorNotFound: "Page or API endpoint not found.",
       sourceChat: "this chat override", sourceGlobal: "global default", current: "Current",
       globalDefault: "Global default", customText: "custom text", modelTitle: "Model",
+    accountTitle: "Language and session", accountHint: "Interface language and closing the current Mini App session.",
       availableModels: "Available provider models", noModels: "No models reported by the provider",
       useModel: "Use model", resetDefault: "Reset to default",
       modelsTruncated: "Only the first 50 provider models are shown; refresh to check the endpoint again.",
@@ -309,9 +311,14 @@
     content: document.getElementById("content"), title: document.getElementById("section-title"), more: document.getElementById("more"),
     refresh: document.getElementById("refresh"), logout: document.getElementById("logout"),
     language: document.getElementById("language"),
+    // The language and the session control are moved into Settings on every render; the nodes stay alive in
+    // this persistent container so their listeners and the current value survive tab switches.
+    accountControls: document.getElementById("account-controls"),
   };
   let session = "";
-  let activeTab = "status";
+  // Chat is the first screen: the Mini App opens where a conversation happens, not on a status table.
+  let activeTab = "chat";
+  let noticeTimer = 0;
   let nextBefore = null;
   let loading = false;
   let clearHistoryArmed = false;
@@ -380,17 +387,23 @@
   }
 
   function showError(message) {
+    clearTimeout(noticeTimer);
     ui.notice.textContent = "";
     ui.notice.hidden = true;
     ui.error.textContent = message;
     ui.error.hidden = !message;
+    if (message) noticeTimer = setTimeout(() => { ui.error.hidden = true; }, 10000);
   }
 
   function showNotice(message) {
+    clearTimeout(noticeTimer);
     ui.error.textContent = "";
     ui.error.hidden = true;
     ui.notice.textContent = message;
     ui.notice.hidden = !message;
+    // A confirmation is transient: ten seconds is enough to read it, and the toast never blocks the tab bar
+    // because it sits at the very top with pointer-events:none (the taps go through to the menu below it).
+    if (message) noticeTimer = setTimeout(() => { ui.notice.hidden = true; }, 10000);
   }
 
   function expire(message) {
@@ -1772,6 +1785,16 @@
       tts.appendChild(speedRow);
       ui.content.appendChild(tts);
     }
+
+    // Language and the session control live here, not in the header: the header keeps only the brand so the tab
+    // bar stays high on a phone screen.
+    const account = settingsSection(t("accountTitle"), t("accountHint"));
+    if (ui.accountControls) {
+      ui.accountControls.hidden = false;
+      ui.accountControls.classList.add("account-controls");
+      account.appendChild(ui.accountControls);
+    }
+    ui.content.appendChild(account);
     syncBusyState();
   }
 
@@ -2342,6 +2365,7 @@
     view = { tab: activeTab, data: null, items: [] };
     ui.title.textContent = t(`tab${activeTab[0].toUpperCase()}${activeTab.slice(1)}`);
     ui.content.replaceChildren();
+    ui.content.scrollTop = 0; // a tab is a page: it opens at its top, not where the previous page was scrolled
     syncTabs(button);
     ui.more.hidden = true;
     load();

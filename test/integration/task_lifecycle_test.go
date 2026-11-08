@@ -23,7 +23,7 @@ import (
 
 func miniAppLifecycleSession(t *testing.T, run *botRun) string {
 	t.Helper()
-	ticket, err := run.miniApp.NewLaunchTicket(chatID, userID)
+	ticket, err := run.miniApp.NewLaunchTicket(userID, userID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func pushTaskLifecycleCallback(tgAPI *testutil.Telegram, updateID int64, callbac
 	tgAPI.Push(models.Update{ID: updateID, CallbackQuery: &models.CallbackQuery{
 		ID: "task-lifecycle", Data: callback, From: models.User{ID: userID, Username: "tester"},
 		Message: models.MaybeInaccessibleMessage{Message: &models.Message{
-			ID: messageID, Date: int(time.Now().Unix()), Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate},
+			ID: messageID, Date: int(time.Now().Unix()), Chat: models.Chat{ID: userID, Type: models.ChatTypePrivate},
 		}},
 	}})
 }
@@ -112,12 +112,12 @@ func TestMiniAppTaskLifecycleRequiresFreshApprovalAndClearsState(t *testing.T) {
 	run := startBot(t, context.Background(), cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second}, 0)
 	bearer := miniAppLifecycleSession(t, run)
 
-	tgAPI.PushText(900, chatID, userID, "/task inspect the bounded goal")
+	tgAPI.PushText(900, userID, userID, "/task inspect the bounded goal")
 	waitFor(t, "initial task network approval", func() bool {
-		current, found, err := store.CurrentTask(context.Background(), db, chatID)
+		current, found, err := store.CurrentTask(context.Background(), db, userID)
 		return err == nil && found && current.Status == store.TaskStatusAwaitingApproval
 	})
-	initial, found, err := store.CurrentTask(context.Background(), db, chatID)
+	initial, found, err := store.CurrentTask(context.Background(), db, userID)
 	if err != nil || !found {
 		t.Fatalf("initial task found=%v err=%v", found, err)
 	}
@@ -134,7 +134,7 @@ func TestMiniAppTaskLifecycleRequiresFreshApprovalAndClearsState(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("Mini App cancel status=%d body=%s", status, body)
 	}
-	cancelled, found, err := store.CurrentTask(context.Background(), db, chatID)
+	cancelled, found, err := store.CurrentTask(context.Background(), db, userID)
 	if err != nil || !found || cancelled.Status != store.TaskStatusCancelled || cancelled.ContinuationJSON != "" || cancelled.ApprovalToken != "" {
 		t.Fatalf("cancelled task=%+v found=%v err=%v", cancelled, found, err)
 	}
@@ -144,10 +144,10 @@ func TestMiniAppTaskLifecycleRequiresFreshApprovalAndClearsState(t *testing.T) {
 	}
 
 	waitFor(t, "fresh network approval after Mini App resume", func() bool {
-		current, found, err := store.CurrentTask(context.Background(), db, chatID)
+		current, found, err := store.CurrentTask(context.Background(), db, userID)
 		return err == nil && found && current.Status == store.TaskStatusAwaitingApproval && current.ApprovalToken != "" && current.ApprovalToken != initial.ApprovalToken
 	})
-	fresh, found, err := store.CurrentTask(context.Background(), db, chatID)
+	fresh, found, err := store.CurrentTask(context.Background(), db, userID)
 	if err != nil || !found {
 		t.Fatalf("fresh task found=%v err=%v", found, err)
 	}
@@ -164,7 +164,7 @@ func TestMiniAppTaskLifecycleRequiresFreshApprovalAndClearsState(t *testing.T) {
 	if status != http.StatusOK || !strings.Contains(string(body), `"deleted":1`) {
 		t.Fatalf("Mini App clear status=%d body=%s", status, body)
 	}
-	if _, found, err := store.CurrentTask(context.Background(), db, chatID); err != nil || found {
+	if _, found, err := store.CurrentTask(context.Background(), db, userID); err != nil || found {
 		t.Fatalf("cleared task found=%v err=%v", found, err)
 	}
 	if _, found, err := store.TaskByApprovalToken(context.Background(), db, fresh.ApprovalToken); err != nil || found {

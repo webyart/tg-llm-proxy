@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -128,13 +129,13 @@ func TestMiniAppFakeTelegramLaunchAndSettingsAPI(t *testing.T) {
 		}
 	}()
 
-	tgAPI.PushText(700, chatID, userID, "/start")
+	tgAPI.PushText(700, userID, userID, "/start")
 	waitFor(t, "root menu for Mini App", func() bool { return tgAPI.Calls("sendMessage") == 1 })
 	menuMessageID := tgAPI.Sent()[0].MessageID
 	tgAPI.FailNext("editMessageText", 400, "Bad Request: message not found", 0)
 	tgAPI.Push(models.Update{ID: 701, CallbackQuery: &models.CallbackQuery{
 		ID: "miniapp-launch-rejected", Data: "menu:more", From: models.User{ID: userID, Username: "tester"},
-		Message: models.MaybeInaccessibleMessage{Message: &models.Message{ID: menuMessageID, Date: int(time.Now().Unix()), Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate}}},
+		Message: models.MaybeInaccessibleMessage{Message: &models.Message{ID: menuMessageID, Date: int(time.Now().Unix()), Chat: models.Chat{ID: userID, Type: models.ChatTypePrivate}}},
 	}})
 	waitFor(t, "rejected More menu edit", func() bool {
 		return tgAPI.Calls("answerCallbackQuery") == 1 && tgAPI.Calls("editMessageText") == 1
@@ -145,7 +146,7 @@ func TestMiniAppFakeTelegramLaunchAndSettingsAPI(t *testing.T) {
 	}
 	tgAPI.Push(models.Update{ID: 702, CallbackQuery: &models.CallbackQuery{
 		ID: "miniapp-launch", Data: "menu:more", From: models.User{ID: userID, Username: "tester"},
-		Message: models.MaybeInaccessibleMessage{Message: &models.Message{ID: menuMessageID, Date: int(time.Now().Unix()), Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate}}},
+		Message: models.MaybeInaccessibleMessage{Message: &models.Message{ID: menuMessageID, Date: int(time.Now().Unix()), Chat: models.Chat{ID: userID, Type: models.ChatTypePrivate}}},
 	}})
 	waitFor(t, "More menu edited with WebApp button", func() bool {
 		return tgAPI.Calls("answerCallbackQuery") == 2 && len(tgAPI.Edits()) == 1
@@ -193,7 +194,7 @@ func TestMiniAppFakeTelegramLaunchAndSettingsAPI(t *testing.T) {
 	}
 	historyBody, _ := io.ReadAll(historyResponse.Body)
 	historyResponse.Body.Close()
-	if historyResponse.StatusCode != http.StatusOK || !bytes.Contains(historyBody, []byte("visible through Mini App")) || bytes.Contains(historyBody, []byte("private ticketless history")) {
+	if historyResponse.StatusCode != http.StatusOK || !bytes.Contains(historyBody, []byte("private ticketless history")) || bytes.Contains(historyBody, []byte("visible through Mini App")) {
 		t.Fatalf("scoped history status=%d body=%s", historyResponse.StatusCode, historyBody)
 	}
 	ticketlessStatus, ticketlessBody := miniAppSessionExchange(t, run.miniAppURL, raw, "")
@@ -230,7 +231,7 @@ func TestMiniAppFakeTelegramLaunchAndSettingsAPI(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("model update status=%d body=%s", status, settingsBody)
 	}
-	if selected, found, err := store.ChatModel(ctx, db, chatID); err != nil || !found || selected != "qwen-alt" {
+	if selected, found, err := store.ChatModel(ctx, db, userID); err != nil || !found || selected != "qwen-alt" {
 		t.Fatalf("selected model=%q found=%v err=%v", selected, found, err)
 	}
 	privatePersona := "integration private persona must not be logged"
@@ -238,21 +239,21 @@ func TestMiniAppFakeTelegramLaunchAndSettingsAPI(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("persona update status=%d body=%s", status, settingsBody)
 	}
-	if prompt, found, err := store.ChatPersona(ctx, db, chatID); err != nil || !found || prompt != privatePersona {
+	if prompt, found, err := store.ChatPersona(ctx, db, userID); err != nil || !found || prompt != privatePersona {
 		t.Fatalf("persona found=%v err=%v", found, err)
 	}
 	status, settingsBody = miniAppSettingsRequest(t, run.miniAppURL, http.MethodPut, "/api/settings/stream", session.Token, `{"enabled":true}`)
 	if status != http.StatusOK {
 		t.Fatalf("stream update status=%d body=%s", status, settingsBody)
 	}
-	if enabled, found, err := store.ChatStreaming(ctx, db, chatID); err != nil || !found || !enabled {
+	if enabled, found, err := store.ChatStreaming(ctx, db, userID); err != nil || !found || !enabled {
 		t.Fatalf("stream enabled=%v found=%v err=%v", enabled, found, err)
 	}
 	status, settingsBody = miniAppSettingsRequest(t, run.miniAppURL, http.MethodDelete, "/api/settings/stream", session.Token, "")
 	if status != http.StatusOK {
 		t.Fatalf("stream reset status=%d body=%s", status, settingsBody)
 	}
-	if _, found, err := store.ChatStreaming(ctx, db, chatID); err != nil || found {
+	if _, found, err := store.ChatStreaming(ctx, db, userID); err != nil || found {
 		t.Fatalf("stream reset found=%v err=%v", found, err)
 	}
 	if strata.ChatCalls() != 0 {
@@ -307,7 +308,12 @@ func TestMiniAppSettingsMutationPreservesGroupTokenAttribution(t *testing.T) {
 	pushGroupQuestion(800, userID, "first user question")
 	waitFor(t, "first group answer", func() bool { return tgAPI.Calls("sendMessage") == 1 && strata.ChatCalls() == 1 })
 
-	ticket, err := app.NewLaunchTicket(groupID, secondID)
+	// The Mini App is a private-chat companion since v1.40: a group ticket must be refused instead of issued,
+	// and a private session must attribute its mutation to that private chat only.
+	if _, err := app.NewLaunchTicket(groupID, secondID); !errors.Is(err, webapp.ErrPrivateOnly) {
+		t.Fatalf("group ticket err=%v, want ErrPrivateOnly", err)
+	}
+	ticket, err := app.NewLaunchTicket(secondID, secondID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +341,13 @@ func TestMiniAppSettingsMutationPreservesGroupTokenAttribution(t *testing.T) {
 	}
 	status, body := miniAppSettingsRequest(t, server.URL, http.MethodPut, "/api/settings/model", session.Token, `{"model":"qwen-alt"}`)
 	if status != http.StatusOK {
-		t.Fatalf("group Mini App model mutation status=%d body=%s", status, body)
+		t.Fatalf("private Mini App model mutation status=%d body=%s", status, body)
+	}
+	if selected, found, err := store.ChatModel(ctx, db, secondID); err != nil || !found || selected != "qwen-alt" {
+		t.Fatalf("private chat model=%q found=%v err=%v", selected, found, err)
+	}
+	if _, found, err := store.ChatModel(ctx, db, groupID); err != nil || found {
+		t.Fatalf("the group chat received a Mini App setting: found=%v err=%v", found, err)
 	}
 
 	pushGroupQuestion(801, secondID, "second user question")

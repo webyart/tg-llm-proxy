@@ -872,8 +872,10 @@ func TestRedeliveredUpdateIsAnsweredOnce(t *testing.T) {
 	second.stop()
 }
 
-// rewrites of that same message id, then the footer on the last rewrite.
-func TestStreamedAnswerEditsOneMessage(t *testing.T) {
+// A streamed answer in a PRIVATE chat travels as Bot API drafts: the preview grows, and the finished answer
+// arrives as one ordinary message. Nothing is edited — that is the point of the draft path, because edits are
+// throttled and 429-prone while a draft is not a message at all.
+func TestStreamedAnswerUsesDraftsInPrivateChat(t *testing.T) {
 	var ctx = context.Background()
 	var path = dbFile(t)
 	var tgAPI = testutil.NewTelegram(t, secretToken)
@@ -898,10 +900,10 @@ func TestStreamedAnswerEditsOneMessage(t *testing.T) {
 	waitFor(t, "the menu of", func() bool { return len(tgAPI.Commands()) == len(run.d.Registry()) })
 
 	tgAPI.PushText(140, chatID, userID, "/ask один")
-	// The last rewrite is what the user keeps on screen, so that is the moment the test waits for — the
-	waitFor(t, "the streamed answer was rewritten with the footer of", func() bool {
-		var edits = tgAPI.Edits()
-		return len(edits) > 0 && strings.Contains(edits[len(edits)-1].Text, "токенов")
+	// The finished message is what the user keeps on screen; the drafts before it are a preview without the footer.
+	waitFor(t, "the finished answer with its footer", func() bool {
+		var sent = tgAPI.Sent()
+		return len(sent) == 1 && strings.Contains(sent[0].Text, "токенов")
 	})
 	quiet()
 	var sent = tgAPI.Sent()
@@ -910,52 +912,48 @@ func TestStreamedAnswerEditsOneMessage(t *testing.T) {
 		t.Fatalf("the chat received %d messages for one streamed question, want 1 : %s",
 			len(sent), strings.Join(tgAPI.Texts(), " | "))
 	}
-	if sent[0].Text != bot.StreamPlaceholder {
-		t.Errorf("the message posted first was %q, want the placeholder %q ",
-			sent[0].Text, bot.StreamPlaceholder)
-	}
-	if sent[0].ParseMode != "" {
-		t.Errorf("the placeholder was sent with parse_mode %q, want none (: the same message later holds «(3 847 символов)», which no parser accepts)", sent[0].ParseMode)
-	}
-	if len(edits) < 2 {
-		t.Fatalf("the placeholder was rewritten %d times, want at least 2 : %s",
+	if len(edits) != 0 {
+		t.Fatalf("the private chat received %d edits, want drafts only : %s",
 			len(edits), strings.Join(tgAPI.EditStrings(), " | "))
 	}
+	if n := tgAPI.Calls("editMessageText"); n != 0 {
+		t.Errorf("editMessageText was called %d times in a private chat, want 0 ", n)
+	}
+	var drafts = tgAPI.Drafts()
+	if len(drafts) < 2 {
+		t.Fatalf("the preview was refreshed %d times through drafts, want at least 2 ", len(drafts))
+	}
 
-	// Every rewrite addresses the id the placeholder was posted with. The fake answers 400 for an id it never
-	// handed out, so a bot editing nothing would already have failed above; this names the id the process held.
-	var sawThinking = false
+	// One draft id groups every interim update of this answer, and the first draft is the placeholder text.
 	var i = 0
-	for i < len(edits) {
-		if edits[i].MessageID != sent[0].MessageID {
-			t.Errorf("rewrite %d addressed message %d, want the placeholder %d ",
-				i+1, edits[i].MessageID, sent[0].MessageID)
+	for i < len(drafts) {
+		if drafts[i].ChatID != chatID {
+			t.Errorf("draft %d went to chat %d, want %d ", i+1, drafts[i].ChatID, chatID)
 		}
-		if strings.Contains(edits[i].Text, "Модель думает") {
-			sawThinking = true
+		if drafts[i].DraftID != drafts[0].DraftID {
+			t.Errorf("draft %d used id %q, want the id of the answer %q ", i+1, drafts[i].DraftID, drafts[0].DraftID)
 		}
 		i++
 	}
-	if !sawThinking {
-		t.Errorf("no rewrite told the user the model is thinking : %s",
-			strings.Join(tgAPI.EditStrings(), " | "))
+	if !strings.Contains(drafts[0].Text, bot.StreamPlaceholder) {
+		t.Errorf("the first draft was %q, want the placeholder %q ", drafts[0].Text, bot.StreamPlaceholder)
 	}
-	if edits[0].ParseMode != "" {
-		t.Errorf("rewrite 1 carried parse_mode %q, want none ", edits[0].ParseMode)
+	// The single real message carries the formatting; drafts never do.
+	if sent[0].ParseMode != "MarkdownV2" {
+		t.Errorf("the final message carried parse_mode %q, want MarkdownV2 ", sent[0].ParseMode)
 	}
-	// only rewrite that asks for formatting at all.
-	var last = edits[len(edits)-1]
-	if last.ParseMode != "MarkdownV2" {
-		t.Errorf("the final rewrite carried parse_mode %q, want MarkdownV2 ", last.ParseMode)
+	if !strings.Contains(sent[0].Text, `\(важно\)`) {
+		t.Errorf("the final message is not escaped for MarkdownV2 : %q", sent[0].Text)
 	}
-	if !strings.Contains(last.Text, `\(важно\)`) {
-		t.Errorf("the final rewrite is not escaped for MarkdownV2 : %q", last.Text)
+	if !strings.Contains(sent[0].Text, "3→7 токенов") {
+		t.Errorf("the final message lost the footer of : %q", sent[0].Text)
 	}
-	if !strings.Contains(last.Text, "3→7 токенов") {
-		t.Errorf("the final rewrite lost the footer of : %q", last.Text)
+	var preview = ""
+	for _, draft := range drafts {
+		preview += draft.Text + " "
 	}
-	if strings.Contains(strings.Join(tgAPI.EditStrings(), " "), "ещё думаю") {
-		t.Errorf("the model's reasoning reached the chat ")
+	if strings.Contains(preview, "ещё думаю") {
+		t.Errorf("the model's reasoning reached the draft preview ")
 	}
 
 	var stored = rowsOf(t, db)
@@ -1242,7 +1240,7 @@ func TestParseErrorFallsBackToPlainMessage(t *testing.T) {
 	run.stop()
 }
 
-func TestStreamFinalEditParseErrorFallsBackOnSameMessage(t *testing.T) {
+func TestStreamFinalParseErrorFallsBackToPlainMessage(t *testing.T) {
 	ctx := context.Background()
 	path := dbFile(t)
 	tgAPI := testutil.NewTelegram(t, secretToken)
@@ -1257,21 +1255,26 @@ func TestStreamFinalEditParseErrorFallsBackOnSameMessage(t *testing.T) {
 	run := startBot(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, bot.Options{ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second}, 0)
 	waitFor(t, "menu published", func() bool { return len(tgAPI.Commands()) == len(run.d.Registry()) })
 
-	tgAPI.FailNext("editMessageText", 400, "Bad Request: can't parse entities: Character '.' is reserved", 0)
+	// The finished answer leaves through sendMessage in the draft path, so that is the call whose formatted
+	// attempt Telegram rejects here; the reply path must resend the same text as plain text instead of losing it.
+	tgAPI.FailNext("sendMessage", 400, "Bad Request: can't parse entities: Character '.' is reserved", 0)
 	tgAPI.PushText(191, chatID, userID, "/ask длинный ответ")
-	waitFor(t, "plain final edit delivered", func() bool { return len(tgAPI.Edits()) == 1 })
-	if tgAPI.Calls("editMessageText") != 2 {
-		t.Fatalf("editMessageText calls=%d, want formatted failure and plain fallback", tgAPI.Calls("editMessageText"))
+	waitFor(t, "plain fallback message delivered", func() bool {
+		var sent = tgAPI.Sent()
+		return len(sent) == 1 && sent[0].ParseMode == ""
+	})
+	if n := tgAPI.Calls("sendMessage"); n != 2 {
+		t.Fatalf("sendMessage calls=%d, want formatted failure and plain resend", n)
 	}
-	if len(tgAPI.Sent()) != 1 {
-		t.Fatalf("stream must keep one placeholder message, got %d sends", len(tgAPI.Sent()))
+	if len(tgAPI.Edits()) != 0 {
+		t.Fatalf("the draft path must not edit messages, got %d edits", len(tgAPI.Edits()))
 	}
-	edit := tgAPI.Edits()[0]
-	if edit.MessageID != tgAPI.Sent()[0].MessageID {
-		t.Fatalf("fallback edited id=%d, want original placeholder id=%d", edit.MessageID, tgAPI.Sent()[0].MessageID)
+	if len(tgAPI.Drafts()) == 0 {
+		t.Fatal("the private preview was never sent as a draft")
 	}
-	if edit.ParseMode != "" || strings.Contains(edit.Text, `\.`) || !strings.Contains(edit.Text, "Финал + конец.") {
-		t.Fatalf("fallback final edit is not complete plain content: %+v", edit)
+	var sent = tgAPI.Sent()[0]
+	if strings.Contains(sent.Text, `\.`) || !strings.Contains(sent.Text, "Финал + конец.") {
+		t.Fatalf("fallback message is not complete plain content: %+v", sent)
 	}
 	if len(rowsOf(t, db)) != 2 {
 		t.Fatal("stream fallback must keep exactly one user and one assistant row")

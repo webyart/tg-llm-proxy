@@ -52,6 +52,9 @@ func TestLinksFakeTelegramOptInSummaryAndDelete(t *testing.T) {
 	}
 	cfg := integrationEnv(t, path, strata.BaseURL(), map[string]string{
 		"TELEGRAM_ALLOWED_USERS": fmt.Sprintf("%d,%d", userID, userID+1),
+		// The save path fetches the page, so the reader must be enabled: since v1.40 /links add and its
+		// confirmation obey URL_READER_ENABLED, and a bare URL is not stored while the reader is off.
+		"URL_READER_ENABLED": "true",
 	})
 	db := openStore(t, path)
 	run := startBotWithURLReader(t, ctx, cfg, db, newClient(t, cfg, strata), tgAPI, urlClient, bot.Options{ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second, Workers: 2}, 0)

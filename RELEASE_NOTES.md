@@ -1,3 +1,21 @@
+# tg-llm-proxy v1.41.0
+
+## Observability (Sprint 4)
+
+- `internal/metrics`: dependency-free Prometheus registry (counters, gauges, gauge functions, histograms) with deterministic text exposition, label escaping and a concurrency test. No new modules.
+- `/readyz` on the same loopback listener as `/healthz`: database ping plus a model probe cached for 30 seconds; answers 200 with per-check `ok` or 503 with the failing check. `/healthz` semantics unchanged.
+- Instrumentation: model requests by outcome with a latency histogram and retry counter; active handlers/model requests and per-chat queue depth; updates, tool calls and Telegram send failures; schema version and database size.
+- `HEALTH_LISTEN_HOST`: the listener address is a validated row (`127.0.0.1`, `::1`, `0.0.0.0`). Compose binds `0.0.0.0` inside the container so the published host port and the edge gateway's Prometheus reach `/readyz` and `/metrics`; the publish rule stays `127.0.0.1`, so the host side is not exposed. Verified from the host after deploy.
+- CI: tag pipelines now run only `coverage` and `release` (heavy jobs stay on branch pipelines, preserving the shared-minutes policy); the isolated restore drill is a manual job because its entry point is Windows-first; the release job builds the image from the tag with checksum and metadata artifacts; `scripts/release-check.ps1` is the local pre-tag gate. `golangci-lint` stays advisory with the exact evidence required to flip it.
+
+## Mini App as a second client (Sprint 5)
+
+- `POST /api/messages` streams Server-Sent Events (`stage`, `delta`, `done`, `error`) and answers through the SAME `Dispatcher` the Telegram poller uses (`main.go` wires `SetChatBackend(dispatcher)`): one per-chat lock, one per-minute budget, one daily quota.
+- Parity controls: `POST /api/context/reset`, `POST /api/pending/skip` (`skip`/`unskip`), `GET /api/whoami`.
+- The answer path reuses `BuildMessages`, RAG context, model selection, the tool loop and the storage ordering that leaves an unanswered question recoverable after a crash. Network tools stay Telegram-only because approvals are Telegram-only; `calculator` works.
+- The embedded frontend gained a chat tab: SSE parsing over `fetch`/`ReadableStream` (EventSource cannot carry the bearer header), pending/stage indicators, reset and skip controls, RU/EN strings, mobile and keyboard access. The server keeps `WriteTimeout` at 10s and extends the write deadline only for the streaming response.
+- Tests: dispatcher-level (history order, rate limit, deny-by-default, reset, skip/unskip, model error) and webapp-level (401, strict JSON, SSE contract, 429, admission, e2e with the real dispatcher).
+
 # tg-llm-proxy v1.40.0
 
 ## Reliability (Sprint 1)

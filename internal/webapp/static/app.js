@@ -2348,6 +2348,7 @@
       ui.launch.hidden = true;
       ui.app.hidden = false;
       ui.logout.hidden = false;
+      setMenuOpen(false);
       showError("");
       await load();
     } catch (error) {
@@ -2355,11 +2356,38 @@
     }
   }
 
+  const menuToggle = document.getElementById("menu-toggle");
+  const tabsBar = document.getElementById("tabs");
+
+  // The sections live in a dropdown behind the header button: one tap opens it, choosing a section or tapping
+  // outside closes it. The nodes are plain buttons, so keyboard navigation inside the panel keeps working.
+  function setMenuOpen(open) {
+    if (!tabsBar || !menuToggle) return;
+    tabsBar.hidden = !open;
+    menuToggle.setAttribute("aria-expanded", String(open));
+  }
+  if (menuToggle && tabsBar) {
+    menuToggle.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setMenuOpen(tabsBar.hidden);
+    });
+    document.addEventListener("click", (event) => {
+      if (!tabsBar.hidden && !tabsBar.contains(event.target) && !menuToggle.contains(event.target)) setMenuOpen(false);
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !tabsBar.hidden) {
+        setMenuOpen(false);
+        menuToggle.focus();
+      }
+    });
+  }
+
   document.getElementById("tabs").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-tab]");
     if (!button || loading) return;
     resetArmedStates();
     resetSearchState();
+    setMenuOpen(false); // choosing a section closes the dropdown as it opens the page
     activeTab = button.dataset.tab;
     nextBefore = null;
     view = { tab: activeTab, data: null, items: [] };

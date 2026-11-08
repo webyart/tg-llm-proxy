@@ -19,6 +19,10 @@
           <p data-i18n="headerSubtitle">Данные чата и его настройки</p>
         </div>
       </div>
+      <button id="menu-toggle" class="menu-toggle" type="button" aria-expanded="false" aria-controls="tabs"
+              aria-label="Разделы чата" data-i18n-aria="navLabel" title="Разделы">
+        <span class="menu-toggle-bars" aria-hidden="true"></span>
+      </button>
     </div>
   </header>
   <!-- The language and the session control live in Settings now: the header keeps only the brand, so the tab bar
@@ -43,7 +47,7 @@
       <p data-i18n="launchText">Откройте Mini App через «Ещё → Mini App» в меню бота. Ссылка запуска и подпись Telegram проверяются до показа данных чата.</p>
     </section>
     <div id="app" hidden>
-      <nav id="tabs" class="tabs" role="tablist" data-i18n-aria="navLabel" aria-label="Разделы чата">
+      <nav id="tabs" class="tabs menu-panel" role="tablist" data-i18n-aria="navLabel" aria-label="Разделы чата" hidden>
         <button id="tab-chat" type="button" role="tab" aria-selected="true" aria-controls="content" tabindex="0" data-tab="chat" class="active">
           <span class="tab-label tab-label-full" data-i18n="tabChat">Чат</span>
           <span class="tab-label tab-label-short" data-i18n="tabChatShort">Чат</span>

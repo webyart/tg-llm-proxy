@@ -1,3 +1,14 @@
+# tg-llm-proxy v1.45.0
+
+## Mini App: the section menu is a dropdown
+
+- The two-row tab bar is gone. A ☰ button in the header, right of the title, opens a compact panel with all nine
+  sections (two columns on phones, three on wide screens, scrollable when needed). Choosing a section closes the
+  panel and opens its page; tapping outside or pressing Escape closes it, and `aria-expanded`/`aria-controls`
+  track the state for screen readers.
+- The content area now owns the whole height under the header, so the chat composer sits at the bottom edge even
+  on a 320 px screen.
+
 # tg-llm-proxy v1.44.0
 
 ## Mini App: header, tabs, toasts and settings

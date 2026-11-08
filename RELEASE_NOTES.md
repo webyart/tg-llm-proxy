@@ -1,3 +1,17 @@
+# tg-llm-proxy v1.47.0
+
+## RAG quality gate
+
+- `internal/store/rag_quality_test.go` adds a fixed evaluation corpus (8 documents, 41 chunks, RU/EN, overlapping vocabulary, a name-only document, a long chunked document) and 19 answerable queries plus one no-answer query.
+- It measures recall@1/@3/@5 and MRR@5 at chunk level and pins thresholds that the current ranking passes with a real margin (baseline 1.000 everywhere; gates recall@3 ≥ 0.95, MRR@5 ≥ 0.85). A future change to the bm25 candidate limit, the scoring weights or the chunking now fails a test instead of silently degrading answers; the no-answer query proves the relevance floor still rejects garbage.
+- Test-only: production code and data are unchanged.
+
+## Operations
+
+- Alert delivery is live: Prometheus → Alertmanager → the administrator's Telegram chat, with resolved notifications, hourly repeats for critical alerts and inhibition of warning siblings (edge-gateway `ff691c7`, see its README).
+- Grafana was permanently unhealthy while its API answered: the container's `pids_limit: 128` left no room for the health probe's exec (`procReady not received`). Raised to 512; all four monitoring services are healthy now (edge-gateway `59e40ca`).
+- The bot README now points to `/metrics`, `/readyz`, the `Bot overview` dashboard and the alert route.
+
 # tg-llm-proxy v1.46.0
 
 ## Bot monitoring in the edge gateway

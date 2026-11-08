@@ -471,6 +471,8 @@ Maintenance чисто останавливает бота, копирует `/d
 
 Монитор проверяет bot и Whisper, называет сервис в failure state, отправляет алерт при сбое и восстановлении, повторяет неизменный failure не чаще одного раза в 6 часов и не перезапускает контейнер автоматически. Mini App probe выполняется прямым `docker exec` по уже проверенному container ID без дополнительной зависимости от Compose в среде Task Scheduler, имеет timeout 5 секунд и до трёх попыток с паузой 2 секунды: failure устанавливается только после третьей последовательной ошибки, а лог содержит exit codes и сокращённую диагностику без секретов. Во время штатного clean-stop backup проверка пропускается только по свежему lease с живым PID; stale lease вызывает alert и восстанавливает проверки. Backup freshness по умолчанию ограничен 30 часами, подтверждённые копии записывают verification receipt. Дополнительно `watch_runtime.ps1` анализирует последние 10 минут логов: три ошибки Telegram, STRATA или Whisper/transcription вызывают алерт, повтор подавляется на 6 часов. Состояния хранятся в `data/monitoring`. Уведомления используют существующие token/allowlist, не принимают token аргументом и не печатают его.
 
+Метрики и готовность бота отдаются на loopback: `GET http://127.0.0.1:8081/metrics` и `GET http://127.0.0.1:8081/readyz` (проверяет БД и доступность модели). Prometheus из `edge-gateway` скрейпит `bot:8081` по общей docker-сети, держит дашборд `Bot overview` и отправляет алерты (down, ошибки модели, p95, очередь, рост БД, смена схемы) в Telegram через Alertmanager; настройка и список правил — в `C:\Kimi code\edge-gateway\README.md`.
+
 Speaches CPU/CUDA images закреплены по digest. Для NVIDIA GPU после настройки Docker GPU support используйте:
 
 ```powershell

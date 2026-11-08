@@ -46,6 +46,14 @@ type SentReplyMarkupEdit struct {
 	ReplyMarkup string
 }
 
+// SentDraft records one accepted `sendMessageDraft`: the chat, the id that groups the interim updates of
+// ONE streamed answer, and the text the user saw. A draft has no message id — it is not a message.
+type SentDraft struct {
+	ChatID  int64
+	DraftID string
+	Text    string
+}
+
 // WebhookRegistration records setWebhook exactly as the fake Bot API received it.
 type WebhookRegistration struct {
 	URL                string
@@ -87,6 +95,8 @@ type Telegram struct {
 	sent             []SentMessage
 	documents        []SentDocument
 	edits            []SentEdit // the rewrites of
+	drafts           []SentDraft
+	draftFailure     string // non-empty: every sendMessageDraft answers this error
 	replyMarkupEdits []SentReplyMarkupEdit
 	sentIDs          map[int]bool // the ids this fake handed out: an edit of an id it never gave is a wiring bug
 	calls            map[string]int
@@ -201,6 +211,14 @@ func (s *Telegram) FailNext(method string, code int, description string, retryAf
 	s.mu.Unlock()
 }
 
+// SetDraftFailure — make every sendMessageDraft answer the error envelope, the way a Bot API without
+// drafts does. An empty description restores the normal handler.
+func (s *Telegram) SetDraftFailure(description string) {
+	s.mu.Lock()
+	s.draftFailure = description
+	s.mu.Unlock()
+}
+
 // Calls — how many requests named `method` arrived (getMe, getUpdates, sendMessage, setMyCommands).
 func (s *Telegram) Calls(method string) int {
 	s.mu.Lock()
@@ -247,6 +265,16 @@ func (s *Telegram) EditStrings() []string {
 		out = append(out, edits[i].Text)
 		i++
 	}
+	return out
+}
+
+// Drafts — every accepted sendMessageDraft, in arrival order. A refused draft is not recorded: the caller
+// asked for an error, not for a text the user never saw.
+func (s *Telegram) Drafts() []SentDraft {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out = make([]SentDraft, len(s.drafts))
+	copy(out, s.drafts)
 	return out
 }
 
@@ -360,6 +388,8 @@ func (s *Telegram) handle(w http.ResponseWriter, r *http.Request) {
 		writeOK(w, file.File)
 	case "sendMessage":
 		s.handleSendMessage(w, r)
+	case "sendMessageDraft":
+		s.handleSendMessageDraft(w, r)
 	case "sendDocument":
 		s.handleSendDocument(w, r)
 	case "editMessageText":
@@ -506,6 +536,39 @@ func (s *Telegram) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		Date: int(time.Now().Unix()),
 		Chat: models.Chat{ID: chatID, Type: models.ChatTypePrivate},
 	})
+}
+
+// handleSendMessageDraft — the interim update of a streamed answer. The library puts every param into the
+// multipart form (strings as they are, `chat_id` as its JSON-encoded number), so the fields are read the
+// same way as in the other handlers. A draft has no message id: the id that groups the updates of one
+// streamed answer is draft_id, and the envelope answers `true`.
+func (s *Telegram) handleSendMessageDraft(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	var failure = s.draftFailure
+	s.mu.Unlock()
+	if failure != "" {
+		writeError(w, http.StatusBadRequest, failure, 0)
+		return
+	}
+	var chatID, err = strconv.ParseInt(strings.TrimSpace(r.FormValue("chat_id")), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "chat_id is required ", 0)
+		return
+	}
+	var draftID = strings.TrimSpace(r.FormValue("draft_id"))
+	if draftID == "" {
+		writeError(w, http.StatusBadRequest, "draft_id is required ", 0)
+		return
+	}
+	var text = r.FormValue("text")
+	if text == "" {
+		writeError(w, http.StatusBadRequest, "text is required ", 0)
+		return
+	}
+	s.mu.Lock()
+	s.drafts = append(s.drafts, SentDraft{ChatID: chatID, DraftID: draftID, Text: text})
+	s.mu.Unlock()
+	writeOK(w, true)
 }
 
 // being rewritten, the chat it lives in, the text, and whether the request carried a parse_mode. The id is

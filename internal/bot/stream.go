@@ -59,12 +59,21 @@ type StreamSender interface {
 	EditStreamMessage(ctx context.Context, chatID int64, messageID int64, text string, parse bool) error
 }
 
+// draftSender — a StreamSender that can also stream through Bot API draft messages. Drafts exist only in
+// private chats, so a session asks for this capability only when the chat id is positive (groups and
+// channels have negative ids).
+type draftSender interface {
+	SendDraft(ctx context.Context, chatID int64, draftID, text string) error
+}
+
 // streamSession — one streamed answer of one chat. The callbacks of the stream run on the single goroutine
 // that reads the SSE body (model.StreamHandler says so), so this struct needs no lock for its own counters;
 type streamSession struct {
 	ctx        context.Context
 	chatID     int64
 	sender     StreamSender
+	draft      draftSender // nil unless this is a private chat and the sender supports drafts
+	draftID    string
 	dispatcher *Dispatcher
 	interval   time.Duration
 	maxRunes   int
@@ -73,6 +82,7 @@ type streamSession struct {
 	messageID      int64
 	messageIDs     []int64
 	posted         bool
+	drafted        bool // a draft reached the chat: the chat has seen this answer, but no real message exists
 	answer         strings.Builder
 	answerRunes    int
 	rendered       bool
@@ -221,10 +231,17 @@ func (d *Dispatcher) newStreamSession(ctx context.Context, chatID int64, sender 
 		// cadence is not something a caller should have to remember).
 		interval = time.Duration(config.DefaultStreamEditIntervalMS) * time.Millisecond
 	}
+	var draft draftSender
+	if chatID > 0 {
+		// Drafts are private-chat only, and a sender opts in by implementing SendDraft.
+		draft, _ = sender.(draftSender)
+	}
 	return &streamSession{
 		ctx:        ctx,
 		chatID:     chatID,
 		sender:     sender,
+		draft:      draft,
+		draftID:    fmt.Sprintf("%d-%d", chatID, time.Now().UnixNano()),
 		dispatcher: d,
 		interval:   interval,
 		maxRunes:   int(d.deps.Cfg.MaxMessageChunk),
@@ -253,7 +270,7 @@ func (s *streamSession) progress(info model.StreamInfo) {
 		s.skipped++
 		return
 	}
-	if !s.posted {
+	if !s.streaming() {
 		s.post()
 		return
 	}
@@ -263,7 +280,7 @@ func (s *streamSession) progress(info model.StreamInfo) {
 	}
 	var elapsed = time.Since(s.start).Round(time.Second)
 	if s.answer.Len() == 0 {
-		s.edit(s.ctx, fmt.Sprintf(msgStreamThinking, info.ReasoningRunes, elapsed), false)
+		s.editOrDraft(fmt.Sprintf(msgStreamThinking, info.ReasoningRunes, elapsed), false)
 		return
 	}
 	chunks, err := s.answerChunks()
@@ -272,7 +289,7 @@ func (s *streamSession) progress(info model.StreamInfo) {
 		return
 	}
 	s.rotateChunks(chunks)
-	s.edit(s.ctx, s.partialViewChunks(chunks), false)
+	s.editOrDraft(s.partialViewChunks(chunks), false)
 }
 
 // refresh — an answer token arrived. The first delta posts the message when no Progress got there first (a
@@ -281,7 +298,7 @@ func (s *streamSession) refresh() error {
 		s.skipped++
 		return nil
 	}
-	if !s.posted {
+	if !s.streaming() {
 		s.post()
 		return nil
 	}
@@ -294,9 +311,13 @@ func (s *streamSession) refresh() error {
 		return err
 	}
 	s.rotateChunks(chunks)
-	s.edit(s.ctx, s.partialViewChunks(chunks), false)
+	s.editOrDraft(s.partialViewChunks(chunks), false)
 	return nil
 }
+
+// streaming — the chat has already seen part of this answer: a real placeholder was posted, or a draft
+// reached it. The final answer is not counted here; it leaves through deliver() only.
+func (s *streamSession) streaming() bool { return s.posted || s.drafted }
 
 func (s *streamSession) answerChunks() ([]string, error) {
 	answer := s.answer.String()
@@ -323,6 +344,11 @@ func (s *streamSession) rotate() {
 }
 
 func (s *streamSession) rotateChunks(chunks []string) {
+	if s.draft != nil {
+		// A draft is one growing view: the answer above one message is cut by partialView, and the
+		// final pieces are sent as ordinary messages by deliver().
+		return
+	}
 	for len(s.messageIDs) < len(chunks) && len(s.messageIDs) < maxStreamChunks && !s.muted {
 		index := len(s.messageIDs)
 		s.postText(plainForParseFallback(chunks[index], s.dispatcher.deps.Cfg.ParseMode))
@@ -405,6 +431,10 @@ func (s *streamSession) post() {
 	if s.answer.Len() > 0 {
 		text = s.partialView()
 	}
+	if s.draft != nil {
+		s.draftText(text)
+		return
+	}
 	s.postText(text)
 }
 
@@ -413,11 +443,41 @@ func (s *streamSession) stage(text string) {
 		return
 	}
 	s.stageText = text
+	if s.draft != nil {
+		s.draftText(text)
+		return
+	}
 	if !s.posted {
 		s.postText(text)
 		return
 	}
 	_ = s.edit(s.ctx, text, false)
+}
+
+// editOrDraft — one interim view: a draft when the session streams through Bot API drafts, an edit of the
+// real placeholder otherwise.
+func (s *streamSession) editOrDraft(text string, parse bool) {
+	if s.draft != nil {
+		s.draftText(text)
+		return
+	}
+	_ = s.edit(s.ctx, text, parse)
+}
+
+// draftText sends one interim view as a Bot API draft. A draft is not a message: it expires on its own and
+// the final answer still leaves through deliver() as ordinary sendMessage calls. The FIRST refusal disables
+// drafts for the rest of the session and posts a real placeholder instead, so a Bot API without drafts
+// degrades to the edit path instead of losing the answer.
+func (s *streamSession) draftText(text string) {
+	if err := s.draft.SendDraft(s.ctx, s.chatID, s.draftID, text); err != nil {
+		s.draft = nil
+		s.dispatcher.deps.Logger.Warn("the draft update was refused, the stream falls back to editing a placeholder",
+			"chat_id", s.chatID, "error", Sanitize(err, s.dispatcher.deps.Token))
+		s.postText(text)
+		return
+	}
+	s.drafted = true
+	s.lastEdit = time.Now()
 }
 
 func (s *streamSession) postText(text string) {
@@ -471,6 +531,8 @@ func (s *streamSession) deliver(ctx context.Context, d *Dispatcher, full string)
 		return nil // an empty answer is the error of and never reaches this call
 	}
 	if !s.posted || len(s.messageIDs) == 0 {
+		// A draft-only session has no real message to edit, so the whole answer — chunked exactly like any
+		// other reply — leaves through the ordinary Send path; the draft expires or is replaced by its head.
 		return d.Send(ctx, s.chatID, full)
 	}
 	var firstErr error

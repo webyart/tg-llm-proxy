@@ -403,6 +403,21 @@ func (r *telegramReplier) SendStreamMessage(ctx context.Context, chatID int64, t
 	return int64(msg.ID), nil
 }
 
+// SendDraft sends one interim update of a streamed answer as a Bot API draft message. Drafts are plain
+// text on purpose: a half-written answer has no balanced markup, and the final message keeps the ordinary
+// formatting of Send.
+func (r *telegramReplier) SendDraft(ctx context.Context, chatID int64, draftID, text string) error {
+	if r.bot == nil {
+		return errors.New("the telegram bot is not attached ")
+	}
+	_, err := r.bot.SendMessageDraft(ctx, &tgbot.SendMessageDraftParams{
+		ChatID:  chatID,
+		DraftID: draftID,
+		Text:    text,
+	})
+	return err
+}
+
 // EditStreamMessage — one rewrite of the placeholder. `parse` says whether the text is finished and escaped:
 // an empty models.ParseMode is the field this library omits from the request, and an absent parse_mode is what
 // Telegram reads as «render this as text» — which is exactly what a half-written answer needs.

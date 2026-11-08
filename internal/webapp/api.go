@@ -773,7 +773,19 @@ func (a *App) searchDocuments(w http.ResponseWriter, req *http.Request, current 
 		writeError(w, http.StatusBadRequest, "invalid_query", "Use exactly one nonempty q of at most 4000 runes.")
 		return
 	}
-	result, err := store.SearchRAGChunksDetailed(req.Context(), a.db, current.ChatID, query, bot.RAGResultLimit, bot.RAGMaxRunes)
+	options := store.SearchOptions{Limit: bot.RAGResultLimit, MaxRunes: bot.RAGMaxRunes}
+	if a.embeddings != nil {
+		// One embedding call per request; a failure is logged once and the lexical search answers.
+		vectors, embedErr := a.embeddings.Embed(req.Context(), []string{query})
+		if embedErr != nil {
+			a.logger.Warn("Mini App RAG query embedding failed, the search continues lexically", "error", embedErr)
+		} else if len(vectors) == 1 && len(vectors[0]) > 0 {
+			options.QueryVector = vectors[0]
+			options.EmbeddingModel = a.embeddings.Model()
+			options.EmbeddingWeight = store.DefaultEmbeddingWeight
+		}
+	}
+	result, err := store.SearchRAGChunksWithOptions(req.Context(), a.db, current.ChatID, query, options)
 	if err != nil {
 		a.queryFailed(w, "document search", err)
 		return

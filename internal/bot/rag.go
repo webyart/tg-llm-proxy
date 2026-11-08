@@ -272,7 +272,7 @@ func (d *Dispatcher) searchDocuments(ctx context.Context, ev Event, query string
 	if query == "" {
 		return d.reply(ctx, ev.ChatID, "Используй /docs search <query>: укажи непустой запрос.")
 	}
-	result, err := store.SearchRAGChunksDetailed(ctx, d.deps.DB, ev.ChatID, query, RAGResultLimit, RAGMaxRunes)
+	result, err := d.searchRAG(ctx, ev.ChatID, query, RAGResultLimit, RAGMaxRunes)
 	if err != nil {
 		return err
 	}
@@ -314,6 +314,9 @@ func (d *Dispatcher) addDocument(ctx context.Context, ev Event) error {
 	if err != nil {
 		return err
 	}
+	// The document is committed first and the vectors are an addition to it: an embedding failure leaves a
+	// lexically searchable document instead of a failed command.
+	d.embedDocumentChunks(ctx, ev.ChatID, id)
 	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Документ %s сохранён с id=%d, частей: %d. Он будет использоваться при следующих вопросах.", name, id, chunks))
 }
 
@@ -347,7 +350,7 @@ func (d *Dispatcher) exportDocuments(ctx context.Context, ev Event) error {
 }
 
 func (d *Dispatcher) addRAGContext(ctx context.Context, chatID int64, userID int64, query string, messages []model.Message) ([]model.Message, []string, error) {
-	result, err := store.SearchRAGChunksDetailed(ctx, d.deps.DB, chatID, query, int(d.deps.Cfg.RAGResultLimit), int(d.deps.Cfg.RAGMaxContextChars))
+	result, err := d.searchRAG(ctx, chatID, query, int(d.deps.Cfg.RAGResultLimit), int(d.deps.Cfg.RAGMaxContextChars))
 	if err != nil || len(result.Chunks) == 0 {
 		return messages, nil, err
 	}

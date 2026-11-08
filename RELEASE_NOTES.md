@@ -1,3 +1,32 @@
+# tg-llm-proxy v1.48.0
+
+## Hybrid RAG: embeddings + FTS5
+
+- Migration 016 adds `rag_chunk_embeddings` (one float32 little-endian vector per chunk and model, cascading with
+  its chunk) and an index on `(chat_id, model)`; schema version is now 16.
+- `internal/embed` is a small OpenAI-compatible client (POST `{base}/embeddings`, batches of at most 64 inputs,
+  one vector length per response, no key or input text in an error) with a cosine helper and its own tests.
+- Four optional config rows, all off by default: `RAG_EMBEDDINGS_ENABLED`, `RAG_EMBEDDINGS_BASE_URL`
+  (`http://host.docker.internal:1234/v1`), `RAG_EMBEDDINGS_MODEL`
+  (`text-embedding-nomic-embed-text-v1.5`) and `RAG_EMBEDDINGS_TIMEOUT_SECONDS` (10, 1..120).
+- `/docs add` embeds the chunks of the new document after the store commit; any failure is a warning and the
+  document stays stored and lexically searchable.
+- Search mixes the query vector into the existing ranking: `final = (1-w)*lexicalNorm + w*cosine`, `w = 0.4`.
+  Chunks the lexical query never matched are scored when they are among the 64 closest by cosine; a chat without
+  vectors gets exactly today's lexical result. A failing embedding server logs one warning and degrades silently.
+- `cmd/ragembed` backfills existing databases (`-path`, `-base-url`, `-model`, `-chat`, `-batch`), idempotent and
+  exiting non-zero only when nothing could be embedded.
+- Metrics `rag_embeddings_total{outcome="ok|error"}` and `rag_embedding_dimensions`.
+- `rag_quality_test.go` gains a hybrid paraphrase case: the lexical call returns nothing, the hybrid call ranks the
+  right chunk first; the existing lexical thresholds stay green.
+
+## Verification
+
+- Docker unit suite: all 15 packages `ok` (new `internal/embed` 0.3 c, store 58 c, bot 29 c, webapp 147 c); `go vet` clean; integration suite `ok` (58 c).
+- Quality gate `TestRAGQuality`: recall@1/@3/@5 = 1.000, MRR@5 = 1.000 over 19 queries; the new hybrid case shows the lexical call returning nothing while the hybrid call ranks the right chunk first.
+- Deployed with migration 15 → 16; the live volume was backfilled (`embedded 3 of 3 missing chunk(s)`), and an end-to-end paraphrase query on a copy of the production database returned 0 lexical chunks and 3 hybrid chunks.
+- Config rows: 59 → 63 (`RAG_EMBEDDINGS_*`), all validated; the feature is enabled in production via `.env`.
+
 # tg-llm-proxy v1.47.0
 
 ## RAG quality gate

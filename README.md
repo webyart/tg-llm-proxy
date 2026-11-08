@@ -18,7 +18,7 @@ Telegram-бот-прокси между пользователями и лока
 - «Ссылки на потом»: сохранение страниц, поиск и резюме без повторной загрузки.
 - Многошаговые read-only задачи с планом, прогрессом и подтверждениями сетевых действий.
 - Opt-in `/tts` для русской речи через существующий Speaches sidecar и Telegram `sendAudio`.
-- Версионированные миграции через `schema_migrations` (текущая схема — версия 15).
+- Версионированные миграции через `schema_migrations` (текущая схема — версия 16).
 - Backup/restore, ротация копий и age-based retention с dry-run по умолчанию.
 - Безопасное восстановление Docker named volume.
 - Docker multi-stage build, non-root runtime, healthcheck, build commit и ротация логов 10 MB × 5.
@@ -97,7 +97,7 @@ docker compose logs -f bot
 
 ## Конфигурация
 
-Полный список из 59 ENV-строк и их значения по умолчанию находится в `.env.example`; строки `STREAMING_*`, `WEBHOOK_*`, `MINIAPP_*` и `HEALTH_*` описаны в одноимённых разделах ниже. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
+Полный список из 63 ENV-строк и их значения по умолчанию находится в `.env.example`; строки `STREAMING_*`, `WEBHOOK_*`, `MINIAPP_*`, `HEALTH_*` и `RAG_EMBEDDINGS_*` описаны в одноимённых разделах ниже. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
 
 ### Основные параметры
 
@@ -135,6 +135,10 @@ docker compose logs -f bot
 | `RAG_MAX_DOCUMENTS` | 20 | документов на чат; замена по имени не увеличивает usage |
 | `RAG_RESULT_LIMIT` | 3 | максимум фрагментов в model request |
 | `RAG_MAX_CONTEXT_CHARS` | 2000 | общий бюджет RAG-фрагментов |
+| `RAG_EMBEDDINGS_ENABLED` | false | opt-in гибридный RAG: embeddings + FTS5 |
+| `RAG_EMBEDDINGS_BASE_URL` | `http://host.docker.internal:1234/v1` | OpenAI-compatible base URL, `/v1` включён |
+| `RAG_EMBEDDINGS_MODEL` | `text-embedding-nomic-embed-text-v1.5` | id embedding-модели; ключ сохранённых векторов |
+| `RAG_EMBEDDINGS_TIMEOUT_SECONDS` | 10 | timeout одного запроса; 1..120 |
 | `RATE_LIMIT_PER_MINUTE` | 20 | лимит запросов пользователя к модели |
 | `MAX_CONCURRENT_MODEL_REQUESTS` | 2 | параллельные вызовы модели |
 | `TOOLS_ENABLED` | true | безопасный calculator через function calling |
@@ -186,6 +190,38 @@ WEB_SEARCH_BASE_URL=http://searxng:8080
 Бот вызывает только `<base>/search?q=…&format=json` и передаёт модели `title`/`url`/`snippet`; ссылки выдачи не загружаются, поэтому результат поиска не становится шагом для SSRF-перехода. SearxNG опубликован на `127.0.0.1:8083`, внутри compose-сети доступен по имени `searxng`, образ закреплён тегом и digest. JSON API включает settings из override-файла: у образа по умолчанию `format=json` отвечает 403, и ни один `SEARXNG_*` этот ключ не переопределяет. `secret_key` SearxNG генерируется в контейнере при старте и не попадает ни в `.env`, ни в репозиторий.
 
 Override проверен локально: контейнер стартует healthy, `format=json` отвечает выдачей, и opt-in проверка под build tag `livecheck` (`TestLiveWebSearchRealProvider`) выполнила реальный запрос через этот sidecar. Живой acceptance внутри Telegram с `WEB_SEARCH_ENABLED=true` выполнен на v1.17.3 и повторно подтверждён на v1.18.1: поисковый tool вызван, финальный streamed-ответ доставлен после tool rounds.
+
+### Гибридный RAG: embeddings + FTS5 (opt-in)
+
+Лексический поиск не находит перефразировки. Гибридный слой считает эмбеддинг запроса и смешивает его с существующим BM25-lite score:
+
+```
+final = (1 - w) * lexicalNorm + w * cosine(query, chunkVector),  w = 0.4
+```
+
+`lexicalNorm` — прежний score, нормированный к лучшему score запроса; `cosine` — косинус между вектором запроса и вектором фрагмента. Фрагмент без вектора этой модели даёт cosine 0, а фрагмент, который не задел ни один термин запроса, всё равно оценивается, если попал в 64 ближайших по косинусу кандидата чата — именно так находится перефразировка. Если векторов нет вообще, результат совпадает с прежним лексическим ранжированием. Порог `0.15` отсекает слабые vector-only совпадения. Вес `0.4` — константа скорера (`store.DefaultEmbeddingWeight`), а не строка `.env`: качество ранжирования проверяется тестом, а не настраивается на проде.
+
+Сервер — OpenAI-compatible; по умолчанию локальный `host.docker.internal:1234/v1`. В compose `extra_hosts: host.docker.internal:host-gateway` уже есть, а ручному контейнеру нужен флаг `--add-host host.docker.internal:host-gateway`. Модель по умолчанию — `text-embedding-nomic-embed-text-v1.5`, 768 измерений.
+
+```env
+RAG_EMBEDDINGS_ENABLED=true
+RAG_EMBEDDINGS_BASE_URL=http://host.docker.internal:1234/v1
+RAG_EMBEDDINGS_MODEL=text-embedding-nomic-embed-text-v1.5
+RAG_EMBEDDINGS_TIMEOUT_SECONDS=10
+```
+
+Новый документ эмбеддится при `/docs add`. Уже сохранённые фрагменты заполняет backfill — только на копии базы, не на живом volume:
+
+```powershell
+go run ./cmd/ragembed -path .\data\ragembed-smoke.db -base-url http://127.0.0.1:1234/v1
+# или из test-образа, если сервер виден только через host-gateway:
+docker run --rm --add-host host.docker.internal:host-gateway -v "${PWD}/data:/data" tg-llm-proxy-test:latest `
+  go run ./cmd/ragembed -path /data/ragembed-smoke.db -base-url http://host.docker.internal:1234/v1
+```
+
+Флаги: `-path`, `-base-url`, `-model`, `-chat` (0 = все чаты с фрагментами), `-batch` (не больше 64). Команда идемпотентна: фрагменты с вектором выбранной модели пропускаются, прерванный прогон продолжается с места остановки. Exit code ≠ 0 только если не удалось заэмбеддить ни одного фрагмента. Метрики: `rag_embeddings_total{outcome="ok|error"}` и `rag_embedding_dimensions`.
+
+Если сервер эмбеддингов недоступен, поиск молча возвращается к лексическому ранжированию: запрос пишет одно предупреждение в лог и не падает, а документ после неудачного `/docs add` остаётся сохранённым и находимым по словам.
 
 ### Подтверждение сетевых действий
 
@@ -252,7 +288,7 @@ Reverse proxy или туннель должен перенаправлять п
 - Denied/bootstrap/overload replies coalesce, а отклонённая работа не скачивает вложения, не вызывает модель и не создаёт command/history rows.
 - Streaming ограничен 100000 runes, tool argument — 16384 runes, один ответ — 64 Telegram-сообщениями.
 - Model work — `3 × RATE_LIMIT_PER_MINUTE` на пользователя; network tools — 8/мин/user и 4 global in flight.
-- RAG использует до 32 значимых RU/EN терминов из 4000 runes запроса, Unicode token boundaries и sentence-aware chunks. Кандидаты отбирает FTS5-индекс (`rag_chunks_fts`) по всей базе чата, поэтому корпус больше не сканируется целиком; при числе совпадений выше лимита `/docs search` и automatic RAG context явно сообщают об усечении. Экспорт истории читает явный диапазон id без длинной транзакции, поэтому не блокирует записи бота, и сериализуется инкрементально с остановкой на 5 МиБ.
+- RAG использует до 32 значимых RU/EN терминов из 4000 runes запроса, Unicode token boundaries и sentence-aware chunks. Кандидаты отбирает FTS5-индекс (`rag_chunks_fts`) по всей базе чата, поэтому корпус больше не сканируется целиком; при числе совпадений выше лимита `/docs search` и automatic RAG context явно сообщают об усечении. С `RAG_EMBEDDINGS_ENABLED=true` к лексическим кандидатам добавляются ближайшие по косинусу фрагменты и score смешивается по формуле `(1-w)*lexical + w*cosine` (w = 0.4); без векторов результат прежний. Экспорт истории читает явный диапазон id без длинной транзакции, поэтому не блокирует записи бота, и сериализуется инкрементально с остановкой на 5 МиБ.
 - Compose resource backstops: bot 512MiB/1 CPU/128 PIDs, Whisper 4GiB/4 CPU/256 PIDs, SearxNG 1GiB/1 CPU/128 PIDs.
 
 ## Команды бота
@@ -404,7 +440,7 @@ Release CI — `.gitlab-ci.yml`: Docker unit/integration checks, race и `govuln
 .\scripts\db_inspect.ps1 -Integrity
 ```
 
-`schema_version=0` означает backup до версионирования; при следующем writable `store.Open` он автоматически становится 15 без изменения прикладных строк.
+`schema_version=0` означает backup до версионирования; при следующем writable `store.Open` он автоматически становится 16 без изменения прикладных строк.
 
 ### Backup и scratch restore
 
@@ -526,7 +562,7 @@ docker compose up -d
 - Startup recovery рассматривает только самый новый visible unanswered-вопрос чата и ограничен `RECOVERY_MAX_AGE_HOURS` (24 часа по умолчанию). Выполняется до трёх попыток с backoff 1, 2, 4 минуты; затем включается suppression без удаления истории, `/unskip` сбрасывает backoff.
 - Host-side `/healthz` на Docker Desktop может давать WARN при healthy in-container healthcheck.
 - macOS использует те же Unix-ветки, что и проверенный Linux; физический Mac acceptance не выполнялся.
-- Содержимое одноразовых фото и документов не сохраняется. `/docs add` явно сохраняет текст для RAG; retrieval lexical, без embeddings. Voice хранится как текст после транскрипции.
+- Содержимое одноразовых фото и документов не сохраняется. `/docs add` явно сохраняет текст для RAG; retrieval лексический (FTS5 + BM25-lite), гибридный слой embeddings включается отдельно через `RAG_EMBEDDINGS_ENABLED=true` и по умолчанию выключен. Voice хранится как текст после транскрипции.
 
 ## Безопасность
 
@@ -539,7 +575,7 @@ docker compose up -d
 
 ## Документы
 
-- `.env.example` — все настройки (59) с комментариями.
+- `.env.example` — все настройки (63) с комментариями.
 - `RELEASE_NOTES.md` — состав release candidate и результаты проверок.
 - `docs/adr/` — Architecture Decision Records: SQLite/один writer, long polling, fail-fast конфигурация, FTS5-индексы, Mini App только для приватных чатов, политика рестарта.
 - `deploy/README.md` — статус исторических конфигураций gateway в `deploy/` (не часть текущего Compose).

@@ -78,13 +78,16 @@ type HandlerFunc func(ctx context.Context, ev Event, cmd Command) error
 type Middleware func(next HandlerFunc) HandlerFunc
 
 type Deps struct {
-	Cfg            config.Config
-	DB             *sql.DB
-	Model          model.Client
-	TTS            model.SpeechSynthesizer
-	Replier        Replier
-	Attachments    AttachmentDownloader
-	URLReader      *http.Client
+	Cfg         config.Config
+	DB          *sql.DB
+	Model       model.Client
+	TTS         model.SpeechSynthesizer
+	Replier     Replier
+	Attachments AttachmentDownloader
+	URLReader   *http.Client
+	// Embeddings is the optional hybrid-search client. nil keeps RAG lexical-only; a deployment turns it on by
+	// building the client in main from RAG_EMBEDDINGS_ENABLED.
+	Embeddings     EmbeddingClient
 	Locks          *ratelimit.Locks
 	Limit          *ratelimit.Limiter
 	Logger         *slog.Logger

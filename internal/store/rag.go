@@ -28,6 +28,13 @@ const (
 	// returns, yet bounded on a 10 000-chunk corpus. It is also the reported "scored chunks" ceiling.
 	ragCandidateLimit       = 300
 	ragChunkInsertBatchSize = 100
+	// The vector side of the hybrid search. The scan cap bounds how many stored vectors one query reads: a chat
+	// with more chunks than that still ranks the newest vectors, and the lexical candidates keep their exact
+	// vectors regardless of the cap. The candidate cap keeps only the closest chunks the lexical query never
+	// saw, and the score floor rejects a weak vector-only match so the no-answer behaviour survives.
+	ragVectorScanLimit      = 5000
+	ragVectorCandidateLimit = 64
+	ragHybridMinimumScore   = 0.15
 )
 
 // ragFTSCandidateQuery is the bm25-ranked branch of the candidate union. MATCH and the chat filter are bound
@@ -86,6 +93,17 @@ type RAGSearchResult struct {
 	CorpusTruncated bool
 	ScannedChunks   int
 	TotalChunks     int
+}
+
+// SearchOptions is one RAG query. Limit and MaxRunes are the arguments the older entry points take; QueryVector,
+// EmbeddingModel and EmbeddingWeight are the optional hybrid layer. The zero value (no vector) is the lexical
+// ranking unchanged, which is what every existing caller and test uses.
+type SearchOptions struct {
+	Limit           int
+	MaxRunes        int
+	QueryVector     []float32
+	EmbeddingModel  string
+	EmbeddingWeight float64
 }
 
 func PutRAGDocument(ctx context.Context, db *sql.DB, chatID int64, userID int64, name string, content string) (int64, int, error) {
@@ -413,10 +431,10 @@ func readRAGSearchCorpus(ctx context.Context, db *sql.DB, chatID int64, terms []
 	}
 	corpus := ragSearchCorpus{documents: map[string]int{}, totalChunks: totalChunks}
 	for _, row := range ftsCandidates {
-		ragAccumulateCandidate(&corpus, row, terms, termIndexes)
+		ragAccumulateCandidate(&corpus, row, terms, termIndexes, false)
 	}
 	for _, row := range nameCandidates {
-		ragAccumulateCandidate(&corpus, row, terms, termIndexes)
+		ragAccumulateCandidate(&corpus, row, terms, termIndexes, false)
 	}
 	return corpus, nil
 }
@@ -490,8 +508,9 @@ func readRAGNameCandidates(ctx context.Context, db *sql.DB, documentIDs []int64,
 }
 
 // ragAccumulateCandidate tokenizes one SQL-selected chunk and adds its term statistics to the corpus. Every
-// selected chunk is counted, but only a chunk with an exact token or name hit becomes a scored candidate.
-func ragAccumulateCandidate(corpus *ragSearchCorpus, row ragScoredChunk, terms []string, termIndexes map[string]int) {
+// selected chunk is counted; a chunk becomes a scored candidate when it has an exact token or name hit, or
+// unconditionally for a vector candidate the cosine ranking wants to score.
+func ragAccumulateCandidate(corpus *ragSearchCorpus, row ragScoredChunk, terms []string, termIndexes map[string]int, force bool) {
 	row.tokens, row.occurred = lexicalTokenOccurrences(row.Content, termIndexes)
 	nameTerms := uint32(0)
 	for _, token := range lexicalTokens(row.Name) {
@@ -514,7 +533,7 @@ func ragAccumulateCandidate(corpus *ragSearchCorpus, row ragScoredChunk, terms [
 	}
 	corpus.chunkCount++
 	corpus.totalTokens += row.tokens
-	if len(row.occurred) > 0 || row.nameHits > 0 {
+	if force || len(row.occurred) > 0 || row.nameHits > 0 {
 		row.textTokens = lexicalTokens(row.Content)
 		corpus.candidates = append(corpus.candidates, row)
 	}
@@ -552,7 +571,21 @@ func SearchRAGChunks(ctx context.Context, db *sql.DB, chatID int64, query string
 // name bonuses, coverage floor and truncation rules still apply, so quality safeguards are unchanged. The
 // result reports when the candidate cap did not cover every matching chunk of the chat.
 func SearchRAGChunksDetailed(ctx context.Context, db *sql.DB, chatID int64, query string, limit int, maxRunes int) (RAGSearchResult, error) {
+	return SearchRAGChunksWithOptions(ctx, db, chatID, query, SearchOptions{Limit: limit, MaxRunes: maxRunes})
+}
+
+// SearchRAGChunksWithOptions is the hybrid-aware entry point. Without a query vector it is exactly the lexical
+// ranking of SearchRAGChunksDetailed. With one, the score of a chunk becomes
+//
+//	final = (1-w) * lexicalNorm + w * cosine(query, chunkVector)
+//
+// where lexicalNorm is the raw BM25-lite score divided by the best raw score of the query. A chunk without a
+// stored vector of this model contributes cosine 0; a chunk no lexical term reached can still be scored when
+// its cosine puts it among the closest chunks of the chat — that is the paraphrase the lexical search cannot
+// see. When the chat has no vector for this model at all, the lexical result is returned untouched.
+func SearchRAGChunksWithOptions(ctx context.Context, db *sql.DB, chatID int64, query string, opts SearchOptions) (RAGSearchResult, error) {
 	result := RAGSearchResult{Chunks: []RAGChunk{}}
+	limit, maxRunes := opts.Limit, opts.MaxRunes
 	query = ragQueryPrefix(query)
 	terms := lexicalTerms(query)
 	if len(terms) == 0 || limit <= 0 || maxRunes <= 0 {
@@ -563,8 +596,40 @@ func SearchRAGChunksDetailed(ctx context.Context, db *sql.DB, chatID int64, quer
 		return RAGSearchResult{}, err
 	}
 	result.TotalChunks = corpus.totalChunks
+	lexicalSelected := corpus.chunkCount
+	weight := opts.EmbeddingWeight
+	if weight > 1 {
+		weight = 1
+	}
+	if weight < 0 {
+		weight = 0
+	}
+	hybrid := len(opts.QueryVector) > 0 && strings.TrimSpace(opts.EmbeddingModel) != "" && weight > 0
+	var vectors map[int64][]float32
+	if hybrid {
+		var wanted = make(map[int64]bool, len(corpus.candidates))
+		for index := range corpus.candidates {
+			wanted[int64(corpus.candidates[index].id)] = true
+		}
+		candidates, loaded, readErr := readRAGVectorCandidates(ctx, db, chatID, opts.EmbeddingModel, opts.QueryVector, wanted)
+		if readErr != nil {
+			return RAGSearchResult{}, readErr
+		}
+		if len(loaded) == 0 {
+			hybrid = false
+		} else {
+			vectors = loaded
+			var termIndexes = make(map[string]int, len(terms))
+			for index, term := range terms {
+				termIndexes[term] = index
+			}
+			for _, row := range candidates {
+				ragAccumulateCandidate(&corpus, row, terms, termIndexes, true)
+			}
+		}
+	}
 	result.ScannedChunks = len(corpus.candidates)
-	result.CorpusTruncated = corpus.chunkCount == ragCandidateLimit && corpus.totalChunks > corpus.chunkCount
+	result.CorpusTruncated = lexicalSelected == ragCandidateLimit && corpus.totalChunks > lexicalSelected
 	if corpus.chunkCount == 0 {
 		return result, nil
 	}
@@ -575,53 +640,102 @@ func SearchRAGChunksDetailed(ctx context.Context, db *sql.DB, chatID int64, quer
 	phraseTokens := lexicalTokens(strings.TrimSpace(query))
 	phraseLong := len([]rune(strings.TrimSpace(query))) >= 2
 	scored := corpus.candidates
+	rawScores := make([]float64, len(scored))
+	maxRaw := 0.0
+	for index := range scored {
+		rawScores[index] = corpus.lexicalScore(&scored[index], terms, averageTokens, phraseTokens, phraseLong)
+		if rawScores[index] > maxRaw {
+			maxRaw = rawScores[index]
+		}
+	}
+	if hybrid {
+		matched := scored[:0]
+		for index := range scored {
+			row := &scored[index]
+			lexical := 0.0
+			if maxRaw > 0 {
+				lexical = rawScores[index] / maxRaw
+			}
+			cosine := 0.0
+			if vector, found := vectors[int64(row.id)]; found {
+				cosine = ragCosine(opts.QueryVector, vector)
+			}
+			final := (1-weight)*lexical + weight*cosine
+			if final < ragHybridMinimumScore {
+				continue
+			}
+			// The hybrid score is a share of two normalized components, so it is reported on a 0..100 scale
+			// instead of the unbounded lexical points.
+			row.rankScore = final
+			row.Score = int(math.Round(final * 100))
+			matched = append(matched, *row)
+		}
+		result.Chunks = ragTruncateChunks(ragTopChunks(matched, limit), limit, maxRunes)
+		return result, nil
+	}
+
 	matched := scored[:0]
 	bestCoverage := 0.0
 	for index := range scored {
 		row := &scored[index]
-		lengthNormalizer := ragK1 * ((1 - ragB) + ragB*float64(row.tokens)/averageTokens)
-		// The terms slice, not the occurred map, fixes the summation order, so equal chunks get
-		// bit-identical scores and the id tie-break decides instead of float noise.
-		core := 0.0
-		for _, term := range terms {
-			frequency := float64(row.occurred[term])
-			if frequency == 0 {
-				continue
-			}
-			idf := 1 + math.Log(float64(corpus.chunkCount)/float64(corpus.documents[term]))
-			core += idf * frequency * (ragK1 + 1) / (frequency + lengthNormalizer)
-		}
-		score := core * ragScoreScale * ragLengthPrior(row.tokens, averageTokens)
-		score += ragDistinctTermBonus * float64(len(row.occurred))
-		score += ragNameTermBonus * float64(row.nameHits)
-		if phraseLong && ragContainsTokenPhrase(row.textTokens, phraseTokens) {
-			score += ragPhraseBonus
-		}
 		minimumRelevance := ragMinimumRelevance
 		if len(terms) == 1 {
 			minimumRelevance = ragNameTermBonus
 		}
-		if score < minimumRelevance {
+		if rawScores[index] < minimumRelevance {
 			continue
 		}
 		row.coverage = float64(bits.OnesCount32(row.matchedTerms)) / float64(len(terms))
 		if row.coverage > bestCoverage {
 			bestCoverage = row.coverage
 		}
-		row.rankScore = score
-		row.Score = int(math.Round(score))
+		row.rankScore = rawScores[index]
+		row.Score = int(math.Round(rawScores[index]))
 		matched = append(matched, *row)
 	}
-	scored = matched
 	minimumCoverage := ragMinimumTermCoverage
 	if bestCoverage < minimumCoverage {
 		minimumCoverage = bestCoverage
 	}
-	top := &ragTopKHeap{}
-	for _, row := range scored {
+	selected := matched[:0]
+	for _, row := range matched {
 		if row.coverage < minimumCoverage {
 			continue
 		}
+		selected = append(selected, row)
+	}
+	result.Chunks = ragTruncateChunks(ragTopChunks(selected, limit), limit, maxRunes)
+	return result, nil
+}
+
+// lexicalScore is the BM25-lite formula of one candidate. It lives in one place because the hybrid path needs the
+// same raw score the lexical path thresholds: the raw score is normalized, not recomputed.
+func (c ragSearchCorpus) lexicalScore(row *ragScoredChunk, terms []string, averageTokens float64, phraseTokens []string, phraseLong bool) float64 {
+	lengthNormalizer := ragK1 * ((1 - ragB) + ragB*float64(row.tokens)/averageTokens)
+	// The terms slice, not the occurred map, fixes the summation order, so equal chunks get bit-identical
+	// scores and the id tie-break decides instead of float noise.
+	core := 0.0
+	for _, term := range terms {
+		frequency := float64(row.occurred[term])
+		if frequency == 0 {
+			continue
+		}
+		idf := 1 + math.Log(float64(c.chunkCount)/float64(c.documents[term]))
+		core += idf * frequency * (ragK1 + 1) / (frequency + lengthNormalizer)
+	}
+	score := core * ragScoreScale * ragLengthPrior(row.tokens, averageTokens)
+	score += ragDistinctTermBonus * float64(len(row.occurred))
+	score += ragNameTermBonus * float64(row.nameHits)
+	if phraseLong && ragContainsTokenPhrase(row.textTokens, phraseTokens) {
+		score += ragPhraseBonus
+	}
+	return score
+}
+
+// ragTopChunks keeps the best limit rows by rankScore, with the id as the deterministic tie-break.
+func ragTopChunks(scored []ragScoredChunk, limit int) []ragScoredChunk {
+	top := &ragTopKHeap{}
+	for _, row := range scored {
 		if top.Len() < limit {
 			heap.Push(top, row)
 			continue
@@ -631,13 +745,19 @@ func SearchRAGChunksDetailed(ctx context.Context, db *sql.DB, chatID int64, quer
 			heap.Fix(top, 0)
 		}
 	}
-	scored = *top
-	sort.Slice(scored, func(i, j int) bool {
-		return ragChunkRanksBefore(scored[i], scored[j])
+	selected := *top
+	sort.Slice(selected, func(i, j int) bool {
+		return ragChunkRanksBefore(selected[i], selected[j])
 	})
+	return selected
+}
+
+// ragTruncateChunks applies the rune budget of one answer and returns the public rows.
+func ragTruncateChunks(scored []ragScoredChunk, limit int, maxRunes int) []RAGChunk {
+	chunks := []RAGChunk{}
 	used := 0
 	for _, row := range scored {
-		if len(result.Chunks) == limit || used >= maxRunes {
+		if len(chunks) == limit || used >= maxRunes {
 			break
 		}
 		content := row.Content
@@ -650,11 +770,158 @@ func SearchRAGChunksDetailed(ctx context.Context, db *sql.DB, chatID int64, quer
 		}
 		row.Content = content
 		used += len([]rune(content))
-		result.Chunks = append(result.Chunks, row.RAGChunk)
+		chunks = append(chunks, row.RAGChunk)
 	}
-	return result, nil
+	return chunks
 }
 
+// ragCosine is the cosine similarity the hybrid score uses. It is the same formula as embed.Cosine, kept here
+// so the scorer depends on the database and not on the HTTP client that produced the vectors.
+func ragCosine(a, b []float32) float64 {
+	if len(a) == 0 || len(a) != len(b) {
+		return 0
+	}
+	var dot, normA, normB float64
+	for index := range a {
+		x, y := float64(a[index]), float64(b[index])
+		dot += x * y
+		normA += x * x
+		normB += y * y
+	}
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+// ragVectorScanQuery reads the newest vectors of one chat and model. chunk_id DESC makes the cap deterministic:
+// a corpus larger than ragVectorScanLimit still ranks its newest vectors instead of an arbitrary slice.
+const ragVectorScanQuery = `SELECT chunk_id, vector FROM rag_chunk_embeddings
+	WHERE chat_id = ? AND model = ?
+	ORDER BY chunk_id DESC
+	LIMIT ?`
+
+// readRAGVectorCandidates finds the chunks the lexical query never saw and returns them with their vectors.
+// wanted is the set of lexical candidate ids: their vectors are loaded by id (exactly, even outside the scan
+// window), the closest other chunks become new candidates. A vector of another length belongs to another model
+// and is skipped rather than scored as zero.
+func readRAGVectorCandidates(ctx context.Context, db *sql.DB, chatID int64, model string, query []float32, wanted map[int64]bool) ([]ragScoredChunk, map[int64][]float32, error) {
+	model = strings.TrimSpace(model)
+	vectors := make(map[int64][]float32, len(wanted))
+	if len(wanted) > 0 {
+		ids := make([]int64, 0, len(wanted))
+		for id := range wanted {
+			ids = append(ids, id)
+		}
+		loaded, err := ChunkEmbeddings(ctx, db, chatID, model, ids)
+		if err != nil {
+			return nil, nil, err
+		}
+		for id, vector := range loaded {
+			if len(vector) == len(query) {
+				vectors[id] = vector
+			}
+		}
+	}
+
+	rows, err := db.QueryContext(ctx, ragVectorScanQuery, chatID, model, ragVectorScanLimit)
+	if err != nil {
+		return nil, nil, err
+	}
+	type rankedVector struct {
+		id     int64
+		cosine float64
+	}
+	var ranked []rankedVector
+	for rows.Next() {
+		var id int64
+		var blob []byte
+		if err := rows.Scan(&id, &blob); err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		vector, err := decodeVector(blob)
+		if err != nil || len(vector) != len(query) {
+			// A corrupt blob or a vector of another model must not fail the search: the lexical ranking still
+			// answers, and the row stays visible to the backfill.
+			continue
+		}
+		ranked = append(ranked, rankedVector{id: id, cosine: ragCosine(query, vector)})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, nil, err
+	}
+	rows.Close()
+	if len(ranked) == 0 {
+		return nil, vectors, nil
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].cosine != ranked[j].cosine {
+			return ranked[i].cosine > ranked[j].cosine
+		}
+		return ranked[i].id > ranked[j].id
+	})
+	if len(ranked) > ragVectorCandidateLimit {
+		ranked = ranked[:ragVectorCandidateLimit]
+	}
+	var extraIDs []int64
+	for _, row := range ranked {
+		if wanted[row.id] {
+			continue
+		}
+		extraIDs = append(extraIDs, row.id)
+	}
+	if len(extraIDs) == 0 {
+		return nil, vectors, nil
+	}
+	extraVectors, err := ChunkEmbeddings(ctx, db, chatID, model, extraIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+	for id, vector := range extraVectors {
+		if len(vector) == len(query) {
+			vectors[id] = vector
+		}
+	}
+	extra, err := ragChunkRowsByID(ctx, db, chatID, extraIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+	return extra, vectors, nil
+}
+
+// ragChunkRowsByID loads the rows the vector ranking selected. The chat filter repeats here even though the ids
+// came from a chat-scoped table: a search must never read a chunk of another chat.
+func ragChunkRowsByID(ctx context.Context, db *sql.DB, chatID int64, ids []int64) ([]ragScoredChunk, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	args := make([]any, 0, len(ids)+1)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	args = append(args, chatID)
+	rows, err := db.QueryContext(ctx, `SELECT c.id, c.document_id, d.name, c.content
+		FROM rag_chunks c
+		JOIN rag_documents d ON d.id = c.document_id
+		WHERE c.id IN (`+placeholders(len(ids))+`) AND c.chat_id = ?`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ragScoredChunk
+	for rows.Next() {
+		var row ragScoredChunk
+		if err := rows.Scan(&row.id, &row.DocumentID, &row.Name, &row.Content); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// ragContainsTokenPhrase reports whether phrase occurs as a consecutive token run inside tokens.
 func ragContainsTokenPhrase(tokens []string, phrase []string) bool {
 	if len(phrase) == 0 || len(phrase) > len(tokens) {
 		return false

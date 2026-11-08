@@ -366,3 +366,128 @@ func BenchmarkRAGQualityCorpus(b *testing.B) {
 		}
 	}
 }
+
+// The hybrid case lives in its own chat: it injects vectors, and the fixed corpus above must stay vector-free so
+// its measured numbers keep describing the lexical ranking.
+const ragHybridChatID = 9102
+
+// ragHybridDimensions is a deterministic 8-dimensional bag-of-words embedding with a fixed synonym map: a
+// paraphrase ("перезапустить … службу") lands on the same dimension as the words it paraphrases ("перезапуск
+// … сервис"), which is what a real embedding model provides and the lexical tokenizer cannot.
+var ragHybridDimensions = map[string]int{
+	"перезапуск": 0, "перезапуска": 0, "перезапустить": 0, "рестарт": 0, "restart": 0, "systemctl": 0,
+	"сервис": 0, "сервиса": 0, "службы": 0, "service": 0, "bot": 0, "бота": 0,
+	"деплой": 1, "деплоя": 1, "deploy": 1, "релиз": 1, "релиза": 1, "release": 1, "образ": 1, "образа": 1,
+	"поддержки": 2, "поддержка": 2, "обращения": 2, "почте": 2, "чате": 2, "дежурный": 2,
+	"мониторинг": 3, "метрики": 3, "алерты": 3, "задержка": 3, "latency": 3, "дашборд": 3,
+	"сверка": 4, "сверки": 4, "платежей": 4, "invoice": 4, "бухгалтер": 4,
+	"документы": 5, "поиск": 5, "фрагмент": 5, "chunk": 5, "ранжирование": 5,
+	"онбординг": 6, "vpn": 6, "доступ": 6, "логин": 6,
+	"журнал": 7, "проверяет": 7, "проверка": 7, "smoke": 7,
+}
+
+func ragHybridFakeVector(text string) []float32 {
+	vector := make([]float32, 8)
+	for _, token := range strings.FieldsFunc(strings.ToLower(text), ragLexicalTokenBoundary) {
+		if dimension, known := ragHybridDimensions[token]; known {
+			vector[dimension]++
+		}
+	}
+	return vector
+}
+
+// ragHybridCorpus is three short documents. Only the restart one answers "как перезапустить службу", and no
+// lexical term of the query occurs in it: "перезапуск" is a different word form and "служба" is not there.
+func ragHybridCorpus() []ragQualityDoc {
+	return []ragQualityDoc{
+		{name: "service-restart.md", sections: []string{
+			"Перезапуск сервиса выполняется командой systemctl restart bot.service. Дежурный проверяет журнал после перезапуска и убеждается, что сервис отвечает.",
+		}},
+		{name: "support-handbook.md", sections: []string{
+			"Служба поддержки принимает обращения по почте и в чате. Дежурный отвечает в течение рабочего дня.",
+		}},
+		{name: "release-calendar.md", sections: []string{
+			"Релиз собирается из образа и выкатывается по календарю. Деплой согласуется с релиз-менеджером.",
+		}},
+	}
+}
+
+// TestRAGQualityHybridParaphrase is the gate of the vector layer: a paraphrase the lexical ranking cannot answer
+// at all must be answered by the hybrid score, with vectors injected by the test instead of an embedding server.
+func TestRAGQualityHybridParaphrase(t *testing.T) {
+	ctx := context.Background()
+	db, err := OpenMemory(ctx, "rag_quality_hybrid_"+t.Name())
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	defer db.Close()
+	const model = "test-hash-8"
+	documentIDs := make(map[string]int64)
+	for _, doc := range ragHybridCorpus() {
+		id, chunks, err := PutRAGDocument(ctx, db, ragHybridChatID, ragQualityUserID, doc.name, strings.Join(doc.sections, "\n"))
+		if err != nil {
+			t.Fatalf("PutRAGDocument(%s): %v", doc.name, err)
+		}
+		if chunks != 1 {
+			t.Fatalf("document %s produced %d chunks, want 1", doc.name, chunks)
+		}
+		documentIDs[doc.name] = id
+	}
+	const query = "как перезапустить службу"
+	queryVector := ragHybridFakeVector(query)
+
+	lexical, err := SearchRAGChunksDetailed(ctx, db, ragHybridChatID, query, 5, 1<<20)
+	if err != nil {
+		t.Fatalf("lexical: %v", err)
+	}
+	if len(lexical.Chunks) != 0 {
+		t.Fatalf("the lexical ranking already answers the paraphrase: %+v", lexical.Chunks)
+	}
+	// A query vector without any stored vector must not change the lexical answer: this is the "no vectors at
+	// all" contract the feature ships with.
+	withoutVectors, err := SearchRAGChunksWithOptions(ctx, db, ragHybridChatID, query, SearchOptions{
+		Limit: 5, MaxRunes: 1 << 20, QueryVector: queryVector, EmbeddingModel: model, EmbeddingWeight: DefaultEmbeddingWeight,
+	})
+	if err != nil {
+		t.Fatalf("hybrid before vectors: %v", err)
+	}
+	if len(withoutVectors.Chunks) != 0 {
+		t.Fatalf("a query vector without stored vectors returned %+v, want the lexical (empty) result", withoutVectors.Chunks)
+	}
+
+	for _, id := range documentIDs {
+		embedDocument(t, ctx, db, ragHybridChatID, id, model, ragHybridFakeVector)
+	}
+
+	hybrid, err := SearchRAGChunksWithOptions(ctx, db, ragHybridChatID, query, SearchOptions{
+		Limit: 5, MaxRunes: 1 << 20, QueryVector: queryVector, EmbeddingModel: model, EmbeddingWeight: DefaultEmbeddingWeight,
+	})
+	if err != nil {
+		t.Fatalf("hybrid: %v", err)
+	}
+	if len(hybrid.Chunks) == 0 {
+		t.Fatal("the hybrid ranking returned nothing for an answerable paraphrase")
+	}
+	if hybrid.Chunks[0].Name != "service-restart.md" || !strings.Contains(hybrid.Chunks[0].Content, "systemctl restart") {
+		t.Fatalf("hybrid rank 1 = %s: %q, want service-restart.md with the systemctl command", hybrid.Chunks[0].Name, briefContent(hybrid.Chunks[0].Content))
+	}
+	t.Logf("hybrid paraphrase: rank=1 document=%s score=%d (lexical chunks: %d)", hybrid.Chunks[0].Name, hybrid.Chunks[0].Score, len(lexical.Chunks))
+
+	// The lexical ranking does not improve by the vectors being present: the comparison is the same query.
+	again, err := SearchRAGChunksDetailed(ctx, db, ragHybridChatID, query, 5, 1<<20)
+	if err != nil {
+		t.Fatalf("lexical after vectors: %v", err)
+	}
+	if len(again.Chunks) != 0 {
+		t.Fatalf("the lexical call started using vectors: %+v", again.Chunks)
+	}
+}
+
+// briefContent keeps a failure message readable.
+func briefContent(content string) string {
+	runes := []rune(content)
+	if len(runes) <= 120 {
+		return content
+	}
+	return string(runes[:120]) + "…"
+}

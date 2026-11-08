@@ -182,7 +182,9 @@ type App struct {
 	taskLifecycle TaskLifecycle
 	linkLifecycle LinkLifecycle
 	chat          ChatBackend
-	rateLimits    *perUserRateLimiter
+	// embeddings is the optional hybrid-search client of the document search; nil keeps it lexical.
+	embeddings bot.EmbeddingClient
+	rateLimits *perUserRateLimiter
 }
 
 func New(cfg config.Config, db *sql.DB, client model.Client, logger *slog.Logger) *App {
@@ -205,6 +207,12 @@ func New(cfg config.Config, db *sql.DB, client model.Client, logger *slog.Logger
 	}
 	app.handler = securityHeaders(limitInFlight(recoverPanics(logger, http.HandlerFunc(app.route)), maxInFlight))
 	return app
+}
+
+// SetEmbeddings attaches the optional hybrid-search client to the document search. It is called by main after
+// New; a Mini App built only for a test keeps the lexical search without it.
+func (a *App) SetEmbeddings(client bot.EmbeddingClient) {
+	a.embeddings = client
 }
 
 // responseRecorder remembers whether anything reached the client, so the panic handler knows if a 500 can

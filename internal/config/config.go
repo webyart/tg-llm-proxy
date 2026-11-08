@@ -55,6 +55,10 @@ var Env = []string{
 	"RAG_MAX_DOCUMENTS",
 	"RAG_RESULT_LIMIT",
 	"RAG_MAX_CONTEXT_CHARS",
+	"RAG_EMBEDDINGS_ENABLED",
+	"RAG_EMBEDDINGS_BASE_URL",
+	"RAG_EMBEDDINGS_MODEL",
+	"RAG_EMBEDDINGS_TIMEOUT_SECONDS",
 	"SYSTEM_PROMPT",
 	"TELEGRAM_ALLOWED_USERS",
 	"TELEGRAM_ADMIN_USERS",
@@ -118,6 +122,14 @@ const DefaultMaxInputChars = int64(4000)
 const DefaultRAGMaxDocuments = int64(20)
 const DefaultRAGResultLimit = int64(3)
 const DefaultRAGMaxContextChars = int64(2000)
+
+// The embeddings endpoint is a separate OpenAI-compatible server: STRATA itself answers 404 on /v1/embeddings.
+// The default points at the host gateway because the bot runs in a container and the server on the host; the
+// base carries the /v1 prefix the OpenAI API mounts its resources under.
+const DefaultRAGEmbeddingsEnabled = false
+const DefaultRAGEmbeddingsBaseURL = "http://host.docker.internal:1234/v1"
+const DefaultRAGEmbeddingsModel = "text-embedding-nomic-embed-text-v1.5"
+const DefaultRAGEmbeddingsTimeoutSeconds = int64(10)
 const DefaultRateLimit = int64(20)
 const DefaultConcurrent = int64(2)
 const DefaultMaxChunk = int64(3500)
@@ -187,47 +199,54 @@ type Config struct {
 	// Off by default: a draft keeps the position where the answer started, so with a second question already in
 	// the chat the finished answer can appear ABOVE that question. The edit path has the same property, which is
 	// why deliver() sends the final message as a new one when a newer update arrived during the stream.
-	StreamDrafts              bool
-	WebhookEnabled            bool
-	WebhookPublicURL          string
-	WebhookSecretToken        string
-	WebhookHost               string
-	WebhookPort               int64
-	WebhookPath               string
-	MiniAppEnabled            bool
-	MiniAppPublicURL          string
-	MiniAppHost               string
-	MiniAppPort               int64
-	DBPath                    string
-	ReminderTimezone          string
-	ReminderLocation          *time.Location
-	ContextMessages           int64
-	MaxContextChars           int64
-	MaxInputChars             int64
-	RAGMaxDocuments           int64
-	RAGResultLimit            int64
-	RAGMaxContextChars        int64
-	SystemPrompt              string
-	UserIDs                   []int64
-	AdminIDs                  []int64
-	DenyByDefault             bool
-	RateLimitPerMinute        int64
-	UserDailyModelLimit       int64
-	UserDailyNetworkToolLimit int64
-	UserLimits                map[int64]UserDailyLimits
-	MaxConcurrentRequests     int64
-	FreeText                  bool
-	ToolsEnabled              bool
-	URLReaderEnabled          bool
-	WebSearchEnabled          bool
-	WebSearchBaseURL          string
-	WebSearchTimeoutSeconds   int64
-	WebSearchMaxResults       int64
-	MaxMessageChunk           int64
-	ParseMode                 string
-	HealthPort                int64
-	HealthListenHost          string
-	LogLevel                  string
+	StreamDrafts       bool
+	WebhookEnabled     bool
+	WebhookPublicURL   string
+	WebhookSecretToken string
+	WebhookHost        string
+	WebhookPort        int64
+	WebhookPath        string
+	MiniAppEnabled     bool
+	MiniAppPublicURL   string
+	MiniAppHost        string
+	MiniAppPort        int64
+	DBPath             string
+	ReminderTimezone   string
+	ReminderLocation   *time.Location
+	ContextMessages    int64
+	MaxContextChars    int64
+	MaxInputChars      int64
+	RAGMaxDocuments    int64
+	RAGResultLimit     int64
+	RAGMaxContextChars int64
+	// The optional hybrid RAG layer: an OpenAI-compatible embeddings server, disabled by default. Base is the
+	// normalized {…}/v1 base, URL is what the client posts to, and Model keys the stored vectors.
+	RAGEmbeddingsEnabled        bool
+	RAGEmbeddingsBase           string
+	RAGEmbeddingsURL            string
+	RAGEmbeddingsModel          string
+	RAGEmbeddingsTimeoutSeconds int64
+	SystemPrompt                string
+	UserIDs                     []int64
+	AdminIDs                    []int64
+	DenyByDefault               bool
+	RateLimitPerMinute          int64
+	UserDailyModelLimit         int64
+	UserDailyNetworkToolLimit   int64
+	UserLimits                  map[int64]UserDailyLimits
+	MaxConcurrentRequests       int64
+	FreeText                    bool
+	ToolsEnabled                bool
+	URLReaderEnabled            bool
+	WebSearchEnabled            bool
+	WebSearchBaseURL            string
+	WebSearchTimeoutSeconds     int64
+	WebSearchMaxResults         int64
+	MaxMessageChunk             int64
+	ParseMode                   string
+	HealthPort                  int64
+	HealthListenHost            string
+	LogLevel                    string
 }
 
 // wrote is normalized so the endpoint it points at is reached EXACTLY ONCE through
@@ -271,6 +290,19 @@ func validateStrataBase(base string) string {
 	}
 	if parsed.Scheme == "http" && !localStrataHost(parsed.Hostname()) {
 		return "ENV STRATA_BASE_URL must use HTTPS for a non-local endpoint"
+	}
+	return ""
+}
+
+// validateRAGEmbeddingsBase accepts only an absolute HTTP(S) URL. It is checked when the feature is enabled:
+// a disabled row may stay at its default, and a wrong one must not stop a bot that does not use embeddings.
+func validateRAGEmbeddingsBase(base string) string {
+	parsed, err := url.Parse(strings.TrimSpace(base))
+	if err != nil || parsed.Host == "" || parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "ENV RAG_EMBEDDINGS_BASE_URL must be an absolute HTTP(S) URL"
+	}
+	if parsed.User != nil {
+		return "ENV RAG_EMBEDDINGS_BASE_URL must not contain userinfo or credentials"
 	}
 	return ""
 }
@@ -681,6 +713,31 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	ragContext, badRAGContext := Num(raw, "RAG_MAX_CONTEXT_CHARS", DefaultRAGMaxContextChars, 256, 20000)
 	cfg.RAGMaxContextChars = ragContext
 	problems = Push(problems, badRAGContext)
+
+	// Hybrid RAG is opt-in and fully optional: with the flag off nothing is embedded and the search stays the
+	// lexical ranking it is today. The rows are still resolved, so enabling the feature later needs one line.
+	ragEmbeddingsEnabled, badRAGEmbeddingsEnabled := Flag(raw, "RAG_EMBEDDINGS_ENABLED", DefaultRAGEmbeddingsEnabled)
+	cfg.RAGEmbeddingsEnabled = ragEmbeddingsEnabled
+	problems = Push(problems, badRAGEmbeddingsEnabled)
+	ragEmbeddingsBase := strings.TrimSpace(raw["RAG_EMBEDDINGS_BASE_URL"])
+	if ragEmbeddingsBase == "" {
+		ragEmbeddingsBase = DefaultRAGEmbeddingsBaseURL
+	}
+	cfg.RAGEmbeddingsBase = NormalizeBase(ragEmbeddingsBase)
+	cfg.RAGEmbeddingsURL = cfg.RAGEmbeddingsBase + "/embeddings"
+	cfg.RAGEmbeddingsModel = strings.TrimSpace(raw["RAG_EMBEDDINGS_MODEL"])
+	if cfg.RAGEmbeddingsModel == "" {
+		cfg.RAGEmbeddingsModel = DefaultRAGEmbeddingsModel
+	}
+	ragEmbeddingsTimeout, badRAGEmbeddingsTimeout := Num(raw, "RAG_EMBEDDINGS_TIMEOUT_SECONDS", DefaultRAGEmbeddingsTimeoutSeconds, 1, 120)
+	cfg.RAGEmbeddingsTimeoutSeconds = ragEmbeddingsTimeout
+	problems = Push(problems, badRAGEmbeddingsTimeout)
+	if ragEmbeddingsEnabled {
+		problems = Push(problems, validateRAGEmbeddingsBase(ragEmbeddingsBase))
+		if cfg.RAGEmbeddingsModel == "" {
+			problems = Push(problems, "ENV RAG_EMBEDDINGS_MODEL is empty: RAG_EMBEDDINGS_ENABLED=true needs a model id ")
+		}
+	}
 
 	var prompt = strings.TrimSpace(raw["SYSTEM_PROMPT"])
 	if prompt == "" {

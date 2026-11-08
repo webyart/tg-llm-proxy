@@ -9,6 +9,7 @@ package main
 import (
 	"bot/internal/bot"
 	"bot/internal/config"
+	"bot/internal/embed"
 	"bot/internal/health"
 	"bot/internal/metrics"
 	"bot/internal/model"
@@ -85,6 +86,9 @@ func startupSummary(logger *slog.Logger, cfg config.Config) {
 		"tools_enabled", cfg.ToolsEnabled,
 		"url_reader", cfg.URLReaderEnabled,
 		"web_search", cfg.WebSearchEnabled,
+		"rag_embeddings", cfg.RAGEmbeddingsEnabled,
+		"rag_embeddings_base", cfg.RAGEmbeddingsBase,
+		"rag_embeddings_model", cfg.RAGEmbeddingsModel,
 		"tts", cfg.TTSEnabled,
 		"miniapp", cfg.MiniAppEnabled,
 		"miniapp_public_url", cfg.MiniAppPublicURL,
@@ -186,6 +190,18 @@ func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, l
 		return fmt.Errorf("model.New: %w", clientErr)
 	}
 
+	// The hybrid RAG layer is optional and off by default. The metric families are registered either way, so a
+	// dashboard sees them before the feature is switched on; the client exists only when the row is on, and the
+	// dispatcher and the Mini App know the feature by a nil interface: nothing embeds, nothing changes.
+	var embeddingMetrics = embed.NewMetrics(registry)
+	var embeddingClient bot.EmbeddingClient
+	if cfg.RAGEmbeddingsEnabled {
+		var embedClient = embed.New(cfg.RAGEmbeddingsBase, cfg.RAGEmbeddingsModel, "",
+			time.Duration(cfg.RAGEmbeddingsTimeoutSeconds)*time.Second)
+		embedClient.SetMetrics(embeddingMetrics)
+		embeddingClient = embedClient
+	}
+
 	// The health listener is bound before the bot starts: the compose HEALTHCHECK probes it and a taken
 	// port must fail the start, not sit next to a healthy-looking /healthz.
 	var healthServer = health.NewOn(cfg.HealthListenHost, cfg.HealthPort)
@@ -202,6 +218,7 @@ func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, l
 	var miniApp *webapp.App
 	if cfg.MiniAppEnabled {
 		miniApp = webapp.New(cfg, db, client, logger)
+		miniApp.SetEmbeddings(embeddingClient)
 	}
 	var synthesizer model.SpeechSynthesizer
 	if cfg.TTSEnabled {
@@ -223,6 +240,7 @@ func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, l
 		DB:             db,
 		Model:          client,
 		TTS:            synthesizer,
+		Embeddings:     embeddingClient,
 		Logger:         logger,
 		Token:          cfg.BotToken,
 		StartOffset:    startOffset,

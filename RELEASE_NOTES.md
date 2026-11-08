@@ -1,3 +1,20 @@
+# tg-llm-proxy v1.42.0
+
+## Feedback on answers (Sprint 6)
+
+- Migration 015 adds `message_feedback`, keyed by (message, user), cascading on message deletion, with one index for per-chat aggregates. Schema version is now 15.
+- `/feedback up|down` (alias `/fb`) rates the newest assistant message; `/feedback` without an argument prints the counts; `/stats` gained the ratings line.
+- The Mini App history carries the caller's rating per item and renders 👍/👎 that update in place; `POST /api/history/{id}/feedback` validates strictly and answers 403/404 for foreign or missing messages.
+
+## Streaming through drafts (Sprint 6)
+
+- In private chats the answer preview now grows through Bot API `sendMessageDraft` instead of editing a placeholder; the finished answer arrives as one ordinary, chunked and formatted message. Groups and repliers without draft support keep the edit path, and the first rejected draft falls back to edits for that session.
+- The fake Telegram server serves `sendMessageDraft` with a failure knob, so both the draft path and the fallback are covered by tests.
+
+## Integration suite repaired
+
+- Four integration tests still expected behaviour that v1.40 changed: `/links add` now requires `URL_READER_ENABLED`, the Mini App is private-only, and private streaming uses drafts. They now assert the current rules, including `ErrPrivateOnly` for group tickets and a plain-text resend after a parse error.
+
 # tg-llm-proxy v1.41.0
 
 ## Observability (Sprint 4)

@@ -19,9 +19,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -194,8 +196,8 @@ func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, l
 	}
 	var healthErr = make(chan error, 1)
 	go func() { healthErr <- healthServer.Run(ctx) }()
-	fmt.Fprintln(out, "health is listening on 127.0.0.1:", healthServer.Port(), health.Path,
-		"readiness", health.ReadyPath, "metrics", health.MetricsPath)
+	fmt.Fprintln(out, "health is listening on", net.JoinHostPort(cfg.HealthListenHost, strconv.FormatInt(healthServer.Port(), 10)),
+		health.Path, "readiness", health.ReadyPath, "metrics", health.MetricsPath)
 
 	var miniApp *webapp.App
 	if cfg.MiniAppEnabled {

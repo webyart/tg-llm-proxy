@@ -143,8 +143,11 @@ func (a *App) writeChatFailure(w http.ResponseWriter, operation string, code str
 //
 //	event: stage  {"stage":"thinking"|"read_url"|"web_search"}
 //	event: delta  {"text":"fragment"}
-//	event: done   {"text":"final answer, already stored in history"}
+//	event: done   {"text":"final answer, already stored in history","message_id":123}
 //	event: error  {"code":"chat_failed","message":"safe text"}
+//
+// message_id is the stored assistant row id, so the client can send feedback for this exact
+// answer without refetching /api/history. It is omitted when a backend did not produce a row.
 //
 // Admission failures are ordinary JSON errors with their real status, because no SSE header has
 // been written yet at that point.
@@ -190,7 +193,11 @@ func (a *App) chatMessage(w http.ResponseWriter, req *http.Request, current scop
 		case event.Stage != "":
 			return stream.send("stage", map[string]string{"stage": event.Stage})
 		case event.Done:
-			return stream.send("done", map[string]string{"text": event.Delta})
+			payload := map[string]any{"text": event.Delta}
+			if event.MessageID > 0 {
+				payload["message_id"] = event.MessageID
+			}
+			return stream.send("done", payload)
 		case event.Delta != "":
 			return stream.send("delta", map[string]string{"text": event.Delta})
 		default:

@@ -9,6 +9,8 @@
       navLabel: "Разделы чата", tabStatus: "Статус", tabHistory: "История", tabDocuments: "Документы",
       tabLinks: "Ссылки", tabTasks: "Задачи", tabReminders: "Напоминания", tabUsage: "Использование", tabSettings: "Настройки", refresh: "Обновить", loadOlder: "Показать ранее", loading: "Загрузка…",
       tabChat: "Чат", chatTitle: "Диалог с моделью", chatIntro: "Сообщение проходит тот же конвейер, что и в Telegram: история чата, документы, лимиты и дневная квота.",
+      tabChatShort: "Чат", tabStatusShort: "Статус", tabHistoryShort: "История", tabDocumentsShort: "Докум.",
+      tabLinksShort: "Ссылки", tabTasksShort: "Задачи", tabRemindersShort: "Напом.", tabUsageShort: "Использ.", tabSettingsShort: "Настр.",
       chatPlaceholder: "Напишите сообщение…", chatInputAria: "Текст сообщения", chatSend: "Отправить",
       chatPending: "Модель отвечает…", chatThinking: "Модель думает…", chatReadingURL: "Читаю страницу…", chatSearching: "Ищу информацию…",
       chatMessageEmpty: "Введите текст сообщения.", chatMessageTooLong: "Сообщение должно быть не длиннее 2000 символов.",
@@ -70,6 +72,7 @@
       historyExportReady: "Экспорт истории подготовлен.", historyExportFailed: "Не удалось экспортировать историю.",
       historyExportEmpty: "Нет сообщений для экспорта.", historyExportTooLarge: "Экспорт истории превышает 5 МиБ.",
       feedbackUp: "👍 Полезно", feedbackDown: "👎 Не полезно",
+      feedbackGroup: "Оценка ответа",
       feedbackSaved: "Оценка сохранена.", feedbackFailed: "Не удалось сохранить оценку.",
       feedbackForbidden: "Оценить можно только ответ ассистента в этом чате.",
       showFullContent: "Показать полностью", fullContentFailed: "Не удалось загрузить полный текст.",
@@ -134,6 +137,8 @@
       navLabel: "Chat sections", tabStatus: "Status", tabHistory: "History", tabDocuments: "Documents",
       tabLinks: "Links", tabTasks: "Tasks", tabReminders: "Reminders", tabUsage: "Usage", tabSettings: "Settings", refresh: "Refresh", loadOlder: "Load older", loading: "Loading…",
       tabChat: "Chat", chatTitle: "Chat with the model", chatIntro: "Each message runs through the same pipeline as in Telegram: chat history, documents, quotas, and daily limits.",
+      tabChatShort: "Chat", tabStatusShort: "Status", tabHistoryShort: "History", tabDocumentsShort: "Docs",
+      tabLinksShort: "Links", tabTasksShort: "Tasks", tabRemindersShort: "Remind.", tabUsageShort: "Usage", tabSettingsShort: "Settings",
       chatPlaceholder: "Type a message…", chatInputAria: "Message text", chatSend: "Send",
       chatPending: "The model is answering…", chatThinking: "The model is thinking…", chatReadingURL: "Reading the page…", chatSearching: "Searching…",
       chatMessageEmpty: "Enter a message.", chatMessageTooLong: "The message must be at most 2000 characters.",
@@ -195,6 +200,7 @@
       historyExportReady: "History export is ready.", historyExportFailed: "History export failed.",
       historyExportEmpty: "There are no messages to export.", historyExportTooLarge: "History export exceeds 5 MiB.",
       feedbackUp: "👍 Helpful", feedbackDown: "👎 Not helpful",
+      feedbackGroup: "Rate the answer",
       feedbackSaved: "Feedback saved.", feedbackFailed: "The feedback could not be saved.",
       feedbackForbidden: "Only an assistant answer in this chat can be rated.",
       showFullContent: "Show full text", fullContentFailed: "The full text could not be loaded.",
@@ -325,6 +331,9 @@
   let view = { tab: "status", data: null, items: [] };
   let chat = { messages: [], pending: false, streaming: false, suppressed: false, stage: "", errorText: "", resetArmed: false, identity: null };
   let chatNodes = { log: null, answer: null, status: null };
+  let chatLiveTimer = null;
+  let chatLiveNode = null;
+  let chatLiveText = "";
 
   function resetArmedStates() {
     chat.resetArmed = false;
@@ -397,6 +406,237 @@
     if (className) node.className = className;
     if (text !== undefined) node.textContent = text;
     return node;
+  }
+
+  // Markdown is rendered into DOM nodes, never into an HTML string. Every character the parser
+  // does not recognise becomes a text node, which is equivalent to escaping & < > " ' first and is
+  // safe by construction: model output can never create an element or an attribute.
+  function textNode(value) {
+    const text = String(value);
+    return typeof document.createTextNode === "function" ? document.createTextNode(text) : element("span", "", text);
+  }
+
+  function safeLinkURL(raw) {
+    const value = String(raw || "").trim();
+    if (!/^https?:\/\/[^\s]+$/i.test(value)) return "";
+    try {
+      const url = new URL(value);
+      if (url.protocol !== "http:" && url.protocol !== "https:") return "";
+      return url.href;
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function trimBareURL(raw) {
+    let value = raw.replace(/[.,;:!?*_~]+$/, "");
+    while (value.endsWith(")") && (value.match(/\(/g) || []).length < (value.match(/\)/g) || []).length) value = value.slice(0, -1);
+    while (value.endsWith("]") && (value.match(/\[/g) || []).length < (value.match(/\]/g) || []).length) value = value.slice(0, -1);
+    while (value.endsWith("}") && (value.match(/\{/g) || []).length < (value.match(/\}/g) || []).length) value = value.slice(0, -1);
+    return value;
+  }
+
+  function appendMarkdownLink(target, href, label) {
+    const anchor = element("a");
+    anchor.href = href;
+    anchor.target = "_blank";
+    anchor.rel = "noopener noreferrer";
+    appendInlineMarkdown(anchor, label, false);
+    target.appendChild(anchor);
+  }
+
+  function appendInlineMarkdown(target, source, allowAutolink = true) {
+    const text = String(source || "");
+    let plain = "";
+    let index = 0;
+    const flush = () => {
+      if (plain) {
+        target.appendChild(textNode(plain));
+        plain = "";
+      }
+    };
+    while (index < text.length) {
+      const rest = text.slice(index);
+      if (rest.startsWith("`")) {
+        const close = text.indexOf("`", index + 1);
+        if (close > index + 1) {
+          flush();
+          target.appendChild(element("code", "", text.slice(index + 1, close)));
+          index = close + 1;
+          continue;
+        }
+      }
+      if (rest.startsWith("**")) {
+        const close = text.indexOf("**", index + 2);
+        if (close > index + 2) {
+          flush();
+          const strong = element("strong");
+          appendInlineMarkdown(strong, text.slice(index + 2, close), allowAutolink);
+          target.appendChild(strong);
+          index = close + 2;
+          continue;
+        }
+      }
+      if (rest.startsWith("~~")) {
+        const close = text.indexOf("~~", index + 2);
+        if (close > index + 2) {
+          flush();
+          const deleted = element("del");
+          appendInlineMarkdown(deleted, text.slice(index + 2, close), allowAutolink);
+          target.appendChild(deleted);
+          index = close + 2;
+          continue;
+        }
+      }
+      if (rest.startsWith("*") && !rest.startsWith("**")) {
+        const close = text.indexOf("*", index + 1);
+        if (close > index + 1 && text[close + 1] !== "*") {
+          flush();
+          const em = element("em");
+          appendInlineMarkdown(em, text.slice(index + 1, close), allowAutolink);
+          target.appendChild(em);
+          index = close + 1;
+          continue;
+        }
+      }
+      if (allowAutolink && rest.startsWith("[")) {
+        const closeLabel = text.indexOf("]", index + 1);
+        if (closeLabel > index + 1 && text[closeLabel + 1] === "(") {
+          const closeHref = text.indexOf(")", closeLabel + 2);
+          if (closeHref > closeLabel + 2) {
+            const href = safeLinkURL(text.slice(closeLabel + 2, closeHref));
+            if (href) {
+              flush();
+              appendMarkdownLink(target, href, text.slice(index + 1, closeLabel));
+              index = closeHref + 1;
+              continue;
+            }
+          }
+        }
+      }
+      if (allowAutolink && (rest.startsWith("http://") || rest.startsWith("https://"))) {
+        const before = index === 0 ? "" : text[index - 1];
+        if (!before || /[\s([{>]/.test(before)) {
+          let end = index;
+          while (end < text.length && !/[\s<>"`]/.test(text[end])) end += 1;
+          const candidate = trimBareURL(text.slice(index, end));
+          const href = safeLinkURL(candidate);
+          if (href) {
+            flush();
+            appendMarkdownLink(target, href, candidate);
+            index += candidate.length;
+            continue;
+          }
+        }
+      }
+      plain += text[index];
+      index += 1;
+    }
+    flush();
+  }
+
+  function markdownBlockStart(line) {
+    const trimmed = line.trimStart();
+    return trimmed.startsWith("```")
+      || /^#{1,3}\s+/.test(trimmed)
+      || /^>\s?/.test(trimmed)
+      || /^[-*+]\s+/.test(trimmed)
+      || /^\d+[.)]\s+/.test(trimmed)
+      || /^([-*_])\1{2,}\s*$/.test(trimmed);
+  }
+
+  function appendMarkdown(target, source) {
+    const lines = String(source || "").replace(/\r\n?/g, "\n").split("\n");
+    let index = 0;
+    while (index < lines.length) {
+      const line = lines[index];
+      const trimmed = line.trimStart();
+      if (!trimmed) {
+        index += 1;
+        continue;
+      }
+      if (trimmed.startsWith("```")) {
+        const info = trimmed.slice(3).trim().split(/\s+/)[0] || "";
+        const codeLines = [];
+        index += 1;
+        while (index < lines.length && !lines[index].trimStart().startsWith("```")) {
+          codeLines.push(lines[index]);
+          index += 1;
+        }
+        if (index < lines.length) index += 1;
+        const pre = element("pre");
+        if (info) pre.appendChild(element("span", "md-code-lang", info));
+        pre.appendChild(element("code", "", codeLines.join("\n")));
+        target.appendChild(pre);
+        continue;
+      }
+      const heading = /^(#{1,3})\s+(.*)$/.exec(trimmed);
+      if (heading) {
+        const node = element(`h${heading[1].length}`, "md-heading");
+        appendInlineMarkdown(node, heading[2]);
+        target.appendChild(node);
+        index += 1;
+        continue;
+      }
+      if (/^>\s?/.test(trimmed)) {
+        const quote = element("blockquote");
+        let first = true;
+        while (index < lines.length && /^\s*>\s?/.test(lines[index])) {
+          if (!first) quote.appendChild(element("br"));
+          appendInlineMarkdown(quote, lines[index].replace(/^\s*>\s?/, ""));
+          first = false;
+          index += 1;
+        }
+        target.appendChild(quote);
+        continue;
+      }
+      if (/^\s*[-*+]\s+/.test(trimmed)) {
+        const list = element("ul");
+        while (index < lines.length) {
+          const item = /^\s*[-*+]\s+(.*)$/.exec(lines[index]);
+          if (!item) break;
+          const entry = element("li");
+          appendInlineMarkdown(entry, item[1]);
+          list.appendChild(entry);
+          index += 1;
+        }
+        target.appendChild(list);
+        continue;
+      }
+      if (/^\s*\d+[.)]\s+/.test(trimmed)) {
+        const list = element("ol");
+        while (index < lines.length) {
+          const item = /^\s*\d+[.)]\s+(.*)$/.exec(lines[index]);
+          if (!item) break;
+          const entry = element("li");
+          appendInlineMarkdown(entry, item[1]);
+          list.appendChild(entry);
+          index += 1;
+        }
+        target.appendChild(list);
+        continue;
+      }
+      if (/^([-*_])\1{2,}\s*$/.test(trimmed)) {
+        target.appendChild(element("hr"));
+        index += 1;
+        continue;
+      }
+      const paragraph = element("p");
+      let first = true;
+      while (index < lines.length && lines[index].trim() && !markdownBlockStart(lines[index])) {
+        if (!first) paragraph.appendChild(element("br"));
+        appendInlineMarkdown(paragraph, lines[index]);
+        first = false;
+        index += 1;
+      }
+      if (paragraph.childNodes.length) target.appendChild(paragraph);
+      else index += 1;
+    }
+  }
+
+  function renderMarkdownInto(target, source) {
+    target.replaceChildren();
+    appendMarkdown(target, source);
   }
 
   function responseError(code, status) {
@@ -593,7 +833,10 @@
     const role = element("div", "role");
     role.appendChild(element("span", item.role === "assistant" ? "badge badge-success" : "badge", item.role === "user" ? t("you") : t("assistant")));
     wrapper.appendChild(role);
-    wrapper.appendChild(element("div", "content", item.content));
+    const body = element("div", item.role === "assistant" ? "content markdown" : "content");
+    if (item.role === "assistant") renderMarkdownInto(body, item.content);
+    else body.textContent = item.content;
+    wrapper.appendChild(body);
     if (item.truncated) {
       const actions = element("div", "task-actions");
       actions.appendChild(settingsButton(t("showFullContent"), () => loadFullContent("history", item.id)));
@@ -1573,32 +1816,133 @@
   }
 
   function chatMessageNode(message) {
-    const wrapper = element("article", message.role === "user" ? "chat-message chat-message-user" : "chat-message chat-message-assistant");
-    wrapper.appendChild(element("span", message.role === "assistant" ? "badge badge-success" : "badge", message.role === "assistant" ? t("assistant") : t("you")));
-    const body = element("div", "chat-text content", message.text);
+    const assistant = message.role === "assistant";
+    const wrapper = element("article", assistant ? "chat-message chat-message-assistant" : "chat-message chat-message-user");
+    const role = element("div", "role");
+    role.appendChild(element("span", assistant ? "badge badge-success" : "badge", assistant ? t("assistant") : t("you")));
+    wrapper.appendChild(role);
+    const body = element("div", assistant ? "chat-text content markdown" : "chat-text content");
+    if (assistant) renderMarkdownInto(body, message.text || "");
+    else body.textContent = message.text || "";
     wrapper.appendChild(body);
+    if (assistant && message.id) wrapper.appendChild(chatFeedbackControls(message));
     return { wrapper, body };
   }
 
-  function scrollChat() {
+  function applyChatFeedbackState(controls, value) {
+    for (const button of controls.querySelectorAll("button")) {
+      const active = Number(button.dataset.value) === value;
+      button.className = active ? "" : "secondary";
+      button.setAttribute("aria-pressed", String(active));
+    }
+  }
+
+  function chatFeedbackControls(message) {
+    const controls = element("div", "chat-feedback");
+    controls.setAttribute("role", "group");
+    controls.setAttribute("aria-label", t("feedbackGroup"));
+    for (const [value, label, glyph] of [[1, "feedbackUp", "👍"], [-1, "feedbackDown", "👎"]]) {
+      const button = element("button", "", glyph);
+      button.type = "button";
+      button.dataset.value = String(value);
+      button.setAttribute("aria-label", t(label));
+      button.title = t(label);
+      button.addEventListener("click", () => rateChatFeedback(message, value, controls));
+      controls.appendChild(button);
+    }
+    applyChatFeedbackState(controls, Number(message.feedback) || 0);
+    return controls;
+  }
+
+  async function rateChatFeedback(message, value, controls) {
+    if (!session || !message.id || message.feedbackBusy) return;
+    const previous = Number(message.feedback) || 0;
+    const next = value === -1 ? -1 : 1;
+    message.feedback = next;
+    message.feedbackBusy = true;
+    applyChatFeedbackState(controls, next);
+    try {
+      const data = await api(`/api/history/${message.id}/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: next }),
+      });
+      const stored = Number(data.value) === -1 ? -1 : 1;
+      message.feedback = stored;
+      updateStoredFeedback(message.id, stored);
+      applyChatFeedbackState(controls, stored);
+      showNotice(t("feedbackSaved"));
+    } catch (error) {
+      message.feedback = previous;
+      applyChatFeedbackState(controls, previous);
+      showError(error.message || t("feedbackFailed"));
+    } finally {
+      message.feedbackBusy = false;
+    }
+  }
+
+  function chatNearBottom() {
+    if (!chatNodes.log) return true;
+    const log = chatNodes.log;
+    const distance = log.scrollHeight - log.scrollTop - log.clientHeight;
+    return !Number.isFinite(distance) || distance <= 96;
+  }
+
+  function scrollChat(force = false) {
     if (!chatNodes.log) return;
+    if (!force && !chatNearBottom()) return;
     chatNodes.log.scrollTop = chatNodes.log.scrollHeight;
   }
 
+  function cancelChatLiveRender() {
+    if (chatLiveTimer !== null) {
+      clearTimeout(chatLiveTimer);
+      chatLiveTimer = null;
+    }
+    chatLiveNode = null;
+    chatLiveText = "";
+  }
+
+  function scheduleChatLiveRender(node, text) {
+    chatLiveNode = node;
+    chatLiveText = text;
+    if (chatLiveTimer !== null) return;
+    // Streaming deltas arrive faster than the screen needs them: re-render markdown at most every
+    // 80ms instead of on every fragment, so partial ** or ``` never blocks the stream.
+    chatLiveTimer = setTimeout(() => {
+      chatLiveTimer = null;
+      if (chatLiveNode === chatNodes.answer && chatNodes.answer) renderMarkdownInto(chatNodes.answer, chatLiveText);
+      scrollChat();
+    }, 80);
+  }
+
   function updateChatLive(answer) {
-    if (chatNodes.answer) chatNodes.answer.textContent = answer.text || "…";
+    if (chatNodes.answer) {
+      if (answer.text) scheduleChatLiveRender(chatNodes.answer, answer.text);
+      else chatNodes.answer.textContent = "…";
+    }
     if (chatNodes.status && chat.streaming) {
       chatNodes.status.replaceChildren(element("span", "chat-pending", chatStageText(chat.stage)));
     }
     scrollChat();
   }
 
+  function autoGrowChatInput(input) {
+    if (!input.style) return;
+    input.style.height = "auto";
+    const max = 140;
+    const height = input.scrollHeight || 44;
+    input.style.height = `${Math.min(height, max)}px`;
+    input.style.overflowY = height > max ? "auto" : "hidden";
+  }
+
   function renderChat() {
     ui.content.replaceChildren();
+    cancelChatLiveRender();
     const section = element("section", "chat-panel");
-    section.appendChild(element("h3", "", t("chatTitle")));
-    section.appendChild(element("p", "meta", t("chatIntro")));
-    if (chat.identity) section.appendChild(element("p", "meta", t("chatIdentity", { user: chat.identity.user_id, chat: chat.identity.chat_id })));
+    section.appendChild(element("h3", "chat-title", t("chatTitle")));
+    section.appendChild(element("p", "meta chat-intro", t("chatIntro")));
+    if (chat.identity) section.appendChild(element("p", "meta chat-identity", t("chatIdentity", { user: chat.identity.user_id, chat: chat.identity.chat_id })));
 
     const log = element("div", "chat-log");
     log.setAttribute("role", "log");
@@ -1609,13 +1953,12 @@
     for (const message of chat.messages) {
       const node = chatMessageNode(message);
       if (chat.streaming && message === chat.messages[chat.messages.length - 1] && message.role === "assistant") {
-        node.wrapper.classList.add("chat-message-live");
+        node.wrapper.className = `${node.wrapper.className} chat-message-live`;
         chatNodes.answer = node.body;
         if (!message.text) node.body.textContent = "…";
       }
       log.appendChild(node.wrapper);
     }
-    section.appendChild(log);
 
     const status = element("div", "chat-status");
     status.setAttribute("role", "status");
@@ -1623,40 +1966,8 @@
     else if (chat.pending) status.appendChild(element("span", "badge", t("awaitingAnswer")));
     if (chat.errorText) status.appendChild(element("p", "chat-error", chat.errorText));
     chatNodes.status = status;
-    section.appendChild(status);
-
-    const form = element("form", "chat-form");
-    form.noValidate = true;
-    const input = element("textarea", "chat-input");
-    input.id = "chat-input";
-    input.rows = 2;
-    input.maxLength = 2000;
-    input.placeholder = t("chatPlaceholder");
-    input.setAttribute("aria-label", t("chatInputAria"));
-    input.disabled = chat.streaming;
-    const counter = element("div", "counter", "0 / 2000");
-    input.addEventListener("input", () => {
-      counter.textContent = `${Array.from(input.value).length} / 2000`;
-      input.setAttribute("aria-invalid", "false");
-    });
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
-        event.preventDefault();
-        sendChat(input.value, input);
-      }
-    });
-    form.appendChild(formField(t("chatInputAria"), input, true));
-    const formActions = element("div", "form-actions");
-    const send = submitButton(t("chatSend"));
-    send.disabled = chat.streaming;
-    formActions.appendChild(send);
-    form.appendChild(formActions);
-    form.appendChild(counter);
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      sendChat(input.value, input);
-    });
-    section.appendChild(form);
+    log.appendChild(status);
+    section.appendChild(log);
 
     if (chat.resetArmed) {
       section.appendChild(inlineConfirmation(t("chatResetWarning"), t("chatResetConfirm"), performChatReset, () => {
@@ -1676,12 +1987,49 @@
       controls.appendChild(skip);
       section.appendChild(controls);
     }
+
+    const form = element("form", "chat-form");
+    form.noValidate = true;
+    const composer = element("div", "chat-composer");
+    const input = element("textarea", "chat-input");
+    input.id = "chat-input";
+    input.rows = 1;
+    input.maxLength = 2000;
+    input.placeholder = t("chatPlaceholder");
+    input.setAttribute("aria-label", t("chatInputAria"));
+    input.disabled = chat.streaming;
+    composer.appendChild(input);
+    const send = submitButton(t("chatSend"));
+    send.className = "chat-send";
+    send.disabled = chat.streaming;
+    composer.appendChild(send);
+    form.appendChild(composer);
+    const counter = element("div", "counter chat-counter", "0 / 2000");
+    form.appendChild(counter);
+    input.addEventListener("input", () => {
+      counter.textContent = `${Array.from(input.value).length} / 2000`;
+      input.setAttribute("aria-invalid", "false");
+      autoGrowChatInput(input);
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        sendChat(input.value, input);
+      }
+    });
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      sendChat(input.value, input);
+    });
+    section.appendChild(form);
+
     ui.content.appendChild(section);
     syncBusyState();
     // syncBusyState may restore a previous disabled state after a global loading phase.
     input.disabled = chat.streaming;
     send.disabled = chat.streaming;
-    scrollChat();
+    autoGrowChatInput(input);
+    scrollChat(true);
   }
 
   function parseChatEvent(block) {
@@ -1696,6 +2044,7 @@
   }
 
   function finishChatError(message, pending) {
+    cancelChatLiveRender();
     chat.streaming = false;
     chat.stage = "";
     chat.pending = pending;
@@ -1752,6 +2101,11 @@
               updateChatLive(answer);
             } else if (event.name === "done") {
               if (typeof event.data.text === "string") answer.text = event.data.text;
+              // The server sends the stored assistant row id; without it the bubble has no
+              // feedback buttons, which is the correct state for a backend that stored nothing.
+              const messageID = Number(event.data.message_id);
+              if (Number.isSafeInteger(messageID) && messageID > 0) answer.id = messageID;
+              answer.feedback = 0;
               doneSeen = true;
             } else if (event.name === "error") {
               finishChatError(typeof event.data.message === "string" ? event.data.message : t("chatFailed"), true);
@@ -1773,6 +2127,7 @@
     chat.pending = false;
     chat.stage = "";
     chat.errorText = "";
+    cancelChatLiveRender();
     if (activeTab === "chat") renderChat();
   }
 
@@ -1795,8 +2150,8 @@
     chat.stage = "";
     chat.pending = true;
     chat.streaming = true;
-    chat.messages.push({ role: "user", text });
-    const answer = { role: "assistant", text: "" };
+    chat.messages.push({ role: "user", text, id: null, feedback: 0 });
+    const answer = { role: "assistant", text: "", id: null, feedback: 0 };
     chat.messages.push(answer);
     renderChat();
     await streamChat(text, answer);
@@ -1875,6 +2230,7 @@
       tab.tabIndex = active ? 0 : -1;
     }
     ui.content.setAttribute("aria-labelledby", selected.id || `tab-${selected.dataset.tab}`);
+    ui.content.classList.toggle("is-chat", activeTab === "chat");
   }
 
   function applyTranslations() {
@@ -1929,7 +2285,12 @@
           chat.messages = (Array.isArray(history.items) ? history.items : [])
             .filter((item) => item.role === "user" || item.role === "assistant")
             .reverse()
-            .map((item) => ({ role: item.role, text: item.content }));
+            .map((item) => ({
+              role: item.role,
+              text: item.content,
+              id: item.id,
+              feedback: Number(item.feedback) === -1 ? -1 : Number(item.feedback) === 1 ? 1 : 0,
+            }));
           renderChat();
         }
         nextBefore = null;

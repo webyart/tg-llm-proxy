@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
-  <meta name="theme-color" content="#f4f7fb">
+  <meta name="theme-color" content="#f4f7fb" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#101218" media="(prefers-color-scheme: dark)">
   <title>Бот — компаньон</title>
   <link rel="stylesheet" href="/style.css">
 </head>
@@ -13,18 +14,20 @@
     <div class="header-inner">
       <div class="header-title">
         <div class="brand-mark" aria-hidden="true">B</div>
-        <div>
+        <div class="header-copy">
           <h1 data-i18n="headerTitle">Бот — компаньон</h1>
           <p data-i18n="headerSubtitle">Данные чата и его настройки</p>
         </div>
       </div>
       <div class="header-actions">
-        <label class="language-label" for="language" data-i18n="languageLabel">Язык</label>
-        <select id="language" class="compact-select" data-i18n-aria="languageLabel" aria-label="Язык">
-          <option value="ru">RU</option>
-          <option value="en">EN</option>
-        </select>
-        <button id="logout" class="secondary" type="button" data-i18n="closeSession" hidden>Закрыть сессию</button>
+        <div class="language-field">
+          <label class="language-label" for="language" data-i18n="languageLabel">Язык</label>
+          <select id="language" class="language-select" data-i18n-aria="languageLabel" aria-label="Язык">
+            <option value="ru">RU</option>
+            <option value="en">EN</option>
+          </select>
+        </div>
+        <button id="logout" class="secondary logout-button" type="button" data-i18n="closeSession" hidden>Закрыть сессию</button>
       </div>
     </div>
   </header>
@@ -38,19 +41,46 @@
     </section>
     <div id="app" hidden>
       <nav id="tabs" class="tabs" role="tablist" data-i18n-aria="navLabel" aria-label="Разделы чата">
-        <button id="tab-chat" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="chat" data-i18n="tabChat">Чат</button>
-        <button id="tab-status" type="button" role="tab" aria-selected="true" aria-controls="content" tabindex="0" data-tab="status" class="active" data-i18n="tabStatus">Статус</button>
-        <button id="tab-history" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="history" data-i18n="tabHistory">История</button>
-        <button id="tab-documents" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="documents" data-i18n="tabDocuments">Документы</button>
-        <button id="tab-links" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="links" data-i18n="tabLinks">Ссылки</button>
-        <button id="tab-tasks" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="tasks" data-i18n="tabTasks">Задачи</button>
-        <button id="tab-reminders" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="reminders" data-i18n="tabReminders">Напоминания</button>
-        <button id="tab-usage" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="usage" data-i18n="tabUsage">Использование</button>
-        <button id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="settings" data-i18n="tabSettings">Настройки</button>
+        <button id="tab-chat" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="chat">
+          <span class="tab-label tab-label-full" data-i18n="tabChat">Чат</span>
+          <span class="tab-label tab-label-short" data-i18n="tabChatShort">Чат</span>
+        </button>
+        <button id="tab-status" type="button" role="tab" aria-selected="true" aria-controls="content" tabindex="0" data-tab="status" class="active">
+          <span class="tab-label tab-label-full" data-i18n="tabStatus">Статус</span>
+          <span class="tab-label tab-label-short" data-i18n="tabStatusShort">Статус</span>
+        </button>
+        <button id="tab-history" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="history">
+          <span class="tab-label tab-label-full" data-i18n="tabHistory">История</span>
+          <span class="tab-label tab-label-short" data-i18n="tabHistoryShort">История</span>
+        </button>
+        <button id="tab-documents" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="documents">
+          <span class="tab-label tab-label-full" data-i18n="tabDocuments">Документы</span>
+          <span class="tab-label tab-label-short" data-i18n="tabDocumentsShort">Докум.</span>
+        </button>
+        <button id="tab-links" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="links">
+          <span class="tab-label tab-label-full" data-i18n="tabLinks">Ссылки</span>
+          <span class="tab-label tab-label-short" data-i18n="tabLinksShort">Ссылки</span>
+        </button>
+        <button id="tab-tasks" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="tasks">
+          <span class="tab-label tab-label-full" data-i18n="tabTasks">Задачи</span>
+          <span class="tab-label tab-label-short" data-i18n="tabTasksShort">Задачи</span>
+        </button>
+        <button id="tab-reminders" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="reminders">
+          <span class="tab-label tab-label-full" data-i18n="tabReminders">Напоминания</span>
+          <span class="tab-label tab-label-short" data-i18n="tabRemindersShort">Напом.</span>
+        </button>
+        <button id="tab-usage" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="usage">
+          <span class="tab-label tab-label-full" data-i18n="tabUsage">Использование</span>
+          <span class="tab-label tab-label-short" data-i18n="tabUsageShort">Использ.</span>
+        </button>
+        <button id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1" data-tab="settings">
+          <span class="tab-label tab-label-full" data-i18n="tabSettings">Настройки</span>
+          <span class="tab-label tab-label-short" data-i18n="tabSettingsShort">Настр.</span>
+        </button>
       </nav>
       <section class="panel workspace-panel" aria-labelledby="section-title">
         <div class="section-heading">
-          <div>
+          <div class="section-heading-copy">
             <span class="eyebrow" data-i18n="headerSubtitle">Данные чата и его настройки</span>
             <h2 id="section-title">Статус</h2>
           </div>

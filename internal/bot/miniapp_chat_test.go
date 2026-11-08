@@ -95,6 +95,9 @@ func TestMiniAppAnswerStreamsDeltasAndStoresHistoryInOrder(t *testing.T) {
 	if rows[1].Model != "fake-model" {
 		t.Errorf("stored assistant model = %q", rows[1].Model)
 	}
+	if done.MessageID <= 0 || done.MessageID != rows[1].ID {
+		t.Errorf("done message_id = %d, stored assistant row = %d", done.MessageID, rows[1].ID)
+	}
 }
 
 func TestMiniAppAnswerNonStreamingFallbackEmitsWholeAnswer(t *testing.T) {

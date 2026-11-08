@@ -217,7 +217,7 @@ function initialDocument() {
   body.appendChild(launch);
   const app = staticElement(document, "div", { id: "app", hidden: true });
   const tabs = staticElement(document, "nav", { id: "tabs", i18nAria: "navLabel" });
-  for (const tab of ["status", "history", "documents", "links", "tasks", "reminders", "usage", "settings"]) {
+  for (const tab of ["status", "history", "documents", "links", "tasks", "reminders", "usage", "settings", "chat"]) {
     const button = staticElement(document, "button", { id: `tab-${tab}`, tab, i18n: `tab${tab[0].toUpperCase()}${tab.slice(1)}` });
     button.setAttribute("role", "tab");
     button.setAttribute("aria-selected", String(tab === "status"));
@@ -264,6 +264,7 @@ function defaultResponse(request) {
   const pathname = request.path.split("?")[0];
   if (pathname === "/api/session" && request.options.method === "POST") return jsonResponse({ token: "test-session" });
   if (pathname === "/api/status") return jsonResponse({ messages: 2, documents: 1, links: 0, tasks: 0, active_tasks: 0, pending: false, recovery_suppressed: false });
+  if (pathname === "/api/whoami") return jsonResponse({ user_id: 11, chat_id: 11, allowed: true, deny_by_default: false });
   if (pathname === "/api/documents") return jsonResponse({ items: [{ id: "doc-1", name: "handbook", size_bytes: 12, chunks: 2, created_at: "2026-01-01" }] });
   if (pathname === "/api/documents/search") return jsonResponse({ items: [], corpus: { truncated: false } });
   if (pathname === "/api/history") return jsonResponse({ items: [{ id: "msg-1", role: "user", content: "hello", created_at: "2026-01-01" }] });
@@ -306,6 +307,9 @@ async function createHarness(options = {}) {
     console,
     setImmediate,
     clearImmediate,
+    setTimeout,
+    clearTimeout,
+    TextDecoder,
     Headers,
     TextEncoder,
     URLSearchParams,

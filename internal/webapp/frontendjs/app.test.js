@@ -152,7 +152,7 @@ test("document search is read-only, busy-safe, bounded to three results and vali
   assert.equal(results.querySelectorAll("article").length, 3);
   assert.match(results.textContent, /result-3/);
   assert.doesNotMatch(results.textContent, /result-4/);
-  assert.match(results.textContent, /Поиск охватил только часть/);
+  assert.match(results.textContent, /Совпадений больше|оценена только часть/);
 
   harness.resetRequests();
   const blank = content.querySelector("input");

@@ -46,12 +46,15 @@ const (
 
 // MiniAppStreamEvent is one visible event of a Mini App answer. Exactly one field is meaningful:
 // Delta for a text fragment (and for the final text of Done), Stage for a tool/thinking notice,
-// Done for the last event, Error for a sanitized failure message.
+// Done for the last event, Error for a sanitized failure message. MessageID is set only on Done:
+// it is the stored assistant row, so the client can rate that exact message without refetching
+// the history.
 type MiniAppStreamEvent struct {
-	Delta string
-	Stage string
-	Done  bool
-	Error string
+	Delta     string
+	Stage     string
+	Done      bool
+	Error     string
+	MessageID int64
 }
 
 var (
@@ -85,7 +88,7 @@ var errMiniAppChatBusy = errors.New("the chat is still answering the previous re
 // AnswerForMiniApp runs one message through the shared model pipeline and forwards visible events
 // to emit. It returns:
 //
-//	nil                                  — done event with the final text was emitted
+//	nil                                  — done event with the final text and stored message id was emitted
 //	ErrMiniAppDenied                     — allowlist refusal (nothing emitted)
 //	ErrMiniAppEmptyText/TooLong          — input refusal (nothing emitted)
 //	*MiniAppRateLimitError               — per-minute refusal (nothing emitted)
@@ -133,7 +136,7 @@ func (d *Dispatcher) AnswerForMiniApp(ctx context.Context, chatID, userID int64,
 		}
 		return emit(event)
 	}
-	final, err := d.answerForMiniApp(ctx, chatID, userID, text, forward)
+	final, assistantID, err := d.answerForMiniApp(ctx, chatID, userID, text, forward)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return err // the reader is gone: a second write would only fail again
@@ -150,7 +153,7 @@ func (d *Dispatcher) AnswerForMiniApp(ctx context.Context, chatID, userID int64,
 			return err
 		}
 	}
-	return emit(MiniAppStreamEvent{Delta: final, Done: true})
+	return emit(MiniAppStreamEvent{Delta: final, Done: true, MessageID: assistantID})
 }
 
 // ResetContextForMiniApp is the Mini App equivalent of /reset: it hides the chat's context from
@@ -226,9 +229,9 @@ func (d *Dispatcher) miniAppAllowed(ctx context.Context, userID int64) error {
 	return nil
 }
 
-func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64, text string, emit func(MiniAppStreamEvent) error) (string, error) {
+func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64, text string, emit func(MiniAppStreamEvent) error) (string, int64, error) {
 	if d.deps.Model == nil {
-		return "", ErrMiniAppUnavailable
+		return "", 0, ErrMiniAppUnavailable
 	}
 
 	// Streaming is decided before the lock so the reply budget covers the wait too. The budget is
@@ -241,7 +244,7 @@ func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64,
 	if streamer != nil {
 		enabled, _, err := d.streamingEnabled(ctx, chatID)
 		if err != nil {
-			return "", fmt.Errorf("%w: read streaming setting: %v", errMiniAppInternal, err)
+			return "", 0, fmt.Errorf("%w: read streaming setting: %v", errMiniAppInternal, err)
 		}
 		streaming = enabled
 	}
@@ -256,6 +259,7 @@ func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64,
 	defer cancel()
 
 	var final string
+	var assistantID int64
 	var inChat bool
 	err := d.deps.Locks.WithChat(workCtx, chatID, func() error {
 		inChat = true
@@ -307,8 +311,9 @@ func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64,
 		}
 
 		// The assistant row is written only after the final successful Response, and before the
-		// done event leaves, so a reader can always find the exact text it just received.
-		if _, err := store.Append(workCtx, d.deps.DB, store.Message{
+		// done event leaves, so a reader can always find the exact text it just received (and its
+		// id, which is what the chat feedback buttons rate).
+		rowID, err := store.Append(workCtx, d.deps.DB, store.Message{
 			ChatID:    chatID,
 			UserID:    userID,
 			Role:      store.RoleAssistant,
@@ -317,19 +322,21 @@ func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64,
 			TokensOut: resp.TokensOut,
 			Model:     replyModel(resp.Model, selectedModel),
 			LatencyMs: resp.Latency.Milliseconds(),
-		}); err != nil {
+		})
+		if err != nil {
 			return fmt.Errorf("%w: store answer: %v", errMiniAppInternal, err)
 		}
+		assistantID = rowID
 		final = resp.Content
 		return nil
 	})
 	if err != nil {
 		if !inChat && errors.Is(workCtx.Err(), context.DeadlineExceeded) {
-			return "", fmt.Errorf("%w: %v", errMiniAppChatBusy, err)
+			return "", 0, fmt.Errorf("%w: %v", errMiniAppChatBusy, err)
 		}
-		return "", err
+		return "", 0, err
 	}
-	return final, nil
+	return final, assistantID, nil
 }
 
 // miniAppToolLoopState builds the continuation for runToolLoop with calculator enabled and both

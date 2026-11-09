@@ -270,7 +270,12 @@ func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64,
 	if budget <= 0 {
 		budget = time.Minute
 	}
-	workCtx, cancel := context.WithTimeout(ctx, budget)
+	// The answer must survive the client: closing the Mini App cancels the HTTP request, and binding the model
+	// work to it used to leave the question stored without an answer. The wait for a network approval still
+	// listens to the client context (a closed window must not keep a pending decision alive), so the two
+	// contexts are kept apart.
+	var clientCtx = ctx
+	workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
 	defer cancel()
 
 	var final string
@@ -312,7 +317,7 @@ func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64,
 			session = d.newStreamSession(workCtx, chatID, &miniAppStreamSender{stages: tracker})
 			used = &miniAppStreamer{streamer: streamer, stages: tracker, emit: emit}
 		}
-		state := d.miniAppToolLoopState(userID, chatID, model.Request{Model: selectedModel, Messages: messages}, metadata, used, session, emit)
+		state := d.miniAppToolLoopState(clientCtx, userID, chatID, model.Request{Model: selectedModel, Messages: messages}, metadata, used, session, emit)
 		resp, modelErr := d.runToolLoop(withToolLoopMetadata(workCtx, metadata), state)
 		if modelErr != nil {
 			d.logMiniAppModelError(ctx, userID, modelErr)
@@ -359,7 +364,7 @@ func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64,
 // A network tool is not executed silently: the continuation gets an approval waiter that asks the
 // user over the live SSE stream and blocks this same loop until POST /api/chat/approval (or the TTL,
 // or the client disconnect) resolves it.
-func (d *Dispatcher) miniAppToolLoopState(userID int64, chatID int64, req model.Request, metadata toolLoopMetadata, streamer model.Streamer, session *streamSession, emit func(MiniAppStreamEvent) error) *toolLoopContinuation {
+func (d *Dispatcher) miniAppToolLoopState(clientCtx context.Context, userID int64, chatID int64, req model.Request, metadata toolLoopMetadata, streamer model.Streamer, session *streamSession, emit func(MiniAppStreamEvent) error) *toolLoopContinuation {
 	allowed := map[string]bool{
 		"calculator": d.deps.Cfg.ToolsEnabled,
 		"read_url":   d.deps.Cfg.ToolsEnabled && d.deps.Cfg.URLReaderEnabled,
@@ -377,7 +382,7 @@ func (d *Dispatcher) miniAppToolLoopState(userID int64, chatID int64, req model.
 	}
 	if allowed["read_url"] || allowed["web_search"] {
 		state.approvalWaiter = func(ctx context.Context, call model.ToolCall) (bool, error) {
-			return d.awaitMiniAppApproval(ctx, emit, chatID, userID, call)
+			return d.awaitMiniAppApproval(clientCtx, emit, chatID, userID, call)
 		}
 	}
 	return state
@@ -514,7 +519,10 @@ func (s *miniAppStreamer) Stream(ctx context.Context, req model.Request, handler
 			if err := handler.Delta(text); err != nil {
 				return err
 			}
-			return s.emit(MiniAppStreamEvent{Delta: text})
+			// A closed Mini App must not abort a generation that is already paid for: its answer is stored and a
+			// reopened window can read it from the history. The event is best-effort by design.
+			_ = s.emit(MiniAppStreamEvent{Delta: text})
+			return nil
 		}
 	}
 	return s.streamer.Stream(ctx, req, inner)

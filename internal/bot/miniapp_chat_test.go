@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"bot/internal/model"
 	"bot/internal/store"
@@ -311,5 +312,37 @@ func TestMiniAppModelFailureKeepsTheQuestionUnansweredAndEmitsError(t *testing.T
 	lastID, lastRole, err := store.LastVisibleMessage(context.Background(), d.deps.DB, 11)
 	if err != nil || lastID == 0 || lastRole != store.RoleUser {
 		t.Fatalf("the chat must end with the unanswered question: id=%d role=%q err=%v", lastID, lastRole, err)
+	}
+}
+
+// TestMiniAppAnswerSurvivesAClientDisconnect — closing the Mini App cancels the HTTP request; the generation is
+// already paid for, so the answer must still be stored and be readable from the history when the window reopens.
+func TestMiniAppAnswerSurvivesAClientDisconnect(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	var m = &fakeModel{response: model.Response{Content: "ответ после закрытия"}, delay: 120 * time.Millisecond}
+	var db = testStore(t)
+	var d = newTestDispatcher(t, cfg, m, &fakeReplier{}, db)
+
+	var ctx, cancel = context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		cancel() // the client closed the window mid-generation
+	}()
+	var err = d.AnswerForMiniApp(ctx, 11, 11, "вопрос", func(MiniAppStreamEvent) error { return nil })
+	if err != nil {
+		t.Fatalf("AnswerForMiniApp after disconnect: %v", err)
+	}
+	var rows, rowsErr = store.RecentMessages(context.Background(), db, 11, 10)
+	if rowsErr != nil {
+		t.Fatalf("RecentMessages: %v", rowsErr)
+	}
+	var found bool
+	for _, row := range rows {
+		if row.Role == store.RoleAssistant && row.Content == "ответ после закрытия" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the answer was not stored after the client disconnected: %+v", rows)
 	}
 }

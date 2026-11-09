@@ -1,3 +1,11 @@
+# tg-llm-proxy v1.50.1
+
+## A text document is accepted by its extension when the MIME is vendor-specific
+
+- Only `.txt` uploaded from the Mini App: phones label `.csv` as `application/vnd.ms-excel` and `.md` as `application/x-markdown`, and the validator rejected any non-empty MIME it did not recognise before looking at the extension.
+- The extension list is now the explicit contract: a known text extension passes once the bytes are valid UTF-8 without NUL/control characters; binary content is still rejected by those checks. The Mini App pre-check mirrors the same rule, so the picker no longer refuses a file the server would accept.
+- Live verification through the real Mini App session: `vendor.csv` with `application/vnd.ms-excel` → 201, `vendor.md` with `application/x-markdown` → 201; binary `.png`/`.exe` stay rejected. PDF and DOCX remain unsupported by design (they are binary formats and need text extraction).
+- Tests: `documentIsText` vendor-MIME table and a webapp upload test for both files.
 # tg-llm-proxy v1.50.0
 
 ## Mini App: загрузка документов в RAG

@@ -9,7 +9,7 @@ Telegram-бот-прокси между пользователями и лока
 
 - 25 команд: `/start`, `/help`, `/ping`, `/status`, `/ask`, `/reset`, `/skip`, `/unskip`, `/history`, `/docs`, `/export`, `/search`, `/delete`, `/model`, `/stream`, `/persona`, `/stats`, `/whoami`, `/admin`, `/remind`, `/reminders`, `/links`, `/task`, `/tts`, `/usage`.
 - `/start` и `/help` открывают секционное inline-меню с Back-навигацией; callbacks проходят через тот же Dispatcher и allowlist.
-- Альбомы до 10 фото JPEG/PNG, текстовые документы UTF-8 до 64 КиБ, voice, аудиофайлы и video notes через Whisper. Лимиты настраиваются `MEDIA_MAX_MB` и `SPEECH_MAX_SECONDS`.
+- Альбомы до 10 фото JPEG/PNG, voice, аудиофайлы и video notes через Whisper. В RAG (`/docs add`) принимаются текстовые документы UTF-8 до 64 КиБ и PDF/DOCX до 20 МиБ. Медиа-лимиты настраиваются `MEDIA_MAX_MB` и `SPEECH_MAX_SECONDS`.
 - История и независимый контекст каждого чата в SQLite/WAL.
 - Безопасный OpenAI function calling: локальный calculator, opt-in `read_url` для чтения HTTPS-страниц и opt-in `web_search` через self-hosted SearxNG; без shell, файлов и произвольного кода. Поддерживаются обычные и streaming ответы.
 - Allowlist по Telegram user id, rate limiting, per-chat lock и ограничение параллельных запросов к модели.
@@ -200,6 +200,23 @@ WEB_SEARCH_BASE_URL=http://searxng:8080
 
 Override проверен локально: контейнер стартует healthy, `format=json` отвечает выдачей, и opt-in проверка под build tag `livecheck` (`TestLiveWebSearchRealProvider`) выполнила реальный запрос через этот sidecar. Живой acceptance внутри Telegram с `WEB_SEARCH_ENABLED=true` выполнен на v1.17.3 и повторно подтверждён на v1.18.1: поисковый tool вызван, финальный streamed-ответ доставлен после tool rounds.
 
+### Документы RAG: текст, PDF и DOCX
+
+`/docs add` и `POST /api/documents` используют один вход `bot.ExtractDocumentText`, поэтому набор форматов и лимиты совпадают:
+
+| Формат | Лимит файла | Что сохраняется |
+|---|---|---|
+| UTF-8 текст (`.txt`, `.md`, `.json`, `.csv`, `.xml`, `.log`, код и т. п.) | 64 КиБ (`DocumentMaxBytes`) | файл как есть, после прежней проверки UTF-8/NUL/control |
+| PDF (`.pdf`, `application/pdf`) | 20 МиБ (`DocumentBinaryMaxBytes`) | текстовый слой; до 200 000 runes (`DocumentTextMaxRunes`) |
+| DOCX (`.docx`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document`) | 20 МиБ | текст `word/document.xml`; до 200 000 runes |
+| `.doc` (старый binary) | — | не поддерживается: «сохрани как .docx или .pdf» |
+
+20 МиБ — это ровно предел Telegram Bot API `getFile`, поэтому Mini App не примет файл, который бот всё равно не смог бы скачать. `MEDIA_MAX_MB` к PDF/DOCX не применяется; для `.txt` по-прежнему 64 КиБ, а не 10 МиБ. Тело `POST /api/documents` ограничено 20 МиБ + 1 МиБ multipart-overhead.
+
+PDF разбирается чистым Go-пакетом `github.com/ledongthuc/pdf` (MIT, без cgo); DOCX — стандартными `archive/zip` + `encoding/xml`, без отдельной зависимости. PDF без текстового слоя (скан) и PDF с паролем отклоняются с понятной ошибкой: OCR в боте нет, пароль не подбирается. Извлечённый текст нормализуется (валидный UTF-8, без NUL/control кроме `\n\t`, пустые строки схлопываются, края обрезаются) и при превышении 200 000 runes обрезается с маркером. Дальше текст идёт в прежние chunking/`RAG_MAX_DOCUMENTS` и best-effort embeddings.
+
+Ожидание по ресурсам: извлечение синхронное и ограничено входом в 20 МиБ; в памяти парсер держит объекты PDF и извлечённый текст, а FlateDecode-поток может временно распаковаться в несколько раз больше сжатого размера. У DOCX чтение `word/document.xml` ограничено 16 МиБ, а собранный текст — 200 000 runes, поэтому zip-bomb не раздувает память. На 20 МиБ PDF рассчитывайте на единицы секунд; Mini App ограничивает число одновременных запросов, Telegram обрабатывает чат последовательно.
+
 ### Гибридный RAG: embeddings + FTS5 (opt-in)
 
 Лексический поиск не находит перефразировки. Гибридный слой считает эмбеддинг запроса и смешивает его с существующим BM25-lite score:
@@ -318,7 +335,7 @@ Reverse proxy или туннель должен перенаправлять п
 | `/links` | сохранённые ссылки; `add <url>`, `search <текст>`, `summary <id>`, `delete <id>`; `add` читает страницу, поэтому работает только при `URL_READER_ENABLED=true` и `TOOLS_ENABLED=true` |
 | `/task <цель>` | read-only задача из 1–3 шагов с прогрессом; без аргумента — статус, `/task cancel` — отмена, `/task resume <id>` — возобновление только последней failed/cancelled текущего чата с сохранением прогресса, `/task clear` — очистка списка с подтверждением |
 | `/tts <текст>` | opt-in озвучка через Speaches и `sendAudio`; `/tts last` — последний ответ ассистента, `/tts speed [0.75\|1\|1.25\|1.5]` — скорость чата; по умолчанию выключено |
-| `/docs` | RAG-база; `/docs add`, `search <query>`, `export`, `delete <id>` и `clear`; поиск показывает до 3 фрагментов с document id и score |
+| `/docs` | RAG-база; `/docs add` (текст UTF-8, PDF, DOCX), `search <query>`, `export`, `delete <id>` и `clear`; поиск показывает до 3 фрагментов с document id и score |
 | `/export [md\|json]` | экспорт последних 10000 сообщений с явным truncation warning и ID/time window |
 | `/search <текст>` | до 20 совпадений по всей истории чата через FTS5-индекс; префиксный поиск по последнему слову, операторы FTS трактуются как текст |
 | `/delete` | одноразовые Confirm/Cancel с TTL 5 минут, привязкой к пользователю и сообщению; настройки сохраняются |
@@ -386,7 +403,7 @@ History поддерживает поиск через `GET /api/history/search?
 
 Mini App использует современную responsive-навигацию, карточки, badges, inline creation forms с валидацией, loading/notices, focus-visible и reduced-motion transitions. Управление с клавиатуры поддерживает ArrowLeft/ArrowRight/Home/End; разрушительные действия требуют inline Confirm/Cancel.
 
-Documents поддерживает загрузку текстового файла через `POST /api/documents` (`multipart/form-data`, одна часть `file`, необязательный `name`) с теми же типами и лимитами, что `/docs add`: UTF-8 без NUL, до 64 КиБ, `RAG_MAX_DOCUMENTS` на чат; chat/user берутся из сессии, тело запроса ограничено `MEDIA_MAX_MB` + 64 КиБ multipart-overhead, ответ `201 {"id","name","chunks","embedded"}` без текста документа. Дальше Documents поддерживает поиск через `GET /api/documents/search?q=...` с corpus truncation warning, удаление отдельного документа вместе с RAG-фрагментами через `POST /api/documents/{id}/delete` и очистку базы текущего чата через `POST /api/documents/clear`. Links позволяет удалить отдельную ссылку через `POST /api/links/{id}/delete` или очистить весь список текущего чата через `POST /api/links/clear`. Tasks показывает для failed sanitized error и expiry. Cancel отменяет active, Resume возобновляет последнюю failed/cancelled через общий TaskLifecycle; network approvals остаются только в Telegram. Отдельная terminal задача удаляется через `POST /api/tasks/{id}/delete`; active нужно сначала отменить. Для любого непустого списка доступна общая очистка через `POST /api/tasks/clear`. Reminders показывает active/failed и поддерживает Cancel active, Retry/Delete failed. Все удаления и очистки требуют отдельного inline Confirm/Cancel и строгого пустого POST body без query params. Loading/mutations показывают индикатор и блокируют повторные действия. Успешные mutations создают best-effort `miniapp_mutation` audit только с operation/chat_id/numeric id/count, без текстов. Вкладка Usage получает данные через `GET /api/usage` и показывает за UTC-сутки model calls и tokens по моделям, вызовы calculator/RAG/read_url/web_search, дневные limits/remaining; для unlimited `remaining` равен `null`. Вкладка не содержит текстов запросов, целей задач и event detail.
+Documents поддерживает загрузку текстового файла, PDF и DOCX через `POST /api/documents` (`multipart/form-data`, одна часть `file`, необязательный `name`) с теми же типами и лимитами, что `/docs add`: UTF-8 текст без NUL до 64 КиБ, PDF/DOCX до 20 МиБ (предел Bot API `getFile`), `RAG_MAX_DOCUMENTS` на чат; chat/user берутся из сессии, тело запроса ограничено `DocumentBinaryMaxBytes` + 1 МиБ multipart-overhead, ответ `201 {"id","name","chunks","embedded"}` без текста документа. Для PDF/DOCX сохраняется извлечённый и нормализованный текст, а не binary-байты; скан без текстового слоя и `.doc` возвращают `400 document_no_text`/`unsupported_document`. Дальше Documents поддерживает поиск через `GET /api/documents/search?q=...` с corpus truncation warning, удаление отдельного документа вместе с RAG-фрагментами через `POST /api/documents/{id}/delete` и очистку базы текущего чата через `POST /api/documents/clear`. Links позволяет удалить отдельную ссылку через `POST /api/links/{id}/delete` или очистить весь список текущего чата через `POST /api/links/clear`. Tasks показывает для failed sanitized error и expiry. Cancel отменяет active, Resume возобновляет последнюю failed/cancelled через общий TaskLifecycle; network approvals остаются только в Telegram. Отдельная terminal задача удаляется через `POST /api/tasks/{id}/delete`; active нужно сначала отменить. Для любого непустого списка доступна общая очистка через `POST /api/tasks/clear`. Reminders показывает active/failed и поддерживает Cancel active, Retry/Delete failed. Все удаления и очистки требуют отдельного inline Confirm/Cancel и строгого пустого POST body без query params. Loading/mutations показывают индикатор и блокируют повторные действия. Успешные mutations создают best-effort `miniapp_mutation` audit только с operation/chat_id/numeric id/count, без текстов. Вкладка Usage получает данные через `GET /api/usage` и показывает за UTC-сутки model calls и tokens по моделям, вызовы calculator/RAG/read_url/web_search, дневные limits/remaining; для unlimited `remaining` равен `null`. Вкладка не содержит текстов запросов, целей задач и event detail.
 
 ### «no available server» в Mini App
 
@@ -571,7 +588,7 @@ docker compose up -d
 - Startup recovery рассматривает только самый новый visible unanswered-вопрос чата и ограничен `RECOVERY_MAX_AGE_HOURS` (24 часа по умолчанию). Выполняется до трёх попыток с backoff 1, 2, 4 минуты; затем включается suppression без удаления истории, `/unskip` сбрасывает backoff.
 - Host-side `/healthz` на Docker Desktop может давать WARN при healthy in-container healthcheck.
 - macOS использует те же Unix-ветки, что и проверенный Linux; физический Mac acceptance не выполнялся.
-- Содержимое одноразовых фото и документов не сохраняется. `/docs add` явно сохраняет текст для RAG; retrieval лексический (FTS5 + BM25-lite), гибридный слой embeddings включается отдельно через `RAG_EMBEDDINGS_ENABLED=true` и по умолчанию выключен. Voice хранится как текст после транскрипции.
+- Содержимое одноразовых фото и документов не сохраняется. `/docs add` явно сохраняет текст для RAG (для PDF/DOCX — извлечённый текст, binary-байты не сохраняются); retrieval лексический (FTS5 + BM25-lite), гибридный слой embeddings включается отдельно через `RAG_EMBEDDINGS_ENABLED=true` и по умолчанию выключен. Voice хранится как текст после транскрипции.
 
 ## Безопасность
 

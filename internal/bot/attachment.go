@@ -60,7 +60,7 @@ type telegramAttachmentDownloader struct {
 }
 
 func (d *telegramAttachmentDownloader) Download(ctx context.Context, attachment Attachment) (DownloadedAttachment, error) {
-	limit := attachmentLimit(attachment.Kind)
+	limit := attachmentLimit(attachment)
 	if limit == 0 {
 		return DownloadedAttachment{}, ErrAttachmentType
 	}
@@ -115,12 +115,15 @@ func (d *telegramAttachmentDownloader) Download(ctx context.Context, attachment 
 	return DownloadedAttachment{Data: data, MIME: http.DetectContentType(data)}, nil
 }
 
-func attachmentLimit(kind string) int64 {
-	switch kind {
+// attachmentLimit is per attachment, not per kind: a PDF/DOCX document gets the 20 MiB Bot API getFile ceiling,
+// while any other document keeps the 64 KiB text cap. The media override below still applies only to photos and
+// speech.
+func attachmentLimit(attachment Attachment) int64 {
+	switch attachment.Kind {
 	case AttachmentPhoto:
 		return PhotoMaxBytes
 	case AttachmentDocument:
-		return DocumentMaxBytes
+		return documentLimit(attachment.FileName, attachment.MimeType)
 	case AttachmentVoice, AttachmentAudio, AttachmentVideoNote:
 		return VoiceMaxBytes
 	default:
@@ -296,12 +299,22 @@ func attachmentErrorKind(err error) string {
 
 func attachmentUserError(err error) string {
 	switch {
-	case errors.Is(err, ErrAttachmentTooLarge):
-		return "Вложение слишком большое. Лимит для фото и аудио/видео задаёт MEDIA_MAX_MB, для текстового документа — 64 КиБ."
+	case errors.Is(err, ErrAttachmentTooLarge), errors.Is(err, ErrRAGDocumentTooLarge):
+		return "Вложение слишком большое. Для текста лимит — 64 КиБ, для PDF/DOCX — 20 МиБ (предел Bot API getFile); фото и аудио/видео ограничивает MEDIA_MAX_MB."
+	case errors.Is(err, ErrRAGDocumentEmpty):
+		return "Документ пустой: в нём нет текста, который можно сохранить."
 	case errors.Is(err, ErrVoiceTooLong):
 		return "Аудио или видеосообщение слишком длинное. Лимит задаёт SPEECH_MAX_SECONDS (по умолчанию — 5 минут)."
+	case errors.Is(err, ErrDocumentNoText):
+		return "В документе нет текстового слоя — OCR недоступен. Загрузи PDF с текстом или распознай его отдельно."
+	case errors.Is(err, ErrDocumentEncrypted):
+		return "PDF защищён паролем. Сними пароль и отправь файл повторно."
+	case errors.Is(err, ErrDocumentUnsupported):
+		return "Старый формат .doc не поддерживается. Сохрани документ как .docx или .pdf."
+	case errors.Is(err, ErrDocumentCorrupt):
+		return "Не удалось разобрать документ. Проверь, что файл не повреждён, и отправь его повторно."
 	case errors.Is(err, ErrAttachmentType):
-		return "Поддерживаются фото JPEG/PNG, текстовые документы UTF-8, голосовые и аудиосообщения, а также видеосообщения."
+		return "Поддерживаются фото JPEG/PNG, текстовые документы UTF-8, PDF и DOCX, голосовые и аудиосообщения, а также видеосообщения."
 	case errors.Is(err, ErrAttachmentUnavailable):
 		return "Не удалось получить вложение из Telegram. Отправь его повторно."
 	default:

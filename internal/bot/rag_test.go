@@ -67,6 +67,58 @@ func TestDocumentCanBeAddedRetrievedAndDeleted(t *testing.T) {
 	}
 }
 
+func TestPDFCanBeAddedThroughDocsAdd(t *testing.T) {
+	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	r := &fakeReplier{}
+	db := testStore(t)
+	d := newTestDispatcher(t, cfg, &fakeModel{}, r, db)
+	d.deps.Attachments = &fakeAttachmentDownloader{
+		data: testPDF("BT /F1 16 Tf 72 720 Td (Aurora PDF via Telegram) Tj ET", 0),
+		mime: "application/pdf",
+	}
+	add := testEvent(212, 11, 1620, "/docs add")
+	add.Attachment = &Attachment{Kind: AttachmentDocument, FileID: "pdf", FileName: "aurora.pdf", MimeType: "application/pdf"}
+	if err := dispatch(t, d, add); err != nil {
+		t.Fatalf("add pdf: %v", err)
+	}
+	if !strings.Contains(r.joined(), "сохранён") {
+		t.Fatalf("reply = %q", r.joined())
+	}
+	documents, err := store.ListRAGDocuments(context.Background(), db, 212)
+	if err != nil || len(documents) != 1 || documents[0].Name != "aurora.pdf" {
+		t.Fatalf("documents=%+v err=%v", documents, err)
+	}
+	var content string
+	if err := db.QueryRow(`SELECT content FROM rag_chunks WHERE document_id = ? ORDER BY ordinal LIMIT 1`, documents[0].ID).Scan(&content); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(content, "Aurora PDF via Telegram") || strings.Contains(content, "%PDF") {
+		t.Fatalf("stored chunk = %q", content)
+	}
+}
+
+func TestScanOnlyPDFThroughDocsAddRepliesAndStoresNothing(t *testing.T) {
+	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	r := &fakeReplier{}
+	db := testStore(t)
+	d := newTestDispatcher(t, cfg, &fakeModel{}, r, db)
+	d.deps.Attachments = &fakeAttachmentDownloader{
+		data: testPDF("q 0 0 612 792 re f Q", 0),
+		mime: "application/pdf",
+	}
+	add := testEvent(213, 11, 1621, "/docs add")
+	add.Attachment = &Attachment{Kind: AttachmentDocument, FileID: "scan", FileName: "scan.pdf", MimeType: "application/pdf"}
+	if err := dispatch(t, d, add); err != nil {
+		t.Fatalf("add scan: %v", err)
+	}
+	if !strings.Contains(r.joined(), "нет текстового слоя") {
+		t.Fatalf("reply = %q", r.joined())
+	}
+	if documents, err := store.ListRAGDocuments(context.Background(), db, 213); err != nil || len(documents) != 0 {
+		t.Fatalf("documents=%+v err=%v", documents, err)
+	}
+}
+
 func TestDocumentsClearRequiresConfirmation(t *testing.T) {
 	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
 	r := &fakeReplier{}

@@ -65,15 +65,20 @@
       documentSearchId: "id документа", documentSearchScore: "оценка",
       documentSearchTruncated: "Совпадений больше, чем помещается в один поиск; оценена только часть фрагментов.",
       uploadDocumentTitle: "Загрузить документ",
-      uploadDocumentHint: "Текстовый файл UTF-8 до 64 КиБ: .txt, .md, .json, .csv и другие.",
-      documentFileAria: "Текстовый файл для загрузки",
+      uploadDocumentHint: "Текст UTF-8 до 64 КиБ, PDF или DOCX до 20 МиБ.",
+      documentFileAria: "Файл для загрузки",
       uploadDocument: "Загрузить", documentUploading: "Загрузка…",
       documentUploaded: "Документ загружен.",
       documentUploadFailed: "Не удалось загрузить документ.",
-      documentUploadChoose: "Выберите текстовый файл.",
+      documentUploadChoose: "Выберите файл.",
       documentUploadEmpty: "Файл пустой.",
-      documentUploadTooLarge: "Файл больше 64 КиБ: Telegram принимает текстовые документы до 64 КиБ.",
-      documentUploadType: "Поддерживаются текстовые файлы UTF-8: .txt, .md, .json, .csv и другие.",
+      documentUploadTooLarge: "Текстовый файл больше 64 КиБ: для текста лимит 64 КиБ.",
+      documentUploadBinaryTooLarge: "PDF/DOCX больше 20 МиБ: это предел Bot API getFile.",
+      documentUploadLimit: "Файл больше лимита: текст — до 64 КиБ, PDF/DOCX — до 20 МиБ.",
+      documentUploadType: "Поддерживаются UTF-8 текст, PDF и DOCX. Старый .doc не поддерживается.",
+      documentUploadNoText: "В документе нет текстового слоя — OCR недоступен.",
+      documentUploadEncrypted: "PDF защищён паролем. Снимите пароль и повторите.",
+      documentUploadCorrupt: "Не удалось разобрать PDF/DOCX. Проверьте файл.",
       documentLimitReached: "Достигнут лимит документов этого чата. Удалите один документ и повторите.",
       searchHistory: "Найти", historySearchAria: "Поиск по истории", historySearchPlaceholder: "Поисковый запрос",
       historySearchResults: "Результаты поиска", historySearchEmpty: "По запросу ничего не найдено.",
@@ -205,15 +210,20 @@
       documentSearchId: "document id", documentSearchScore: "score",
       documentSearchTruncated: "More chunks match than one search scores; only part of them was ranked.",
       uploadDocumentTitle: "Upload a document",
-      uploadDocumentHint: "UTF-8 text file up to 64 KiB: .txt, .md, .json, .csv and others.",
-      documentFileAria: "Text file to upload",
+      uploadDocumentHint: "UTF-8 text up to 64 KiB, PDF or DOCX up to 20 MiB.",
+      documentFileAria: "File to upload",
       uploadDocument: "Upload", documentUploading: "Uploading…",
       documentUploaded: "Document uploaded.",
       documentUploadFailed: "The document could not be uploaded.",
-      documentUploadChoose: "Choose a text file.",
+      documentUploadChoose: "Choose a file.",
       documentUploadEmpty: "The file is empty.",
-      documentUploadTooLarge: "The file is larger than 64 KiB; Telegram accepts text documents up to 64 KiB.",
-      documentUploadType: "Supported files are UTF-8 text: .txt, .md, .json, .csv and others.",
+      documentUploadTooLarge: "The text file is larger than 64 KiB; the text limit is 64 KiB.",
+      documentUploadBinaryTooLarge: "The PDF/DOCX is larger than 20 MiB; that is the Telegram Bot API getFile limit.",
+      documentUploadLimit: "The file is over the limit: text up to 64 KiB, PDF/DOCX up to 20 MiB.",
+      documentUploadType: "Supported files are UTF-8 text, PDF and DOCX. Legacy .doc is not supported.",
+      documentUploadNoText: "The document has no text layer — OCR is not available.",
+      documentUploadEncrypted: "The PDF is password-protected. Remove the password and retry.",
+      documentUploadCorrupt: "The file could not be read as a PDF or DOCX.",
       documentLimitReached: "This chat reached its document limit. Delete one document and retry.",
       searchHistory: "Search", historySearchAria: "Search history", historySearchPlaceholder: "Search query",
       historySearchResults: "Search results", historySearchEmpty: "No messages matched the query.",
@@ -294,8 +304,10 @@
     not_found: "errorNotFound", invalid_body: "errorInvalidJSON", static_error: "errorRead", reminder_not_mutable: "reminderNotMutable",
     task_not_active: "taskNotActive", task_not_resumable: "taskNotResumable", task_mutation_failed: "taskMutationFailed",
     task_not_deletable: "taskNotDeletable", document_mutation_failed: "documentMutationFailed",
-    document_empty: "documentUploadEmpty", document_too_large: "documentUploadTooLarge",
+    document_empty: "documentUploadEmpty", document_too_large: "documentUploadLimit",
     unsupported_document: "documentUploadType", document_limit: "documentLimitReached",
+    document_no_text: "documentUploadNoText", document_encrypted: "documentUploadEncrypted",
+    invalid_document: "documentUploadCorrupt",
     link_mutation_failed: "linkMutationFailed", reminder_mutation_failed: "reminderMutationFailed",
     history_mutation_failed: "historyMutationFailed", invalid_url: "linkInvalidURL", invalid_reminder: "reminderInvalid",
     feedback_forbidden: "feedbackForbidden",
@@ -925,35 +937,50 @@
     return section;
   }
 
-  // The server-side text-document contract of /docs add: 64 KiB, UTF-8 text, this extension list for a file whose
-  // MIME is empty or octet-stream (a browser sends the real type, but a picker may not know it). The pre-check
-  // mirrors the server so an obviously wrong file never leaves the phone; the server still validates every byte.
-  const documentUploadMaxBytes = 64 * 1024;
+  // The server-side document contract of /docs add: UTF-8 text up to 64 KiB and PDF/DOCX up to 20 MiB (the
+  // Telegram Bot API getFile ceiling). The extension lists are what the input accepts and what the pre-check
+  // uses; the MIME lists cover a picker that does not know the type. The server validates every byte and decides
+  // the format extension-first exactly as here, so an obviously wrong file never leaves the phone.
+  const documentUploadTextMaxBytes = 64 * 1024;
+  const documentUploadBinaryMaxBytes = 20 * 1024 * 1024;
   const documentUploadExtensions = [
     ".txt", ".md", ".markdown", ".log", ".csv", ".tsv", ".json", ".jsonl", ".xml", ".yaml", ".yml",
     ".toml", ".ini", ".cfg", ".html", ".css", ".js", ".ts", ".go", ".py", ".java", ".c", ".h", ".cpp",
     ".cs", ".rs", ".sh", ".ps1", ".sql",
   ];
+  const documentUploadBinaryExtensions = [".pdf", ".docx"];
   const documentUploadMIMEs = [
     "application/json", "application/ld+json", "application/xml", "application/xhtml+xml", "application/x-yaml",
     "application/yaml", "application/x-ndjson", "application/sql", "application/javascript", "application/x-sh",
     "application/x-httpd-php",
   ];
-  const documentUploadAccept = documentUploadExtensions.join(",") + ",text/*,application/json";
+  const documentUploadBinaryMIMEs = [
+    "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ];
+  const documentUploadAccept = documentUploadExtensions.concat(documentUploadBinaryExtensions).join(",") +
+    ",text/*,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
   function documentUploadIssue(file) {
     if (!file || !file.name) return "documentUploadChoose";
     if (!file.size) return "documentUploadEmpty";
-    if (file.size > documentUploadMaxBytes) return "documentUploadTooLarge";
     const mime = String(file.type || "").toLowerCase().split(";")[0].trim();
-    // An explicitly textual extension wins over a MIME the browser does not know: .csv often arrives as
-    // application/vnd.ms-excel, .md as application/x-markdown. The server applies the same rule and still checks
-    // the bytes for UTF-8 and NUL.
+    // Extension first: .csv often arrives as application/vnd.ms-excel and .md as application/x-markdown, while
+    // a picker may report an empty type for a real .pdf. A known text extension therefore stays text even with
+    // a vendor MIME, and a known binary extension is binary even when the MIME is generic.
     const dot = file.name.lastIndexOf(".");
     const extension = dot < 0 ? "" : file.name.slice(dot).toLowerCase();
-    if (documentUploadExtensions.includes(extension)) return "";
-    if (mime.startsWith("text/") || documentUploadMIMEs.includes(mime)) return "";
-    return "documentUploadType";
+    if (extension === ".doc") return "documentUploadType";
+    const textual = documentUploadExtensions.includes(extension) ||
+      mime.startsWith("text/") || documentUploadMIMEs.includes(mime);
+    const binary = documentUploadBinaryExtensions.includes(extension) ||
+      (!textual && documentUploadBinaryMIMEs.includes(mime));
+    if (binary) {
+      if (file.size > documentUploadBinaryMaxBytes) return "documentUploadBinaryTooLarge";
+      return "";
+    }
+    if (!textual) return "documentUploadType";
+    if (file.size > documentUploadTextMaxBytes) return "documentUploadTooLarge";
+    return "";
   }
 
   function renderDocumentUpload() {

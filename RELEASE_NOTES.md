@@ -1,3 +1,14 @@
+# tg-llm-proxy v1.51.0
+
+## PDF и DOCX в RAG: `/docs add` и Mini App
+
+- Один вход `bot.ExtractDocumentText` для Telegram `/docs add` и `POST /api/documents`: UTF-8 текст (прежняя проверка), PDF через `github.com/ledongthuc/pdf` (MIT, pure Go, без cgo), DOCX через `archive/zip` + `encoding/xml` без новой зависимости. Старый `.doc` отклоняется с подсказкой сохранить как `.docx` или `.pdf`.
+- Лимиты: текст — 64 КиБ (`DocumentMaxBytes`), PDF/DOCX — 20 МиБ (`DocumentBinaryMaxBytes`, ровно предел Telegram Bot API `getFile`); `MEDIA_MAX_MB` к документам не применяется. Тело Mini App upload — 20 МиБ + 1 МиБ multipart-overhead. Извлечённый текст нормализуется (UTF-8, без NUL/control, blank-line collapse, trim) и обрезается до `DocumentTextMaxRunes = 200 000` с маркером; chunking/store и best-effort embeddings не менялись.
+- Ошибки без записи в базу: скан-only PDF — `no text layer — OCR is not available` (веб `400 document_no_text`, Telegram — понятное сообщение), зашифрованный PDF — `PDF is encrypted; remove the password and retry` (`400 document_encrypted`), битый файл — `400 invalid_document`, `.doc` — `400 unsupported_document`.
+- Mini App: `.pdf`/`.docx` в `accept`, pre-check по расширению, затем по лимиту типа (64 КиБ текст / 20 МиБ PDF/DOCX), RU/EN-подсказки называют форматы и 20 МиБ; hint обновлён.
+- Тесты: `internal/bot/extract_test.go` (uncompressed PDF, PDF без текстового слоя, DOCX из двух параграфов, `.doc`, NUL/control и truncation, plain text без изменений, per-type limit, ingest scan-only ничего не сохраняет), webapp upload (PDF 1 МиБ → 201 и в чанках извлечённый текст; DOCX → 201; scan-only → 400; PDF > 20 МиБ → 400; 5 МиБ `.txt` → 400; тело > cap → 413; `.doc` → 400), frontend `documents_upload.test.js` (accept, per-type pre-check, 20 МиБ boundary). Docker `go test ./internal/bot ./internal/webapp`, `gofmt`, `go build ./...`, `node --check`, `node --test`.
+- Зависимость: `github.com/ledongthuc/pdf v0.0.0-20261020125853-5e46805f718e` (go.sum), других новых модулей нет.
+
 # tg-llm-proxy v1.50.1
 
 ## A text document is accepted by its extension when the MIME is vendor-specific

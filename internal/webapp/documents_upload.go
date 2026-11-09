@@ -15,19 +15,20 @@ import (
 )
 
 const (
-	// documentUploadOverhead is the room multipart framing and the optional name part need above the file
-	// itself. The stored text keeps the Telegram /docs add limit (bot.DocumentMaxBytes); this cap only bounds
-	// how much of a request the Mini App is willing to buffer.
-	documentUploadOverhead = 64 << 10
+	// documentUploadOverhead is the room multipart framing and the optional name part need above the largest
+	// accepted binary document. One MiB is comfortably above a boundary string, part headers and a 4 KiB name;
+	// it is not tied to MEDIA_MAX_MB, because a PDF/DOCX follows bot.DocumentBinaryMaxBytes (the Telegram getFile
+	// ceiling) while a plain text file keeps the much smaller bot.DocumentMaxBytes.
+	documentUploadOverhead = 1 << 20
 	// documentUploadNameBytes bounds the optional name override before safeAttachmentName trims it to 120 runes.
 	documentUploadNameBytes = 4 << 10
 )
 
-// documentUploadBodyLimit is the request cap of POST /api/documents. It follows MEDIA_MAX_MB, the same row the
-// Telegram media limits use, so a text document of an ordinary media size is not refused by the generic 16 KiB
-// JSON cap. The stricter 64 KiB text limit is still enforced from the shared ingest helper.
-func documentUploadBodyLimit(cfg config.Config) int64 {
-	return cfg.MediaMaxBytes + documentUploadOverhead
+// documentUploadBodyLimit is the request cap of POST /api/documents: the 20 MiB binary document cap plus
+// multipart overhead. The stricter per-type limits (64 KiB text, 20 MiB PDF/DOCX) are still enforced from the
+// shared ingest helper, so this cap only bounds how much of a request the Mini App buffers.
+func documentUploadBodyLimit(_ config.Config) int64 {
+	return bot.DocumentBinaryMaxBytes + documentUploadOverhead
 }
 
 // uploadDocument handles POST /api/documents: one multipart file part, an optional name override, and no ID in
@@ -123,10 +124,22 @@ func (a *App) uploadDocument(w http.ResponseWriter, req *http.Request, current s
 		writeError(w, http.StatusBadRequest, "document_empty", "The document is empty.")
 		return
 	case errors.Is(err, bot.ErrRAGDocumentTooLarge):
-		writeError(w, http.StatusBadRequest, "document_too_large", "A text document may be at most 64 KiB.")
+		writeError(w, http.StatusBadRequest, "document_too_large", "A text document may be at most 64 KiB; a PDF or DOCX at most 20 MiB.")
+		return
+	case errors.Is(err, bot.ErrDocumentNoText):
+		writeError(w, http.StatusBadRequest, "document_no_text", "The document has no text layer — OCR is not available.")
+		return
+	case errors.Is(err, bot.ErrDocumentEncrypted):
+		writeError(w, http.StatusBadRequest, "document_encrypted", "The PDF is password-protected. Remove the password and retry.")
+		return
+	case errors.Is(err, bot.ErrDocumentUnsupported):
+		writeError(w, http.StatusBadRequest, "unsupported_document", "Legacy .doc is not supported. Save the document as .docx or .pdf.")
+		return
+	case errors.Is(err, bot.ErrDocumentCorrupt):
+		writeError(w, http.StatusBadRequest, "invalid_document", "The file could not be read as a PDF or DOCX.")
 		return
 	case errors.Is(err, bot.ErrAttachmentType):
-		writeError(w, http.StatusBadRequest, "unsupported_document", "Send a UTF-8 text document of a supported type.")
+		writeError(w, http.StatusBadRequest, "unsupported_document", "Send a PDF, DOCX or UTF-8 text document of a supported type.")
 		return
 	default:
 		if errors.Is(err, context.Canceled) || errors.Is(err, req.Context().Err()) {

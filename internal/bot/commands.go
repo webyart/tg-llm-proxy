@@ -749,12 +749,17 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 				last.ImageURL = last.ImageURLs[0]
 			}
 		case AttachmentDocument:
-			if !documentIsText(ev.Attachment.FileName, ev.Attachment.MimeType, downloaded[0].Data) {
-				err = ErrAttachmentType
+			mime := strings.TrimSpace(ev.Attachment.MimeType)
+			if mime == "" {
+				mime = downloaded[0].MIME
+			}
+			documentText, extractErr := ExtractDocumentText(ev.Attachment.FileName, mime, downloaded[0].Data)
+			if extractErr != nil {
+				err = extractErr
 			} else {
 				name := safeAttachmentName(ev.Attachment.FileName)
-				documentTruncated = Runes(text+"\n\nДокумент "+name+":\n"+string(downloaded[0].Data)) > int(d.deps.Cfg.MaxContextChars)
-				last.Content = documentModelPrompt(text, name, string(downloaded[0].Data), int(d.deps.Cfg.MaxContextChars))
+				documentTruncated = Runes(text+"\n\nДокумент "+name+":\n"+documentText) > int(d.deps.Cfg.MaxContextChars)
+				last.Content = documentModelPrompt(text, name, documentText, int(d.deps.Cfg.MaxContextChars))
 			}
 		default:
 			if isSpeechAttachment(ev.Attachment) {

@@ -47,26 +47,28 @@ type RAGDocumentResult struct {
 	Embedded bool
 }
 
-// IngestRAGDocument is the single ingest path of Telegram /docs add and POST /api/documents: it reuses
-// documentIsText (UTF-8, no NUL/control bytes, the same MIME/extension list), enforces DocumentMaxBytes and the
+// IngestRAGDocument is the single ingest path of Telegram /docs add and POST /api/documents: it calls
+// ExtractDocumentText (plain text, PDF or DOCX), enforces the per-type size limit of documentLimit and the
 // chat's RAG_MAX_DOCUMENTS through the store, and then makes the best-effort embedding pass. A validation error
-// is returned before the store is touched; a store error is returned unchanged so the caller can map it.
+// is returned before the store is touched; a store error is returned unchanged so the caller can map it. The
+// extracted text — not the uploaded bytes — is what the store chunks.
 func IngestRAGDocument(ctx context.Context, db *sql.DB, embeddings EmbeddingClient, logger *slog.Logger, token string,
 	chatID, userID int64, input RAGDocumentInput, maxDocuments int) (RAGDocumentResult, error) {
 	if len(input.Data) == 0 {
 		return RAGDocumentResult{}, ErrRAGDocumentEmpty
 	}
-	if int64(len(input.Data)) > DocumentMaxBytes {
+	if int64(len(input.Data)) > documentLimit(input.Name, input.MIMEType) {
 		return RAGDocumentResult{}, ErrRAGDocumentTooLarge
 	}
-	if strings.TrimSpace(string(input.Data)) == "" {
+	text, err := ExtractDocumentText(input.Name, input.MIMEType, input.Data)
+	if err != nil {
+		return RAGDocumentResult{}, err
+	}
+	if strings.TrimSpace(text) == "" {
 		return RAGDocumentResult{}, ErrRAGDocumentEmpty
 	}
-	if !documentIsText(input.Name, input.MIMEType, input.Data) {
-		return RAGDocumentResult{}, ErrAttachmentType
-	}
 	name := safeAttachmentName(input.Name)
-	id, chunks, err := store.PutRAGDocumentWithLimit(ctx, db, chatID, userID, name, string(input.Data), maxDocuments)
+	id, chunks, err := store.PutRAGDocumentWithLimit(ctx, db, chatID, userID, name, text, maxDocuments)
 	if err != nil {
 		return RAGDocumentResult{}, err
 	}
@@ -207,7 +209,7 @@ func (d *Dispatcher) documentMenuControl(ctx context.Context, ev Event, action s
 	case "menu":
 		return d.showDocumentsMenu(ctx, ev)
 	case "menu:add":
-		return d.renderMenu(ctx, ev, "Отправь текстовый файл с подписью /docs add. Документ останется доступен только этому чату.", simpleBackMarkup("menu:docs"))
+		return d.renderMenu(ctx, ev, "Отправь текстовый файл, PDF или DOCX с подписью /docs add. Документ останется доступен только этому чату.", simpleBackMarkup("menu:docs"))
 	case "menu:search":
 		return d.beginPendingInput(ctx, ev, pendingDocumentSearch, "menu:docs", "Отправь текст для поиска по документам текущего чата. Он будет обработан как /docs search <query>. Ввод действует 2 минуты.")
 	case "menu:clear":
@@ -273,7 +275,7 @@ func (d *Dispatcher) documents(ctx context.Context, ev Event, arg string) error 
 			return err
 		}
 		if len(rows) == 0 {
-			return d.reply(ctx, ev.ChatID, "Локальная база документов пуста. Отправь текстовый файл с подписью /docs add.")
+			return d.reply(ctx, ev.ChatID, "Локальная база документов пуста. Отправь текстовый файл, PDF или DOCX с подписью /docs add.")
 		}
 		lines := []string{"Документы текущего чата:"}
 		for _, row := range rows {
@@ -311,7 +313,7 @@ func (d *Dispatcher) documents(ctx context.Context, ev Event, arg string) error 
 		}
 		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Удалено документов: %d.", deleted))
 	}
-	return d.reply(ctx, ev.ChatID, "Команды: /docs, /docs search <query>, /docs delete <id>, /docs clear. Для добавления отправь текстовый файл с подписью /docs add.")
+	return d.reply(ctx, ev.ChatID, "Команды: /docs, /docs search <query>, /docs delete <id>, /docs clear. Для добавления отправь текстовый файл, PDF или DOCX с подписью /docs add.")
 }
 
 func ragCorpusWarning(result store.RAGSearchResult) string {
@@ -364,13 +366,19 @@ func (d *Dispatcher) addDocument(ctx context.Context, ev Event) error {
 	if len(files) != 1 {
 		return d.reply(ctx, ev.ChatID, attachmentUserError(ErrAttachmentType))
 	}
+	mime := strings.TrimSpace(ev.Attachment.MimeType)
+	if mime == "" {
+		mime = files[0].MIME
+	}
 	result, err := IngestRAGDocument(ctx, d.deps.DB, d.deps.Embeddings, d.deps.Logger, d.deps.Token,
 		ev.ChatID, ev.UserID,
-		RAGDocumentInput{Name: ev.Attachment.FileName, MIMEType: ev.Attachment.MimeType, Data: files[0].Data},
+		RAGDocumentInput{Name: ev.Attachment.FileName, MIMEType: mime, Data: files[0].Data},
 		int(d.deps.Cfg.RAGMaxDocuments))
 	if err != nil {
-		if errors.Is(err, ErrAttachmentType) || errors.Is(err, ErrRAGDocumentEmpty) || errors.Is(err, ErrRAGDocumentTooLarge) {
-			return d.reply(ctx, ev.ChatID, attachmentUserError(ErrAttachmentType))
+		if errors.Is(err, ErrAttachmentType) || errors.Is(err, ErrRAGDocumentEmpty) || errors.Is(err, ErrRAGDocumentTooLarge) ||
+			errors.Is(err, ErrDocumentNoText) || errors.Is(err, ErrDocumentEncrypted) ||
+			errors.Is(err, ErrDocumentUnsupported) || errors.Is(err, ErrDocumentCorrupt) {
+			return d.reply(ctx, ev.ChatID, attachmentUserError(err))
 		}
 		return err
 	}

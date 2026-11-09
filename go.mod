@@ -7,6 +7,7 @@ go 1.27.3
 
 require (
 	github.com/go-telegram/bot v1.27.0
+	github.com/ledongthuc/pdf v0.0.0-20261020125853-5e46805f718e
 	modernc.org/sqlite v1.61.0
 )
 

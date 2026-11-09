@@ -419,6 +419,24 @@ option { color: var(--text); background: var(--surface); overflow-wrap: anywhere
 textarea { min-height: 78px; resize: vertical; line-height: 1.45; }
 .settings-row select { flex: 1 1 180px; width: auto; }
 .settings-row button { flex: 0 1 auto; }
+.settings-toggle {
+  min-width: 96px;
+  min-height: 44px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-weight: 750;
+}
+.settings-toggle[aria-pressed="false"] {
+  color: var(--link);
+  background: transparent;
+  border-color: var(--border);
+  box-shadow: none;
+}
+.settings-toggle[aria-pressed="true"] {
+  color: var(--accent-contrast);
+  background: linear-gradient(145deg, #7474ed, #4b4bc4);
+  border-color: transparent;
+}
 .counter { margin-top: 3px; color: var(--muted); font-size: .72rem; text-align: right; }
 .document-search, .history-search, .link-search, .document-upload { padding: 11px; margin: 9px 0 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: #7b899608; }
 .document-upload { border-color: #5b5bd62e; background: linear-gradient(145deg, #5b5bd60a, #7b899608); }

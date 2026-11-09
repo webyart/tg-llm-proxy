@@ -18,7 +18,7 @@ Telegram-бот-прокси между пользователями и лока
 - «Ссылки на потом»: сохранение страниц, поиск и резюме без повторной загрузки.
 - Многошаговые read-only задачи с планом, прогрессом и подтверждениями сетевых действий.
 - Opt-in `/tts` для русской речи через существующий Speaches sidecar и Telegram `sendAudio`.
-- Версионированные миграции через `schema_migrations` (текущая схема — версия 16).
+- Версионированные миграции через `schema_migrations` (текущая схема — версия 17).
 - Backup/restore, ротация копий и age-based retention с dry-run по умолчанию.
 - Безопасное восстановление Docker named volume.
 - Docker multi-stage build, non-root runtime, healthcheck, build commit и ротация логов 10 MB × 5.
@@ -125,7 +125,7 @@ docker compose logs -f bot
 | `USER_DAILY_NETWORK_TOOL_LIMIT` | 0 = без ограничений | дневной лимит read_url/web_search пользователя по UTC |
 | `USER_LIMITS_JSON` | `{}` | per-user overrides: `{"id":{"model":N,"network_tools":N}}` |
 | `MINIAPP_ENABLED` | false | opt-in Telegram Mini App |
-| `MINIAPP_TELEGRAM_FALLBACK` | true | ответ, досчитанный после закрытия Mini App, отправляется в Telegram |
+| `MINIAPP_TELEGRAM_FALLBACK` | true | глобальное значение по умолчанию: ответ, досчитанный после закрытия Mini App, отправляется в Telegram; для конкретного чата переопределяется `/miniapp` и настройкой Mini App |
 | `MINIAPP_LISTEN_HOST` | `127.0.0.1`; в compose — `0.0.0.0` | listener Mini App |
 | `MINIAPP_PORT` | 8084 | loopback port Mini App |
 | `MINIAPP_PUBLIC_URL` | пусто | обязательный HTTPS URL при `MINIAPP_ENABLED=true` |
@@ -368,6 +368,8 @@ Mini App доступен **только в приватных чатах**: е�
 
 More → Mini App открывает companion со Status, History, Documents, Links, Tasks, Reminders, Usage и Settings. Для включения задайте `MINIAPP_ENABLED=true` и HTTPS `MINIAPP_PUBLIC_URL`; внутри контейнера listener `0.0.0.0`, host-порт бота остаётся loopback-only `127.0.0.1:8084`.
 
+`MINIAPP_TELEGRAM_FALLBACK` — глобальное значение по умолчанию. Для конкретного чата его переопределяют команда `/miniapp on|off|reset` в Telegram и переключатель «Mini App» в Settings: строка `chat_miniapp_fallback` (миграция 17) побеждает env, а `reset` возвращает env. Тот же выбор отдаёт `GET /api/settings` (`miniapp_fallback: {enabled, source}`) и меняют `PUT`/`DELETE /api/settings/miniapp-fallback`.
+
 Production Telegram запускается всеми override-файлами одной командой:
 
 ```powershell
@@ -398,7 +400,7 @@ Traefik использует только static file provider: `/etc/traefik/tr
 
 Прямой запуск Mini App без любого gateway сохраняет прежнее поведение: reverse proxy/tunnel направляет публичный URL без `/miniapp` на `127.0.0.1:8084`, и префикс приложению не требуется.
 
-Raw `initData` проверяется через Telegram HMAC и `auth_date`, session — на 15 минут. Inline launch ticket привязан к chat/user на 2 минуты и остаётся одноразовым. Direct launch через нижнюю кнопку работает без ticket только с private scope `ChatID=UserID`, полученным из подписанного `user.id`; client-supplied `chat_id` не используется. Доступ и allowlist проверяются при каждом запросе. Нет model keys, task plans/results или tool arguments. Настройки Model/Persona/Stream работают через те же store-операции и проверку allowlist, без прямых обращений браузера к STRATA. Интерфейс по умолчанию русский, есть переключатель RU/EN и адаптивная мобильная вёрстка без горизонтального скролла. `watch_container.ps1` дополнительно проверяет `/healthz` при включённом Mini App.
+Raw `initData` проверяется через Telegram HMAC и `auth_date`, session — на 15 минут. Inline launch ticket привязан к chat/user на 2 минуты и остаётся одноразовым. Direct launch через нижнюю кнопку работает без ticket только с private scope `ChatID=UserID`, полученным из подписанного `user.id`; client-supplied `chat_id` не используется. Доступ и allowlist проверяются при каждом запросе. Нет model keys, task plans/results или tool arguments. Настройки Model/Persona/Stream/Mini App fallback работают через те же store-операции и проверку allowlist, без прямых обращений браузера к STRATA. Интерфейс по умолчанию русский, есть переключатель RU/EN и адаптивная мобильная вёрстка без горизонтального скролла. `watch_container.ps1` дополнительно проверяет `/healthz` при включённом Mini App.
 
 History поддерживает поиск через `GET /api/history/search?q=...`, полный просмотр через `/api/history/item`, MD/JSON export с bearer fetch/Blob, удаление отдельных user/assistant сообщений и очистку с подтверждением. Links поддерживает добавление HTTPS-страниц через общий Dispatcher lifecycle, поиск, полный просмотр и delete/clear. Reminders поддерживает создание once/daily, Cancel active и Retry/Delete failed; Tasks — создание безопасного плана через общий Dispatcher lifecycle, Cancel/Resume/Delete/Clear. Settings при включённом TTS позволяет выбрать скорость 0.75/1/1.25/1.5 через `/api/settings/tts-speed` или вернуть 1. Bearer mutations ограничены 30/min/user, History export — 5/min/user с HTTP 429 и `Retry-After`.
 
@@ -467,7 +469,7 @@ Release CI — `.gitlab-ci.yml`: Docker unit/integration checks, race и `govuln
 .\scripts\db_inspect.ps1 -Integrity
 ```
 
-`schema_version=0` означает backup до версионирования; при следующем writable `store.Open` он автоматически становится 16 без изменения прикладных строк.
+`schema_version=0` означает backup до версионирования; при следующем writable `store.Open` он автоматически становится 17 без изменения прикладных строк.
 
 ### Backup и scratch restore
 

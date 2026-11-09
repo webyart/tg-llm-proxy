@@ -392,3 +392,46 @@ func TestMiniAppAnswerStaysInTheMiniAppWhenDelivered(t *testing.T) {
 		t.Fatalf("a delivered Mini App answer was duplicated into Telegram: %q", replier.texts())
 	}
 }
+
+// TestMiniAppTelegramFallbackChatOverrideWinsOverGlobal — the per-chat row is the effective setting; the
+// environment row only fills in when the chat has no row of its own.
+func TestMiniAppTelegramFallbackChatOverrideWinsOverGlobal(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		global      string
+		override    *bool
+		wantDeliver bool
+	}{
+		{name: "override on with global off delivers", global: "false", override: boolPointer(true), wantDeliver: true},
+		{name: "override off with global on stays silent", global: "true", override: boolPointer(false), wantDeliver: false},
+		{name: "no override uses global on", global: "true", override: nil, wantDeliver: true},
+		{name: "no override uses global off", global: "false", override: nil, wantDeliver: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db := testStore(t)
+			cfg := testConfig(t, map[string]string{
+				"TELEGRAM_ALLOWED_USERS":    "11",
+				"MINIAPP_TELEGRAM_FALLBACK": test.global,
+			})
+			replier := &fakeReplier{}
+			d := newTestDispatcher(t, cfg, &fakeModel{}, replier, db)
+			if test.override != nil {
+				if err := store.EnsureChat(context.Background(), db, 11, 11, ""); err != nil {
+					t.Fatalf("EnsureChat: %v", err)
+				}
+				if err := store.SetChatMiniAppFallback(context.Background(), db, 11, *test.override); err != nil {
+					t.Fatalf("SetChatMiniAppFallback: %v", err)
+				}
+			}
+			d.deliverMiniAppAnswerToTelegram(context.Background(), 11, 11, "готовый ответ")
+			if test.wantDeliver && replier.count() != 1 {
+				t.Fatalf("Telegram fallback messages = %q, want exactly one", replier.texts())
+			}
+			if !test.wantDeliver && replier.count() != 0 {
+				t.Fatalf("Telegram fallback sent %q, want nothing", replier.texts())
+			}
+		})
+	}
+}
+
+func boolPointer(value bool) *bool { return &value }

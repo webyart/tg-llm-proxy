@@ -504,6 +504,9 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 	case "/api/settings/stream":
 		a.settingsStream(w, req, current)
 		return
+	case "/api/settings/miniapp-fallback":
+		a.settingsMiniAppFallback(w, req, current)
+		return
 	case "/api/settings/tts-speed":
 		a.settingsTTSSpeed(w, req, current)
 		return
@@ -612,6 +615,8 @@ func miniAppMutationOperation(req *http.Request) (string, bool) {
 			operation = "settings.persona."
 		case "/api/settings/stream":
 			operation = "settings.stream."
+		case "/api/settings/miniapp-fallback":
+			operation = "settings.miniapp_fallback."
 		case "/api/settings/tts-speed":
 			operation = "settings.tts_speed."
 		}

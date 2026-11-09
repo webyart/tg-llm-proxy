@@ -24,6 +24,7 @@ const (
 	CommandStatus    = "status"
 	CommandModel     = "model"
 	CommandStream    = "stream"
+	CommandMiniApp   = "miniapp"
 	CommandPersona   = "persona"
 	CommandAsk       = "ask"
 	CommandReset     = "reset"
@@ -123,6 +124,7 @@ func (d *Dispatcher) registry() []Command {
 		{Name: CommandStatus, Description: "стриминг, модель, uptime и ожидание ответа", Handler: d.status},
 		{Name: CommandModel, Description: "модель, endpoint, /model check, select и reset", Handler: d.modelInfo},
 		{Name: CommandStream, Description: "стриминг для этого чата: on, off, reset", Handler: d.streamControl},
+		{Name: CommandMiniApp, Description: "доставка ответа Mini App в Telegram: on, off, reset", Handler: d.miniappControl},
 		{Name: CommandPersona, Description: "роль модели для этого чата: пресеты, custom, reset", Handler: d.personaControl},
 		{Name: CommandAsk, Description: "вопрос модели", NeedsArgs: true, UsesModel: true, Handler: d.ask},
 		{Name: CommandReset, Description: "очистить контекст чата", Handler: d.reset},
@@ -259,6 +261,57 @@ func (d *Dispatcher) statusText(ctx context.Context, ev Event) (string, error) {
 		"Последний вопрос чата ждёт ответа: " + pending,
 	}
 	return strings.Join(lines, "\n"), nil
+}
+
+// miniappControl — /miniapp: the per-chat override of MINIAPP_TELEGRAM_FALLBACK. It never calls the model and
+// keeps no menu state: the same switch is edited from the Mini App Settings, and this command must always report
+// the value that the delivery path would actually use.
+func (d *Dispatcher) miniappControl(ctx context.Context, ev Event, arg string) error {
+	action := strings.ToLower(strings.TrimSpace(arg))
+	switch action {
+	case "on", "off":
+		enabled := action == "on"
+		if err := store.EnsureChat(ctx, d.deps.DB, ev.ChatID, ev.UserID, ev.ChatTitle); err != nil {
+			return err
+		}
+		if err := store.SetChatMiniAppFallback(ctx, d.deps.DB, ev.ChatID, enabled); err != nil {
+			return err
+		}
+		state := "выключена"
+		if enabled {
+			state = "включена"
+		}
+		return d.reply(ctx, ev.ChatID, "Доставка ответа Mini App в Telegram "+state+" для этого чата. Настройка сохранена и переживёт рестарт. /miniapp reset — вернуть общий MINIAPP_TELEGRAM_FALLBACK.")
+	case "reset":
+		if err := store.ResetChatMiniAppFallback(ctx, d.deps.DB, ev.ChatID); err != nil {
+			return err
+		}
+	case "":
+	default:
+		return d.reply(ctx, ev.ChatID, "Использование: /miniapp — состояние, /miniapp on, /miniapp off, /miniapp reset — общий MINIAPP_TELEGRAM_FALLBACK.")
+	}
+
+	enabled := d.deps.Cfg.MiniAppTelegramFallback
+	source := "общий MINIAPP_TELEGRAM_FALLBACK"
+	if d.deps.DB != nil {
+		override, found, err := store.ChatMiniAppFallback(ctx, d.deps.DB, ev.ChatID)
+		if err != nil {
+			return err
+		}
+		if found {
+			enabled = override
+			source = "настройка этого чата"
+		}
+	}
+	state := "выключена"
+	if enabled {
+		state = "включена"
+	}
+	prefix := ""
+	if action == "reset" {
+		prefix = "Настройка этого чата сброшена. "
+	}
+	return d.reply(ctx, ev.ChatID, prefix+fmt.Sprintf("Доставка ответа Mini App в Telegram: %s. Источник: %s. /miniapp on, /miniapp off, /miniapp reset.", state, source))
 }
 
 // skip — suppress startup recovery of only the newest visible unanswered question. The row and its history stay

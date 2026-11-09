@@ -136,6 +136,20 @@ func TestMiniAppMutationAuditCoversAllAreasWithoutContent(t *testing.T) {
 			},
 		},
 		{
+			name: "settings mini app fallback set",
+			run: func(t *testing.T, app *App, serverURL string, bearer string) string {
+				assertAuditMutationStatus(t, serverURL, "/api/settings/miniapp-fallback", bearer, `{"enabled":false}`, http.MethodPut)
+				return fmt.Sprintf("operation=settings.miniapp_fallback.set chat_id=%d", testChatID)
+			},
+		},
+		{
+			name: "settings mini app fallback reset",
+			run: func(t *testing.T, app *App, serverURL string, bearer string) string {
+				assertAuditMutationStatus(t, serverURL, "/api/settings/miniapp-fallback", bearer, "", http.MethodDelete)
+				return fmt.Sprintf("operation=settings.miniapp_fallback.reset chat_id=%d", testChatID)
+			},
+		},
+		{
 			name: "reminder cancel",
 			run: func(t *testing.T, app *App, serverURL string, bearer string) string {
 				created := createWebappReminder(t, app, testChatID, "private-audit-content", store.ReminderCadenceOnce, time.Now().UTC().Add(time.Hour))
@@ -163,7 +177,7 @@ func TestMiniAppMutationAuditCoversAllAreasWithoutContent(t *testing.T) {
 		},
 	}
 
-	detailPattern := regexp.MustCompile(`^operation=[a-z.]+ chat_id=-?[0-9]+( (id|count)=-?[0-9]+)?$`)
+	detailPattern := regexp.MustCompile(`^operation=[a-z._]+ chat_id=-?[0-9]+( (id|count)=-?[0-9]+)?$`)
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			app, server := newTestApp(t)

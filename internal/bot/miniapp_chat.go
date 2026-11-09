@@ -173,14 +173,47 @@ func (d *Dispatcher) AnswerForMiniApp(ctx context.Context, chatID, userID int64,
 	return doneErr
 }
 
+// effectiveMiniAppTelegramFallback resolves the fallback for one chat: an explicit per-chat row wins, and the
+// MINIAPP_TELEGRAM_FALLBACK environment row is only the default. A failed read is logged and treated as "no
+// override" — the answer still goes to Telegram, and the next read can repair the setting.
+func (d *Dispatcher) effectiveMiniAppTelegramFallback(ctx context.Context, chatID int64) bool {
+	if d == nil {
+		return false
+	}
+	enabled := d.deps.Cfg.MiniAppTelegramFallback
+	if d.deps.DB == nil {
+		return enabled
+	}
+	override, found, err := store.ChatMiniAppFallback(ctx, d.deps.DB, chatID)
+	if err != nil {
+		if d.deps.Logger != nil {
+			d.deps.Logger.Warn("the Mini App Telegram fallback setting could not be read",
+				"chat_id", chatID, "error", Sanitize(err, d.deps.Token))
+		}
+		return enabled
+	}
+	if found {
+		return override
+	}
+	return enabled
+}
+
 // deliverMiniAppAnswerToTelegram sends an already stored Mini App answer to the Telegram chat when the reader
-// disappeared before the done event (MINIAPP_TELEGRAM_FALLBACK, on by default). Best-effort: a failed send is
-// logged, never returned, because the answer is already readable from the history.
+// disappeared before the done event (MINIAPP_TELEGRAM_FALLBACK, on by default; a chat override wins). Best-effort:
+// a failed send is logged, never returned, because the answer is already readable from the history.
 func (d *Dispatcher) deliverMiniAppAnswerToTelegram(ctx context.Context, chatID, userID int64, text string) {
 	if d == nil {
 		return
 	}
-	if !d.deps.Cfg.MiniAppTelegramFallback || strings.TrimSpace(text) == "" || d.deps.Replier == nil {
+	if strings.TrimSpace(text) == "" || d.deps.Replier == nil {
+		return
+	}
+	// The client context is usually already canceled when this path runs, and the setting read must not inherit
+	// that cancellation: otherwise the override could not be read and every chat would fall back to the global row.
+	settingCtx, cancelSetting := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	enabled := d.effectiveMiniAppTelegramFallback(settingCtx, chatID)
+	cancelSetting()
+	if !enabled {
 		return
 	}
 	var sendCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)

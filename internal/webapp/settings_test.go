@@ -308,6 +308,96 @@ func TestSettingsStrictMethodsJSONAndBodyCap(t *testing.T) {
 	}
 }
 
+func TestSettingsMiniAppFallbackReadAndMutations(t *testing.T) {
+	app, server := newTestApp(t)
+	app.cfg.MiniAppTelegramFallback = false
+	bearer := launchSession(t, app, server)
+	read := func() settingsResponse {
+		t.Helper()
+		status, body := settingsRequest(t, server.URL, http.MethodGet, "/api/settings", bearer, "", "")
+		if status != http.StatusOK {
+			t.Fatalf("GET settings status=%d body=%s", status, body)
+		}
+		var decoded settingsResponse
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		return decoded
+	}
+
+	if got := read().MiniAppFallback; got.Enabled || got.Source != "global" {
+		t.Fatalf("global Mini App fallback=%+v", got)
+	}
+	status, body := putSettings(t, server.URL, "/api/settings/miniapp-fallback", bearer, `{"enabled":true}`)
+	if status != http.StatusOK {
+		t.Fatalf("set Mini App fallback status=%d body=%s", status, body)
+	}
+	enabled, found, err := store.ChatMiniAppFallback(context.Background(), app.db, testChatID)
+	if err != nil || !found || !enabled {
+		t.Fatalf("ChatMiniAppFallback=%v found=%v err=%v", enabled, found, err)
+	}
+	if got := read().MiniAppFallback; !got.Enabled || got.Source != "chat" {
+		t.Fatalf("chat Mini App fallback=%+v", got)
+	}
+	status, body = putSettings(t, server.URL, "/api/settings/miniapp-fallback", bearer, `{"enabled":false}`)
+	if status != http.StatusOK {
+		t.Fatalf("unset Mini App fallback status=%d body=%s", status, body)
+	}
+	if got := read().MiniAppFallback; got.Enabled || got.Source != "chat" {
+		t.Fatalf("chat off Mini App fallback=%+v", got)
+	}
+	status, body = settingsRequest(t, server.URL, http.MethodDelete, "/api/settings/miniapp-fallback", bearer, "", "")
+	if status != http.StatusOK {
+		t.Fatalf("reset Mini App fallback status=%d body=%s", status, body)
+	}
+	if _, found, err := store.ChatMiniAppFallback(context.Background(), app.db, testChatID); err != nil || found {
+		t.Fatalf("Mini App fallback reset found=%v err=%v", found, err)
+	}
+	if got := read().MiniAppFallback; got.Enabled || got.Source != "global" {
+		t.Fatalf("after reset Mini App fallback=%+v", got)
+	}
+
+	// A rejected mutation must leave the stored row untouched.
+	if status, _ := putSettings(t, server.URL, "/api/settings/miniapp-fallback", bearer, `{"enabled":false}`); status != http.StatusOK {
+		t.Fatalf("prime off override status=%d", status)
+	}
+	for _, test := range []struct {
+		method      string
+		path        string
+		body        string
+		contentType string
+		want        int
+	}{
+		{http.MethodPost, "/api/settings/miniapp-fallback", `{}`, "application/json", http.StatusMethodNotAllowed},
+		{http.MethodPut, "/api/settings/miniapp-fallback", `{"enabled":true,"other":1}`, "application/json", http.StatusBadRequest},
+		{http.MethodPut, "/api/settings/miniapp-fallback", `{}`, "application/json", http.StatusBadRequest},
+		{http.MethodPut, "/api/settings/miniapp-fallback", `{"enabled":"yes"}`, "application/json", http.StatusBadRequest},
+		{http.MethodPut, "/api/settings/miniapp-fallback", `{"enabled":true}`, "text/plain", http.StatusUnsupportedMediaType},
+		{http.MethodPut, "/api/settings/miniapp-fallback?enabled=true", `{"enabled":true}`, "application/json", http.StatusBadRequest},
+		{http.MethodDelete, "/api/settings/miniapp-fallback?all=1", "", "", http.StatusBadRequest},
+		{http.MethodDelete, "/api/settings/miniapp-fallback", `{}`, "application/json", http.StatusBadRequest},
+	} {
+		status, body := settingsRequest(t, server.URL, test.method, test.path, bearer, test.body, test.contentType)
+		if status != test.want {
+			t.Errorf("%s %s status=%d want=%d body=%s", test.method, test.path, status, test.want, body)
+		}
+	}
+	if enabled, found, err := store.ChatMiniAppFallback(context.Background(), app.db, testChatID); err != nil || !found || enabled {
+		t.Fatalf("rejected mutations changed the override to %v found=%v err=%v", enabled, found, err)
+	}
+
+	status, _ = putSettings(t, server.URL, "/api/settings/miniapp-fallback", "", `{"enabled":true}`)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("missing session status=%d", status)
+	}
+	now := app.auth.now()
+	app.auth.now = func() time.Time { return now.Add(defaultSessionTTL + time.Second) }
+	status, _ = putSettings(t, server.URL, "/api/settings/miniapp-fallback", bearer, `{"enabled":true}`)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("expired session status=%d", status)
+	}
+}
+
 func strconvQuote(value string) string {
 	encoded, _ := json.Marshal(value)
 	return string(encoded)

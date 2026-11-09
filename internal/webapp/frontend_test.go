@@ -698,6 +698,33 @@ func TestFrontendTTSSettingsAreConditionalAndLocalized(t *testing.T) {
 	}
 }
 
+func TestFrontendMiniAppFallbackSettingIsLocalized(t *testing.T) {
+	script := frontendAsset(t, "static/app.js")
+	for _, want := range []string{
+		`miniAppTitle: "Mini App"`,
+		`miniAppFallbackAria: "Доставка ответов Mini App в Telegram"`,
+		`miniAppFallbackAria: "Mini App answer delivery to Telegram"`,
+		`saveMiniAppFallback: "Сохранить доставку в Telegram"`,
+		`saveMiniAppFallback: "Save Telegram delivery"`,
+		`resetMiniAppFallback: "Сбросить доставку в Telegram"`,
+		`resetMiniAppFallback: "Reset Telegram delivery"`,
+		`miniappFallbackSaved: "Доставка ответов Mini App в Telegram сохранена."`,
+		`miniappFallbackSaved: "Mini App Telegram delivery saved."`,
+		`miniappFallbackReset: "Доставка ответов Mini App в Telegram сброшена."`,
+		`miniappFallbackReset: "Mini App Telegram delivery reset."`,
+		`errorInvalidMiniAppFallback: "Choose an enabled or disabled Mini App Telegram delivery."`,
+		`invalid_miniapp_fallback: "errorInvalidMiniAppFallback"`,
+		`"settings-toggle"`, `aria-pressed`, `data.miniapp_fallback && data.miniapp_fallback.enabled`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js misses Mini App fallback regression %q", want)
+		}
+	}
+	if got := strings.Count(script, `"/api/settings/miniapp-fallback"`); got != 2 {
+		t.Errorf("Mini App fallback endpoint count = %d, want PUT and DELETE only", got)
+	}
+}
+
 func TestFrontendRateLimitedErrorsAreLocalized(t *testing.T) {
 	script := frontendAsset(t, "static/app.js")
 	for _, want := range []string{

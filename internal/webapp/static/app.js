@@ -125,7 +125,7 @@
       errorModels: "Не удалось получить текущий список моделей провайдера.",
       errorInvalidModel: "Выберите модель из текущего списка провайдера.",
       errorInvalidPersona: "Выберите существующий пресет или введите от 1 до 4000 символов без NUL.",
-      errorInvalidStream: "Укажите корректное состояние стриминга.", errorInvalidJSON: "Некорректные или неизвестные поля настроек.",
+      errorInvalidStream: "Укажите корректное состояние стриминга.", errorInvalidMiniAppFallback: "Укажите, доставлять ли ответ Mini App в Telegram.", errorInvalidJSON: "Некорректные или неизвестные поля настроек.",
       errorContentType: "Ожидался строгий JSON запрос.", errorBodyLarge: "Слишком большой размер запроса.",
       errorMethod: "Этот метод не разрешён.", errorPagination: "Некорректные параметры страницы.",
       errorInvalidQuery: "Введите один непустой запрос длиной до 4000 символов.", reminderNotMutable: "Напоминание отсутствует или его нельзя изменить в текущем состоянии.",
@@ -144,6 +144,10 @@
       customAria: "Пользовательский текст роли", saveCustom: "Сохранить свою роль",
       streamTitle: "Стриминг ответов", streamAria: "Стриминг ответов", on: "Включён", off: "Выключен",
       saveStream: "Сохранить стриминг", resetGlobal: "Сбросить к общей",
+      miniAppTitle: "Mini App", miniAppFallbackAria: "Доставка ответов Mini App в Telegram",
+      saveMiniAppFallback: "Сохранить доставку в Telegram", resetMiniAppFallback: "Сбросить доставку в Telegram",
+      miniappFallbackSaved: "Доставка ответов Mini App в Telegram сохранена.",
+      miniappFallbackReset: "Доставка ответов Mini App в Telegram сброшена.",
       ttsTitle: "Озвучивание (TTS)", ttsSpeedAria: "Скорость озвучивания",
       saveTTSSpeed: "Сохранить скорость", resetTTSSpeed: "Сбросить скорость",
       ttsSpeedSaved: "Скорость озвучивания сохранена.", ttsSpeedReset: "Скорость озвучивания сброшена.",
@@ -275,7 +279,7 @@
       errorModels: "The current provider model list could not be read.",
       errorInvalidModel: "Choose a model from the current provider list.",
       errorInvalidPersona: "Choose an existing preset or enter 1 to 4000 Unicode characters without NUL.",
-      errorInvalidStream: "Choose a valid stream setting.", errorInvalidJSON: "Invalid or unknown settings fields.",
+      errorInvalidStream: "Choose a valid stream setting.", errorInvalidMiniAppFallback: "Choose an enabled or disabled Mini App Telegram delivery.", errorInvalidJSON: "Invalid or unknown settings fields.",
       errorContentType: "A strict JSON request was expected.", errorBodyLarge: "Request body is too large.",
       errorMethod: "Method not allowed.", errorPagination: "Invalid pagination parameters.",
       errorInvalidQuery: "Enter one nonempty query of at most 4000 characters.", reminderNotMutable: "The reminder is missing or cannot be changed in its current state.",
@@ -294,6 +298,10 @@
       customAria: "Custom persona text", saveCustom: "Save custom persona",
       streamTitle: "Stream responses", streamAria: "Stream responses", on: "On", off: "Off",
       saveStream: "Save stream setting", resetGlobal: "Reset to global",
+      miniAppTitle: "Mini App", miniAppFallbackAria: "Mini App answer delivery to Telegram",
+      saveMiniAppFallback: "Save Telegram delivery", resetMiniAppFallback: "Reset Telegram delivery",
+      miniappFallbackSaved: "Mini App Telegram delivery saved.",
+      miniappFallbackReset: "Mini App Telegram delivery reset.",
       ttsTitle: "Speech synthesis (TTS)", ttsSpeedAria: "Speech synthesis speed",
       saveTTSSpeed: "Save speed", resetTTSSpeed: "Reset speed",
       ttsSpeedSaved: "Speech synthesis speed saved.", ttsSpeedReset: "Speech synthesis speed reset.",
@@ -307,6 +315,7 @@
   const errorKeys = {
     invalid_launch: "launchFailed", session_expired: "sessionExpired", models_unavailable: "errorModels",
     invalid_model: "errorInvalidModel", invalid_persona: "errorInvalidPersona", invalid_stream: "errorInvalidStream",
+    invalid_miniapp_fallback: "errorInvalidMiniAppFallback",
     invalid_json: "errorInvalidJSON", content_type: "errorContentType", body_too_large: "errorBodyLarge",
     method_not_allowed: "errorMethod", invalid_pagination: "errorPagination", invalid_query: "errorInvalidQuery", read_failed: "errorRead",
     overloaded: "errorOverloaded", rate_limited: "errorRateLimited", invalid_tts_speed: "errorInvalidTTSSpeed",
@@ -1926,6 +1935,26 @@
     streamRow.appendChild(settingsButton(t("resetGlobal"), () => changeSettings("/api/settings/stream", "DELETE"), true));
     stream.appendChild(streamRow);
     ui.content.appendChild(stream);
+
+    const fallbackEnabled = Boolean(data.miniapp_fallback && data.miniapp_fallback.enabled);
+    const fallback = settingsSection(t("miniAppTitle"), `${t("current")}: ${fallbackEnabled ? t("on") : t("off")} · ${source(data.miniapp_fallback ? data.miniapp_fallback.source : "global")}`);
+    const fallbackToggle = element("button", "settings-toggle", fallbackEnabled ? t("on") : t("off"));
+    fallbackToggle.type = "button";
+    fallbackToggle.setAttribute("aria-pressed", String(fallbackEnabled));
+    fallbackToggle.setAttribute("aria-label", t("miniAppFallbackAria"));
+    fallbackToggle.addEventListener("click", () => {
+      const next = fallbackToggle.getAttribute("aria-pressed") !== "true";
+      fallbackToggle.setAttribute("aria-pressed", String(next));
+      fallbackToggle.textContent = next ? t("on") : t("off");
+    });
+    const fallbackRow = element("div", "settings-row");
+    fallbackRow.appendChild(fallbackToggle);
+    fallbackRow.appendChild(settingsButton(t("saveMiniAppFallback"), () => changeSettings(
+      "/api/settings/miniapp-fallback", "PUT", { enabled: fallbackToggle.getAttribute("aria-pressed") === "true" }, "miniappFallbackSaved")));
+    fallbackRow.appendChild(settingsButton(t("resetMiniAppFallback"), () => changeSettings(
+      "/api/settings/miniapp-fallback", "DELETE", undefined, "miniappFallbackReset"), true));
+    fallback.appendChild(fallbackRow);
+    ui.content.appendChild(fallback);
 
     if (data.tts && data.tts.enabled) {
       const tts = settingsSection(t("ttsTitle"), `${t("current")}: ${data.tts.current}×`);

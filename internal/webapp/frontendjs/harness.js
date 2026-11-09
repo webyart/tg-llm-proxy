@@ -256,6 +256,7 @@ function settings() {
     model: { current: "model-a", source: "global", default: "model-a", available: ["model-a", "model-b"], available_truncated: false },
     persona: { current: "default", source: "global", custom: false, presets: [{ name: "assistant", description: "assistant" }] },
     stream: { enabled: true, source: "global" },
+    miniapp_fallback: { enabled: true, source: "global" },
     tts: { enabled: true, current: 1 },
   };
 }

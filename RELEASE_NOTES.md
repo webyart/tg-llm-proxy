@@ -1,3 +1,14 @@
+# tg-llm-proxy v1.54.0
+
+## Per-chat Mini App → Telegram fallback
+
+- `MINIAPP_TELEGRAM_FALLBACK` is now the global default only: migration 17 adds `chat_miniapp_fallback` (schema version 17), and a chat row wins over the environment value.
+- Telegram: `/miniapp` reports the effective value and its source (`настройка этого чата` / `общий MINIAPP_TELEGRAM_FALLBACK`), `/miniapp on|off` writes the chat override, `/miniapp reset` removes it. An unknown argument returns usage and changes nothing.
+- Mini App Settings: a new «Mini App» section with a 44 px on/off toggle, current state and source, Save/Reset buttons and RU/EN notices.
+- HTTP: `GET /api/settings` gains `miniapp_fallback: {enabled, source}` (`source` is `chat` or `global`); `PUT /api/settings/miniapp-fallback` accepts strict `{"enabled":true|false}` and `DELETE` removes the override, under the same bearer, body-cap and 30/min/user mutation rules as the other settings routes.
+- Tests: store (set/read/reset/idempotent/unknown chat), bot (`/miniapp` branches, invalid argument, override precedence on delivery), webapp (GET shape, PUT/DELETE, strict body/query, auth, mutation audit) and the Node frontend toggle flow.
+- Verification: `gofmt -l .`, `go build ./...`, Docker `go test -count=1 ./internal/store ./internal/bot ./internal/webapp`, `node --check` and the JS tests.
+
 # tg-llm-proxy v1.53.0
 
 ## An answer generated after the Mini App window closed is delivered to Telegram

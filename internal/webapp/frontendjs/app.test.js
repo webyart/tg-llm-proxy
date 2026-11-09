@@ -349,6 +349,42 @@ test("TTS speed save and reset use JSON PUT and empty DELETE with dedicated noti
 });
 
 
+test("Mini App fallback toggle saves the chat override and resets it", async () => {
+  const harness = await createHarness();
+  await openTab(harness, "settings");
+  harness.resetRequests();
+  const content = harness.element("content");
+  let toggle = content.querySelector('[aria-label="Доставка ответов Mini App в Telegram"]');
+  assert.ok(toggle);
+  assert.ok(toggle.classList.contains("settings-toggle"));
+  assert.equal(toggle.getAttribute("aria-pressed"), "true");
+  assert.equal(toggle.textContent, "Включён");
+  toggle.click();
+  assert.equal(toggle.getAttribute("aria-pressed"), "false");
+  assert.equal(toggle.textContent, "Выключен");
+  findButton(content, "Сохранить доставку в Telegram").click();
+  await harness.flush();
+
+  const update = harness.requests.find((request) => request.path === "/api/settings/miniapp-fallback");
+  assert.equal(update.options.method, "PUT");
+  assert.equal(update.options.body, JSON.stringify({ enabled: false }));
+  assert.equal(update.options.headers.get("Content-Type"), "application/json");
+  assert.equal(harness.element("notice").textContent, "Доставка ответов Mini App в Telegram сохранена.");
+  assert.equal(harness.element("error").hidden, true);
+
+  harness.resetRequests();
+  toggle = content.querySelector('[aria-label="Доставка ответов Mini App в Telegram"]');
+  assert.ok(toggle);
+  findButton(content, "Сбросить доставку в Telegram").click();
+  await harness.flush();
+  const reset = harness.requests.find((request) => request.path === "/api/settings/miniapp-fallback");
+  assert.equal(reset.options.method, "DELETE");
+  assert.equal(reset.options.body, undefined);
+  assert.equal(harness.element("notice").textContent, "Доставка ответов Mini App в Telegram сброшена.");
+  assert.equal(harness.element("error").hidden, true);
+});
+
+
 test("history Delete and Clear require inline confirmation and use empty canonical POSTs", async () => {
   const harness = await createHarness();
   await openTab(harness, "history");

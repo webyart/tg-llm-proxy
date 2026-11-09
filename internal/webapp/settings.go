@@ -124,6 +124,10 @@ type settingsResponse struct {
 		Enabled bool   `json:"enabled"`
 		Source  string `json:"source"`
 	} `json:"stream"`
+	MiniAppFallback struct {
+		Enabled bool   `json:"enabled"`
+		Source  string `json:"source"`
+	} `json:"miniapp_fallback"`
 	TTS struct {
 		Enabled bool      `json:"enabled"`
 		Current float64   `json:"current"`
@@ -156,6 +160,11 @@ func (a *App) settings(w http.ResponseWriter, req *http.Request, current scope) 
 	streamOverride, streamFound, err := store.ChatStreaming(req.Context(), a.db, current.ChatID)
 	if err != nil {
 		a.queryFailed(w, "settings stream", err)
+		return
+	}
+	miniAppFallback, miniAppFallbackFound, err := store.ChatMiniAppFallback(req.Context(), a.db, current.ChatID)
+	if err != nil {
+		a.queryFailed(w, "settings Mini App fallback", err)
 		return
 	}
 	ttsSpeed, err := bot.TTSSpeed(req.Context(), a.db, current.ChatID)
@@ -204,6 +213,12 @@ func (a *App) settings(w http.ResponseWriter, req *http.Request, current scope) 
 	if streamFound {
 		response.Stream.Enabled = streamOverride
 		response.Stream.Source = "chat"
+	}
+	response.MiniAppFallback.Enabled = a.cfg.MiniAppTelegramFallback
+	response.MiniAppFallback.Source = "global"
+	if miniAppFallbackFound {
+		response.MiniAppFallback.Enabled = miniAppFallback
+		response.MiniAppFallback.Source = "chat"
 	}
 	response.TTS.Enabled = a.cfg.TTSEnabled
 	response.TTS.Current = ttsSpeed
@@ -408,6 +423,50 @@ func (a *App) settingsStream(w http.ResponseWriter, req *http.Request, current s
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	default:
 		methodAllowed(w, http.MethodPut, http.MethodDelete)
+	}
+}
+
+func (a *App) settingsMiniAppFallback(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.Method != http.MethodPut && req.Method != http.MethodDelete {
+		methodAllowed(w, http.MethodPut, http.MethodDelete)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_query", "Mini App fallback settings do not accept query parameters.")
+		return
+	}
+	switch req.Method {
+	case http.MethodPut:
+		var input struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if status, ok := decodeSettingsJSON(req, &input); !ok {
+			settingsDecodeError(w, status)
+			return
+		}
+		if input.Enabled == nil {
+			writeError(w, http.StatusBadRequest, "invalid_miniapp_fallback", "Set enabled to true or false.")
+			return
+		}
+		if err := store.EnsureChat(req.Context(), a.db, current.ChatID, current.UserID, ""); err != nil {
+			a.queryFailed(w, "settings ensure chat", err)
+			return
+		}
+		if err := store.SetChatMiniAppFallback(req.Context(), a.db, current.ChatID, *input.Enabled); err != nil {
+			a.queryFailed(w, "settings set Mini App fallback", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	case http.MethodDelete:
+		if status, ok := emptySettingsBody(req); !ok {
+			settingsDecodeError(w, status)
+			return
+		}
+		if err := store.ResetChatMiniAppFallback(req.Context(), a.db, current.ChatID); err != nil {
+			a.queryFailed(w, "settings reset Mini App fallback", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}
 }
 

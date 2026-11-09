@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
+	"time"
 
 	"bot/internal/bot"
 	"bot/internal/config"
@@ -22,6 +23,10 @@ const (
 	documentUploadOverhead = 1 << 20
 	// documentUploadNameBytes bounds the optional name override before safeAttachmentName trims it to 120 runes.
 	documentUploadNameBytes = 4 << 10
+	// documentUploadReadBudget is the read deadline for ONE upload request. The server-wide ReadTimeout stays 5s
+	// (fast-fail for JSON), but a document over a mobile link can legitimately take minutes: a 2 MiB PDF already
+	// exceeded 5s from a phone and arrived as a truncated body, which the handler could only report as 400.
+	documentUploadReadBudget = 5 * time.Minute
 )
 
 // documentUploadBodyLimit is the request cap of POST /api/documents: the 20 MiB binary document cap plus
@@ -44,6 +49,9 @@ func (a *App) uploadDocument(w http.ResponseWriter, req *http.Request, current s
 		writeError(w, http.StatusUnsupportedMediaType, "content_type", "Send one multipart/form-data file part.")
 		return
 	}
+	// The server-wide read timeout is intentionally short; the upload needs its own deadline or a slow phone
+	// connection is cut after five seconds and the user sees a 400 for a perfectly valid file.
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(documentUploadReadBudget))
 	// limitInFlight already wrapped the body with the same cap; wrapping again keeps the handler honest when it
 	// is called directly, and the inner reader still reports http.MaxBytesError.
 	req.Body = http.MaxBytesReader(w, req.Body, documentUploadBodyLimit(a.cfg))
@@ -169,6 +177,12 @@ func (a *App) documentUploadReadFailed(w http.ResponseWriter, req *http.Request,
 	if errors.Is(err, context.Canceled) || errors.Is(err, req.Context().Err()) {
 		return
 	}
-	a.logger.Warn("Mini App document upload body could not be read", "chat_id", current.ChatID)
+	a.logger.Warn("Mini App document upload body could not be read",
+		"chat_id", current.ChatID, "content_length", req.ContentLength, "error", err.Error())
+	var timeout interface{ Timeout() bool }
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		writeError(w, http.StatusRequestTimeout, "upload_timeout", "The upload was interrupted. Check the connection and send the file again.")
+		return
+	}
 	writeError(w, http.StatusBadRequest, "invalid_body", "Send one multipart file part.")
 }

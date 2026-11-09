@@ -17,6 +17,7 @@ type Metrics struct {
 	requests *metrics.Counter
 	latency  *metrics.Histogram
 	retries  *metrics.Counter
+	fallback *metrics.Counter
 }
 
 // NewMetrics registers the model metric families on reg and returns the recorder for Options.Metrics.
@@ -28,6 +29,7 @@ func NewMetrics(reg *metrics.Registry) *Metrics {
 		requests: reg.Counter("model_requests_total", "Model chat requests by outcome."),
 		latency:  reg.Histogram("model_request_duration_seconds", "Wall time of one model chat request, retries included, in seconds.", requestBuckets),
 		retries:  reg.Counter("model_retries_total", "Retries started after a retryable model failure."),
+		fallback: reg.Counter("model_fallback_total", "Fallback-model attempts by outcome."),
 	}
 }
 
@@ -46,6 +48,15 @@ func (m *Metrics) retryStarted() {
 		return
 	}
 	m.retries.Add(nil, 1)
+}
+
+// fallbackAttempt records one attempt on the fallback model. Every attempt ends with exactly one sample:
+// ok when the fallback answered, error when it failed too.
+func (m *Metrics) fallbackAttempt(outcome string) {
+	if m == nil {
+		return
+	}
+	m.fallback.Add(map[string]string{"outcome": outcome}, 1)
 }
 
 // outcomeOf maps an error of a call to one of the five outcomes the metric documents. A caller's

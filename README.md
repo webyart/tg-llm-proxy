@@ -97,7 +97,7 @@ docker compose logs -f bot
 
 ## Конфигурация
 
-Полный список из 63 ENV-строк и их значения по умолчанию находится в `.env.example`; строки `STREAMING_*`, `WEBHOOK_*`, `MINIAPP_*`, `HEALTH_*` и `RAG_EMBEDDINGS_*` описаны в одноимённых разделах ниже. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
+Полный список из 65 ENV-строк и их значения по умолчанию находится в `.env.example`; строки `STREAMING_*`, `WEBHOOK_*`, `MINIAPP_*`, `HEALTH_*` и `RAG_EMBEDDINGS_*` описаны в одноимённых разделах ниже. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
 
 ### Основные параметры
 
@@ -106,6 +106,8 @@ docker compose logs -f bot
 | `TELEGRAM_BOT_TOKEN` | обязательный | Telegram token, без значения запуск запрещён |
 | `STRATA_BASE_URL` | `http://host.docker.internal:8000` | OpenAI-compatible base URL без обязательного `/v1` |
 | `STRATA_MODEL` | `qwen2.5-7b-instruct` | id модели из `GET /v1/models` |
+| `STRATA_FALLBACK_MODEL` | пусто = fallback выключен | резервная модель после retryable-ошибки основной |
+| `STRATA_FALLBACK_BASE_URL` | `STRATA_BASE_URL` | отдельный endpoint fallback; absolute http(s) без userinfo |
 | `STRATA_TRANSCRIPTION_MODEL` | `Systran/faster-whisper-small` | модель для `/audio/transcriptions` |
 | `TRANSCRIPTION_BASE_URL` | `STRATA_BASE_URL`; в compose — Whisper | отдельный transcription endpoint |
 | `STRATA_API_KEY` | пусто | ключ endpoint, если требуется |
@@ -153,6 +155,10 @@ docker compose logs -f bot
 | `LOG_LEVEL` | `info` | `error`, `warning`, `info`, `debug` |
 
 `STRATA_BASE_URL` нормализуется к ровно одному `/v1`: chat и models используют этот base. `TRANSCRIPTION_BASE_URL` независимо ведёт в `/audio/transcriptions`. Оба endpoint запрещают userinfo, query и fragment, чтобы credentials не попадали в логи или диагностику. Compose запускает Speaches Whisper без публичного порта и заранее загружает multilingual small-модель. Voice хранится только как текст транскрипции; исходное аудио остаётся в памяти на время запроса.
+
+### Резервная модель (fallback, opt-in)
+
+`STRATA_FALLBACK_MODEL` включает один повторный запрос на резервную модель. Fallback срабатывает только на retryable-ошибку основной: 5xx, 429, transient error внутри 200-стрима или сетевой сбой; 400/401/404 и ошибки разбора возвращаются как есть. `STRATA_FALLBACK_BASE_URL` задаёт отдельный endpoint, пустое значение означает тот же `STRATA_BASE_URL`; непустой URL обязан быть absolute http(s) без userinfo, а та же модель на том же endpoint отклоняется как ошибка конфигурации. Частично доставленный стрим не переигрывается: если хотя бы один `delta` уже ушёл в чат, второй запрос не делается и возвращается исходная ошибка, поэтому ответ не дублируется. Список `/model` по-прежнему строится по основной `GET /models`, а явно выбранная fallback-модель работает как обычная per-chat модель и не сохраняется как fallback.
 
 При `PARSE_MODE=MarkdownV2` сохраняются заголовки, жирный и курсивный текст, `code`, code fences и
 http/https-ссылки. Обычные специальные символы экранируются, а небезопасные схемы ссылок не пропускаются.
@@ -575,7 +581,7 @@ docker compose up -d
 
 ## Документы
 
-- `.env.example` — все настройки (63) с комментариями.
+- `.env.example` — все настройки (65) с комментариями.
 - `RELEASE_NOTES.md` — состав release candidate и результаты проверок.
 - `docs/adr/` — Architecture Decision Records: SQLite/один writer, long polling, fail-fast конфигурация, FTS5-индексы, Mini App только для приватных чатов, политика рестарта.
 - `deploy/README.md` — статус исторических конфигураций gateway в `deploy/` (не часть текущего Compose).

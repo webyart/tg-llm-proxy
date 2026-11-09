@@ -19,6 +19,8 @@ var Env = []string{
 	"TELEGRAM_BOT_TOKEN",
 	"STRATA_BASE_URL",
 	"STRATA_MODEL",
+	"STRATA_FALLBACK_MODEL",
+	"STRATA_FALLBACK_BASE_URL",
 	"STRATA_TRANSCRIPTION_MODEL",
 	"TRANSCRIPTION_BASE_URL",
 	"MEDIA_MAX_MB",
@@ -168,12 +170,19 @@ const UserIDsMax = 1024
 // the suffix is what a real OpenAI-compatible server actually serves). BotToken
 // the chat or a commit).
 type Config struct {
-	BotToken             string
-	StrataKey            string
-	StrataBase           string
-	ChatURL              string
-	ModelsURL            string
-	StrataModel          string
+	BotToken    string
+	StrataKey   string
+	StrataBase  string
+	ChatURL     string
+	ModelsURL   string
+	StrataModel string
+	// The optional reserve model. StrataFallbackModel is empty when the feature is off; FallbackBase stays
+	// empty when the fallback shares the primary endpoint, so a startup summary can print only a real second
+	// endpoint. FallbackChatURL/FallbackModelsURL are always the URLs to call when the fallback is enabled.
+	StrataFallbackModel  string
+	FallbackBase         string
+	FallbackChatURL      string
+	FallbackModelsURL    string
 	TranscriptionModel   string
 	TranscriptionBase    string
 	TranscriptionURL     string
@@ -303,6 +312,19 @@ func validateRAGEmbeddingsBase(base string) string {
 	}
 	if parsed.User != nil {
 		return "ENV RAG_EMBEDDINGS_BASE_URL must not contain userinfo or credentials"
+	}
+	return ""
+}
+
+// validateFallbackBase accepts an absolute HTTP(S) URL without userinfo. It is checked only when a fallback
+// model is configured, so an empty or stale row cannot stop a bot that runs on a single model.
+func validateFallbackBase(base string) string {
+	parsed, err := url.Parse(strings.TrimSpace(base))
+	if err != nil || parsed.Host == "" || parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "ENV STRATA_FALLBACK_BASE_URL must be an absolute HTTP(S) URL"
+	}
+	if parsed.User != nil {
+		return "ENV STRATA_FALLBACK_BASE_URL must not contain userinfo or credentials"
 	}
 	return ""
 }
@@ -605,6 +627,27 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 		model = DefaultStrataModel
 	}
 	cfg.StrataModel = model
+
+	// The fallback is opt-in and silent by default. Its base URL is validated only when the model is set: a
+	// leftover base of a disabled fallback is not a configuration of the running bot.
+	cfg.StrataFallbackModel = strings.TrimSpace(raw["STRATA_FALLBACK_MODEL"])
+	if cfg.StrataFallbackModel != "" {
+		var fallbackBase = strings.TrimSpace(raw["STRATA_FALLBACK_BASE_URL"])
+		if fallbackBase == "" {
+			cfg.FallbackChatURL = cfg.ChatURL
+			cfg.FallbackModelsURL = cfg.ModelsURL
+			if cfg.StrataFallbackModel == cfg.StrataModel {
+				problems = Push(problems, "ENV STRATA_FALLBACK_MODEL is the same as STRATA_MODEL and STRATA_FALLBACK_BASE_URL is empty: a fallback that is the same model on the same endpoint cannot help ")
+			}
+		} else {
+			problems = Push(problems, validateFallbackBase(fallbackBase))
+			var endpointBase = baseWithoutQueryOrFragment(fallbackBase)
+			cfg.FallbackBase = NormalizeBase(endpointBase)
+			cfg.FallbackChatURL = JoinURL(endpointBase, "/chat/completions")
+			cfg.FallbackModelsURL = JoinURL(endpointBase, "/models")
+		}
+	}
+
 	cfg.TranscriptionModel = strings.TrimSpace(raw["STRATA_TRANSCRIPTION_MODEL"])
 	if cfg.TranscriptionModel == "" {
 		cfg.TranscriptionModel = DefaultTranscriptionModel

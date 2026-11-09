@@ -74,11 +74,12 @@ func LoadConfig() (config.Config, []string, map[string]string) {
 // presence and length — and rows that are simply unset are not listed: the previous version printed one
 // "is not set" line per optional row on every start, which buried the six lines that mattered.
 func startupSummary(logger *slog.Logger, cfg config.Config) {
-	logger.Info("configuration loaded",
+	var summary = []any{
 		"token_set", cfg.BotToken != "",
 		"token_length", len(cfg.BotToken),
 		"strata_base", cfg.StrataBase,
 		"model", cfg.StrataModel,
+		"fallback_model", cfg.StrataFallbackModel,
 		"transcription_model", cfg.TranscriptionModel,
 		"timeout_seconds", cfg.TimeoutSeconds,
 		"reply_deadline_seconds", cfg.ReplyDeadlineSeconds,
@@ -101,7 +102,13 @@ func startupSummary(logger *slog.Logger, cfg config.Config) {
 		"deny_by_default", cfg.DenyByDefault,
 		"rate_limit_per_minute", cfg.RateLimitPerMinute,
 		"max_concurrent_requests", cfg.MaxConcurrentRequests,
-	)
+	}
+	// fallback_base is printed only when a SECOND endpoint is configured: an empty value means "same as
+	// strata_base", and repeating the primary URL would look like a different endpoint in the summary.
+	if cfg.FallbackBase != "" {
+		summary = append(summary, "fallback_base", cfg.FallbackBase)
+	}
+	logger.Info("configuration loaded", summary...)
 	// The URL above is what Telegram stores as the menu button and pastes into every WebApp button. A root URL
 	// behind a path-prefix gateway opens the gateway's fallback route instead of the Mini App — the symptom is
 	// Traefik's «no available server» with a perfectly healthy bot behind it. This warning names the two
@@ -169,7 +176,8 @@ func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, l
 	store.RegisterMetrics(registry, cfg.DBPath, schemaVersion)
 	fmt.Fprintln(out, "program is running, PID", os.Getpid())
 
-	var client, clientErr = model.New(model.Options{
+	var modelMetrics = model.NewMetrics(registry)
+	var modelOptions = model.Options{
 		ChatURL:             cfg.ChatURL,
 		ModelsURL:           cfg.ModelsURL,
 		APIKey:              cfg.StrataKey,
@@ -179,15 +187,41 @@ func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, l
 		TranscriptionNoAuth: cfg.TranscriptionBase != cfg.StrataBase,
 		Timeout:             time.Duration(cfg.TimeoutSeconds) * time.Second,
 		MaxConcurrent:       int(cfg.MaxConcurrentRequests),
-		Metrics:             model.NewMetrics(registry),
+		Metrics:             modelMetrics,
 		Stream: model.StreamSettings{
 			Idle:     time.Duration(cfg.StreamIdleSeconds) * time.Second,
 			Total:    time.Duration(cfg.StreamTotalSeconds) * time.Second,
 			Progress: time.Duration(cfg.StreamEditIntervalMS) * time.Millisecond,
 		},
-	})
+	}
+	var primary, clientErr = model.New(modelOptions)
 	if clientErr != nil {
 		return fmt.Errorf("model.New: %w", clientErr)
+	}
+
+	// The chat client is the primary unless a fallback is configured. The fallback wrapper deliberately has
+	// no Transcribe method, so voice keeps using the primary: the composite reattaches that optional
+	// interface to the wrapper the dispatcher sees.
+	var client model.Client = primary
+	if cfg.StrataFallbackModel != "" {
+		var fallbackOptions = modelOptions
+		fallbackOptions.ChatURL = cfg.FallbackChatURL
+		fallbackOptions.ModelsURL = cfg.FallbackModelsURL
+		fallbackOptions.Model = cfg.StrataFallbackModel
+		fallbackOptions.TranscriptionModel = ""
+		fallbackOptions.TranscriptionURL = ""
+		fallbackOptions.TranscriptionNoAuth = false
+		var fallbackClient, fallbackErr = model.New(fallbackOptions)
+		if fallbackErr != nil {
+			return fmt.Errorf("model.New (fallback %q): %w", cfg.StrataFallbackModel, fallbackErr)
+		}
+		var wrapped = model.NewFallback(primary, fallbackClient, model.FallbackOptions{
+			PrimaryModel:  cfg.StrataModel,
+			FallbackModel: cfg.StrataFallbackModel,
+			Metrics:       modelMetrics,
+			Logger:        logger,
+		})
+		client = withPrimaryTranscription(wrapped, primary)
 	}
 
 	// The hybrid RAG layer is optional and off by default. The metric families are registered either way, so a
@@ -380,6 +414,40 @@ func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, l
 		fmt.Fprintln(out, "the startup scan was still answering when the process left")
 	}
 	return nil
+}
+
+// withPrimaryTranscription reattaches the optional Transcriber of the primary client to the fallback
+// wrapper. NewFallback never handles audio — a reserve chat model is not a reserve Whisper — so the
+// dispatcher's voice path keeps the client an operator configured, not the fallback.
+func withPrimaryTranscription(chat, primary model.Client) model.Client {
+	var transcriber, transcribes = primary.(model.Transcriber)
+	if !transcribes {
+		return chat
+	}
+	var transcribed = &transcribedChat{Client: chat, transcriber: transcriber}
+	var streamer, streams = chat.(model.Streamer)
+	if !streams {
+		return transcribed
+	}
+	return &streamingTranscribedChat{transcribedChat: transcribed, streamer: streamer}
+}
+
+type transcribedChat struct {
+	model.Client
+	transcriber model.Transcriber
+}
+
+func (c *transcribedChat) Transcribe(ctx context.Context, req model.TranscriptionRequest) (string, error) {
+	return c.transcriber.Transcribe(ctx, req)
+}
+
+type streamingTranscribedChat struct {
+	*transcribedChat
+	streamer model.Streamer
+}
+
+func (c *streamingTranscribedChat) Stream(ctx context.Context, req model.Request, h model.StreamHandler) (model.Response, error) {
+	return c.streamer.Stream(ctx, req, h)
 }
 
 // waitClosed reports whether ch was closed (or delivered its one value) inside the shutdown window.

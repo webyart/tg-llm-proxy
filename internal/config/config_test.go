@@ -294,8 +294,8 @@ func TestOldNameOfTheRowIsRefusedByName(t *testing.T) {
 }
 
 func TestEnvIsTheRowsOfTheTable(t *testing.T) {
-	if len(Env) != 63 {
-		t.Errorf("Env holds %d names, want 63 including per-user daily limits, HEALTH_LISTEN_HOST, STREAM_DRAFTS_ENABLED and the four RAG_EMBEDDINGS_* rows", len(Env))
+	if len(Env) != 65 {
+		t.Errorf("Env holds %d names, want 65 including per-user daily limits, HEALTH_LISTEN_HOST, STREAM_DRAFTS_ENABLED, the four RAG_EMBEDDINGS_* rows and the two STRATA_FALLBACK_* rows", len(Env))
 	}
 	var seen = map[string]bool{}
 	var i = 0
@@ -310,7 +310,7 @@ func TestEnvIsTheRowsOfTheTable(t *testing.T) {
 		t.Error("TELEGRAM_ALLOWED_USERS is not in Env, so the allowlist of has no row ")
 	}
 	// name must not refuse them.
-	for _, name := range []string{"STREAMING_ENABLED", "STREAM_EDIT_INTERVAL_MS", "STREAM_IDLE_TIMEOUT_SECONDS", "STREAM_TOTAL_DEADLINE_SECONDS", "MEDIA_MAX_MB", "SPEECH_MAX_SECONDS", "TTS_ENABLED", "TTS_MODEL", "TTS_VOICE", "TTS_MAX_CHARS", "TTS_TIMEOUT_SECONDS"} {
+	for _, name := range []string{"STREAMING_ENABLED", "STREAM_EDIT_INTERVAL_MS", "STREAM_IDLE_TIMEOUT_SECONDS", "STREAM_TOTAL_DEADLINE_SECONDS", "MEDIA_MAX_MB", "SPEECH_MAX_SECONDS", "TTS_ENABLED", "TTS_MODEL", "TTS_VOICE", "TTS_MAX_CHARS", "TTS_TIMEOUT_SECONDS", "STRATA_FALLBACK_MODEL", "STRATA_FALLBACK_BASE_URL"} {
 		if !seen[name] || !HasRow(name) {
 			t.Errorf("%s is not a row of Env", name)
 		}

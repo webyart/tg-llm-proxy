@@ -23,6 +23,10 @@
       chatIdentity: "user_id: {user} · chat_id: {chat}", chatForbidden: "Чат в Mini App доступен только пользователям из allowlist.",
       chatInvalidText: "Отправьте непустое сообщение длиной до 2000 символов.", chatTooLongError: "Сообщение должно быть не длиннее 2000 символов.",
       chatUnavailable: "Чат недоступен в этом развёртывании Mini App.", chatMutationFailed: "Не удалось изменить состояние чата.",
+      chatApprovalTitle: "Подтверждение сетевого действия", chatApprovalToolReadURL: "Чтение страницы", chatApprovalToolWebSearch: "Веб-поиск",
+      chatApprovalAllow: "Разрешить", chatApprovalDeny: "Отклонить", chatApprovalExpires: "Истекает через {seconds} с",
+      chatApprovalApproved: "Разрешено. Выполняю действие…", chatApprovalDenied: "Отклонено. Действие не выполнено.",
+      chatApprovalExpired: "Время подтверждения истекло. Действие не выполнено.", chatApprovalFailed: "Не удалось передать решение. Повторите попытку.",
       sessionExpired: "Сессия истекла. Откройте Mini App заново из Telegram.",
       launchRequired: "Запустите страницу через «Ещё → Mini App» в Telegram.",
       verifyLaunch: "Проверяем запуск из Telegram…", launchFailed: "Не удалось проверить запуск. Откройте Mini App заново из Telegram.",
@@ -169,6 +173,10 @@
       chatIdentity: "user_id: {user} · chat_id: {chat}", chatForbidden: "The Mini App chat is available only to allowlisted users.",
       chatInvalidText: "Send a nonempty message of at most 2000 characters.", chatTooLongError: "The message must be at most 2000 characters.",
       chatUnavailable: "The chat is unavailable in this Mini App deployment.", chatMutationFailed: "The chat state could not be changed.",
+      chatApprovalTitle: "Network action approval", chatApprovalToolReadURL: "Reading the page", chatApprovalToolWebSearch: "Web search",
+      chatApprovalAllow: "Allow", chatApprovalDeny: "Deny", chatApprovalExpires: "Expires in {seconds} s",
+      chatApprovalApproved: "Approved. Running the action…", chatApprovalDenied: "Denied. The action was not performed.",
+      chatApprovalExpired: "The approval expired. The action was not performed.", chatApprovalFailed: "The decision could not be delivered. Try again.",
       sessionExpired: "Session expired. Reopen the Mini App from Telegram.",
       launchRequired: "This page needs a launch from More → Mini App in Telegram.",
       verifyLaunch: "Verifying Telegram launch…", launchFailed: "Launch verification failed. Reopen the Mini App from Telegram.",
@@ -315,6 +323,7 @@
     feedback_forbidden: "feedbackForbidden",
     invalid_goal: "taskGoalInvalid", chat_forbidden: "chatForbidden", invalid_text: "chatInvalidText", text_too_long: "chatTooLongError",
     chat_unavailable: "chatUnavailable", chat_failed: "chatFailed", chat_mutation_failed: "chatMutationFailed",
+    approval_expired: "chatApprovalExpired", approval_not_found: "chatApprovalExpired", approval_failed: "chatApprovalFailed",
   };
 
   function initialLanguage() {
@@ -377,11 +386,12 @@
   let historySearch = { query: "", active: false, items: [], truncated: false };
   let linkSearch = { query: "", active: false, items: [] };
   let view = { tab: "status", data: null, items: [] };
-  let chat = { messages: [], pending: false, streaming: false, suppressed: false, stage: "", errorText: "", resetArmed: false, identity: null };
-  let chatNodes = { log: null, answer: null, status: null };
+  let chat = { messages: [], pending: false, streaming: false, suppressed: false, stage: "", errorText: "", resetArmed: false, identity: null, approval: null };
+  let chatNodes = { log: null, answer: null, status: null, approvalNote: null };
   let chatLiveTimer = null;
   let chatLiveNode = null;
   let chatLiveText = "";
+  let chatApprovalTimer = null;
 
   function resetArmedStates() {
     chat.resetArmed = false;
@@ -2108,9 +2118,105 @@
     input.style.overflowY = height > max ? "auto" : "hidden";
   }
 
+  function stopChatApprovalTimer() {
+    if (chatApprovalTimer !== null) {
+      clearTimeout(chatApprovalTimer);
+      chatApprovalTimer = null;
+    }
+  }
+
+  function chatApprovalToolLabel(tool) {
+    if (tool === "read_url") return t("chatApprovalToolReadURL");
+    if (tool === "web_search") return t("chatApprovalToolWebSearch");
+    return tool;
+  }
+
+  function chatApprovalNotice(approval) {
+    if (approval.state === "approved") return t("chatApprovalApproved");
+    if (approval.state === "denied") return t("chatApprovalDenied");
+    if (approval.state === "timeout" || approval.state === "expired") return t("chatApprovalExpired");
+    if (approval.state === "failed") return t("chatApprovalFailed");
+    const seconds = Math.max(0, Math.ceil((approval.deadline - Date.now()) / 1000));
+    return t("chatApprovalExpires", { seconds });
+  }
+
+  function chatApprovalButton(label, handler) {
+    // chat-send is the existing 44px target of the composer; reusing it keeps the approval buttons
+    // thumb-sized without a stylesheet change (style.css is outside this change's file set).
+    const button = settingsButton(label, handler, true);
+    button.className = "chat-send";
+    return button;
+  }
+
+  function chatApprovalCard() {
+    const approval = chat.approval;
+    const card = element("section", "inline-confirm chat-approval");
+    card.setAttribute("role", "group");
+    card.setAttribute("aria-label", t("chatApprovalTitle"));
+    card.appendChild(element("h4", "chat-approval-title", t("chatApprovalTitle")));
+    card.appendChild(element("p", "chat-approval-tool", chatApprovalToolLabel(approval.tool)));
+    if (approval.summary) card.appendChild(element("code", "chat-approval-summary", approval.summary));
+    const note = element("p", "chat-approval-note", chatApprovalNotice(approval));
+    note.setAttribute("role", "status");
+    card.appendChild(note);
+    chatNodes.approvalNote = note;
+    const actions = element("div", "task-actions inline-confirm-actions chat-approval-actions");
+    const actionable = approval.state === "pending" || approval.state === "submitting";
+    if (actionable) {
+      const allow = chatApprovalButton(t("chatApprovalAllow"), () => decideChatApproval(true));
+      const deny = chatApprovalButton(t("chatApprovalDeny"), () => decideChatApproval(false));
+      const busy = approval.state === "submitting";
+      allow.disabled = busy;
+      deny.disabled = busy;
+      actions.appendChild(allow);
+      actions.appendChild(deny);
+    }
+    card.appendChild(actions);
+    return card;
+  }
+
+  function scheduleChatApprovalTick() {
+    stopChatApprovalTimer();
+    const approval = chat.approval;
+    if (!approval || approval.state !== "pending") return;
+    chatApprovalTimer = setTimeout(() => {
+      chatApprovalTimer = null;
+      const current = chat.approval;
+      if (!current || current.state !== "pending") return;
+      const remaining = Math.max(0, Math.ceil((current.deadline - Date.now()) / 1000));
+      if (remaining <= 0) {
+        current.state = "timeout";
+        if (activeTab === "chat") renderChat();
+        return;
+      }
+      if (chatNodes.approvalNote) chatNodes.approvalNote.textContent = t("chatApprovalExpires", { seconds: remaining });
+      scheduleChatApprovalTick();
+    }, 1000);
+  }
+
+  async function decideChatApproval(approve) {
+    const approval = chat.approval;
+    if (!approval || approval.state !== "pending" || !session) return;
+    approval.state = "submitting";
+    if (activeTab === "chat") renderChat();
+    try {
+      await api("/api/chat/approval", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: approval.token, approve }),
+      });
+      approval.state = approve ? "approved" : "denied";
+    } catch (error) {
+      approval.state = "failed";
+      showError(error.message || t("chatApprovalFailed"));
+    }
+    if (activeTab === "chat") renderChat();
+  }
+
   function renderChat() {
     ui.content.replaceChildren();
     cancelChatLiveRender();
+    stopChatApprovalTimer();
     const section = element("section", "chat-panel");
     section.appendChild(element("h3", "chat-title", t("chatTitle")));
     section.appendChild(element("p", "meta chat-intro", t("chatIntro")));
@@ -2120,7 +2226,7 @@
     log.setAttribute("role", "log");
     log.setAttribute("aria-live", "polite");
     log.setAttribute("aria-label", t("chatTitle"));
-    chatNodes = { log, answer: null, status: null };
+    chatNodes = { log, answer: null, status: null, approvalNote: null };
     if (!chat.messages.length) log.appendChild(element("p", "empty", t("emptyHistory")));
     for (const message of chat.messages) {
       const node = chatMessageNode(message);
@@ -2131,6 +2237,8 @@
       }
       log.appendChild(node.wrapper);
     }
+
+    if (chat.approval) log.appendChild(chatApprovalCard());
 
     const status = element("div", "chat-status");
     status.setAttribute("role", "status");
@@ -2202,6 +2310,7 @@
     send.disabled = chat.streaming;
     autoGrowChatInput(input);
     scrollChat(true);
+    scheduleChatApprovalTick();
   }
 
   function parseChatEvent(block) {
@@ -2217,10 +2326,12 @@
 
   function finishChatError(message, pending) {
     cancelChatLiveRender();
+    stopChatApprovalTimer();
     chat.streaming = false;
     chat.stage = "";
     chat.pending = pending;
     chat.errorText = message;
+    if (chat.approval && chat.approval.state === "pending") chat.approval.state = "timeout";
     const last = chat.messages[chat.messages.length - 1];
     if (last && last.role === "assistant" && !last.text) chat.messages.pop();
     showError(message);
@@ -2271,6 +2382,17 @@
             } else if (event.name === "stage") {
               chat.stage = typeof event.data.stage === "string" ? event.data.stage : "";
               updateChatLive(answer);
+            } else if (event.name === "approval") {
+              const seconds = Number(event.data.expires_in_seconds);
+              chat.approval = {
+                token: typeof event.data.token === "string" ? event.data.token : "",
+                tool: typeof event.data.tool === "string" ? event.data.tool : "",
+                summary: typeof event.data.summary === "string" ? event.data.summary : "",
+                deadline: Date.now() + (Number.isFinite(seconds) && seconds > 0 ? seconds : 120) * 1000,
+                state: "pending",
+              };
+              chat.stage = "";
+              if (activeTab === "chat") renderChat();
             } else if (event.name === "done") {
               if (typeof event.data.text === "string") answer.text = event.data.text;
               // The server sends the stored assistant row id; without it the bubble has no
@@ -2322,6 +2444,8 @@
     chat.stage = "";
     chat.pending = true;
     chat.streaming = true;
+    chat.approval = null;
+    stopChatApprovalTimer();
     chat.messages.push({ role: "user", text, id: null, feedback: 0 });
     const answer = { role: "assistant", text: "", id: null, feedback: 0 };
     chat.messages.push(answer);
@@ -2351,6 +2475,8 @@
     chat.stage = "";
     chat.errorText = "";
     chat.suppressed = false;
+    chat.approval = null;
+    stopChatApprovalTimer();
     await load();
     showNotice(t("chatResetDone"));
   }

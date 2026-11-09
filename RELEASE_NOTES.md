@@ -1,3 +1,13 @@
+# tg-llm-proxy v1.52.0
+
+## Подтверждения сетевых действий в Mini App
+
+- `runToolLoop` получил необязательный `approvalWaiter`: в Mini App он заменяет Telegram-меню, ждёт решение в том же SSE-потоке и продолжает цикл после «Разрешить»; «Отклонить» сохраняет отказ без выполнения инструмента, таймаут/обрыв дают понятную ошибку.
+- `POST /api/chat/approval` строгий JSON `{"token","approve"}`: токен одноразовый, привязан к chat_id и user_id сессии (чужой — 404, истёкший/использованный — 410, кривое тело — 400, без bearer — 401), ответ `{"ok":true}`; отдельный per-user лимит 10/мин. Ожидающий поток — единственный, кто возобновляется.
+- SSE-событие `approval`: `{token, tool, summary, expires_in_seconds}`; TTL 2 минуты, глобальный cap 16, на пользователя 4, summary — аргументы до 300 символов без секретов.
+- Frontend: inline-карточка с «Разрешить»/«Отклонить» (44 px, без inline-обработчиков), обратный отсчёт, RU/EN, сообщения об отказе/истечении; поток после решения продолжается `delta`/`done`.
+- Тесты: bot (approve/deny/timeout/single-use/wrong chat-user/cancel/caps/summary), webapp (401/400/404/410/200, rate limit, возобновление заблокированного потока, TTL без решения), JS. Docker: `go test ./internal/bot ./internal/webapp`, `gofmt`, `go build ./...`, `node --check`, `node --test`.
+
 # tg-llm-proxy v1.51.2
 
 ## Slow document uploads keep their response

@@ -190,6 +190,13 @@ func (a *App) chatMessage(w http.ResponseWriter, req *http.Request, current scop
 		case event.Error != "":
 			stream.errorSeen = true
 			return stream.send("error", map[string]string{"code": "chat_failed", "message": event.Error})
+		case event.Approval != nil:
+			return stream.send("approval", map[string]any{
+				"token":              event.Approval.Token,
+				"tool":               event.Approval.Tool,
+				"summary":            event.Approval.Summary,
+				"expires_in_seconds": event.Approval.ExpiresInSeconds,
+			})
 		case event.Stage != "":
 			return stream.send("stage", map[string]string{"stage": event.Stage})
 		case event.Done:
@@ -223,6 +230,54 @@ func (a *App) chatMessage(w http.ResponseWriter, req *http.Request, current scop
 	if !stream.errorSeen {
 		stream.errorSeen = true
 		_ = stream.send("error", map[string]string{"code": "chat_failed", "message": a.chatErrorMessage(err)})
+	}
+}
+
+// chatApproval — POST /api/chat/approval `{"token":"…","approve":true|false}`. It delivers the
+// decision to the stream blocked in /api/messages and returns immediately; the stream is the one
+// that resumes and sends `delta`/`done` afterwards. The token belongs to the authenticated session
+// chat AND user (any mismatch is 404), expired or already used tokens are 410, and a bad body is
+// 400. No response body is streamed here.
+func (a *App) chatApproval(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.Method != http.MethodPost {
+		methodAllowed(w, http.MethodPost)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Approval decisions do not accept query parameters.")
+		return
+	}
+	var input struct {
+		Token   string `json:"token"`
+		Approve *bool  `json:"approve"`
+	}
+	if status, ok := decodeSettingsJSON(req, &input); !ok {
+		chatBodyError(w, status)
+		return
+	}
+	if input.Token == "" || len(input.Token) > 64 || input.Approve == nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "The token and approve fields are required.")
+		return
+	}
+	if a.chat == nil {
+		writeError(w, http.StatusServiceUnavailable, "chat_unavailable", "The chat is unavailable in this Mini App deployment.")
+		return
+	}
+	if allowed, retryAfter := a.rateLimits.allowApproval(current.UserID); !allowed {
+		writeRateLimited(w, retryAfter)
+		return
+	}
+	err := a.chat.ResolveMiniAppApproval(req.Context(), input.Token, current.ChatID, current.UserID, *input.Approve)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	case errors.Is(err, bot.ErrMiniAppApprovalExpired):
+		writeError(w, http.StatusGone, "approval_expired", "This network approval has expired or was already used.")
+	case errors.Is(err, bot.ErrMiniAppApprovalNotFound):
+		writeError(w, http.StatusNotFound, "approval_not_found", "This network approval does not exist for this chat.")
+	default:
+		a.logger.Error("Mini App approval decision failed", "chat_id", current.ChatID, "error", a.chatErrorMessage(err))
+		writeError(w, http.StatusInternalServerError, "approval_failed", "The approval decision could not be delivered.")
 	}
 }
 

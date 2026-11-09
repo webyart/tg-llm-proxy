@@ -41,14 +41,14 @@ registry остаётся открытой (нужен токен с нужны�
 
 ## Спринт 5 — Mini App как полноценный второй клиент (≈2–3 недели)
 
-СТАТУС 2026-11-08: **основной сценарий готов.** `POST /api/messages` (SSE: `stage`/`delta`/`done`/`error`),
-`POST /api/context/reset`, `POST /api/pending/skip`, `GET /api/whoami`, вкладка «Чат» в UI. Mini App отвечает
-через ТОТ ЖЕ `Dispatcher`, что и Telegram (`main.go` вызывает `SetChatBackend(dispatcher)`): общий per-chat
-lock, общий per-minute бюджет и общая дневная квота. Сетевые инструменты (`read_url`, `web_search`) в Mini App
-сознательно отключены — подтверждение возможно только в Telegram; `calculator` работает.
-Осталось: подтверждения сетевых действий внутри Mini App, загрузка голоса, матрица паритета. Загрузка
-документов закрыта в v1.50.0 (`POST /api/documents` + общий ingest-helper с `/docs add`), PDF/DOCX для обоих
-путей добавлены в v1.51.0.
+СТАТУС 2026-11-10: **основной сценарий готов.** `POST /api/messages` (SSE: `stage`/`delta`/`approval`/`done`/`error`),
+`POST /api/chat/approval`, `POST /api/context/reset`, `POST /api/pending/skip`, `GET /api/whoami`, вкладка «Чат» в UI.
+Mini App отвечает через ТОТ ЖЕ `Dispatcher`, что и Telegram (`main.go` вызывает `SetChatBackend(dispatcher)`): общий
+per-chat lock, общий per-minute бюджет и общая дневная квота. Сетевые инструменты (`read_url`, `web_search`) доступны
+и в Mini App: модель запрашивает действие, SSE-событие `approval` показывает карточку, `POST /api/chat/approval`
+возвращает решение и тот же поток продолжается; `calculator` работает без подтверждения.
+Осталось: загрузка голоса, матрица паритета. Загрузка документов закрыта в v1.50.0 (`POST /api/documents` + общий
+ingest-helper с `/docs add`), PDF/DOCX для обоих путей добавлены в v1.51.0, подтверждения сетевых действий — в v1.52.0.
 
 Спринт начинался с read-only панели: задать вопрос, ответить на «ожидает ответа», нажать `/skip`/`/unskip`/`/reset`
 было нельзя, хотя бот умеет стриминг.
@@ -57,7 +57,7 @@ lock, общий per-minute бюджет и общая дневная квота
 |---|---|---|
 | `POST /api/messages` + SSE-стрим | Чат в Mini App; переиспользовать `Dispatcher` (лимиты, RAG, tools, подтверждения), а не писать второй путь | 5–7 дней |
 | Индикатор «ожидает ответа», `/skip`, `/unskip`, `/reset`, `/whoami` | Паритет с ботом для основного сценария | 2 дня |
-| Подтверждения сетевых действий в Mini App | Сейчас «Approve network actions only in Telegram»; либо approve в Mini App с теми же токенами, либо deep-link в чат | 3 дня |
+| Подтверждения сетевых действий в Mini App | ✅ v1.52.0: SSE `approval`, одноразовый токен, `POST /api/chat/approval`, тот же поток продолжается после решения | 3 дня |
 | Загрузка документов и голоса | `/docs add` и транскрипция сейчас только в боте | ✅ документы — v1.50.0 (`POST /api/documents`, общий `bot.IngestRAGDocument`), PDF/DOCX — v1.51.0 (`bot.ExtractDocumentText`); голос — остался |
 | Матрица паритета «бот vs Mini App» в тестах | Чтобы третья итерация не забыла половину команд | 1 день |
 
@@ -69,7 +69,7 @@ lock, общий per-minute бюджет и общая дневная квота
   модели/очередей/апдейтов/инструментов/БД, CI `restore-drill` (manual, требует Windows-раннер) и `release`
   (тег → образ + артефакты), `scripts/release-check.ps1`.
 - Спринт 5: чат в Mini App (см. статус выше); загрузка документов в Mini App закрыта в v1.50.0, PDF/DOCX
-  добавлены в v1.51.0, остались подтверждения сетевых действий, голос и матрица паритета.
+  добавлены в v1.51.0, подтверждения сетевых действий — в v1.52.0; остались голос и матрица паритета.
 - Спринт 6 в работе: 👍/👎-фидбэк закрыт (миграция 15, `/feedback` и кнопки в Mini App), гибридный RAG закрыт
   (миграция 16, embeddings + FTS5); остальное — по списку ниже.
 

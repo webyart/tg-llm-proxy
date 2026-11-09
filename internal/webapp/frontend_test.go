@@ -110,8 +110,8 @@ func TestFrontendTaskControlsAndUsageAreScopedToAllowedActions(t *testing.T) {
 			t.Errorf("app.js misses %q", want)
 		}
 	}
-	if strings.Contains(script, "/approve") {
-		t.Fatal("Mini App exposes a network approval action")
+	if strings.Contains(script, "/api/approve") {
+		t.Fatal("Mini App exposes a separate network approval action")
 	}
 }
 
@@ -708,6 +708,34 @@ func TestFrontendRateLimitedErrorsAreLocalized(t *testing.T) {
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("app.js misses localized 429 regression %q", want)
+		}
+	}
+}
+
+func TestFrontendNetworkApprovalCardIsLocalizedAndInline(t *testing.T) {
+	script := frontendAsset(t, "static/app.js")
+	for _, want := range []string{
+		`event.name === "approval"`, `chat.approval = {`, `deadline: Date.now()`,
+		`chatApprovalTitle: "Подтверждение сетевого действия"`, `chatApprovalTitle: "Network action approval"`,
+		`chatApprovalAllow: "Разрешить"`, `chatApprovalAllow: "Allow"`,
+		`chatApprovalDeny: "Отклонить"`, `chatApprovalDeny: "Deny"`,
+		`chatApprovalExpires: "Истекает через {seconds} с"`, `chatApprovalExpires: "Expires in {seconds} s"`,
+		`chatApprovalExpired: "Время подтверждения истекло. Действие не выполнено."`,
+		`chatApprovalDenied: "Отклонено. Действие не выполнено."`,
+		`/api/chat/approval`, `JSON.stringify({ token: approval.token, approve })`,
+		`approval.state = approve ? "approved" : "denied"`, `button.className = "chat-send"`,
+		`approval_expired: "chatApprovalExpired"`, `approval_not_found: "chatApprovalExpired"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js misses network approval regression %q", want)
+		}
+	}
+	if got := strings.Count(script, "/api/chat/approval"); got != 1 {
+		t.Errorf("approval endpoint count = %d, want 1", got)
+	}
+	for _, rejected := range []string{"onclick=", "javascript:", "innerHTML"} {
+		if strings.Contains(script, rejected) {
+			t.Errorf("approval card uses forbidden inline/HTML API %q", rejected)
 		}
 	}
 }

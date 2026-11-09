@@ -32,6 +32,7 @@ const (
 	mutationRateLimit     = 30
 	exportRateLimit       = 5
 	sessionRateLimit      = 6
+	approvalRateLimit     = 10
 	rateLimitWindow       = time.Minute
 	maxRateLimitUsers     = 4096
 )
@@ -48,6 +49,7 @@ type rateLimitPrincipal struct {
 	mutation rateLimitBucket
 	export   rateLimitBucket
 	session  rateLimitBucket
+	approval rateLimitBucket
 }
 
 type perUserRateLimiter struct {
@@ -78,12 +80,19 @@ func (l *perUserRateLimiter) allowSession(userID int64) (bool, time.Duration) {
 	return l.allowBucket(userID, bucketSession, sessionRateLimit)
 }
 
+// allowApproval bounds how fast one user can answer network approvals. The waiting stream is not
+// affected: only the decision endpoint is counted, and a legitimate answer is a single POST.
+func (l *perUserRateLimiter) allowApproval(userID int64) (bool, time.Duration) {
+	return l.allowBucket(userID, bucketApproval, approvalRateLimit)
+}
+
 type rateLimitBucketKind int
 
 const (
 	bucketMutation rateLimitBucketKind = iota
 	bucketExport
 	bucketSession
+	bucketApproval
 )
 
 func (l *perUserRateLimiter) allowBucket(userID int64, kind rateLimitBucketKind, limit int) (bool, time.Duration) {
@@ -92,7 +101,7 @@ func (l *perUserRateLimiter) allowBucket(userID int64, kind rateLimitBucketKind,
 	now := l.now()
 	for id, principal := range l.principals {
 		if rateLimitBucketExpired(principal.mutation, now) && rateLimitBucketExpired(principal.export, now) &&
-			rateLimitBucketExpired(principal.session, now) {
+			rateLimitBucketExpired(principal.session, now) && rateLimitBucketExpired(principal.approval, now) {
 			delete(l.principals, id)
 		}
 	}
@@ -109,6 +118,8 @@ func (l *perUserRateLimiter) allowBucket(userID int64, kind rateLimitBucketKind,
 		bucket, limit = &principal.export, exportRateLimit
 	case bucketSession:
 		bucket = &principal.session
+	case bucketApproval:
+		bucket = &principal.approval
 	default:
 		bucket, limit = &principal.mutation, mutationRateLimit
 	}
@@ -141,6 +152,9 @@ type LinkLifecycle interface {
 // authenticated session — the client never supplies a chat id.
 type ChatBackend interface {
 	AnswerForMiniApp(ctx context.Context, chatID, userID int64, text string, emit func(bot.MiniAppStreamEvent) error) error
+	// ResolveMiniAppApproval delivers a decision for a pending network action. The token must belong
+	// to the same chat and user; used/expired tokens are rejected.
+	ResolveMiniAppApproval(ctx context.Context, token string, chatID, userID int64, approve bool) error
 	ResetContextForMiniApp(ctx context.Context, chatID, userID int64) error
 	SkipPendingForMiniApp(ctx context.Context, chatID, userID int64, skip bool) (bool, error)
 }
@@ -390,6 +404,10 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 	}
 	if req.URL.Path == "/api/messages" {
 		a.chatMessage(w, req, current)
+		return
+	}
+	if req.URL.Path == "/api/chat/approval" {
+		a.chatApproval(w, req, current)
 		return
 	}
 	if req.URL.Path == "/api/context/reset" {

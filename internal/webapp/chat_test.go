@@ -20,6 +20,13 @@ import (
 	"bot/internal/store"
 )
 
+type recordedApproval struct {
+	token   string
+	chatID  int64
+	userID  int64
+	approve bool
+}
+
 type fakeChatBackend struct {
 	mu sync.Mutex
 
@@ -34,11 +41,13 @@ type fakeChatBackend struct {
 	userID int64
 	text   string
 
-	resets   int
-	resetErr error
-	skips    []bool
-	skipSet  bool
-	skipErr  error
+	resets     int
+	resetErr   error
+	skips      []bool
+	skipSet    bool
+	skipErr    error
+	approvals  []recordedApproval
+	approveErr error
 }
 
 func (f *fakeChatBackend) AnswerForMiniApp(ctx context.Context, chatID, userID int64, text string, emit func(bot.MiniAppStreamEvent) error) error {
@@ -69,6 +78,13 @@ func (f *fakeChatBackend) AnswerForMiniApp(ctx context.Context, chatID, userID i
 		return err
 	}
 	return emit(bot.MiniAppStreamEvent{Delta: final, Done: true})
+}
+
+func (f *fakeChatBackend) ResolveMiniAppApproval(ctx context.Context, token string, chatID, userID int64, approve bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.approvals = append(f.approvals, recordedApproval{token: token, chatID: chatID, userID: userID, approve: approve})
+	return f.approveErr
 }
 
 func (f *fakeChatBackend) ResetContextForMiniApp(ctx context.Context, chatID, userID int64) error {

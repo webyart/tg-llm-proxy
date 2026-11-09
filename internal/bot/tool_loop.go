@@ -79,6 +79,10 @@ type toolLoopContinuation struct {
 	approvalScope         *networkApprovalScope
 	suppressApprovalScope bool
 	recoveredApproval     bool
+	// approvalWaiter replaces promptNetworkApproval for clients that can ask the user on the same
+	// stream (the Mini App). It returns true when that exact call is approved, false when the user
+	// refuses, and an error when the wait itself failed (timeout, cancellation, unavailable).
+	approvalWaiter func(ctx context.Context, call model.ToolCall) (bool, error)
 }
 
 type networkConfirmation struct {
@@ -676,7 +680,20 @@ func (d *Dispatcher) runToolLoop(ctx context.Context, state *toolLoopContinuatio
 			}
 			if (call.Name == "read_url" || call.Name == "web_search") && !state.approvedCalls[index] &&
 				!d.networkScopeAllows(ctx, state, call) && !directNetworkIntent(state.metadata.originalRequest, call) {
-				return d.promptNetworkApproval(ctx, state, index)
+				if state.approvalWaiter == nil {
+					return d.promptNetworkApproval(ctx, state, index)
+				}
+				// The Mini App has no callback query: the same stream asks the user and then keeps
+				// running. A refusal ends the request with the Telegram refusal wording and never
+				// executes the tool; a wait error (TTL, client disconnect) stops the answer.
+				approved, err := state.approvalWaiter(ctx, call)
+				if err != nil {
+					return model.Response{}, err
+				}
+				if !approved {
+					return model.Response{Content: miniAppApprovalRefusal}, nil
+				}
+				state.approvedCalls[index] = true
 			}
 		}
 		messages := append([]model.Message(nil), state.request.Messages...)

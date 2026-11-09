@@ -44,14 +44,25 @@ const (
 	MiniAppStageWebSearch = "web_search"
 )
 
+// MiniAppApprovalEvent is the one-time request the model made for a network action. The token is
+// random, bound to this chat/user and single-use; Summary is the bounded, sanitized tool arguments.
+// ExpiresInSeconds is what the client shows as a countdown.
+type MiniAppApprovalEvent struct {
+	Token            string
+	Tool             string
+	Summary          string
+	ExpiresInSeconds int
+}
+
 // MiniAppStreamEvent is one visible event of a Mini App answer. Exactly one field is meaningful:
 // Delta for a text fragment (and for the final text of Done), Stage for a tool/thinking notice,
-// Done for the last event, Error for a sanitized failure message. MessageID is set only on Done:
-// it is the stored assistant row, so the client can rate that exact message without refetching
-// the history.
+// Approval for a pending network decision, Done for the last event, Error for a sanitized failure
+// message. MessageID is set only on Done: it is the stored assistant row, so the client can rate
+// that exact message without refetching the history.
 type MiniAppStreamEvent struct {
 	Delta     string
 	Stage     string
+	Approval  *MiniAppApprovalEvent
 	Done      bool
 	Error     string
 	MessageID int64
@@ -252,6 +263,10 @@ func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64,
 	if streaming {
 		budget += time.Duration(d.deps.Cfg.StreamTotalSeconds) * time.Second
 	}
+	// The approval wait is part of this answer: two network calls per round and two rounds at the
+	// approval TTL each must fit before the work context expires, otherwise the 2-minute approval
+	// would be cut by a shorter non-streaming reply budget.
+	budget += time.Duration(2*toolRoundLimit) * MiniAppApprovalTimeout
 	if budget <= 0 {
 		budget = time.Minute
 	}
@@ -297,7 +312,7 @@ func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64,
 			session = d.newStreamSession(workCtx, chatID, &miniAppStreamSender{stages: tracker})
 			used = &miniAppStreamer{streamer: streamer, stages: tracker, emit: emit}
 		}
-		state := d.miniAppToolLoopState(userID, model.Request{Model: selectedModel, Messages: messages}, metadata, used, session)
+		state := d.miniAppToolLoopState(userID, chatID, model.Request{Model: selectedModel, Messages: messages}, metadata, used, session, emit)
 		resp, modelErr := d.runToolLoop(withToolLoopMetadata(workCtx, metadata), state)
 		if modelErr != nil {
 			d.logMiniAppModelError(ctx, userID, modelErr)
@@ -339,30 +354,33 @@ func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64,
 	return final, assistantID, nil
 }
 
-// miniAppToolLoopState builds the continuation for runToolLoop with calculator enabled and both
-// network tools disabled. A network tool without a Telegram confirmation would have to either
-// execute silently (the Mini App has no approval UI, and the frontend deliberately exposes no
-// /approve action) or dead-end in promptNetworkApproval, which sends a Telegram menu. Neither is
-// acceptable for a client that must perform no Telegram I/O, so the schemas are simply not
-// offered here and tool_loop.go's own "tool disabled" guard protects the protocol.
-func (d *Dispatcher) miniAppToolLoopState(userID int64, req model.Request, metadata toolLoopMetadata, streamer model.Streamer, session *streamSession) *toolLoopContinuation {
+// miniAppToolLoopState builds the continuation for runToolLoop with the same tools the Telegram
+// path offers: calculator plus read_url/web_search behind URL_READER_ENABLED/WEB_SEARCH_ENABLED.
+// A network tool is not executed silently: the continuation gets an approval waiter that asks the
+// user over the live SSE stream and blocks this same loop until POST /api/chat/approval (or the TTL,
+// or the client disconnect) resolves it.
+func (d *Dispatcher) miniAppToolLoopState(userID int64, chatID int64, req model.Request, metadata toolLoopMetadata, streamer model.Streamer, session *streamSession, emit func(MiniAppStreamEvent) error) *toolLoopContinuation {
 	allowed := map[string]bool{
 		"calculator": d.deps.Cfg.ToolsEnabled,
-		"read_url":   false,
-		"web_search": false,
+		"read_url":   d.deps.Cfg.ToolsEnabled && d.deps.Cfg.URLReaderEnabled,
+		"web_search": d.deps.Cfg.ToolsEnabled && d.deps.Cfg.WebSearchEnabled,
 	}
-	req.Tools = nil
-	if allowed["calculator"] {
-		req.Tools = append(req.Tools, calculatorTools(true)...)
-	}
+	req.Tools = append(calculatorTools(allowed["calculator"]), urlReaderTools(allowed["read_url"])...)
+	req.Tools = append(req.Tools, webSearchTools(allowed["web_search"])...)
 	if len(req.Tools) > 0 {
 		req.Messages = append([]model.Message{{Role: model.RoleSystem, Content: nativeToolInstruction}}, req.Messages...)
 	}
-	return &toolLoopContinuation{
+	state := &toolLoopContinuation{
 		userID: userID, request: req, allowedTools: allowed,
 		approvedCall: -1, approvedCalls: map[int]bool{},
 		metadata: metadata, streamer: streamer, session: session,
 	}
+	if allowed["read_url"] || allowed["web_search"] {
+		state.approvalWaiter = func(ctx context.Context, call model.ToolCall) (bool, error) {
+			return d.awaitMiniAppApproval(ctx, emit, chatID, userID, call)
+		}
+	}
+	return state
 }
 
 func (d *Dispatcher) logMiniAppModelError(ctx context.Context, userID int64, err error) {
@@ -404,6 +422,10 @@ func (d *Dispatcher) miniAppErrorText(err error) string {
 		return ""
 	case errors.Is(err, errNetworkApprovalPending):
 		return "Сетевое действие подтверждается только в Telegram: открой бота в Telegram и повтори запрос там."
+	case errors.Is(err, errMiniAppApprovalTimeout):
+		return "Время подтверждения сетевого действия истекло. Запрос не выполнен. Попробуй ещё раз."
+	case errors.Is(err, errMiniAppApprovalBusy):
+		return "Слишком много одновременных запросов на подтверждение сетевого действия. Попробуй ещё раз позже."
 	case errors.Is(err, model.ErrEmptyAnswer):
 		return msgEmptyAnswer
 	case errors.Is(err, model.ErrNoRoom):

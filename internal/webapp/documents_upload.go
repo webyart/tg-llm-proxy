@@ -27,6 +27,9 @@ const (
 	// (fast-fail for JSON), but a document over a mobile link can legitimately take minutes: a 2 MiB PDF already
 	// exceeded 5s from a phone and arrived as a truncated body, which the handler could only report as 400.
 	documentUploadReadBudget = 5 * time.Minute
+	// documentUploadWriteBudget covers the response after the body was read: the server-wide WriteTimeout is 10 s,
+	// which a 12-second upload already exceeded and Traefik reported as 502.
+	documentUploadWriteBudget = 15 * time.Minute
 )
 
 // documentUploadBodyLimit is the request cap of POST /api/documents: the 20 MiB binary document cap plus
@@ -51,10 +54,14 @@ func (a *App) uploadDocument(w http.ResponseWriter, req *http.Request, current s
 	}
 	// The server-wide read timeout is intentionally short; the upload needs its own deadline or a slow phone
 	// connection is cut after five seconds and the user sees a 400 for a perfectly valid file.
-	if deadlineErr := http.NewResponseController(w).SetReadDeadline(time.Now().Add(documentUploadReadBudget)); deadlineErr != nil {
+	var control = http.NewResponseController(w)
+	if deadlineErr := control.SetReadDeadline(time.Now().Add(documentUploadReadBudget)); deadlineErr != nil {
 		// Not every middleware chain supports the controller; the server-wide ReadTimeout is the backstop, so this
 		// is diagnostic only and must not fail an otherwise valid upload.
 		a.logger.Debug("the upload read deadline could not be extended", "chat_id", current.ChatID, "error", deadlineErr.Error())
+	}
+	if deadlineErr := control.SetWriteDeadline(time.Now().Add(documentUploadWriteBudget)); deadlineErr != nil {
+		a.logger.Debug("the upload write deadline could not be extended", "chat_id", current.ChatID, "error", deadlineErr.Error())
 	}
 	// limitInFlight already wrapped the body with the same cap; wrapping again keeps the handler honest when it
 	// is called directly, and the inner reader still reports http.MaxBytesError.

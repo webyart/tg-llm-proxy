@@ -51,7 +51,11 @@ func (a *App) uploadDocument(w http.ResponseWriter, req *http.Request, current s
 	}
 	// The server-wide read timeout is intentionally short; the upload needs its own deadline or a slow phone
 	// connection is cut after five seconds and the user sees a 400 for a perfectly valid file.
-	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(documentUploadReadBudget))
+	if deadlineErr := http.NewResponseController(w).SetReadDeadline(time.Now().Add(documentUploadReadBudget)); deadlineErr != nil {
+		// Not every middleware chain supports the controller; the server-wide ReadTimeout is the backstop, so this
+		// is diagnostic only and must not fail an otherwise valid upload.
+		a.logger.Debug("the upload read deadline could not be extended", "chat_id", current.ChatID, "error", deadlineErr.Error())
+	}
 	// limitInFlight already wrapped the body with the same cap; wrapping again keeps the handler honest when it
 	// is called directly, and the inner reader still reports http.MaxBytesError.
 	req.Body = http.MaxBytesReader(w, req.Body, documentUploadBodyLimit(a.cfg))

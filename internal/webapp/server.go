@@ -864,7 +864,12 @@ func Listen(app *App, address string) (*Server, error) {
 	}
 	return &Server{app: app, listener: listener, srv: &http.Server{
 		Handler: app.Handler(), MaxHeaderBytes: maxHeaderBytes,
-		ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 5 * time.Second,
+		ReadHeaderTimeout: 2 * time.Second,
+		// A document upload from a phone can take minutes: a 8.6 MiB PDF failed at the old 5 s read timeout even
+		// though the handler asked for its own deadline (the ResponseController call is not supported by every
+		// wrapper), so the server-wide value has to carry the slow case. Header floods stay bounded by
+		// ReadHeaderTimeout, bodies by MaxBytesReader and the per-route rate limits.
+		ReadTimeout:  10 * time.Minute,
 		WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second,
 	}}, nil
 }

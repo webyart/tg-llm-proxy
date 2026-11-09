@@ -1,3 +1,11 @@
+# tg-llm-proxy v1.51.1
+
+## A document upload gets its own read deadline
+
+- Both of the user's uploads (2.26 MB and 1.18 MB) were cut at exactly 5.00 s and reported as 400: the webapp server-wide `ReadTimeout` is 5 s so JSON endpoints fail fast, and it also applied to a multipart upload from a phone.
+- `POST /api/documents` now extends the read deadline to 5 minutes for its own request via `http.ResponseController`; the body cap (20 MiB + 1 MiB overhead) is unchanged. An interrupted transfer returns 408 `upload_timeout` with a localized message instead of a generic body error, and the warning log carries the error and Content-Length.
+- The edge gateway's web entrypoint read timeout was raised from 30 s to 300 s (`edge-gateway` commit `b61a4d1`): the old value would have cut a 20 MiB upload from a slow link.
+- Verified live: a deliberately throttled DOCX upload through the gateway took 5.5 s (past the old limit) and returned 201 with 217 chunks; the test document was deleted.
 # tg-llm-proxy v1.51.0
 
 ## PDF и DOCX в RAG: `/docs add` и Mini App

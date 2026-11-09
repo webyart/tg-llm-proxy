@@ -346,3 +346,49 @@ func TestMiniAppAnswerSurvivesAClientDisconnect(t *testing.T) {
 		t.Fatalf("the answer was not stored after the client disconnected: %+v", rows)
 	}
 }
+
+// TestMiniAppAnswerFallsBackToTelegramWhenTheReaderIsGone — the window closed before the done event and
+// MINIAPP_TELEGRAM_FALLBACK is on: the stored answer is delivered to the Telegram chat instead of disappearing.
+func TestMiniAppAnswerFallsBackToTelegramWhenTheReaderIsGone(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	var m = &fakeModel{response: model.Response{Content: "ответ из мини-апп"}}
+	var replier = &fakeReplier{}
+	var d = newTestDispatcher(t, cfg, m, replier, testStore(t))
+	var gone = errors.New("client disconnected")
+	var err = d.AnswerForMiniApp(context.Background(), 11, 11, "вопрос", func(MiniAppStreamEvent) error { return gone })
+	if err == nil {
+		t.Fatal("AnswerForMiniApp returned nil although the reader was gone")
+	}
+	if replier.count() != 1 || !strings.Contains(strings.Join(replier.texts(), " "), "ответ из мини-апп") {
+		t.Fatalf("Telegram fallback messages = %q, want the stored answer", replier.texts())
+	}
+}
+
+// TestMiniAppAnswerDoesNotFallBackWhenDisabled — the same disconnect with the row turned off stays in the history.
+func TestMiniAppAnswerDoesNotFallBackWhenDisabled(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "MINIAPP_TELEGRAM_FALLBACK": "false"})
+	var m = &fakeModel{response: model.Response{Content: "ответ из мини-апп"}}
+	var replier = &fakeReplier{}
+	var d = newTestDispatcher(t, cfg, m, replier, testStore(t))
+	var gone = errors.New("client disconnected")
+	if err := d.AnswerForMiniApp(context.Background(), 11, 11, "вопрос", func(MiniAppStreamEvent) error { return gone }); err == nil {
+		t.Fatal("AnswerForMiniApp returned nil although the reader was gone")
+	}
+	if replier.count() != 0 {
+		t.Fatalf("Telegram fallback sent %q although MINIAPP_TELEGRAM_FALLBACK=false", replier.texts())
+	}
+}
+
+// TestMiniAppAnswerStaysInTheMiniAppWhenDelivered — the healthy path must not duplicate the answer into Telegram.
+func TestMiniAppAnswerStaysInTheMiniAppWhenDelivered(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	var m = &fakeModel{response: model.Response{Content: "ответ из мини-апп"}}
+	var replier = &fakeReplier{}
+	var d = newTestDispatcher(t, cfg, m, replier, testStore(t))
+	if err := d.AnswerForMiniApp(context.Background(), 11, 11, "вопрос", func(MiniAppStreamEvent) error { return nil }); err != nil {
+		t.Fatalf("AnswerForMiniApp: %v", err)
+	}
+	if replier.count() != 0 {
+		t.Fatalf("a delivered Mini App answer was duplicated into Telegram: %q", replier.texts())
+	}
+}

@@ -93,6 +93,7 @@ func startupSummary(logger *slog.Logger, cfg config.Config) {
 		"rag_embeddings_model", cfg.RAGEmbeddingsModel,
 		"tts", cfg.TTSEnabled,
 		"miniapp", cfg.MiniAppEnabled,
+		"miniapp_telegram_fallback", cfg.MiniAppTelegramFallback,
 		"miniapp_public_url", cfg.MiniAppPublicURL,
 		"webhook", cfg.WebhookEnabled,
 		"db_path", cfg.DBPath,

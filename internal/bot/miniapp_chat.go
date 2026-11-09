@@ -161,10 +161,38 @@ func (d *Dispatcher) AnswerForMiniApp(ctx context.Context, chatID, userID int64,
 	}
 	if !streamed {
 		if err := emit(MiniAppStreamEvent{Delta: final}); err != nil {
+			d.deliverMiniAppAnswerToTelegram(ctx, chatID, userID, final)
 			return err
 		}
 	}
-	return emit(MiniAppStreamEvent{Delta: final, Done: true, MessageID: assistantID})
+	var doneErr = emit(MiniAppStreamEvent{Delta: final, Done: true, MessageID: assistantID})
+	if doneErr != nil || ctx.Err() != nil {
+		// The window is gone but the answer exists; deliver it where the user will see it.
+		d.deliverMiniAppAnswerToTelegram(ctx, chatID, userID, final)
+	}
+	return doneErr
+}
+
+// deliverMiniAppAnswerToTelegram sends an already stored Mini App answer to the Telegram chat when the reader
+// disappeared before the done event (MINIAPP_TELEGRAM_FALLBACK, on by default). Best-effort: a failed send is
+// logged, never returned, because the answer is already readable from the history.
+func (d *Dispatcher) deliverMiniAppAnswerToTelegram(ctx context.Context, chatID, userID int64, text string) {
+	if d == nil {
+		return
+	}
+	if !d.deps.Cfg.MiniAppTelegramFallback || strings.TrimSpace(text) == "" || d.deps.Replier == nil {
+		return
+	}
+	var sendCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	if err := d.Send(sendCtx, chatID, text); err != nil {
+		if d.deps.Logger != nil {
+			d.deps.Logger.Warn("the Mini App answer could not be delivered to Telegram",
+				"chat_id", chatID, "error", Sanitize(err, d.deps.Token))
+		}
+		return
+	}
+	d.logEvent(sendCtx, userID, store.EventCommand, "miniapp_answer_telegram")
 }
 
 // ResetContextForMiniApp is the Mini App equivalent of /reset: it hides the chat's context from

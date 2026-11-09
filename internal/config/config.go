@@ -47,6 +47,7 @@ var Env = []string{
 	"WEBHOOK_PORT",
 	"WEBHOOK_PATH",
 	"MINIAPP_ENABLED",
+	"MINIAPP_TELEGRAM_FALLBACK",
 	"MINIAPP_LISTEN_HOST",
 	"MINIAPP_PORT",
 	"MINIAPP_PUBLIC_URL",
@@ -151,6 +152,10 @@ const DefaultReminderTimezone = "UTC"
 // live volume holds measured 1m56s. A sustained one-second cadence reached a real Telegram retry_after=120
 const DefaultStreaming = false
 
+// DefaultMiniAppTelegramFallback delivers an already-generated Mini App answer to Telegram when the window closed
+// before the done event. An answer the bot was charged for should reach the user even if the tab is gone.
+const DefaultMiniAppTelegramFallback = true
+
 // DefaultFallbackTimeoutSeconds — a reserve endpoint may serve by loading its model on the first request; a 27B
 // model on LM Studio took about 61 s cold. The value is a per-attempt timeout, not a promise about the answer.
 const DefaultFallbackTimeoutSeconds = int64(120)
@@ -225,18 +230,21 @@ type Config struct {
 	WebhookPort        int64
 	WebhookPath        string
 	MiniAppEnabled     bool
-	MiniAppPublicURL   string
-	MiniAppHost        string
-	MiniAppPort        int64
-	DBPath             string
-	ReminderTimezone   string
-	ReminderLocation   *time.Location
-	ContextMessages    int64
-	MaxContextChars    int64
-	MaxInputChars      int64
-	RAGMaxDocuments    int64
-	RAGResultLimit     int64
-	RAGMaxContextChars int64
+	// MiniAppTelegramFallback delivers the stored answer to the Telegram chat when the Mini App window was closed
+	// before the done event. On by default: an answer that was already paid for should not disappear with the tab.
+	MiniAppTelegramFallback bool
+	MiniAppPublicURL        string
+	MiniAppHost             string
+	MiniAppPort             int64
+	DBPath                  string
+	ReminderTimezone        string
+	ReminderLocation        *time.Location
+	ContextMessages         int64
+	MaxContextChars         int64
+	MaxInputChars           int64
+	RAGMaxDocuments         int64
+	RAGResultLimit          int64
+	RAGMaxContextChars      int64
 	// The optional hybrid RAG layer: an OpenAI-compatible embeddings server, disabled by default. Base is the
 	// normalized {…}/v1 base, URL is what the client posts to, and Model keys the stored vectors.
 	RAGEmbeddingsEnabled        bool
@@ -728,6 +736,9 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	miniAppEnabled, badMiniAppEnabled := Flag(raw, "MINIAPP_ENABLED", DefaultMiniAppEnabled)
 	cfg.MiniAppEnabled = miniAppEnabled
 	problems = Push(problems, badMiniAppEnabled)
+	miniAppTelegramFallback, badMiniAppTelegramFallback := Flag(raw, "MINIAPP_TELEGRAM_FALLBACK", DefaultMiniAppTelegramFallback)
+	cfg.MiniAppTelegramFallback = miniAppTelegramFallback
+	problems = Push(problems, badMiniAppTelegramFallback)
 	problems = append(problems, loadMiniApp(raw, &cfg)...)
 
 	var dbPath = strings.TrimSpace(raw["DB_PATH"])

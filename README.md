@@ -97,7 +97,7 @@ docker compose logs -f bot
 
 ## Конфигурация
 
-Полный список из 66 ENV-строк и их значения по умолчанию находится в `.env.example`; строки `STREAMING_*`, `WEBHOOK_*`, `MINIAPP_*`, `HEALTH_*` и `RAG_EMBEDDINGS_*` описаны в одноимённых разделах ниже. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
+Полный список из 67 ENV-строк и их значения по умолчанию находится в `.env.example`; строки `STREAMING_*`, `WEBHOOK_*`, `MINIAPP_*`, `HEALTH_*` и `RAG_EMBEDDINGS_*` описаны в одноимённых разделах ниже. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
 
 ### Основные параметры
 
@@ -125,6 +125,7 @@ docker compose logs -f bot
 | `USER_DAILY_NETWORK_TOOL_LIMIT` | 0 = без ограничений | дневной лимит read_url/web_search пользователя по UTC |
 | `USER_LIMITS_JSON` | `{}` | per-user overrides: `{"id":{"model":N,"network_tools":N}}` |
 | `MINIAPP_ENABLED` | false | opt-in Telegram Mini App |
+| `MINIAPP_TELEGRAM_FALLBACK` | true | ответ, досчитанный после закрытия Mini App, отправляется в Telegram |
 | `MINIAPP_LISTEN_HOST` | `127.0.0.1`; в compose — `0.0.0.0` | listener Mini App |
 | `MINIAPP_PORT` | 8084 | loopback port Mini App |
 | `MINIAPP_PUBLIC_URL` | пусто | обязательный HTTPS URL при `MINIAPP_ENABLED=true` |
@@ -601,7 +602,7 @@ docker compose up -d
 
 ## Документы
 
-- `.env.example` — все настройки (66) с комментариями.
+- `.env.example` — все настройки (67) с комментариями.
 - `RELEASE_NOTES.md` — состав release candidate и результаты проверок.
 - `docs/adr/` — Architecture Decision Records: SQLite/один writer, long polling, fail-fast конфигурация, FTS5-индексы, Mini App только для приватных чатов, политика рестарта.
 - `deploy/README.md` — статус исторических конфигураций gateway в `deploy/` (не часть текущего Compose).

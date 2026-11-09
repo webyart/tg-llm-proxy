@@ -1,3 +1,10 @@
+# tg-llm-proxy v1.53.0
+
+## An answer generated after the Mini App window closed is delivered to Telegram
+
+- `MINIAPP_TELEGRAM_FALLBACK` (default true, row 67) delivers the stored Mini App answer to the Telegram chat when the reader disappeared before the `done` event. A healthy Mini App delivery is not duplicated; a failed Telegram send is logged, never surfaced, because the answer is already in the history.
+- The question's answer is still stored even with the fallback off: reopening the Mini App shows it in history.
+- Tests: reader-gone with fallback on sends exactly one Telegram message with the stored text, reader-gone with the row off sends nothing, a normal Mini App delivery sends nothing to Telegram.
 # tg-llm-proxy v1.52.1
 
 ## A Mini App answer survives closing the window

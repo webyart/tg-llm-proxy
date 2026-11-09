@@ -869,8 +869,10 @@ func Listen(app *App, address string) (*Server, error) {
 		// though the handler asked for its own deadline (the ResponseController call is not supported by every
 		// wrapper), so the server-wide value has to carry the slow case. Header floods stay bounded by
 		// ReadHeaderTimeout, bodies by MaxBytesReader and the per-route rate limits.
-		ReadTimeout:  10 * time.Minute,
-		WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second,
+		ReadTimeout: 10 * time.Minute,
+		// The write side must cover the same slow case: a 12-second upload already finished storing the document and
+		// then lost the response to this timeout, which Traefik reported as 502 while the row existed.
+		WriteTimeout: 15 * time.Minute, IdleTimeout: 30 * time.Second,
 	}}, nil
 }
 

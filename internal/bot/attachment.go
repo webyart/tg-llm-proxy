@@ -228,9 +228,17 @@ func documentIsText(name string, declaredMIME string, data []byte) bool {
 	if strings.HasPrefix(mime, "text/") || textualApplicationMIME(mime) {
 		return true
 	}
-	if mime != "" && mime != "application/octet-stream" {
-		return false
+	// An explicitly textual EXTENSION wins over a MIME the caller does not know: browsers and file managers report
+	// .csv as application/vnd.ms-excel, .md as application/x-markdown, and a picker may send a vendor type. The
+	// bytes already passed the UTF-8/control check above, which is what actually separates text from binary.
+	if textDocumentExtension(name) {
+		return true
 	}
+	return false
+}
+
+// textDocumentExtension — the one list both the Telegram and the Mini App upload paths accept.
+func textDocumentExtension(name string) bool {
 	switch strings.ToLower(path.Ext(name)) {
 	case ".txt", ".md", ".markdown", ".log", ".csv", ".tsv", ".json", ".jsonl", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".html", ".css", ".js", ".ts", ".go", ".py", ".java", ".c", ".h", ".cpp", ".cs", ".rs", ".sh", ".ps1", ".sql":
 		return true

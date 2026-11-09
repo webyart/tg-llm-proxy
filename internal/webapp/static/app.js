@@ -946,11 +946,14 @@
     if (!file.size) return "documentUploadEmpty";
     if (file.size > documentUploadMaxBytes) return "documentUploadTooLarge";
     const mime = String(file.type || "").toLowerCase().split(";")[0].trim();
-    if (mime.startsWith("text/") || documentUploadMIMEs.includes(mime)) return "";
-    if (mime && mime !== "application/octet-stream") return "documentUploadType";
+    // An explicitly textual extension wins over a MIME the browser does not know: .csv often arrives as
+    // application/vnd.ms-excel, .md as application/x-markdown. The server applies the same rule and still checks
+    // the bytes for UTF-8 and NUL.
     const dot = file.name.lastIndexOf(".");
     const extension = dot < 0 ? "" : file.name.slice(dot).toLowerCase();
-    return documentUploadExtensions.includes(extension) ? "" : "documentUploadType";
+    if (documentUploadExtensions.includes(extension)) return "";
+    if (mime.startsWith("text/") || documentUploadMIMEs.includes(mime)) return "";
+    return "documentUploadType";
   }
 
   function renderDocumentUpload() {

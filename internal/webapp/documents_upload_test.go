@@ -381,3 +381,25 @@ func TestDocumentUploadNameOverrideAndRequestContract(t *testing.T) {
 		t.Fatalf("duplicate file status=%d body=%s", status, body)
 	}
 }
+
+// TestDocumentUploadAcceptsAVendorMIMEWithATextualExtension — a phone often labels .csv as
+// application/vnd.ms-excel and .md as application/x-markdown; the explicit extension plus valid UTF-8 must be
+// enough for the upload to succeed.
+func TestDocumentUploadAcceptsAVendorMIMEWithATextualExtension(t *testing.T) {
+	app, server := newTestApp(t)
+	bearer := launchSession(t, app, server)
+	for _, test := range []struct {
+		name    string
+		mime    string
+		content string
+	}{
+		{name: "report.csv", mime: "application/vnd.ms-excel", content: "name,value\none,1\n"},
+		{name: "notes.md", mime: "application/x-markdown", content: "# notes\nbody\n"},
+	} {
+		payload, contentType := uploadMultipart(t, test.name, test.mime, []byte(test.content), nil)
+		status, body := uploadRequest(t, server, bearer, bytes.NewReader(payload.Bytes()), contentType)
+		if status != http.StatusCreated {
+			t.Fatalf("%s upload status=%d body=%s", test.name, status, body)
+		}
+	}
+}

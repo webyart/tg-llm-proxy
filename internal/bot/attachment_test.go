@@ -141,3 +141,28 @@ func TestStartupAsksToResendAttachmentInsteadOfCallingModel(t *testing.T) {
 		t.Fatalf("suppressed attachment replay: answered=%d pending=%d err=%v", answered, pending, err)
 	}
 }
+
+// TestDocumentIsTextAcceptsATextualExtensionWithAVendorMIME — browsers and file managers report .csv as
+// application/vnd.ms-excel and .md as application/x-markdown. The extension is explicit and the bytes already
+// passed the UTF-8/control check, so an unknown vendor MIME must not reject a text document.
+func TestDocumentIsTextAcceptsATextualExtensionWithAVendorMIME(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		mime string
+		data string
+		want bool
+	}{
+		{name: "report.csv", mime: "application/vnd.ms-excel", data: "name,value\none,1\n", want: true},
+		{name: "notes.md", mime: "application/x-markdown", data: "# notes\nbody\n", want: true},
+		{name: "notes.md", mime: "application/octet-stream", data: "# notes\nbody\n", want: true},
+		{name: "data.json", mime: "application/vnd.vendor+json", data: `{"a":1}`, want: true},
+		{name: "image.png", mime: "image/png", data: "\x89PNG\r\n\x1a\n\x00\x00", want: false},
+		{name: "tool.exe", mime: "application/x-msdownload", data: "MZ\x00\x00binary", want: false},
+	} {
+		t.Run(test.name+"/"+test.mime, func(t *testing.T) {
+			if got := documentIsText(test.name, test.mime, []byte(test.data)); got != test.want {
+				t.Fatalf("documentIsText(%q, %q) = %v, want %v", test.name, test.mime, got, test.want)
+			}
+		})
+	}
+}

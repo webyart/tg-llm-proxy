@@ -1,3 +1,11 @@
+# tg-llm-proxy v1.52.1
+
+## A Mini App answer survives closing the window
+
+- Closing the Mini App cancels the HTTP request; the generation was bound to that context, so the question was stored, the model call aborted, and no answer row existed (three such questions were visible in the database).
+- The work context is now detached from the client (`context.WithoutCancel` plus the same reply/stream budget), delta emission is best-effort, and the assistant row is written as usual. Reopening the Mini App shows the answer in history.
+- The network-approval wait deliberately still listens to the client context: a closed window must not keep a pending decision alive, and no network action happens without a decision.
+- Test `TestMiniAppAnswerSurvivesAClientDisconnect` cancels the request mid-generation and asserts the stored answer.
 # tg-llm-proxy v1.52.0
 
 ## Подтверждения сетевых действий в Mini App

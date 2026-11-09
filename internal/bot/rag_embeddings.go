@@ -2,6 +2,8 @@ package bot
 
 import (
 	"context"
+	"database/sql"
+	"log/slog"
 	"strings"
 
 	"bot/internal/store"
@@ -45,22 +47,35 @@ func (d *Dispatcher) searchRAG(ctx context.Context, chatID int64, query string, 
 	return store.SearchRAGChunksWithOptions(ctx, d.deps.DB, chatID, query, options)
 }
 
-// embedDocumentChunks fills the vectors of a document that has just been committed. It is best-effort by
-// contract: the document is already stored and searchable lexically, so every failure here is a warning and the
-// reply still says the document was saved.
+// embedDocumentChunks is the dispatcher's thin wrapper over EmbedDocumentChunks, kept so the Telegram tests and
+// any future caller can use the dispatcher without spelling out its dependencies.
 func (d *Dispatcher) embedDocumentChunks(ctx context.Context, chatID, documentID int64) {
-	if d.deps.Embeddings == nil {
-		return
+	EmbedDocumentChunks(ctx, d.deps.DB, d.deps.Embeddings, d.deps.Logger, d.deps.Token, chatID, documentID)
+}
+
+// EmbedDocumentChunks fills the vectors of a document that has just been committed. It is best-effort by
+// contract: the document is already stored and searchable lexically, so every failure here is a warning and the
+// reply still says the document was saved. It reports whether every chunk received a stored vector, which is
+// what POST /api/documents returns as "embedded"; no client, no targets or any failure is false.
+//
+// The function is exported because the Mini App upload goes through the same ingest path as Telegram /docs add:
+// chunking lives in the store and embedding lives here, in one place.
+func EmbedDocumentChunks(ctx context.Context, db *sql.DB, client EmbeddingClient, logger *slog.Logger, token string, chatID, documentID int64) bool {
+	if client == nil {
+		return false
 	}
-	model := d.deps.Embeddings.Model()
-	targets, err := store.DocumentEmbeddingTargets(ctx, d.deps.DB, documentID)
+	if logger == nil {
+		logger = slog.Default()
+	}
+	model := client.Model()
+	targets, err := store.DocumentEmbeddingTargets(ctx, db, documentID)
 	if err != nil {
-		d.deps.Logger.Warn("RAG document chunks could not be read for embedding",
-			"document_id", documentID, "error", Sanitize(err, d.deps.Token))
-		return
+		logger.Warn("RAG document chunks could not be read for embedding",
+			"document_id", documentID, "error", Sanitize(err, token))
+		return false
 	}
 	if len(targets) == 0 {
-		return
+		return false
 	}
 	texts := make([]string, len(targets))
 	for index, target := range targets {
@@ -68,25 +83,26 @@ func (d *Dispatcher) embedDocumentChunks(ctx context.Context, chatID, documentID
 	}
 	// The client sends at most embed.MaxBatch inputs per request and splits a longer document itself, so one
 	// call here covers a document of any size while the batch cap stays in one place.
-	vectors, err := d.deps.Embeddings.Embed(ctx, texts)
+	vectors, err := client.Embed(ctx, texts)
 	if err != nil {
-		d.deps.Logger.Warn("RAG document embedding failed, the document stays searchable lexically",
-			"document_id", documentID, "chunks", len(targets), "error", Sanitize(err, d.deps.Token))
-		return
+		logger.Warn("RAG document embedding failed, the document stays searchable lexically",
+			"document_id", documentID, "chunks", len(targets), "error", Sanitize(err, token))
+		return false
 	}
 	if len(vectors) != len(targets) {
-		d.deps.Logger.Warn("RAG document embedding returned a different number of vectors",
+		logger.Warn("RAG document embedding returned a different number of vectors",
 			"document_id", documentID, "chunks", len(targets), "vectors", len(vectors))
-		return
+		return false
 	}
 	stored := 0
 	for index, vector := range vectors {
-		if err := store.PutChunkEmbedding(ctx, d.deps.DB, chatID, targets[index].ID, model, vector); err != nil {
-			d.deps.Logger.Warn("RAG chunk embedding could not be stored",
-				"document_id", documentID, "chunk_id", targets[index].ID, "error", Sanitize(err, d.deps.Token))
+		if err := store.PutChunkEmbedding(ctx, db, chatID, targets[index].ID, model, vector); err != nil {
+			logger.Warn("RAG chunk embedding could not be stored",
+				"document_id", documentID, "chunk_id", targets[index].ID, "error", Sanitize(err, token))
 			continue
 		}
 		stored++
 	}
-	d.deps.Logger.Debug("RAG document embedded", "document_id", documentID, "chunks", stored, "model", model)
+	logger.Debug("RAG document embedded", "document_id", documentID, "chunks", stored, "model", model)
+	return stored == len(targets)
 }

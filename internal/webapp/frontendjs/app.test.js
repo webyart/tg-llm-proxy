@@ -119,7 +119,7 @@ test("document search is read-only, busy-safe, bounded to three results and vali
   await openTab(harness, "documents");
   harness.resetRequests();
   const content = harness.element("content");
-  const input = content.querySelector("input");
+  const input = content.querySelector('input[type="search"]');
   input.value = "  need & more  ";
   input.dispatchEvent({ type: "input" });
 
@@ -157,7 +157,7 @@ test("document search is read-only, busy-safe, bounded to three results and vali
   assert.match(results.textContent, /Совпадений больше|оценена только часть/);
 
   harness.resetRequests();
-  const blank = content.querySelector("input");
+  const blank = content.querySelector('input[type="search"]');
   blank.value = "   ";
   blank.dispatchEvent({ type: "input" });
   findButton(content, "Найти").click();

@@ -1,3 +1,12 @@
+# tg-llm-proxy v1.50.0
+
+## Mini App: загрузка документов в RAG
+
+- `POST /api/documents` принимает `multipart/form-data` с одной частью `file` и необязательным `name`; chat/user берутся только из bearer-сессии. Успех — `201 {"id","name","chunks","embedded"}` без текста документа. Ошибки: `400 document_empty|unsupported_document|document_too_large|invalid_body`, `409 document_limit`, `413 body_too_large` (cap `MEDIA_MAX_MB` + 64 КиБ multipart-overhead), `415 content_type`.
+- Валидация и ingest вынесены в общий `bot.IngestRAGDocument`, поэтому Mini App и `/docs add` используют один `documentIsText` (UTF-8, NUL/control, MIME/extension), один лимит 64 КиБ и один вызов `store.PutRAGDocumentWithLimit` с `RAG_MAX_DOCUMENTS`. Эмбеддинги — тот же best-effort `bot.EmbedDocumentChunks`; `embedded` в ответе означает, что все чанки получили вектор.
+- Вкладка «Документы»: выбор файла и кнопка «Загрузить» (44 px, mobile-first), клиентский pre-check расширения и размера, состояние «Загрузка…» с блокировкой повторного нажатия, toast и обновление списка; RU/EN, без inline-обработчиков, внешних зависимостей и изменений CSP.
+- Проверки: `internal/webapp/documents_upload_test.go` (401, spoofed `chat_id`, 415, пустой/бинарный/oversized текст, 413, 409, 201 с nil/fake/failing embeddings, замена по имени), `internal/webapp/frontendjs/documents_upload.test.js`; Docker `go test ./internal/webapp ./internal/bot`, `go build ./...`, `gofmt`, `node --check`.
+
 # tg-llm-proxy v1.49.3
 
 ## A reserve that answers nothing gets one more try

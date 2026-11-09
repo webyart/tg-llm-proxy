@@ -64,6 +64,17 @@
       documentSearchEmptyQuery: "Введите непустой поисковый запрос.", documentSearchFailed: "Не удалось выполнить поиск документов.",
       documentSearchId: "id документа", documentSearchScore: "оценка",
       documentSearchTruncated: "Совпадений больше, чем помещается в один поиск; оценена только часть фрагментов.",
+      uploadDocumentTitle: "Загрузить документ",
+      uploadDocumentHint: "Текстовый файл UTF-8 до 64 КиБ: .txt, .md, .json, .csv и другие.",
+      documentFileAria: "Текстовый файл для загрузки",
+      uploadDocument: "Загрузить", documentUploading: "Загрузка…",
+      documentUploaded: "Документ загружен.",
+      documentUploadFailed: "Не удалось загрузить документ.",
+      documentUploadChoose: "Выберите текстовый файл.",
+      documentUploadEmpty: "Файл пустой.",
+      documentUploadTooLarge: "Файл больше 64 КиБ: Telegram принимает текстовые документы до 64 КиБ.",
+      documentUploadType: "Поддерживаются текстовые файлы UTF-8: .txt, .md, .json, .csv и другие.",
+      documentLimitReached: "Достигнут лимит документов этого чата. Удалите один документ и повторите.",
       searchHistory: "Найти", historySearchAria: "Поиск по истории", historySearchPlaceholder: "Поисковый запрос",
       historySearchResults: "Результаты поиска", historySearchEmpty: "По запросу ничего не найдено.",
       historySearchEmptyQuery: "Введите непустой поисковый запрос.", historySearchFailed: "Не удалось выполнить поиск по истории.",
@@ -193,6 +204,17 @@
       documentSearchEmptyQuery: "Enter a non-empty search query.", documentSearchFailed: "Document search failed.",
       documentSearchId: "document id", documentSearchScore: "score",
       documentSearchTruncated: "More chunks match than one search scores; only part of them was ranked.",
+      uploadDocumentTitle: "Upload a document",
+      uploadDocumentHint: "UTF-8 text file up to 64 KiB: .txt, .md, .json, .csv and others.",
+      documentFileAria: "Text file to upload",
+      uploadDocument: "Upload", documentUploading: "Uploading…",
+      documentUploaded: "Document uploaded.",
+      documentUploadFailed: "The document could not be uploaded.",
+      documentUploadChoose: "Choose a text file.",
+      documentUploadEmpty: "The file is empty.",
+      documentUploadTooLarge: "The file is larger than 64 KiB; Telegram accepts text documents up to 64 KiB.",
+      documentUploadType: "Supported files are UTF-8 text: .txt, .md, .json, .csv and others.",
+      documentLimitReached: "This chat reached its document limit. Delete one document and retry.",
       searchHistory: "Search", historySearchAria: "Search history", historySearchPlaceholder: "Search query",
       historySearchResults: "Search results", historySearchEmpty: "No messages matched the query.",
       historySearchEmptyQuery: "Enter a non-empty search query.", historySearchFailed: "History search failed.",
@@ -272,6 +294,8 @@
     not_found: "errorNotFound", invalid_body: "errorInvalidJSON", static_error: "errorRead", reminder_not_mutable: "reminderNotMutable",
     task_not_active: "taskNotActive", task_not_resumable: "taskNotResumable", task_mutation_failed: "taskMutationFailed",
     task_not_deletable: "taskNotDeletable", document_mutation_failed: "documentMutationFailed",
+    document_empty: "documentUploadEmpty", document_too_large: "documentUploadTooLarge",
+    unsupported_document: "documentUploadType", document_limit: "documentLimitReached",
     link_mutation_failed: "linkMutationFailed", reminder_mutation_failed: "reminderMutationFailed",
     history_mutation_failed: "historyMutationFailed", invalid_url: "linkInvalidURL", invalid_reminder: "reminderInvalid",
     feedback_forbidden: "feedbackForbidden",
@@ -333,6 +357,9 @@
   let cancelTaskArmed = false;
   let cancelReminderArmed = null;
   let documentSearch = { query: "", active: false, items: [], truncated: false };
+  // The selected File survives a re-render of the Documents tab (a FileList cannot be restored, the object can),
+  // so arming a delete does not silently throw away the file the user just picked.
+  let documentUploadFile = null;
   let historySearch = { query: "", active: false, items: [], truncated: false };
   let linkSearch = { query: "", active: false, items: [] };
   let view = { tab: "status", data: null, items: [] };
@@ -898,6 +925,93 @@
     return section;
   }
 
+  // The server-side text-document contract of /docs add: 64 KiB, UTF-8 text, this extension list for a file whose
+  // MIME is empty or octet-stream (a browser sends the real type, but a picker may not know it). The pre-check
+  // mirrors the server so an obviously wrong file never leaves the phone; the server still validates every byte.
+  const documentUploadMaxBytes = 64 * 1024;
+  const documentUploadExtensions = [
+    ".txt", ".md", ".markdown", ".log", ".csv", ".tsv", ".json", ".jsonl", ".xml", ".yaml", ".yml",
+    ".toml", ".ini", ".cfg", ".html", ".css", ".js", ".ts", ".go", ".py", ".java", ".c", ".h", ".cpp",
+    ".cs", ".rs", ".sh", ".ps1", ".sql",
+  ];
+  const documentUploadMIMEs = [
+    "application/json", "application/ld+json", "application/xml", "application/xhtml+xml", "application/x-yaml",
+    "application/yaml", "application/x-ndjson", "application/sql", "application/javascript", "application/x-sh",
+    "application/x-httpd-php",
+  ];
+  const documentUploadAccept = documentUploadExtensions.join(",") + ",text/*,application/json";
+
+  function documentUploadIssue(file) {
+    if (!file || !file.name) return "documentUploadChoose";
+    if (!file.size) return "documentUploadEmpty";
+    if (file.size > documentUploadMaxBytes) return "documentUploadTooLarge";
+    const mime = String(file.type || "").toLowerCase().split(";")[0].trim();
+    if (mime.startsWith("text/") || documentUploadMIMEs.includes(mime)) return "";
+    if (mime && mime !== "application/octet-stream") return "documentUploadType";
+    const dot = file.name.lastIndexOf(".");
+    const extension = dot < 0 ? "" : file.name.slice(dot).toLowerCase();
+    return documentUploadExtensions.includes(extension) ? "" : "documentUploadType";
+  }
+
+  function renderDocumentUpload() {
+    const section = element("section", "document-upload");
+    section.appendChild(element("h3", "", t("uploadDocumentTitle")));
+    section.appendChild(element("p", "form-hint", t("uploadDocumentHint")));
+    const row = element("div", "document-upload-row");
+    const input = element("input");
+    input.type = "file";
+    input.className = "document-file";
+    input.accept = documentUploadAccept;
+    input.setAttribute("aria-label", t("documentFileAria"));
+    const selected = element("p", "document-file-name", documentUploadFile ? documentUploadFile.name : "");
+    input.addEventListener("change", () => {
+      documentUploadFile = input.files && input.files[0] ? input.files[0] : null;
+      selected.textContent = documentUploadFile ? documentUploadFile.name : "";
+    });
+    row.appendChild(input);
+    const button = element("button", "", t("uploadDocument"));
+    button.type = "button";
+    button.addEventListener("click", () => uploadDocument(input, button));
+    row.appendChild(button);
+    section.appendChild(row);
+    section.appendChild(selected);
+    return section;
+  }
+
+  async function uploadDocument(fileInput, button) {
+    if (loading || !session) return;
+    const file = documentUploadFile || (fileInput.files && fileInput.files[0]) || null;
+    const issue = documentUploadIssue(file);
+    if (issue) {
+      showError(t(issue));
+      return;
+    }
+    button.textContent = t("documentUploading");
+    setBusy(true);
+    showError("");
+    let uploaded = false;
+    try {
+      const form = new FormData();
+      form.append("file", file, file.name);
+      const data = await api("/api/documents", { method: "POST", body: form });
+      if (!data || data.id === undefined || typeof data.name !== "string" || typeof data.chunks !== "number") {
+        throw new Error(t("invalidResponse"));
+      }
+      uploaded = true;
+    } catch (error) {
+      showError(error.message || t("documentUploadFailed"));
+    } finally {
+      setBusy(false);
+      if (!uploaded) renderItems("documents", view.items);
+    }
+    if (uploaded) {
+      documentUploadFile = null;
+      resetArmedStates();
+      await load();
+      showNotice(t("documentUploaded"));
+    }
+  }
+
   function renderDocumentSearch() {
     const section = element("section", "document-search");
     const row = element("div", "document-search-row");
@@ -1127,7 +1241,10 @@
   function renderItems(tab, items) {
     ui.content.replaceChildren();
     if (tab === "history") ui.content.appendChild(renderHistorySearch());
-    if (tab === "documents") ui.content.appendChild(renderDocumentSearch());
+    if (tab === "documents") {
+      ui.content.appendChild(renderDocumentUpload());
+      ui.content.appendChild(renderDocumentSearch());
+    }
     if (tab === "links") ui.content.appendChild(renderLinkControls());
     if (tab === "tasks") ui.content.appendChild(renderTaskCreation());
     if (!items.length) {

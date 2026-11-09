@@ -2,9 +2,11 @@ package bot
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +22,59 @@ const (
 	RAGResultLimit = 3
 	RAGMaxRunes    = 2000
 )
+
+// Errors of the shared text-document ingest. The Mini App maps them to 400 responses; the Telegram handler
+// reports them as the same unsupported-document message it always has.
+var (
+	ErrRAGDocumentEmpty    = errors.New("RAG document is empty")
+	ErrRAGDocumentTooLarge = errors.New("RAG document is too large")
+)
+
+// RAGDocumentInput is one text document on its way into a chat's local base. MIMEType and Data are what the
+// transport supplied: Telegram's declared attachment MIME/downloaded bytes or a multipart file part. Name may be
+// raw and is sanitized exactly once, in IngestRAGDocument.
+type RAGDocumentInput struct {
+	Name     string
+	MIMEType string
+	Data     []byte
+}
+
+// RAGDocumentResult is the committed document as the caller may report it. It never contains the text itself.
+type RAGDocumentResult struct {
+	ID       int64
+	Name     string
+	Chunks   int
+	Embedded bool
+}
+
+// IngestRAGDocument is the single ingest path of Telegram /docs add and POST /api/documents: it reuses
+// documentIsText (UTF-8, no NUL/control bytes, the same MIME/extension list), enforces DocumentMaxBytes and the
+// chat's RAG_MAX_DOCUMENTS through the store, and then makes the best-effort embedding pass. A validation error
+// is returned before the store is touched; a store error is returned unchanged so the caller can map it.
+func IngestRAGDocument(ctx context.Context, db *sql.DB, embeddings EmbeddingClient, logger *slog.Logger, token string,
+	chatID, userID int64, input RAGDocumentInput, maxDocuments int) (RAGDocumentResult, error) {
+	if len(input.Data) == 0 {
+		return RAGDocumentResult{}, ErrRAGDocumentEmpty
+	}
+	if int64(len(input.Data)) > DocumentMaxBytes {
+		return RAGDocumentResult{}, ErrRAGDocumentTooLarge
+	}
+	if strings.TrimSpace(string(input.Data)) == "" {
+		return RAGDocumentResult{}, ErrRAGDocumentEmpty
+	}
+	if !documentIsText(input.Name, input.MIMEType, input.Data) {
+		return RAGDocumentResult{}, ErrAttachmentType
+	}
+	name := safeAttachmentName(input.Name)
+	id, chunks, err := store.PutRAGDocumentWithLimit(ctx, db, chatID, userID, name, string(input.Data), maxDocuments)
+	if err != nil {
+		return RAGDocumentResult{}, err
+	}
+	// The document is committed first and the vectors are an addition to it: an embedding failure leaves a
+	// lexically searchable document instead of a failed command.
+	embedded := EmbedDocumentChunks(ctx, db, embeddings, logger, token, chatID, id)
+	return RAGDocumentResult{ID: id, Name: name, Chunks: chunks, Embedded: embedded}, nil
+}
 
 type documentConfirmation struct {
 	ChatID     int64
@@ -306,18 +361,20 @@ func (d *Dispatcher) addDocument(ctx context.Context, ev Event) error {
 	if err != nil {
 		return d.reply(ctx, ev.ChatID, attachmentUserError(err))
 	}
-	if len(files) != 1 || !documentIsText(ev.Attachment.FileName, ev.Attachment.MimeType, files[0].Data) {
+	if len(files) != 1 {
 		return d.reply(ctx, ev.ChatID, attachmentUserError(ErrAttachmentType))
 	}
-	name := safeAttachmentName(ev.Attachment.FileName)
-	id, chunks, err := store.PutRAGDocumentWithLimit(ctx, d.deps.DB, ev.ChatID, ev.UserID, name, string(files[0].Data), int(d.deps.Cfg.RAGMaxDocuments))
+	result, err := IngestRAGDocument(ctx, d.deps.DB, d.deps.Embeddings, d.deps.Logger, d.deps.Token,
+		ev.ChatID, ev.UserID,
+		RAGDocumentInput{Name: ev.Attachment.FileName, MIMEType: ev.Attachment.MimeType, Data: files[0].Data},
+		int(d.deps.Cfg.RAGMaxDocuments))
 	if err != nil {
+		if errors.Is(err, ErrAttachmentType) || errors.Is(err, ErrRAGDocumentEmpty) || errors.Is(err, ErrRAGDocumentTooLarge) {
+			return d.reply(ctx, ev.ChatID, attachmentUserError(ErrAttachmentType))
+		}
 		return err
 	}
-	// The document is committed first and the vectors are an addition to it: an embedding failure leaves a
-	// lexically searchable document instead of a failed command.
-	d.embedDocumentChunks(ctx, ev.ChatID, id)
-	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Документ %s сохранён с id=%d, частей: %d. Он будет использоваться при следующих вопросах.", name, id, chunks))
+	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Документ %s сохранён с id=%d, частей: %d. Он будет использоваться при следующих вопросах.", result.Name, result.ID, result.Chunks))
 }
 
 func (d *Dispatcher) documentActionReply(ctx context.Context, ev Event, text string) error {

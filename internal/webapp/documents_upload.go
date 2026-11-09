@@ -1,0 +1,161 @@
+package webapp
+
+import (
+	"context"
+	"errors"
+	"io"
+	"mime"
+	"mime/multipart"
+	"net/http"
+	"strings"
+
+	"bot/internal/bot"
+	"bot/internal/config"
+	"bot/internal/store"
+)
+
+const (
+	// documentUploadOverhead is the room multipart framing and the optional name part need above the file
+	// itself. The stored text keeps the Telegram /docs add limit (bot.DocumentMaxBytes); this cap only bounds
+	// how much of a request the Mini App is willing to buffer.
+	documentUploadOverhead = 64 << 10
+	// documentUploadNameBytes bounds the optional name override before safeAttachmentName trims it to 120 runes.
+	documentUploadNameBytes = 4 << 10
+)
+
+// documentUploadBodyLimit is the request cap of POST /api/documents. It follows MEDIA_MAX_MB, the same row the
+// Telegram media limits use, so a text document of an ordinary media size is not refused by the generic 16 KiB
+// JSON cap. The stricter 64 KiB text limit is still enforced from the shared ingest helper.
+func documentUploadBodyLimit(cfg config.Config) int64 {
+	return cfg.MediaMaxBytes + documentUploadOverhead
+}
+
+// uploadDocument handles POST /api/documents: one multipart file part, an optional name override, and no ID in
+// the body. The chat and user come from the authenticated session only; unknown parts (a spoofed chat_id, for
+// example) are skipped, never read as scope.
+func (a *App) uploadDocument(w http.ResponseWriter, req *http.Request, current scope) {
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Document upload does not accept query parameters.")
+		return
+	}
+	mediaType, parameters, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
+	if err != nil || mediaType != "multipart/form-data" || parameters["boundary"] == "" {
+		writeError(w, http.StatusUnsupportedMediaType, "content_type", "Send one multipart/form-data file part.")
+		return
+	}
+	// limitInFlight already wrapped the body with the same cap; wrapping again keeps the handler honest when it
+	// is called directly, and the inner reader still reports http.MaxBytesError.
+	req.Body = http.MaxBytesReader(w, req.Body, documentUploadBodyLimit(a.cfg))
+	reader := multipart.NewReader(req.Body, parameters["boundary"])
+	var (
+		data         []byte
+		fileName     string
+		fileMIME     string
+		overrideName string
+		haveFile     bool
+		haveName     bool
+	)
+	for {
+		part, partErr := reader.NextPart()
+		if errors.Is(partErr, io.EOF) {
+			break
+		}
+		if partErr != nil {
+			a.documentUploadReadFailed(w, req, current, partErr)
+			return
+		}
+		switch part.FormName() {
+		case "file":
+			if haveFile {
+				_ = part.Close()
+				writeError(w, http.StatusBadRequest, "invalid_body", "Send exactly one file part.")
+				return
+			}
+			haveFile = true
+			fileName = part.FileName()
+			if strings.TrimSpace(fileName) == "" {
+				_ = part.Close()
+				writeError(w, http.StatusBadRequest, "invalid_body", "The file part needs a filename.")
+				return
+			}
+			fileMIME = part.Header.Get("Content-Type")
+			// The body cap bounds this read; reading the whole part is what turns an oversized body into 413
+			// instead of a premature 400.
+			data, partErr = io.ReadAll(part)
+		case "name":
+			if haveName {
+				_ = part.Close()
+				writeError(w, http.StatusBadRequest, "invalid_body", "Send at most one name field.")
+				return
+			}
+			haveName = true
+			var raw []byte
+			raw, partErr = io.ReadAll(io.LimitReader(part, documentUploadNameBytes))
+			if partErr == nil {
+				overrideName = strings.TrimSpace(string(raw))
+			}
+		default:
+			// Unknown fields are ignored on purpose: the session decides the chat and the user.
+		}
+		_ = part.Close()
+		if partErr != nil {
+			a.documentUploadReadFailed(w, req, current, partErr)
+			return
+		}
+	}
+	if !haveFile {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Send one file part.")
+		return
+	}
+	if overrideName != "" {
+		fileName = overrideName
+	}
+	result, err := bot.IngestRAGDocument(req.Context(), a.db, a.embeddings, a.logger, a.cfg.BotToken,
+		current.ChatID, current.UserID,
+		bot.RAGDocumentInput{Name: fileName, MIMEType: fileMIME, Data: data},
+		int(a.cfg.RAGMaxDocuments))
+	switch {
+	case err == nil:
+	case errors.Is(err, store.ErrRAGDocumentLimit):
+		writeError(w, http.StatusConflict, "document_limit", "This chat reached its document limit (RAG_MAX_DOCUMENTS). Delete a document and retry.")
+		return
+	case errors.Is(err, bot.ErrRAGDocumentEmpty):
+		writeError(w, http.StatusBadRequest, "document_empty", "The document is empty.")
+		return
+	case errors.Is(err, bot.ErrRAGDocumentTooLarge):
+		writeError(w, http.StatusBadRequest, "document_too_large", "A text document may be at most 64 KiB.")
+		return
+	case errors.Is(err, bot.ErrAttachmentType):
+		writeError(w, http.StatusBadRequest, "unsupported_document", "Send a UTF-8 text document of a supported type.")
+		return
+	default:
+		if errors.Is(err, context.Canceled) || errors.Is(err, req.Context().Err()) {
+			return
+		}
+		a.logger.Error("Mini App document upload failed", "chat_id", current.ChatID, "error", err)
+		writeError(w, http.StatusInternalServerError, "document_mutation_failed", "The document could not be saved.")
+		return
+	}
+	// One line with metadata only: the document text never reaches the log.
+	a.logger.Info("Mini App RAG document uploaded",
+		"chat_id", current.ChatID, "user_id", current.UserID, "document_id", result.ID,
+		"name", result.Name, "bytes", len(data), "chunks", result.Chunks, "embedded", result.Embedded)
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id": result.ID, "name": result.Name, "chunks": result.Chunks, "embedded": result.Embedded,
+	})
+}
+
+// documentUploadReadFailed maps the two ways reading a multipart body can fail: the request cap (413) and a
+// malformed or truncated body (400).
+func (a *App) documentUploadReadFailed(w http.ResponseWriter, req *http.Request, current scope, err error) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "Request body is too large.")
+		return
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, req.Context().Err()) {
+		return
+	}
+	a.logger.Warn("Mini App document upload body could not be read", "chat_id", current.ChatID)
+	writeError(w, http.StatusBadRequest, "invalid_body", "Send one multipart file part.")
+}

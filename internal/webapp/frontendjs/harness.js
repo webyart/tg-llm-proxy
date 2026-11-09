@@ -312,6 +312,9 @@ async function createHarness(options = {}) {
     TextDecoder,
     Headers,
     TextEncoder,
+    FormData,
+    File,
+    Blob,
     URLSearchParams,
     localStorage: {
       getItem() { return null; },

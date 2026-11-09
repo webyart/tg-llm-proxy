@@ -61,11 +61,21 @@ func (f *fakeModelClient) Models(ctx context.Context) ([]string, error) {
 
 func newTestApp(t *testing.T) (*App, *httptest.Server) {
 	t.Helper()
+	return newTestAppWithRaw(t, nil)
+}
+
+// newTestAppWithRaw is newTestApp with extra config rows. The document upload tests use it to put the request
+// cap (MEDIA_MAX_MB) at its minimum instead of building an 11 MiB body.
+func newTestAppWithRaw(t *testing.T, extra map[string]string) (*App, *httptest.Server) {
+	t.Helper()
 	var raw = map[string]string{}
 	raw["TELEGRAM_BOT_TOKEN"] = "123:test"
 	raw["TELEGRAM_ALLOWED_USERS"] = strconv.FormatInt(testUserID, 10) + "," + strconv.FormatInt(otherTestUserID, 10)
 	raw["MINIAPP_ENABLED"] = "true"
 	raw["MINIAPP_PUBLIC_URL"] = "https://example.test/app"
+	for name, value := range extra {
+		raw[name] = value
+	}
 	cfg, problems := config.LoadFrom(raw)
 	if len(problems) != 0 {
 		t.Fatalf("config: %v", problems)
@@ -290,7 +300,11 @@ func TestReadOnlyAPIRejectsMethodsWithAllowGet(t *testing.T) {
 		{http.MethodDelete, "/api/settings"},
 	} {
 		status, body, headers := apiRequest(t, server, test.method, test.path, bearer)
-		if status != http.StatusMethodNotAllowed || headers.Get("Allow") != http.MethodGet {
+		wantAllow := http.MethodGet
+		if test.path == "/api/documents" {
+			wantAllow = http.MethodGet + ", " + http.MethodPost
+		}
+		if status != http.StatusMethodNotAllowed || headers.Get("Allow") != wantAllow {
 			t.Errorf("%s %s status=%d Allow=%q body=%s", test.method, test.path, status, headers.Get("Allow"), body)
 		}
 		var payload struct {
@@ -329,7 +343,7 @@ func TestGlobalInFlightCap(t *testing.T) {
 		once.Do(func() { close(entered) })
 		<-release
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-	}), 1)
+	}), 1, 0)
 	done := make(chan struct{})
 	go func() {
 		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))

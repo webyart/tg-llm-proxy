@@ -420,7 +420,14 @@ textarea { min-height: 78px; resize: vertical; line-height: 1.45; }
 .settings-row select { flex: 1 1 180px; width: auto; }
 .settings-row button { flex: 0 1 auto; }
 .counter { margin-top: 3px; color: var(--muted); font-size: .72rem; text-align: right; }
-.document-search, .history-search, .link-search { padding: 11px; margin: 9px 0 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: #7b899608; }
+.document-search, .history-search, .link-search, .document-upload { padding: 11px; margin: 9px 0 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: #7b899608; }
+.document-upload { border-color: #5b5bd62e; background: linear-gradient(145deg, #5b5bd60a, #7b899608); }
+.document-upload h3 { font-size: .95rem; margin: 0 0 6px; overflow-wrap: anywhere; }
+.document-upload-row { display: flex; flex-wrap: wrap; align-items: stretch; gap: 7px; }
+.document-upload-row input[type="file"] { flex: 1 1 180px; min-height: 44px; padding: 9px 11px; }
+.document-upload-row button { flex: 0 1 auto; min-height: 44px; }
+.document-file-name { margin-top: 7px; color: var(--muted); font-size: .78rem; overflow-wrap: anywhere; }
+.document-file-name:empty { display: none; }
 .document-search-row, .history-search-row, .history-export, .link-search-row { display: flex; flex-wrap: wrap; align-items: stretch; gap: 7px; }
 .document-search-row input, .history-search-row input, .link-search-row input { flex: 1 1 180px; }
 .document-search-row button, .history-search-row button, .link-search-row button { flex: 0 1 auto; }
@@ -645,11 +652,11 @@ textarea { min-height: 78px; resize: vertical; line-height: 1.45; }
   .app-header { padding-left: max(9px, env(safe-area-inset-left)); padding-right: max(9px, env(safe-area-inset-right)); }
   main { padding-left: max(8px, env(safe-area-inset-left)); padding-right: max(8px, env(safe-area-inset-right)); }
   .workspace-panel { padding: 8px; }
-  .item, .creation-panel, .document-search, .history-search, .link-search { padding: 10px; }
+  .item, .creation-panel, .document-search, .document-upload, .history-search, .link-search { padding: 10px; }
   .settings-row { align-items: stretch; }
   .settings-row select, .settings-row button { flex: 1 1 100%; width: 100%; }
   .chat-actions button, .chat-form .form-actions button { flex: 1 1 auto; }
-  .document-search-row input, .document-search-row button, .history-search-row input, .history-search-row button, .history-export button, .link-search-row input, .link-search-row button, .form-actions button { flex: 1 1 100%; width: 100%; }
+  .document-search-row input, .document-search-row button, .history-search-row input, .history-search-row button, .history-export button, .link-search-row input, .link-search-row button, .document-upload-row input, .document-upload-row button, .form-actions button { flex: 1 1 100%; width: 100%; }
   .header-actions { width: 100%; justify-content: flex-end; }
   .stats { grid-template-columns: 1fr 1fr; }
   .section-heading { align-items: center; }

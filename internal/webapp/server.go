@@ -205,7 +205,7 @@ func New(cfg config.Config, db *sql.DB, client model.Client, logger *slog.Logger
 	if client != nil {
 		app.chat = bot.New(bot.Deps{Cfg: cfg, DB: db, Model: client, Logger: logger, Token: cfg.BotToken})
 	}
-	app.handler = securityHeaders(limitInFlight(recoverPanics(logger, http.HandlerFunc(app.route)), maxInFlight))
+	app.handler = securityHeaders(limitInFlight(recoverPanics(logger, http.HandlerFunc(app.route)), maxInFlight, documentUploadBodyLimit(cfg)))
 	return app
 }
 
@@ -303,7 +303,9 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-func limitInFlight(next http.Handler, capacity int) http.Handler {
+// limitInFlight caps concurrent requests and replaces every body with a bounded reader. uploadBodyLimit is the
+// larger cap of POST /api/documents (multipart upload); every other route keeps maxBodyBytes.
+func limitInFlight(next http.Handler, capacity int, uploadBodyLimit int64) http.Handler {
 	inFlight := make(chan struct{}, capacity)
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		select {
@@ -313,7 +315,11 @@ func limitInFlight(next http.Handler, capacity int) http.Handler {
 			writeError(w, http.StatusServiceUnavailable, "overloaded", "The Mini App is busy. Try again shortly.")
 			return
 		}
-		req.Body = http.MaxBytesReader(w, req.Body, maxBodyBytes)
+		limit := int64(maxBodyBytes)
+		if uploadBodyLimit > 0 && req.Method == http.MethodPost && req.URL.Path == "/api/documents" {
+			limit = uploadBodyLimit
+		}
+		req.Body = http.MaxBytesReader(w, req.Body, limit)
 		next.ServeHTTP(w, req)
 	})
 }
@@ -422,6 +428,17 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 		a.documentControl(w, req, current)
 		return
 	}
+	if req.URL.Path == "/api/documents" {
+		switch req.Method {
+		case http.MethodPost:
+			a.uploadDocument(w, req, current)
+		case http.MethodGet:
+			a.documents(w, req, current)
+		default:
+			methodAllowed(w, http.MethodGet, http.MethodPost)
+		}
+		return
+	}
 	if req.URL.Path == "/api/links/search" {
 		a.searchLinks(w, req, current)
 		return
@@ -488,8 +505,6 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 		a.historyByID(w, req, current)
 	case "/api/history/export":
 		a.exportHistory(w, req, current)
-	case "/api/documents":
-		a.documents(w, req, current)
 	case "/api/links":
 		a.links(w, req, current)
 	case "/api/tasks":
@@ -532,6 +547,8 @@ func miniAppMutationOperation(req *http.Request) (string, bool) {
 	path := req.URL.Path
 	if req.Method == http.MethodPost {
 		switch path {
+		case "/api/documents":
+			return "documents.add", true
 		case "/api/documents/clear":
 			return "documents.clear", true
 		case "/api/history/clear":

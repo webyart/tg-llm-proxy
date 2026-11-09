@@ -21,6 +21,7 @@ var Env = []string{
 	"STRATA_MODEL",
 	"STRATA_FALLBACK_MODEL",
 	"STRATA_FALLBACK_BASE_URL",
+	"STRATA_FALLBACK_TIMEOUT_SECONDS",
 	"STRATA_TRANSCRIPTION_MODEL",
 	"TRANSCRIPTION_BASE_URL",
 	"MEDIA_MAX_MB",
@@ -150,6 +151,10 @@ const DefaultReminderTimezone = "UTC"
 // live volume holds measured 1m56s. A sustained one-second cadence reached a real Telegram retry_after=120
 const DefaultStreaming = false
 
+// DefaultFallbackTimeoutSeconds — a reserve endpoint may serve by loading its model on the first request; a 27B
+// model on LM Studio took about 61 s cold. The value is a per-attempt timeout, not a promise about the answer.
+const DefaultFallbackTimeoutSeconds = int64(120)
+
 // DefaultStreamDrafts keeps the edit path: see the field comment for the ordering caveat of draft previews.
 const DefaultStreamDrafts = false
 const DefaultStreamEditIntervalMS = int64(5000)
@@ -179,24 +184,28 @@ type Config struct {
 	// The optional reserve model. StrataFallbackModel is empty when the feature is off; FallbackBase stays
 	// empty when the fallback shares the primary endpoint, so a startup summary can print only a real second
 	// endpoint. FallbackChatURL/FallbackModelsURL are always the URLs to call when the fallback is enabled.
-	StrataFallbackModel  string
-	FallbackBase         string
-	FallbackChatURL      string
-	FallbackModelsURL    string
-	TranscriptionModel   string
-	TranscriptionBase    string
-	TranscriptionURL     string
-	TTSURL               string
-	TTSEnabled           bool
-	TTSModel             string
-	TTSVoice             string
-	TTSMaxChars          int64
-	TTSTimeoutSeconds    int64
-	MediaMaxBytes        int64
-	SpeechMaxSeconds     int64
-	TimeoutSeconds       int64
-	ReplyDeadlineSeconds int64
-	RecoveryMaxAgeHours  int64
+	StrataFallbackModel string
+	// A reserve endpoint may need to load its model on the first request (a cold LM Studio/LM Studio-style server
+	// took ~61 s for a 27B model), so its per-attempt timeout is separate from STRATA_TIMEOUT_SECONDS. The outer
+	// reply budget still bounds the whole answer.
+	StrataFallbackTimeoutSeconds int64
+	FallbackBase                 string
+	FallbackChatURL              string
+	FallbackModelsURL            string
+	TranscriptionModel           string
+	TranscriptionBase            string
+	TranscriptionURL             string
+	TTSURL                       string
+	TTSEnabled                   bool
+	TTSModel                     string
+	TTSVoice                     string
+	TTSMaxChars                  int64
+	TTSTimeoutSeconds            int64
+	MediaMaxBytes                int64
+	SpeechMaxSeconds             int64
+	TimeoutSeconds               int64
+	ReplyDeadlineSeconds         int64
+	RecoveryMaxAgeHours          int64
 	// rewritten as the model writes; StreamEditIntervalMS is the cadence of those rewrites; StreamIdleSeconds
 	// is the pause between two SSE events past which the stream is considered dead; StreamTotalSeconds is the
 	// ceiling of one streamed answer. The semantics of TimeoutSeconds and ReplyDeadlineSeconds do NOT change
@@ -665,6 +674,10 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	var timeout, badTimeout = Num(raw, "STRATA_TIMEOUT_SECONDS", DefaultTimeoutSeconds, 1, 3600)
 	cfg.TimeoutSeconds = timeout
 	problems = Push(problems, badTimeout)
+
+	var fallbackTimeout, badFallbackTimeout = Num(raw, "STRATA_FALLBACK_TIMEOUT_SECONDS", DefaultFallbackTimeoutSeconds, 5, 600)
+	cfg.StrataFallbackTimeoutSeconds = fallbackTimeout
+	problems = Push(problems, badFallbackTimeout)
 
 	var deadline, badDeadline = Num(raw, "TG_REPLY_DEADLINE_SECONDS", DefaultDeadlineSeconds, 1, 3600)
 	cfg.ReplyDeadlineSeconds = deadline

@@ -80,6 +80,7 @@ func startupSummary(logger *slog.Logger, cfg config.Config) {
 		"strata_base", cfg.StrataBase,
 		"model", cfg.StrataModel,
 		"fallback_model", cfg.StrataFallbackModel,
+		"fallback_timeout_seconds", cfg.StrataFallbackTimeoutSeconds,
 		"transcription_model", cfg.TranscriptionModel,
 		"timeout_seconds", cfg.TimeoutSeconds,
 		"reply_deadline_seconds", cfg.ReplyDeadlineSeconds,
@@ -208,6 +209,8 @@ func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, l
 		fallbackOptions.ChatURL = cfg.FallbackChatURL
 		fallbackOptions.ModelsURL = cfg.FallbackModelsURL
 		fallbackOptions.Model = cfg.StrataFallbackModel
+		// A reserve model may load on demand: its own timeout must not be the primary per-attempt one.
+		fallbackOptions.Timeout = time.Duration(cfg.StrataFallbackTimeoutSeconds) * time.Second
 		fallbackOptions.TranscriptionModel = ""
 		fallbackOptions.TranscriptionURL = ""
 		fallbackOptions.TranscriptionNoAuth = false

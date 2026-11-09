@@ -294,8 +294,8 @@ func TestOldNameOfTheRowIsRefusedByName(t *testing.T) {
 }
 
 func TestEnvIsTheRowsOfTheTable(t *testing.T) {
-	if len(Env) != 65 {
-		t.Errorf("Env holds %d names, want 65 including per-user daily limits, HEALTH_LISTEN_HOST, STREAM_DRAFTS_ENABLED, the four RAG_EMBEDDINGS_* rows and the two STRATA_FALLBACK_* rows", len(Env))
+	if len(Env) != 66 {
+		t.Errorf("Env holds %d names, want 66 including per-user daily limits, HEALTH_LISTEN_HOST, STREAM_DRAFTS_ENABLED, the four RAG_EMBEDDINGS_* rows and the two STRATA_FALLBACK_* rows", len(Env))
 	}
 	var seen = map[string]bool{}
 	var i = 0

@@ -1,3 +1,11 @@
+# tg-llm-proxy v1.49.1
+
+## Fallback: separate per-attempt timeout
+
+- `STRATA_FALLBACK_TIMEOUT_SECONDS` (default 120, 5..600) sets the reserve endpoint's per-attempt timeout. A local OpenAI-compatible server may load the model on the first request: a 27B model on LM Studio took about 61 s cold, which the primary 60 s timeout would have cut. The outer reply budget still bounds the whole answer.
+- Live verification: primary pointed at a dead port, reserve at LM Studio; the log showed `model fallback attempt ... reason=network` and the answer came back from `qwen/qwen3.8-27b`.
+- Config rows: 65 → 66.
+
 # tg-llm-proxy v1.49.0
 
 ## Fallback-модель

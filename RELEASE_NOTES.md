@@ -1,3 +1,11 @@
+# tg-llm-proxy v1.51.2
+
+## Slow document uploads keep their response
+
+- A 8.6 MiB PDF was cut at 5.00 s (408) and a 12-second test upload stored its document but lost the response to the 10-second server write timeout, which Traefik reported as 502 while the row already existed.
+- The webapp server now uses `ReadTimeout` 10 minutes and `WriteTimeout` 15 minutes: `ReadHeaderTimeout` (2 s), `MaxBytesReader` and per-route rate limits still bound abuse, while a phone upload plus PDF/DOCX extraction is no longer cut mid-flight. The upload handler keeps its own read/write deadlines and logs a refused extension at debug.
+- The edge gateway bounds went to `readTimeout` 600 s and `responseHeaderTimeout` 300 s (commits `78db806`, `164553c`).
+- Verified live: a deliberately throttled 410 KB DOCX over 12.6 s through the gateway returned 201 (1 chunk, embedded); the test documents were deleted. The user's three PDFs remained stored.
 # tg-llm-proxy v1.51.1
 
 ## A document upload gets its own read deadline

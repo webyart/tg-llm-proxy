@@ -9,6 +9,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"strings"
 	"time"
 )
 
@@ -95,6 +97,12 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
+	// A provider can answer HTTP 200 and put the failure into an `error` object in the body (LM Studio does this
+	// while it is still loading a model). Reporting only "200: client error" hid the reason and sent people
+	// looking at the wrong layer, so the sanitized body is shown for exactly that case.
+	if e.Status == http.StatusOK && strings.TrimSpace(e.Body) != "" {
+		return "the endpoint answered 200 with an error: " + Flatten(e.Body, 200)
+	}
 	return fmt.Sprintf("strata answered %d: %s", e.Status, httpStatusClass(e.Status))
 }
 

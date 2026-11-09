@@ -1,3 +1,10 @@
+# tg-llm-proxy v1.49.2
+
+## A 200-with-error is reported with its reason
+
+- LM Studio (and some OpenAI-compatible servers) can answer HTTP 200 and put the failure into an `error` object in the body while a model is loading. The client reported `strata answered 200: client error, not retried`, which hid the reason and sent the reader to the wrong layer. `APIError.Error` now prints the sanitized, truncated body for exactly that case; 4xx/5xx keep their short class text and never echo a provider body.
+- Diagnosed from a live incident: the primary STRATA endpoint was stopped (connection refused on :8080) and the LM Studio reserve answered 200-with-error because its 27B model was still loading; the fallback itself was configured correctly (:1234) and streams fine once the model is resident.
+- Test `TestAPIErrorKeepsTheProviderBodyOfA200` covers both branches.
 # tg-llm-proxy v1.49.1
 
 ## Fallback: separate per-attempt timeout

@@ -200,6 +200,16 @@ func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, l
 		return fmt.Errorf("model.New: %w", clientErr)
 	}
 
+	// STRATA is a single-model server: it may keep the loaded model while answering requests that name another
+	// one, or reject a name it no longer offers. When the endpoint lists exactly one model, adopt it for the
+	// primary path instead of letting every answer take the fallback. A failed listing leaves the config alone.
+	if discovered, changed := model.DiscoverModelName(ctx, primary, cfg.StrataModel, 3*time.Second); changed {
+		logger.Warn("the endpoint offers a single model; using it instead of STRATA_MODEL",
+			"configured", cfg.StrataModel, "loaded", discovered)
+		primary.UseModel(discovered)
+		cfg.StrataModel = discovered
+	}
+
 	// The chat client is the primary unless a fallback is configured. The fallback wrapper deliberately has
 	// no Transcribe method, so voice keeps using the primary: the composite reattaches that optional
 	// interface to the wrapper the dispatcher sees.

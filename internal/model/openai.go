@@ -469,6 +469,15 @@ func Decode(status int, payload []byte, model string, attempt int) (Response, er
 	return out, nil
 }
 
+// UseModel replaces the model name this client sends. It exists for startup model discovery on a single-model
+// server (see DiscoverModelName) and must not be called while requests are in flight.
+func (c *OpenAI) UseModel(name string) {
+	var trimmed = strings.TrimSpace(name)
+	if trimmed != "" {
+		c.model = trimmed
+	}
+}
+
 // `/model` slower than the answer it reports on.
 func (c *OpenAI) Models(ctx context.Context) ([]string, error) {
 	var modelCtx, cancel = context.WithTimeout(ctx, c.timeout)

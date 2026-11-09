@@ -1,3 +1,15 @@
+# tg-llm-proxy v1.49.3
+
+## A reserve that answers nothing gets one more try
+
+- A small local reserve can return HTTP 200 with an empty `content`. The fallback wrapper now repeats the reserve attempt exactly once when the failure is `ErrEmptyAnswer`, for `Complete` and for `Stream` (a stream only when no non-empty delta has reached the caller — an empty delta is not text on the screen, so it does not block the retry and never causes duplicated text).
+- Tests cover both paths and assert that the reserve is called exactly twice and the fallback outcome is recorded as `ok`.
+
+## Single-model endpoints are adopted at startup
+
+- STRATA loads one model at a time. When `GET /v1/models` lists exactly one model whose name differs from `STRATA_MODEL`, the bot adopts that name for the primary client and logs a `WARN` with both names. An unavailable listing, several models or an empty list keep the configured name — discovery never guesses in an ambiguous case.
+- This keeps the primary path real instead of quietly sending every request through the fallback; on this machine the bot now logs the switch from `qwen3.8-flash-next-coder-iq1_m` to the loaded `qwen3.8-flash-next-iq3_s`.
+
 # tg-llm-proxy v1.49.2
 
 ## A 200-with-error is reported with its reason

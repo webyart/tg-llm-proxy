@@ -96,6 +96,11 @@ func (c *fallbackClient) Complete(ctx context.Context, req Request) (Response, e
 	var fallbackRequest = req
 	fallbackRequest.Model = c.fallbackModel
 	var fallbackResponse, fallbackErr = c.fallback.Complete(ctx, fallbackRequest)
+	if fallbackErr != nil && errors.Is(fallbackErr, ErrEmptyAnswer) {
+		// A small local reserve answered 200 with no content once (a known quirk of some models). One more attempt
+		// is cheap next to handing the user a failed answer.
+		fallbackResponse, fallbackErr = c.fallback.Complete(ctx, fallbackRequest)
+	}
 	if fallbackErr != nil {
 		c.metrics.fallbackAttempt("error")
 		return fallbackResponse, fallbackFailed("Complete", c.primaryModel, c.fallbackModel, err, fallbackErr)
@@ -137,7 +142,28 @@ func (c *fallbackStreamerClient) Stream(ctx context.Context, req Request, h Stre
 	c.warnFallback(err)
 	var fallbackRequest = req
 	fallbackRequest.Model = c.fallbackModel
-	var fallbackResponse, fallbackErr = c.fallbackStreamer.Stream(ctx, fallbackRequest, h)
+	// The retry-on-empty rule needs to know whether the reserve already put text on the screen: replaying a
+	// partial stream would duplicate it, so the marker is observed through this handler only for the fallback.
+	var fallbackDelivered bool
+	var fallbackHandler = StreamHandler{
+		Progress: h.Progress,
+		Delta: func(text string) error {
+			// An empty delta is not text on the screen: the reserve still owes the user an answer, so the
+			// retry-on-empty rule must see it as nothing delivered.
+			if strings.TrimSpace(text) != "" {
+				fallbackDelivered = true
+			}
+			if h.Delta == nil {
+				return nil
+			}
+			return h.Delta(text)
+		},
+	}
+	var fallbackResponse, fallbackErr = c.fallbackStreamer.Stream(ctx, fallbackRequest, fallbackHandler)
+	if fallbackErr != nil && !fallbackDelivered && errors.Is(fallbackErr, ErrEmptyAnswer) {
+		fallbackDelivered = false
+		fallbackResponse, fallbackErr = c.fallbackStreamer.Stream(ctx, fallbackRequest, fallbackHandler)
+	}
 	if fallbackErr != nil {
 		c.metrics.fallbackAttempt("error")
 		return fallbackResponse, fallbackFailed("Stream", c.primaryModel, c.fallbackModel, err, fallbackErr)

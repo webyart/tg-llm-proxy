@@ -783,3 +783,285 @@ test("miniapp base prefixes session, central API and history export fetches", as
   assert.equal(harness.requests[0].path, "/miniapp/api/history/export?format=json");
   assert.equal(harness.requests[0].options.headers.get("Authorization"), "Bearer test-session");
 });
+
+function enableSvg(harness) {
+  harness.document.createElementNS = (namespace, tag) => {
+    assert.equal(namespace, "http://www.w3.org/2000/svg");
+    return harness.document.createElement(tag);
+  };
+}
+
+function usageSeries(count) {
+  const base = Date.UTC(2026, 2, 2, 0, 0, 0);
+  return Array.from({ length: count }, (_, index) => ({
+    start: new Date(base - (count - 1 - index) * 86400000).toISOString(),
+    model_calls: index % 3 === 0 ? index + 1 : 0,
+    tokens_in: index * 10,
+    tokens_out: index * 20,
+    tools: {
+      read_url: index % 2 === 0 ? 1 : 0,
+      web_search: index > 1 ? 1 : 0,
+      calculator: 0,
+      rag: index > 3 ? 1 : 0,
+    },
+    tools_total: (index % 2 === 0 ? 1 : 0) + (index > 1 ? 1 : 0) + (index > 3 ? 1 : 0),
+  }));
+}
+
+function usagePayload(range) {
+  const series = usageSeries(range === "week" ? 8 : 7);
+  return {
+    date: "2026-03-02",
+    models: [{ model: "series-model", calls: 2, tokens_in: 7, tokens_out: 9 }],
+    tools: { read_url: 1, web_search: 2, calculator: 3, rag: 4 },
+    limits: {
+      model: { used: 2, limit: 10, remaining: 8 },
+      network_tools: { used: 1, limit: 5, remaining: 4 },
+    },
+    range,
+    truncated: false,
+    series,
+    totals: {
+      model_calls: 2,
+      tokens_in: 7,
+      tokens_out: 9,
+      tool_calls: 10,
+      models: [{ model: "series-model", calls: 2, tokens_in: 7, tokens_out: 9 }],
+      tools: { read_url: 1, web_search: 2, calculator: 3, rag: 4 },
+    },
+  };
+}
+
+test("usage tab requests the selected range and renders accessible inline SVG charts", async () => {
+  const harness = await createHarness();
+  enableSvg(harness);
+  harness.setHandler((request, fallback) => {
+    if (request.path.startsWith("/api/usage")) {
+      const range = new URL(request.path, "https://example.test").searchParams.get("range") || "day";
+      return jsonResponse(usagePayload(range === "week" ? "week" : "day"));
+    }
+    return fallback();
+  });
+  harness.resetRequests();
+  await openTab(harness, "usage");
+  assert.equal(harness.requests.length, 1);
+  assert.equal(harness.requests[0].path, "/api/usage?range=day");
+  assert.equal(harness.requests[0].options.headers.get("Authorization"), "Bearer test-session");
+
+  const content = harness.element("content");
+  const labels = content.querySelectorAll("button").map((button) => button.textContent);
+  for (const label of ["Час", "День", "Неделя", "Месяц"]) {
+    assert.ok(labels.includes(label), `range button ${label} is missing`);
+  }
+  const pressed = content.querySelectorAll("button")
+    .filter((button) => button.getAttribute("aria-pressed") === "true")
+    .map((button) => button.textContent);
+  assert.deepEqual(pressed, ["День"]);
+
+  const svgs = content.querySelectorAll("svg");
+  assert.equal(svgs.length, 3);
+  for (const svg of svgs) {
+    assert.equal(svg.getAttribute("role"), "img");
+    assert.ok((svg.getAttribute("aria-label") || "").length > 20);
+    assert.match(svg.getAttribute("viewBox"), /^0 0 320 \d+$/);
+  }
+  assert.ok(content.querySelectorAll("rect").length >= 5);
+  assert.ok(content.querySelectorAll("polyline").length >= 2);
+  assert.ok(content.textContent.includes("series-model"));
+  assert.ok(content.textContent.includes("Входящие"));
+  assert.ok(content.textContent.includes("Исходящие"));
+
+  const weekButton = content.querySelectorAll("button").find((button) => button.textContent === "Неделя");
+  weekButton.click();
+  await harness.flush();
+  assert.equal(harness.requests.at(-1).path, "/api/usage?range=week");
+  const after = harness.element("content");
+  const pressedAfter = after.querySelectorAll("button")
+    .filter((button) => button.getAttribute("aria-pressed") === "true")
+    .map((button) => button.textContent);
+  assert.deepEqual(pressedAfter, ["Неделя"]);
+  assert.equal(after.querySelectorAll("svg").length, 3);
+});
+
+test("usage tab tolerates the pre-range response without series or totals", async () => {
+  const harness = await createHarness();
+  enableSvg(harness);
+  harness.resetRequests();
+  await openTab(harness, "usage");
+  assert.equal(harness.requests[0].path, "/api/usage?range=day");
+  const content = harness.element("content");
+  assert.ok(content.textContent.includes("Обращений за сегодня не было."));
+  assert.ok(content.textContent.includes("За выбранный период обращений не было."));
+  assert.equal(content.querySelectorAll("svg").length, 1);
+});
+
+function adminChatFixture(overrides = {}) {
+  return {
+    id: 11,
+    title: "Личный чат",
+    type: "private",
+    user_id: 11,
+    last_activity: "2026-01-01 10:00:00",
+    today: { model_calls: 3, read_url: 1, web_search: 2, calculator: 0 },
+    limits: { daily_model_limit: 10, daily_network_limit: 5, per_minute_limit: 2, disabled_tools: ["web_search"] },
+    has_limits: true,
+    ...overrides,
+  };
+}
+
+function adminSettingsHandler(chats, extra = {}) {
+  return async (request, fallback) => {
+    if (request.path === "/api/admin/chats?limit=50") return jsonResponse({ items: chats, limit: 50 });
+    if (extra.handle && extra.handle(request)) return extra.handle(request);
+    if (request.path.startsWith("/api/settings")) {
+      const response = await fallback();
+      const body = await response.json();
+      body.is_admin = true;
+      return jsonResponse(body);
+    }
+    return fallback();
+  };
+}
+
+function limitsSection(harness) {
+  const content = harness.element("content");
+  const section = content.querySelectorAll("section").find((node) => node.classList.contains("chat-limits"));
+  assert.ok(section, "the admin chat-limits section is missing");
+  return section;
+}
+
+test("non-admin settings has no chat-limits section and makes no admin request", async () => {
+  const harness = await createHarness();
+  harness.resetRequests();
+  await openTab(harness, "settings");
+  const content = harness.element("content");
+  assert.equal(content.textContent.includes("Лимиты чатов"), false);
+  assert.equal(harness.requests.some((request) => request.path.startsWith("/api/admin/")), false);
+});
+
+test("admin chat limits render usage, edit and save the strict payload", async () => {
+  const harness = await createHarness();
+  const chats = [
+    adminChatFixture(),
+    adminChatFixture({ id: -100200, title: "Рабочая группа", type: "group" }),
+  ];
+  let savedPath = "";
+  let savedBody = null;
+  harness.setHandler(adminSettingsHandler(chats, {
+    handle(request) {
+      if (request.path === "/api/admin/chats/11/limits" && request.options.method === "PUT") {
+        savedPath = request.path;
+        savedBody = JSON.parse(request.options.body);
+        return jsonResponse({ ok: true, id: 11 });
+      }
+      return null;
+    },
+  }));
+  harness.resetRequests();
+  await openTab(harness, "settings");
+  const section = limitsSection(harness);
+  assert.ok(section.textContent.includes("Сегодня (UTC): модель 3, сеть 3, read_url 1, web_search 2, calculator 0"));
+  const choice = section.querySelectorAll("select");
+  assert.equal(choice.length, 1);
+  assert.equal(choice[0].getAttribute("aria-label"), "Чат");
+  assert.equal(choice[0].querySelectorAll("option").length, 2);
+  assert.ok(choice[0].querySelectorAll("option")[0].textContent.includes("11 · Личный чат · личный"));
+  assert.ok(choice[0].querySelectorAll("option")[1].textContent.includes("-100200 · Рабочая группа · группа"));
+
+  const numbers = section.querySelectorAll("input").filter((input) => input.type === "number");
+  assert.deepEqual(numbers.map((input) => input.value), ["10", "5", "2"]);
+  const boxes = section.querySelectorAll("input").filter((input) => input.type === "checkbox");
+  assert.deepEqual(boxes.map((box) => box.checked), [false, true, false]);
+
+  numbers[0].value = "20";
+  numbers[1].value = "6";
+  numbers[2].value = "3";
+  boxes[0].checked = true;
+  findButton(section, "Сохранить").click();
+  await harness.flush();
+
+  assert.equal(savedPath, "/api/admin/chats/11/limits");
+  assert.deepEqual(savedBody, {
+    daily_model_limit: 20, daily_network_limit: 6, per_minute_limit: 3,
+    disabled_tools: ["read_url", "web_search"],
+  });
+  assert.ok(harness.element("notice").textContent.includes("Лимиты чата сохранены."));
+  assert.ok(harness.requests.filter((request) => request.path === "/api/admin/chats?limit=50").length >= 2);
+});
+
+test("admin chat limits switch chat and reset one row", async () => {
+  const harness = await createHarness();
+  const chats = [
+    adminChatFixture(),
+    adminChatFixture({
+      id: -100200, title: "Рабочая группа", type: "group",
+      today: { model_calls: 7, read_url: 0, web_search: 1, calculator: 2 },
+      limits: { daily_model_limit: 0, daily_network_limit: 4, per_minute_limit: 1, disabled_tools: [] },
+    }),
+  ];
+  let deletedPath = "";
+  harness.setHandler(adminSettingsHandler(chats, {
+    handle(request) {
+      if (request.path === "/api/admin/chats/-100200/limits" && request.options.method === "DELETE") {
+        deletedPath = request.path;
+        return jsonResponse({ ok: true, id: -100200 });
+      }
+      return null;
+    },
+  }));
+  await openTab(harness, "settings");
+  let section = limitsSection(harness);
+  const choice = section.querySelectorAll("select")[0];
+  choice.value = "-100200";
+  choice.dispatchEvent({ type: "change", bubbles: false });
+  await harness.flush();
+
+  section = limitsSection(harness);
+  assert.ok(section.textContent.includes("модель 7, сеть 1, read_url 0, web_search 1, calculator 2"));
+  const numbers = section.querySelectorAll("input").filter((input) => input.type === "number");
+  assert.deepEqual(numbers.map((input) => input.value), ["0", "4", "1"]);
+  findButton(section, "Сбросить").click();
+  await harness.flush();
+  assert.equal(deletedPath, "/api/admin/chats/-100200/limits");
+  assert.ok(harness.element("notice").textContent.includes("Лимиты чата сброшены."));
+});
+
+test("admin chat limits reject a non-integer before calling the API", async () => {
+  const harness = await createHarness();
+  harness.setHandler(adminSettingsHandler([adminChatFixture()], {
+    handle(request) {
+      if (request.path.startsWith("/api/admin/chats/") && request.options.method === "PUT") {
+        return jsonResponse({ ok: true, id: 11 });
+      }
+      return null;
+    },
+  }));
+  await openTab(harness, "settings");
+  const section = limitsSection(harness);
+  const numbers = section.querySelectorAll("input").filter((input) => input.type === "number");
+  numbers[0].value = "1.5";
+  const before = harness.requests.length;
+  findButton(section, "Сохранить").click();
+  await harness.flush();
+  assert.equal(harness.requests.length, before);
+  assert.ok(harness.element("error").textContent.includes("целые числа от 0 до 1000000"));
+});
+
+test("admin chat list failure is localized inside the section", async () => {
+  const harness = await createHarness();
+  harness.setHandler(async (request, fallback) => {
+    if (request.path === "/api/admin/chats?limit=50") {
+      return jsonResponse({ error: { code: "admin_required", message: "Administrator access is required." } }, 403);
+    }
+    if (request.path.startsWith("/api/settings")) {
+      const response = await fallback();
+      const body = await response.json();
+      body.is_admin = true;
+      return jsonResponse(body);
+    }
+    return fallback();
+  });
+  await openTab(harness, "settings");
+  const section = limitsSection(harness);
+  assert.ok(section.textContent.includes("Раздел доступен только администратору."));
+});

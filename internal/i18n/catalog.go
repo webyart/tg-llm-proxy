@@ -111,6 +111,7 @@ var ruMessages = map[string]string{
 	"command.usage.description":     "использование модели и инструментов за UTC-сутки",
 	"command.whoami.description":    "user_id и chat_id для TELEGRAM_ALLOWED_USERS",
 	"command.admin.description":     "агрегированные метрики для администратора",
+	"command.limits.description":    "лимиты чата: показать, model N, network N, minute N, tools, reset",
 
 	// /help and /start.
 	"help.line":            "%s — %s",
@@ -609,6 +610,26 @@ var ruMessages = map[string]string{
 	// Access refusals.
 	"refuse.closed":     "Бот закрыт: TELEGRAM_ALLOWED_USERS пуст. Твой user_id — %d, впиши его в %s и перезапусти бот.",
 	"refuse.not_listed": "Тебя нет в TELEGRAM_ALLOWED_USERS. Твой user_id — %d, добавь его в %s.",
+
+	// Per-chat limits: the daily model refusal, the per-minute refusal, the /limits command and the
+	// disabled-tools allowlist. Tool names (read_url, web_search, calculator) are never translated.
+	"ask.chat_daily_limited": "Дневной лимит обращений к модели для этого чата исчерпан (не более %d вызовов за UTC-сутки). Попробуйте ещё раз после 00:00 UTC.",
+	"chat.limit_minute":      "Слишком часто: в этом чате не больше %d сообщений в минуту. Подождите минуту и повторите.",
+	"limits.title":           "Лимиты чата %d (%s):",
+	"limits.source":          "Источник: %s",
+	"limits.source_chat":     "настройки этого чата",
+	"limits.source_default":  "по умолчанию (без ограничений)",
+	"limits.today":           "Сегодня (UTC): вызовов модели %d (лимит %s); сетевых вызовов %d (лимит %s)",
+	"limits.tools":           "Инструменты за UTC-сутки: read_url %d, web_search %d, calculator %d; отключены: %s",
+	"limits.per_minute":      "Сообщений в минуту: %s",
+	"limits.unlimited":       "без ограничений",
+	"limits.tools_none":      "нет",
+	"limits.saved":           "Лимиты чата сохранены. Отправьте /limits, чтобы увидеть текущие значения.",
+	"limits.reset":           "Лимиты чата сброшены: все счётчики без ограничений, все инструменты включены.",
+	"limits.denied":          "Управлять лимитами может только администратор; в личном чате — его владелец.",
+	"limits.invalid_number":  "Укажите целое число от 0 до %d (0 — без ограничения).",
+	"limits.invalid_tool":    "Неизвестный инструмент %q. Доступны: %s.",
+	"limits.usage":           "Использование: /limits — текущие лимиты и расход; /limits model N; /limits network N; /limits minute N; /limits tools read_url,web_search (пусто или none — включить все); /limits reset.",
 }
 
 var enMessages = map[string]string{
@@ -642,6 +663,7 @@ var enMessages = map[string]string{
 	"command.usage.description":     "model and tool usage for the UTC day",
 	"command.whoami.description":    "user_id and chat_id for TELEGRAM_ALLOWED_USERS",
 	"command.admin.description":     "aggregated metrics for the administrator",
+	"command.limits.description":    "chat limits: show, model N, network N, minute N, tools, reset",
 
 	// /help and /start.
 	"help.line":            "%s — %s",
@@ -1139,4 +1161,24 @@ var enMessages = map[string]string{
 	// Access refusals.
 	"refuse.closed":     "The bot is closed: TELEGRAM_ALLOWED_USERS is empty. Your user_id is %d, add it to %s and restart the bot.",
 	"refuse.not_listed": "You are not in TELEGRAM_ALLOWED_USERS. Your user_id is %d, add it to %s.",
+
+	// Per-chat limits: the daily model refusal, the per-minute refusal, the /limits command and the
+	// disabled-tools allowlist. Tool names stay untranslated on purpose.
+	"ask.chat_daily_limited": "The daily model call limit of this chat is exhausted (at most %d calls per UTC day). Try again after 00:00 UTC.",
+	"chat.limit_minute":      "Too often: this chat allows at most %d messages per minute. Wait a minute and repeat.",
+	"limits.title":           "Limits of chat %d (%s):",
+	"limits.source":          "Source: %s",
+	"limits.source_chat":     "this chat's settings",
+	"limits.source_default":  "default (unlimited)",
+	"limits.today":           "Today (UTC): model calls %d (limit %s); network calls %d (limit %s)",
+	"limits.tools":           "Tool usage today (UTC): read_url %d, web_search %d, calculator %d; disabled: %s",
+	"limits.per_minute":      "Messages per minute: %s",
+	"limits.unlimited":       "unlimited",
+	"limits.tools_none":      "none",
+	"limits.saved":           "Chat limits saved. Send /limits to see the current values.",
+	"limits.reset":           "Chat limits reset: every counter is unlimited and every tool is enabled.",
+	"limits.denied":          "Only an administrator can manage limits; in a private chat its owner can too.",
+	"limits.invalid_number":  "Send an integer from 0 to %d (0 means unlimited).",
+	"limits.invalid_tool":    "Unknown tool %q. Available: %s.",
+	"limits.usage":           "Usage: /limits — current limits and usage; /limits model N; /limits network N; /limits minute N; /limits tools read_url,web_search (empty or none enables all); /limits reset.",
 }

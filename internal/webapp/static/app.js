@@ -128,7 +128,32 @@
       toolsTitle: "Инструменты", dailyLimits: "Дневные лимиты", used: "использовано", limit: "лимит",
       remaining: "осталось", unlimited: "без ограничений", modelUnspecified: "модель не указана",
       networkTools: "Сетевые инструменты", noUsage: "Обращений за сегодня не было.",
+      usageRangeTitle: "Период", usageRangeLabel: "Диапазон статистики",
+      usageRangeHour: "Час", usageRangeDay: "День", usageRangeWeek: "Неделя", usageRangeMonth: "Месяц",
+      usageRangeHint: "Агрегаты по UTC: без текстов запросов, ответов и целей задач.",
+      usageRangeTruncated: "Диапазон ограничен: показана только самая свежая часть.",
+      usageCallsChart: "Вызовы модели", usageCallsChartHint: "Вызовы по интервалам, UTC.",
+      usageCallsChartAria: "График вызовов модели: {total} вызовов; интервалов: {buckets}.",
+      usageTokensChart: "Токены", usageTokensChartHint: "Входящие и исходящие токены по интервалам, UTC.",
+      usageTokensChartAria: "График токенов: {tokens_in} входящих и {tokens_out} исходящих; интервалов: {buckets}.",
+      usageTokensIn: "Входящие", usageTokensOut: "Исходящие",
+      usageToolsChart: "Вызовы инструментов", usageToolsChartAria: "Использование инструментов: {total} вызовов.",
+      usageRangeModels: "Модели за период", usageRangeTools: "Инструменты за период",
+      usageTodayModels: "Модели за сегодня", noRangeUsage: "За выбранный период обращений не было.",
+      usageToolReadURL: "Чтение URL", usageToolWebSearch: "Веб-поиск", usageToolCalculator: "Калькулятор", usageToolRAG: "RAG",
       settingsSaved: "Настройки чата сохранены.", settingsSaveFailed: "Не удалось сохранить настройку.",
+      chatLimitsTitle: "Лимиты чатов", chatLimitsHint: "Администратор задаёт дневной лимит модели, дневной лимит сетевых инструментов, лимит сообщений в минуту и отключённые инструменты для любого активного чата или группы. 0 — без ограничения.",
+      chatLimitsChat: "Чат", chatLimitsTypePrivate: "личный", chatLimitsTypeGroup: "группа",
+      chatLimitsToday: "Сегодня (UTC): модель {model}, сеть {network}, read_url {read_url}, web_search {web_search}, calculator {calculator}",
+      chatLimitsModel: "Вызовов модели в сутки", chatLimitsNetwork: "Сетевых вызовов в сутки", chatLimitsMinute: "Сообщений в минуту",
+      chatLimitsTools: "Отключённые инструменты", chatLimitsToolReadURL: "Чтение страниц (read_url)",
+      chatLimitsToolWebSearch: "Веб-поиск (web_search)", chatLimitsToolCalculator: "Калькулятор (calculator)",
+      chatLimitsSave: "Сохранить", chatLimitsReset: "Сбросить",
+      chatLimitsSaved: "Лимиты чата сохранены.", chatLimitsResetDone: "Лимиты чата сброшены.",
+      chatLimitsFailed: "Не удалось сохранить лимиты чата.", chatLimitsLoadFailed: "Не удалось загрузить список чатов.",
+      chatLimitsEmpty: "Активных чатов пока нет.", chatLimitsInvalid: "Лимиты — целые числа от 0 до 1000000.",
+      errorAdminRequired: "Раздел доступен только администратору.", errorChatNotFound: "Чат не найден.",
+      errorInvalidLimits: "Проверьте лимиты: целые числа от 0 до 1000000.", errorInvalidTools: "Неизвестный инструмент: доступны read_url, web_search, calculator.",
       dataLoadFailed: "Не удалось загрузить данные.", invalidResponse: "Сервер вернул некорректный ответ.",
       networkError: "Нет соединения с сервером. Проверьте сеть и повторите попытку.", requestFailed: "Запрос не выполнен (код {status}).",
       errorModels: "Не удалось получить текущий список моделей провайдера.",
@@ -298,7 +323,32 @@
       toolsTitle: "Tools", dailyLimits: "Daily limits", used: "used", limit: "limit",
       remaining: "remaining", unlimited: "unlimited", modelUnspecified: "model not specified",
       networkTools: "Network tools", noUsage: "No calls today.",
+      usageRangeTitle: "Range", usageRangeLabel: "Statistics range",
+      usageRangeHour: "Hour", usageRangeDay: "Day", usageRangeWeek: "Week", usageRangeMonth: "Month",
+      usageRangeHint: "UTC aggregates: request texts, answers, and task goals are never included.",
+      usageRangeTruncated: "The range is capped; only the newest part is shown.",
+      usageCallsChart: "Model calls", usageCallsChartHint: "Calls per bucket, UTC.",
+      usageCallsChartAria: "Model calls chart: {total} calls across {buckets} buckets.",
+      usageTokensChart: "Tokens", usageTokensChartHint: "Input and output tokens per bucket, UTC.",
+      usageTokensChartAria: "Tokens chart: {tokens_in} input and {tokens_out} output tokens across {buckets} buckets.",
+      usageTokensIn: "Input", usageTokensOut: "Output",
+      usageToolsChart: "Tool calls", usageToolsChartAria: "Tool usage: {total} calls.",
+      usageRangeModels: "Models in range", usageRangeTools: "Tools in range",
+      usageTodayModels: "Models today", noRangeUsage: "No calls in the selected range.",
+      usageToolReadURL: "URL reading", usageToolWebSearch: "Web search", usageToolCalculator: "Calculator", usageToolRAG: "RAG",
       settingsSaved: "Settings saved for this chat.", settingsSaveFailed: "The setting could not be saved.",
+      chatLimitsTitle: "Chat limits", chatLimitsHint: "An administrator sets a daily model limit, a daily network-tool limit, a per-minute message limit and disabled tools for any active chat or group. 0 means unlimited.",
+      chatLimitsChat: "Chat", chatLimitsTypePrivate: "private", chatLimitsTypeGroup: "group",
+      chatLimitsToday: "Today (UTC): model {model}, network {network}, read_url {read_url}, web_search {web_search}, calculator {calculator}",
+      chatLimitsModel: "Model calls per day", chatLimitsNetwork: "Network calls per day", chatLimitsMinute: "Messages per minute",
+      chatLimitsTools: "Disabled tools", chatLimitsToolReadURL: "Page reader (read_url)",
+      chatLimitsToolWebSearch: "Web search (web_search)", chatLimitsToolCalculator: "Calculator (calculator)",
+      chatLimitsSave: "Save", chatLimitsReset: "Reset",
+      chatLimitsSaved: "Chat limits saved.", chatLimitsResetDone: "Chat limits reset.",
+      chatLimitsFailed: "The chat limits could not be saved.", chatLimitsLoadFailed: "The chat list could not be loaded.",
+      chatLimitsEmpty: "There are no active chats yet.", chatLimitsInvalid: "Limits are integers from 0 to 1000000.",
+      errorAdminRequired: "This section is available to administrators only.", errorChatNotFound: "The chat was not found.",
+      errorInvalidLimits: "Check the limits: integers from 0 to 1000000.", errorInvalidTools: "Unknown tool: only read_url, web_search and calculator are allowed.",
       dataLoadFailed: "The data could not be loaded.", invalidResponse: "The server returned an invalid response.",
       networkError: "The server could not be reached. Check your connection and try again.", requestFailed: "Request failed ({status}).",
       errorModels: "The current provider model list could not be read.",
@@ -368,6 +418,8 @@
     audio_too_short: "voiceTooShort", unsupported_audio: "voiceUnsupportedAudio", transcription_failed: "voiceFailed",
     task_active: "taskActive", link_limit: "linkLimitReached", reminder_limit: "reminderLimitReached",
     url_reader_disabled: "urlReaderDisabled", lifecycle_unavailable: "lifecycleUnavailable", internal_error: "errorInternal",
+    admin_required: "errorAdminRequired", chat_not_found: "errorChatNotFound",
+    invalid_limits: "errorInvalidLimits", invalid_tools: "errorInvalidTools", invalid_limit: "errorInvalidLimits",
   };
 
   function initialLanguage() {
@@ -430,6 +482,10 @@
   let historySearch = { query: "", active: false, items: [], truncated: false };
   let linkSearch = { query: "", active: false, items: [] };
   let view = { tab: "status", data: null, items: [] };
+  // Admin chat limits: the fetched chat list survives a re-render of the Settings tab (so changing the
+  // selected chat or the language does not refetch), and null means "fetch on the next render". The
+  // state exists even for a non-admin session — it simply stays empty and no request is made.
+  let adminLimits = { chats: null, selected: null, loading: false, error: "" };
   let chat = { messages: [], pending: false, streaming: false, suppressed: false, stage: "", errorText: "", resetArmed: false, identity: null, approval: null };
   let chatNodes = { log: null, answer: null, status: null, approvalNote: null };
   let chatLiveTimer = null;
@@ -1900,6 +1956,188 @@
     }
   }
 
+  // The admin-only "Chat limits" section. The server decides who is an admin (is_admin of /api/settings)
+  // and re-checks every /api/admin request; this code only avoids showing a section a non-admin cannot
+  // use. Chats are labelled with id, title and type because a group has a negative id and a long title.
+  function chatLimitChatLabel(chat) {
+    const kind = chat.type === "group" ? t("chatLimitsTypeGroup") : t("chatLimitsTypePrivate");
+    const title = chat.title || kind;
+    return `${chat.id} · ${title} · ${kind}`;
+  }
+
+  function chatLimitNumber(input) {
+    const raw = String(input.value).trim();
+    if (!/^[0-9]+$/.test(raw)) return null;
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value < 0 || value > 1000000) return null;
+    return value;
+  }
+
+  async function refreshAdminLimits(body) {
+    if (adminLimits.chats !== null || adminLimits.loading) {
+      renderAdminLimitsBody(body);
+      return;
+    }
+    adminLimits.loading = true;
+    try {
+      const data = await api("/api/admin/chats?limit=50");
+      adminLimits.chats = Array.isArray(data.items) ? data.items : [];
+      adminLimits.error = "";
+      const known = adminLimits.chats.some((chat) => chat.id === adminLimits.selected);
+      if (!known) adminLimits.selected = adminLimits.chats.length ? adminLimits.chats[0].id : null;
+    } catch (error) {
+      // chats stays null so the next explicit render (a tab switch or Refresh) tries again; the error
+      // text is what the section shows meanwhile.
+      adminLimits.chats = null;
+      adminLimits.error = error.message || t("chatLimitsLoadFailed");
+    }
+    adminLimits.loading = false;
+    // The section may have been re-rendered (a language switch, another load) while the request was in
+    // flight: the response belongs to the section that is attached NOW, not to the detached body.
+    const live = ui.content.querySelector(".chat-limits-body");
+    if (!live) return;
+    if (adminLimits.error) {
+      live.replaceChildren();
+      live.appendChild(element("p", "meta", adminLimits.error));
+      return;
+    }
+    if (activeTab !== "settings") return;
+    renderAdminLimitsBody(live);
+  }
+
+  function renderAdminLimitsBody(body) {
+    body.replaceChildren();
+    if (adminLimits.loading) {
+      body.appendChild(element("p", "meta", t("loading")));
+      return;
+    }
+    if (adminLimits.error) {
+      body.appendChild(element("p", "meta", adminLimits.error));
+      return;
+    }
+    if (!adminLimits.chats || !adminLimits.chats.length) {
+      body.appendChild(element("p", "meta", t("chatLimitsEmpty")));
+      return;
+    }
+    const selected = adminLimits.chats.find((chat) => chat.id === adminLimits.selected) || adminLimits.chats[0];
+    adminLimits.selected = selected.id;
+
+    const selectRow = element("div", "settings-row");
+    const chatChoice = element("select");
+    chatChoice.setAttribute("aria-label", t("chatLimitsChat"));
+    for (const chat of adminLimits.chats) {
+      const option = element("option", "", chatLimitChatLabel(chat));
+      option.value = String(chat.id);
+      option.selected = chat.id === selected.id;
+      chatChoice.appendChild(option);
+    }
+    chatChoice.addEventListener("change", () => {
+      adminLimits.selected = Number(chatChoice.value);
+      renderAdminLimitsBody(body);
+    });
+    selectRow.appendChild(chatChoice);
+    body.appendChild(selectRow);
+
+    const today = selected.today || { model_calls: 0, read_url: 0, web_search: 0, calculator: 0 };
+    body.appendChild(element("p", "meta", t("chatLimitsToday", {
+      model: today.model_calls, network: today.read_url + today.web_search,
+      read_url: today.read_url, web_search: today.web_search, calculator: today.calculator,
+    })));
+
+    const limits = selected.limits || { daily_model_limit: 0, daily_network_limit: 0, per_minute_limit: 0, disabled_tools: [] };
+    const inputs = {};
+    const grid = element("div", "chat-limits-grid");
+    for (const [key, label] of [
+      ["daily_model_limit", t("chatLimitsModel")],
+      ["daily_network_limit", t("chatLimitsNetwork")],
+      ["per_minute_limit", t("chatLimitsMinute")],
+    ]) {
+      const field = element("label", "chat-limits-field");
+      field.appendChild(element("span", "", label));
+      const input = element("input");
+      input.type = "number";
+      input.min = "0";
+      input.max = "1000000";
+      input.step = "1";
+      input.setAttribute("inputmode", "numeric");
+      input.value = String(Number(limits[key]) || 0);
+      field.appendChild(input);
+      grid.appendChild(field);
+      inputs[key] = input;
+    }
+    body.appendChild(grid);
+
+    const disabled = Array.isArray(limits.disabled_tools) ? limits.disabled_tools : [];
+    const toolsBox = element("fieldset", "chat-limits-tools");
+    toolsBox.appendChild(element("legend", "", t("chatLimitsTools")));
+    const toggles = {};
+    for (const [name, label] of [
+      ["read_url", t("chatLimitsToolReadURL")],
+      ["web_search", t("chatLimitsToolWebSearch")],
+      ["calculator", t("chatLimitsToolCalculator")],
+    ]) {
+      const option = element("label", "chat-limits-tool");
+      const box = element("input");
+      box.type = "checkbox";
+      box.checked = disabled.includes(name);
+      option.appendChild(box);
+      option.appendChild(element("span", "", label));
+      toolsBox.appendChild(option);
+      toggles[name] = box;
+    }
+    body.appendChild(toolsBox);
+
+    const actions = element("div", "settings-row");
+    actions.appendChild(settingsButton(t("chatLimitsSave"), () => saveAdminChatLimits(selected.id, inputs, toggles)));
+    actions.appendChild(settingsButton(t("chatLimitsReset"), () => resetAdminChatLimits(selected.id), true));
+    body.appendChild(actions);
+  }
+
+  async function saveAdminChatLimits(chatID, inputs, toggles) {
+    const payload = {};
+    for (const [key, input] of Object.entries(inputs)) {
+      const value = chatLimitNumber(input);
+      if (value === null) {
+        showError(t("chatLimitsInvalid"));
+        return;
+      }
+      payload[key] = value;
+    }
+    payload.disabled_tools = Object.keys(toggles).filter((name) => toggles[name].checked);
+    await mutateAdminChatLimits(chatID, "PUT", payload, "chatLimitsSaved");
+  }
+
+  async function resetAdminChatLimits(chatID) {
+    await mutateAdminChatLimits(chatID, "DELETE", undefined, "chatLimitsResetDone");
+  }
+
+  async function mutateAdminChatLimits(chatID, method, payload, successKey) {
+    if (loading || !session) return;
+    setBusy(true);
+    showError("");
+    let saved = false;
+    try {
+      const options = { method };
+      if (payload !== undefined) {
+        options.headers = { "Content-Type": "application/json" };
+        options.body = JSON.stringify(payload);
+      }
+      await api(`/api/admin/chats/${chatID}/limits`, options);
+      saved = true;
+    } catch (error) {
+      showError(error.message || t("chatLimitsFailed"));
+    } finally {
+      setBusy(false);
+    }
+    if (!saved) return;
+    // Today's usage of the saved chat may have changed while the form was open: the next render fetches
+    // the list again instead of showing the numbers from before the save.
+    adminLimits.chats = null;
+    adminLimits.selected = chatID;
+    await load();
+    showNotice(t(successKey));
+  }
+
   function renderSettings(data) {
     ui.content.replaceChildren();
     const source = (value) => t(value === "chat" ? "sourceChat" : "sourceGlobal");
@@ -2015,6 +2253,16 @@
       ui.content.appendChild(tts);
     }
 
+    if (data.is_admin) {
+      const limits = element("section", "settings-section chat-limits");
+      limits.appendChild(element("h3", "", t("chatLimitsTitle")));
+      limits.appendChild(element("p", "meta", t("chatLimitsHint")));
+      const body = element("div", "chat-limits-body");
+      limits.appendChild(body);
+      ui.content.appendChild(limits);
+      void refreshAdminLimits(body);
+    }
+
     // Language and the session control live here, not in the header: the header keeps only the brand so the tab
     // bar stays high on a phone screen.
     const account = settingsSection(t("accountTitle"), t("accountHint"));
@@ -2027,24 +2275,309 @@
     syncBusyState();
   }
 
-  function renderUsage(data) {
-    ui.content.replaceChildren();
-    ui.content.appendChild(element("p", "meta", `${t("usageDate")}: ${data.date} (UTC)`));
-    const models = settingsSection(t("modelTitle"), "");
-    if (!data.models.length) models.appendChild(element("p", "empty", t("noUsage")));
-    for (const model of data.models) {
+  const usageRangeValues = ["hour", "day", "week", "month"];
+  const usageRangeKey = {
+    hour: "usageRangeHour", day: "usageRangeDay", week: "usageRangeWeek", month: "usageRangeMonth",
+  };
+  const usageToolValues = ["read_url", "web_search", "calculator", "rag"];
+  const usageToolKey = {
+    read_url: "usageToolReadURL", web_search: "usageToolWebSearch",
+    calculator: "usageToolCalculator", rag: "usageToolRAG",
+  };
+  const usageSVGNamespace = "http://www.w3.org/2000/svg";
+  // The usage range is UI state, not server state: the next load of the tab asks for the same window.
+  let usageRange = "day";
+
+  function svgNode(tag, className) {
+    const node = document.createElementNS(usageSVGNamespace, tag);
+    if (className) node.setAttribute("class", className);
+    return node;
+  }
+
+  function svgText(label, x, y, className, anchor) {
+    const node = svgNode("text", className);
+    node.setAttribute("x", String(x));
+    node.setAttribute("y", String(y));
+    if (anchor) node.setAttribute("text-anchor", anchor);
+    node.textContent = label;
+    return node;
+  }
+
+  function svgLine(x1, y1, x2, y2, className) {
+    const node = svgNode("line", className);
+    node.setAttribute("x1", String(x1));
+    node.setAttribute("y1", String(y1));
+    node.setAttribute("x2", String(x2));
+    node.setAttribute("y2", String(y2));
+    return node;
+  }
+
+  function svgRect(x, y, width, height, className) {
+    const node = svgNode("rect", className);
+    node.setAttribute("x", String(x));
+    node.setAttribute("y", String(y));
+    node.setAttribute("width", String(width));
+    node.setAttribute("height", String(height));
+    node.setAttribute("rx", "2");
+    return node;
+  }
+
+  function svgPolyline(points, className) {
+    const node = svgNode("polyline", className);
+    node.setAttribute("points", points.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" "));
+    return node;
+  }
+
+  // A chart is an accessible image: role=img plus a text alternative, never an inline handler or a
+  // canvas bitmap. The fixed viewBox scales the same drawing from a 320 px phone to a desktop panel.
+  function usageChart(label, viewBox, parts) {
+    const svg = svgNode("svg", "usage-chart");
+    svg.setAttribute("viewBox", viewBox);
+    svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", label);
+    svg.setAttribute("focusable", "false");
+    for (const part of parts) svg.appendChild(part);
+    return svg;
+  }
+
+  function compactUsageNumber(value) {
+    const number = Number(value) || 0;
+    if (number >= 1e9) return `${(number / 1e9).toFixed(1)}B`;
+    if (number >= 1e6) return `${(number / 1e6).toFixed(1)}M`;
+    if (number >= 1e4) return `${Math.round(number / 1e3)}k`;
+    return String(number);
+  }
+
+  function usageBucketLabel(start, range) {
+    const date = new Date(start);
+    if (Number.isNaN(date.getTime())) return "";
+    const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(date.getUTCDate()).padStart(2, "0");
+    const hour = String(date.getUTCHours()).padStart(2, "0");
+    if (range === "hour") return `${hour}:00`;
+    if (range === "month") return `${month}.${String(date.getUTCFullYear()).slice(-2)}`;
+    return `${day}.${month}`;
+  }
+
+  function usageAxisStep(range) {
+    if (range === "hour") return 6;
+    if (range === "month") return 2;
+    return 1;
+  }
+
+  function usageChartAxis(parts, series, range, left, slot, height) {
+    const step = usageAxisStep(range);
+    series.forEach((bucket, index) => {
+      if (index % step === 0) {
+        parts.push(svgText(usageBucketLabel(bucket.start, range), left + slot * index + slot / 2, height - 7, "usage-chart-axis", "middle"));
+      }
+    });
+    const last = series.length - 1;
+    if (last >= 0 && last % step !== 0) {
+      parts.push(svgText(usageBucketLabel(series[last].start, range), left + slot * last + slot / 2, height - 7, "usage-chart-axis", "middle"));
+    }
+  }
+
+  function usageCallsChart(series, range) {
+    const width = 320;
+    const height = 138;
+    const left = 30;
+    const right = 8;
+    const top = 10;
+    const bottom = 26;
+    const plotWidth = width - left - right;
+    const plotHeight = height - top - bottom;
+    const values = series.map((bucket) => Math.max(0, Number(bucket.model_calls) || 0));
+    const maximum = Math.max(1, ...values);
+    const parts = [];
+    for (const fraction of [0, 0.5, 1]) {
+      const y = top + plotHeight - plotHeight * fraction;
+      parts.push(svgLine(left, y, width - right, y, "usage-chart-grid"));
+      parts.push(svgText(compactUsageNumber(Math.round(maximum * fraction)), left - 4, y + 3, "usage-chart-axis", "end"));
+    }
+    const slot = plotWidth / Math.max(1, series.length);
+    const barWidth = Math.max(2, slot * 0.62);
+    series.forEach((bucket, index) => {
+      const value = values[index];
+      if (value > 0) {
+        const barHeight = (value / maximum) * plotHeight;
+        parts.push(svgRect(left + slot * index + (slot - barWidth) / 2, top + plotHeight - barHeight, barWidth, barHeight, "usage-chart-bar"));
+      }
+    });
+    usageChartAxis(parts, series, range, left, slot, height);
+    const total = values.reduce((sum, value) => sum + value, 0);
+    return usageChart(t("usageCallsChartAria", { total, buckets: series.length }), `0 0 ${width} ${height}`, parts);
+  }
+
+  function usageTokensChart(series, range) {
+    const width = 320;
+    const height = 138;
+    const left = 30;
+    const right = 8;
+    const top = 10;
+    const bottom = 26;
+    const plotWidth = width - left - right;
+    const plotHeight = height - top - bottom;
+    const valuesIn = series.map((bucket) => Math.max(0, Number(bucket.tokens_in) || 0));
+    const valuesOut = series.map((bucket) => Math.max(0, Number(bucket.tokens_out) || 0));
+    const maximum = Math.max(1, ...valuesIn, ...valuesOut);
+    const parts = [];
+    for (const fraction of [0, 0.5, 1]) {
+      const y = top + plotHeight - plotHeight * fraction;
+      parts.push(svgLine(left, y, width - right, y, "usage-chart-grid"));
+      parts.push(svgText(compactUsageNumber(Math.round(maximum * fraction)), left - 4, y + 3, "usage-chart-axis", "end"));
+    }
+    const slot = plotWidth / Math.max(1, series.length);
+    const points = (values) => values.map((value, index) => [
+      left + slot * index + slot / 2,
+      top + plotHeight - (value / maximum) * plotHeight,
+    ]);
+    parts.push(svgPolyline(points(valuesIn), "usage-chart-line-in"));
+    parts.push(svgPolyline(points(valuesOut), "usage-chart-line-out"));
+    usageChartAxis(parts, series, range, left, slot, height);
+    const totalIn = valuesIn.reduce((sum, value) => sum + value, 0);
+    const totalOut = valuesOut.reduce((sum, value) => sum + value, 0);
+    return usageChart(t("usageTokensChartAria", { tokens_in: totalIn, tokens_out: totalOut, buckets: series.length }), `0 0 ${width} ${height}`, parts);
+  }
+
+  function usageToolsChart(tools) {
+    const width = 320;
+    const rowHeight = 26;
+    const top = 2;
+    const bottom = 2;
+    const left = 88;
+    const right = 34;
+    const height = top + bottom + rowHeight * usageToolValues.length;
+    const trackWidth = width - left - right;
+    const values = usageToolValues.map((name) => Math.max(0, Number(tools[name]) || 0));
+    const maximum = Math.max(1, ...values);
+    const parts = [];
+    usageToolValues.forEach((name, index) => {
+      const y = top + index * rowHeight;
+      const value = values[index];
+      parts.push(svgText(t(usageToolKey[name]), left - 6, y + rowHeight / 2 + 3, "usage-chart-axis", "end"));
+      parts.push(svgRect(left, y + 5, trackWidth, rowHeight - 10, "usage-chart-track"));
+      if (value > 0) {
+        parts.push(svgRect(left, y + 5, Math.max(2, (value / maximum) * trackWidth), rowHeight - 10, "usage-chart-tool"));
+      }
+      parts.push(svgText(String(value), width - 2, y + rowHeight / 2 + 3, "usage-chart-axis", "end"));
+    });
+    const total = values.reduce((sum, value) => sum + value, 0);
+    return usageChart(t("usageToolsChartAria", { total }), `0 0 ${width} ${height}`, parts);
+  }
+
+  function usageRangeSwitch() {
+    const group = element("div", "usage-range-switch");
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-label", t("usageRangeLabel"));
+    for (const value of usageRangeValues) {
+      const active = value === usageRange;
+      const button = element("button", active ? "usage-range-button active" : "usage-range-button", t(usageRangeKey[value]));
+      button.type = "button";
+      button.dataset.range = value;
+      button.setAttribute("aria-pressed", String(active));
+      button.addEventListener("click", () => selectUsageRange(value));
+      group.appendChild(button);
+    }
+    return group;
+  }
+
+  async function selectUsageRange(value) {
+    if (loading || !session || !usageRangeValues.includes(value) || value === usageRange) return;
+    usageRange = value;
+    await load();
+  }
+
+  function usageModelRows(section, models, emptyText) {
+    if (!models.length) {
+      section.appendChild(element("p", "empty", emptyText));
+      return;
+    }
+    for (const model of models) {
       const row = element("div", "usage-row");
       row.appendChild(element("div", "content", model.model || t("modelUnspecified")));
       row.appendChild(element("div", "meta", `${model.calls} ${t("modelCalls")} · ${model.tokens_in} ${t("tokensIn")} · ${model.tokens_out} ${t("tokensOut")}`));
-      models.appendChild(row);
+      section.appendChild(row);
     }
-    ui.content.appendChild(models);
+  }
 
-    const tools = settingsSection(t("toolsTitle"), "");
-    for (const name of ["read_url", "web_search", "calculator", "rag"]) {
-      tools.appendChild(element("div", "meta", `${name}: ${data.tools[name]}`));
+  function usageTokenLegend() {
+    const legend = element("div", "usage-chart-legend");
+    for (const [key, className] of [["usageTokensIn", "usage-legend-in"], ["usageTokensOut", "usage-legend-out"]]) {
+      const item = element("span", "usage-legend-item");
+      const swatch = element("span", `usage-legend-swatch ${className}`);
+      swatch.setAttribute("aria-hidden", "true");
+      item.appendChild(swatch);
+      item.appendChild(element("span", "", t(key)));
+      legend.appendChild(item);
     }
-    ui.content.appendChild(tools);
+    return legend;
+  }
+
+  function renderUsage(data) {
+    ui.content.replaceChildren();
+    const series = Array.isArray(data.series) ? data.series : [];
+    const totals = data.totals && typeof data.totals === "object" ? data.totals : {};
+    const rangeTools = totals.tools && typeof totals.tools === "object" ? totals.tools : {};
+    const range = usageRangeValues.includes(data.range) ? data.range : usageRange;
+    if (usageRangeValues.includes(data.range)) usageRange = data.range;
+    const sumSeries = (key) => series.reduce((sum, bucket) => sum + (Number(bucket[key]) || 0), 0);
+
+    ui.content.appendChild(element("p", "meta", `${t("usageDate")}: ${data.date || "—"} (UTC)`));
+
+    const rangeSection = settingsSection(t("usageRangeTitle"), t("usageRangeHint"));
+    rangeSection.appendChild(usageRangeSwitch());
+    if (data.truncated) rangeSection.appendChild(element("p", "meta", t("usageRangeTruncated")));
+    ui.content.appendChild(rangeSection);
+
+    const totalsGrid = element("div", "stats usage-totals");
+    const totalsValues = [
+      [t("modelCalls"), Number(totals.model_calls) || sumSeries("model_calls")],
+      [t("tokensIn"), Number(totals.tokens_in) || sumSeries("tokens_in")],
+      [t("tokensOut"), Number(totals.tokens_out) || sumSeries("tokens_out")],
+      [t("usageToolsChart"), Number(totals.tool_calls) || sumSeries("tools_total")],
+    ];
+    for (const [label, value] of totalsValues) {
+      const card = element("div", "stat");
+      card.appendChild(element("strong", "", String(value)));
+      card.appendChild(element("span", "", label));
+      totalsGrid.appendChild(card);
+    }
+    ui.content.appendChild(totalsGrid);
+
+    if (series.length) {
+      const calls = settingsSection(t("usageCallsChart"), t("usageCallsChartHint"));
+      calls.appendChild(usageCallsChart(series, range));
+      ui.content.appendChild(calls);
+
+      const tokens = settingsSection(t("usageTokensChart"), t("usageTokensChartHint"));
+      tokens.appendChild(usageTokensChart(series, range));
+      tokens.appendChild(usageTokenLegend());
+      ui.content.appendChild(tokens);
+    }
+
+    const rangeModels = settingsSection(t("usageRangeModels"), "");
+    usageModelRows(rangeModels, Array.isArray(totals.models) ? totals.models : [], t("noRangeUsage"));
+    ui.content.appendChild(rangeModels);
+
+    const toolsSection = settingsSection(t("usageRangeTools"), "");
+    toolsSection.appendChild(usageToolsChart(rangeTools));
+    for (const name of usageToolValues) {
+      toolsSection.appendChild(element("div", "meta", `${t(usageToolKey[name])}: ${Number(rangeTools[name]) || 0}`));
+    }
+    ui.content.appendChild(toolsSection);
+
+    const dailyModels = settingsSection(t("usageTodayModels"), "");
+    usageModelRows(dailyModels, Array.isArray(data.models) ? data.models : [], t("noUsage"));
+    ui.content.appendChild(dailyModels);
+
+    const dailyTools = settingsSection(t("toolsTitle"), "");
+    const todayTools = data.tools && typeof data.tools === "object" ? data.tools : {};
+    for (const name of usageToolValues) {
+      dailyTools.appendChild(element("div", "meta", `${t(usageToolKey[name])}: ${Number(todayTools[name]) || 0}`));
+    }
+    ui.content.appendChild(dailyTools);
 
     const limits = settingsSection(t("dailyLimits"), "");
     const grid = element("div", "stats");
@@ -2058,6 +2591,7 @@
     }
     limits.appendChild(grid);
     ui.content.appendChild(limits);
+    syncBusyState();
   }
 
   function chatStageText(stage) {
@@ -2880,7 +3414,7 @@
         renderSettings(view.data);
         nextBefore = null;
       } else if (activeTab === "usage") {
-        view = { tab: activeTab, data: await api("/api/usage"), items: [] };
+        view = { tab: activeTab, data: await api(`/api/usage?range=${usageRange}`), items: [] };
         renderUsage(view.data);
         nextBefore = null;
       } else if (activeTab === "reminders") {

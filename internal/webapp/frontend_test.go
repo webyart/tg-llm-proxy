@@ -105,7 +105,7 @@ func TestFrontendTaskControlsAndUsageAreScopedToAllowedActions(t *testing.T) {
 	for _, want := range []string{
 		`item.expires_at`, `item.error`, `changeTask("/api/tasks/cancel")`,
 		"index === 0", "changeTask(`/api/tasks/${item.id}/resume`)", `renderUsage(view.data)`,
-		`api("/api/usage")`, `networkApprovalTelegram`, `data.limits.model`, `data.limits.network_tools`,
+		"api(`/api/usage?range=${usageRange}`)", `networkApprovalTelegram`, `data.limits.model`, `data.limits.network_tools`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("app.js misses %q", want)
@@ -113,6 +113,54 @@ func TestFrontendTaskControlsAndUsageAreScopedToAllowedActions(t *testing.T) {
 	}
 	if strings.Contains(script, "/api/approve") {
 		t.Fatal("Mini App exposes a separate network approval action")
+	}
+}
+
+func TestFrontendUsageRangeChartsAreAccessibleAndLocalized(t *testing.T) {
+	script := frontendAsset(t, "static/app.js")
+	css := frontendAsset(t, "static/style.css")
+	for _, want := range []string{
+		"api(`/api/usage?range=${usageRange}`)",
+		`usageSVGNamespace = "http://www.w3.org/2000/svg"`,
+		`document.createElementNS(usageSVGNamespace, tag)`,
+		`svg.setAttribute("role", "img")`,
+		`svg.setAttribute("aria-label", label)`,
+		`usageRangeSwitch()`,
+		`usageCallsChart(series, range)`,
+		`usageTokensChart(series, range)`,
+		`usageToolsChart(rangeTools)`,
+		`usageModelRows(rangeModels, Array.isArray(totals.models) ? totals.models : [], t("noRangeUsage"))`,
+		`usageRangeHour: "Час"`, `usageRangeDay: "День"`, `usageRangeWeek: "Неделя"`, `usageRangeMonth: "Месяц"`,
+		`usageRangeHour: "Hour"`, `usageRangeDay: "Day"`, `usageRangeWeek: "Week"`, `usageRangeMonth: "Month"`,
+		`usageRangeTitle: "Период"`, `usageRangeTitle: "Range"`,
+		`usageCallsChartAria:`, `usageTokensChartAria:`, `usageToolsChartAria:`,
+		`usageToolReadURL: "Чтение URL"`, `usageToolWebSearch: "Web search"`,
+		`usageRangeModels: "Модели за период"`, `usageRangeModels: "Models in range"`,
+		`usageRangeTools: "Инструменты за период"`, `usageRangeTools: "Tools in range"`,
+		`usageRangeTruncated: "Диапазон ограничен: показана только самая свежая часть."`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js misses usage chart regression %q", want)
+		}
+	}
+	for _, key := range []string{
+		"usageRangeTitle", "usageRangeLabel", "usageRangeHint", "usageCallsChart", "usageCallsChartHint",
+		"usageCallsChartAria", "usageTokensChart", "usageTokensChartHint", "usageTokensChartAria",
+		"usageToolsChart", "usageToolsChartAria", "usageRangeModels", "usageRangeTools", "usageTodayModels",
+		"usageRangeTruncated", "noRangeUsage",
+	} {
+		if count := strings.Count(script, key+":"); count < 2 {
+			t.Errorf("translation key %s has %d RU/EN catalog entries, want 2", key, count)
+		}
+	}
+	for _, want := range []string{
+		".usage-range-switch {", ".usage-chart {", "width: 100%", "max-width: 100%",
+		".usage-chart-line-in", ".usage-chart-line-out", ".usage-chart-bar",
+		".usage-chart-legend", "@media (max-width: 360px)",
+	} {
+		if !strings.Contains(css, want) {
+			t.Errorf("style.css misses usage chart rule %q", want)
+		}
 	}
 }
 
@@ -974,6 +1022,41 @@ func TestFrontendUsesInjectedBaseForAPIAndExport(t *testing.T) {
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("app.js misses forwarded base regression %q", want)
+		}
+	}
+}
+
+// TestFrontendAdminChatLimitsSection — the admin-only Settings section of v1.64.0. It is rendered only
+// when /api/settings says is_admin, it uses the same strict payload as the API contract, and every
+// control is a real element (no inline handlers, no HTML strings) so the page CSP stays intact.
+func TestFrontendAdminChatLimitsSection(t *testing.T) {
+	script := frontendAsset(t, "static/app.js")
+	for _, want := range []string{
+		`if (data.is_admin)`,
+		`await api("/api/admin/chats?limit=50")`,
+		"await api(`/api/admin/chats/${chatID}/limits`, options)",
+		`chatLimitsTitle: "Лимиты чатов"`, `chatLimitsTitle: "Chat limits"`,
+		`chatLimitsHint: `, `chatLimitsTypeGroup: "группа"`, `chatLimitsTypeGroup: "group"`,
+		`chatLimitsModel: `, `chatLimitsNetwork: `, `chatLimitsMinute: `, `chatLimitsTools: `,
+		`chatLimitsSave: "Сохранить"`, `chatLimitsReset: "Сбросить"`,
+		`input.type = "number"`, `input.max = "1000000"`, `input.step = "1"`,
+		`box.type = "checkbox"`, `box.checked = disabled.includes(name)`,
+		`payload.disabled_tools = Object.keys(toggles).filter((name) => toggles[name].checked)`,
+		`adminLimits.chats = null`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js misses the admin chat-limits regression %q", want)
+		}
+	}
+	for _, forbidden := range []string{"onclick=", "onchange=", "innerHTML"} {
+		if strings.Contains(script, forbidden) {
+			t.Errorf("app.js uses %q, which the Mini App CSP forbids", forbidden)
+		}
+	}
+	css := frontendAsset(t, "static/style.css")
+	for _, want := range []string{".chat-limits-grid", ".chat-limits-tool {", "min-height: 44px"} {
+		if !strings.Contains(css, want) {
+			t.Errorf("style.css misses the admin chat-limits control style %q", want)
 		}
 	}
 }

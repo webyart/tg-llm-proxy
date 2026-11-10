@@ -131,6 +131,15 @@ func startupSummary(logger *slog.Logger, cfg config.Config) {
 	if cfg.FallbackBase != "" {
 		summary = append(summary, "fallback_base", cfg.FallbackBase)
 	}
+	// The named providers are listed only when the row is set: a deployment without MODEL_PROVIDERS keeps the
+	// same summary it had before.
+	if len(cfg.ModelProviders) > 0 {
+		var providerNames = make([]string, len(cfg.ModelProviders))
+		for index, provider := range cfg.ModelProviders {
+			providerNames[index] = provider.Name
+		}
+		summary = append(summary, "model_providers", providerNames)
+	}
 	logger.Info("configuration loaded", summary...)
 	// The URL above is what Telegram stores as the menu button and pastes into every WebApp button. A root URL
 	// behind a path-prefix gateway opens the gateway's fallback route instead of the Mini App — the symptom is
@@ -287,6 +296,55 @@ func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, l
 			Logger:       logger,
 		})
 		client = withPrimaryTranscription(wrapped, primary)
+	}
+
+	// The named providers of MODEL_PROVIDERS are separate OpenAI-compatible endpoints a chat may select with a
+	// "name:model" id. The default client above stays the fallback chain; the router only wraps it when at least
+	// one provider is really usable, so a deployment without providers keeps the old path exactly.
+	var providers []model.Provider
+	for _, provider := range cfg.ModelProviders {
+		if provider.APIKey == "" && !provider.IsLocal() {
+			// A third-party endpoint without a key cannot answer, and calling it unauthenticated would look like a
+			// working provider until the first request. A local endpoint (LM Studio and similar) is different: it
+			// needs no key, so it is built and listed.
+			logger.Warn("model provider is skipped: api_key is empty and the endpoint is not local",
+				"provider", provider.Name, "base_url", provider.BaseURL)
+			continue
+		}
+		var providerOptions = modelOptions
+		providerOptions.ChatURL = provider.ChatURL
+		providerOptions.ModelsURL = provider.ModelsURL
+		providerOptions.APIKey = provider.APIKey
+		providerOptions.Model = provider.DefaultModel
+		providerOptions.TranscriptionModel = ""
+		providerOptions.TranscriptionURL = ""
+		providerOptions.TranscriptionNoAuth = false
+		providerOptions.Timeout = time.Duration(provider.TimeoutSeconds) * time.Second
+		var providerClient, providerErr = model.New(providerOptions)
+		if providerErr != nil {
+			return fmt.Errorf("model.New (provider %q): %w", provider.Name, providerErr)
+		}
+		providers = append(providers, model.Provider{
+			Name:         provider.Name,
+			Models:       provider.Models,
+			DefaultModel: provider.DefaultModel,
+			Client:       providerClient,
+		})
+	}
+	if len(providers) > 0 {
+		client = model.NewRouter(model.RouterOptions{
+			Default:      client,
+			DefaultModel: cfg.StrataModel,
+			Providers:    providers,
+			Logger:       logger,
+		})
+		var names = make([]string, len(providers))
+		for index, provider := range providers {
+			names[index] = provider.Name
+		}
+		logger.Info("model providers are available", "providers", names)
+	} else if len(cfg.ModelProviders) > 0 {
+		logger.Warn("MODEL_PROVIDERS lists no usable provider; every request stays on the default endpoint")
 	}
 
 	// The hybrid RAG layer is optional and off by default. The metric families are registered either way, so a

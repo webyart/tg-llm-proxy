@@ -617,6 +617,19 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 	}
+	if req.URL.Path == "/api/admin/chats" {
+		a.adminChats(w, req, current)
+		return
+	}
+	if strings.HasPrefix(req.URL.Path, "/api/admin/chats/") {
+		chatID, ok := adminChatLimitsID(req.URL.Path)
+		if !ok {
+			writeError(w, http.StatusNotFound, "not_found", "API endpoint not found.")
+			return
+		}
+		a.adminChatLimits(w, req, current, chatID)
+		return
+	}
 	switch req.URL.Path {
 	case "/api/settings":
 		a.settings(w, req, current)
@@ -739,6 +752,12 @@ func miniAppMutationOperation(req *http.Request) (string, bool) {
 		}
 	}
 	if req.Method == http.MethodPut || req.Method == http.MethodDelete {
+		if _, ok := adminChatLimitsID(path); ok {
+			if req.Method == http.MethodPut {
+				return "admin.limits.set", true
+			}
+			return "admin.limits.reset", true
+		}
 		operation := ""
 		switch path {
 		case "/api/settings/model":

@@ -37,6 +37,7 @@ const (
 	CommandUsage     = "usage"
 	CommandWhoAmI    = "whoami"
 	CommandAdmin     = "admin"
+	CommandLimits    = "limits"
 	CommandExport    = "export"
 	CommandSearch    = "search"
 	CommandDelete    = "delete"
@@ -144,6 +145,7 @@ func (d *Dispatcher) registry() []Command {
 		{Name: CommandUsage, Description: "использование модели и инструментов за UTC-сутки", Handler: d.usage},
 		{Name: CommandWhoAmI, Description: "user_id и chat_id для TELEGRAM_ALLOWED_USERS", AlwaysAllowed: true, Handler: d.whoami},
 		{Name: CommandAdmin, Description: "агрегированные метрики для администратора", Handler: d.admin},
+		{Name: CommandLimits, Description: "лимиты чата: показать, model N, network N, minute N, tools, reset", Handler: d.limitsControl},
 	}
 }
 
@@ -441,6 +443,52 @@ func (d *Dispatcher) modelName(ctx context.Context, chatID int64) (string, error
 	return d.deps.Cfg.StrataModel, nil
 }
 
+// modelDisplayName names the provider of a selection. The primary endpoint is "strata"; its prefix is shown
+// only when MODEL_PROVIDERS is configured, so a bot without named providers keeps the old "/model" output.
+func (d *Dispatcher) modelDisplayName(selected string) string {
+	if selected == "" || strings.Contains(selected, ":") || len(d.deps.Cfg.ModelProviders) == 0 {
+		return selected
+	}
+	return "strata:" + selected
+}
+
+// providerModelAllowed checks a provider-prefixed selection against that provider's configured list. A plain id
+// is validated by the catalogue of the default endpoint and needs nothing here; a "strata:" id names the
+// default endpoint and accepts any model id, exactly like a plain one.
+func (d *Dispatcher) providerModelAllowed(requested string) bool {
+	provider, selected, prefixed := strings.Cut(requested, ":")
+	if !prefixed || provider == "strata" {
+		return true
+	}
+	for _, configured := range d.deps.Cfg.ModelProviders {
+		if configured.Name != provider {
+			continue
+		}
+		for _, model := range configured.Models {
+			if strings.TrimSpace(model) == selected {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
+// modelEndpoint names the endpoint that actually serves a selection: the provider's own base for a prefixed id,
+// the primary base otherwise. Without MODEL_PROVIDERS this always returns the primary endpoint.
+func (d *Dispatcher) modelEndpoint(selected string) string {
+	provider, _, prefixed := strings.Cut(selected, ":")
+	if !prefixed || provider == "strata" {
+		return d.deps.Cfg.StrataBase
+	}
+	for _, configured := range d.deps.Cfg.ModelProviders {
+		if configured.Name == provider {
+			return configured.BaseURL
+		}
+	}
+	return d.deps.Cfg.StrataBase
+}
+
 // modelInfo — model/endpoint diagnostics and the per-chat select/reset controls.
 func (d *Dispatcher) modelInfo(ctx context.Context, ev Event, arg string) error {
 	var endpoint = d.deps.Cfg.StrataBase
@@ -459,7 +507,7 @@ func (d *Dispatcher) modelInfo(ctx context.Context, ev Event, arg string) error 
 		if err := store.ClearChatModel(ctx, d.deps.DB, ev.ChatID); err != nil {
 			return err
 		}
-		return d.reply(ctx, ev.ChatID, i18n.T(lang, "model.reset", d.deps.Cfg.StrataModel))
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "model.reset", d.modelDisplayName(d.deps.Cfg.StrataModel)))
 	}
 	if strings.EqualFold(control, "check") && requested == "" || strings.EqualFold(control, "select") {
 		var names, err = d.deps.Model.Models(ctx)
@@ -479,7 +527,7 @@ func (d *Dispatcher) modelInfo(ctx context.Context, ev Event, arg string) error 
 				return currentErr
 			}
 			return d.reply(ctx, ev.ChatID, i18n.T(lang, "model.select_current",
-				current, len(names), strings.Join(names, ", "), d.deps.Cfg.StrataModel))
+				d.modelDisplayName(current), len(names), strings.Join(names, ", "), d.modelDisplayName(d.deps.Cfg.StrataModel)))
 		}
 		var allowed = false
 		for _, name := range names {
@@ -487,6 +535,11 @@ func (d *Dispatcher) modelInfo(ctx context.Context, ev Event, arg string) error 
 				allowed = true
 				break
 			}
+		}
+		// The aggregated catalogue already lists exactly the configured ids; this second check proves the model
+		// is in ITS provider's list even if the default endpoint happens to advertise a colliding "name:model".
+		if allowed && !d.providerModelAllowed(requested) {
+			allowed = false
 		}
 		if !allowed {
 			return d.reply(ctx, ev.ChatID, i18n.T(lang, "model.not_found", requested, strings.Join(names, ", ")))
@@ -497,7 +550,7 @@ func (d *Dispatcher) modelInfo(ctx context.Context, ev Event, arg string) error 
 		if err := store.SetChatModel(ctx, d.deps.DB, ev.ChatID, requested); err != nil {
 			return err
 		}
-		return d.reply(ctx, ev.ChatID, i18n.T(lang, "model.selected", requested, d.deps.Cfg.StrataModel))
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "model.selected", d.modelDisplayName(requested), d.modelDisplayName(d.deps.Cfg.StrataModel)))
 	}
 	var selected, err = d.modelName(ctx, ev.ChatID)
 	if err != nil {
@@ -505,9 +558,9 @@ func (d *Dispatcher) modelInfo(ctx context.Context, ev Event, arg string) error 
 	}
 	var note = ""
 	if selected != d.deps.Cfg.StrataModel {
-		note = i18n.T(lang, "model.override_note", d.deps.Cfg.StrataModel)
+		note = i18n.T(lang, "model.override_note", d.modelDisplayName(d.deps.Cfg.StrataModel))
 	}
-	return d.reply(ctx, ev.ChatID, i18n.T(lang, "model.info", selected, note, endpoint))
+	return d.reply(ctx, ev.ChatID, i18n.T(lang, "model.info", d.modelDisplayName(selected), note, d.modelEndpoint(selected)))
 }
 
 func (d *Dispatcher) modelMenuControl(ctx context.Context, ev Event, action string) error {
@@ -522,7 +575,7 @@ func (d *Dispatcher) modelMenuControl(ctx context.Context, ev Event, action stri
 		if err := store.ClearChatModel(ctx, d.deps.DB, ev.ChatID); err != nil {
 			return err
 		}
-		return d.showModelMenu(ctx, ev, i18n.T(lang, "model.menu_reset", d.deps.Cfg.StrataModel))
+		return d.showModelMenu(ctx, ev, i18n.T(lang, "model.menu_reset", d.modelDisplayName(d.deps.Cfg.StrataModel)))
 	}
 	value, ok := strings.CutPrefix(action, "menu:set:")
 	index, err := strconv.Atoi(value)
@@ -547,7 +600,7 @@ func (d *Dispatcher) modelMenuControl(ctx context.Context, ev Event, action stri
 	if err := store.SetChatModel(ctx, d.deps.DB, ev.ChatID, selected); err != nil {
 		return err
 	}
-	return d.showModelMenu(ctx, ev, i18n.T(lang, "model.menu_selected", selected))
+	return d.showModelMenu(ctx, ev, i18n.T(lang, "model.menu_selected", d.modelDisplayName(selected)))
 }
 
 func (d *Dispatcher) showModelMenu(ctx context.Context, ev Event, note ...string) error {
@@ -556,7 +609,7 @@ func (d *Dispatcher) showModelMenu(ctx context.Context, ev Event, note ...string
 	if err != nil {
 		return err
 	}
-	text := menuText(i18n.T(lang, "model.menu_current", selected, d.deps.Cfg.StrataBase), note)
+	text := menuText(i18n.T(lang, "model.menu_current", d.modelDisplayName(selected), d.modelEndpoint(selected)), note)
 	names, modelsErr := d.deps.Model.Models(ctx)
 	if modelsErr != nil {
 		d.logEvent(ctx, ev.UserID, store.EventModelError, "models:"+Sanitize(modelsErr, d.deps.Token))
@@ -1155,6 +1208,155 @@ func brief(text string, maxRunes int) string {
 	return string(runes[:maxRunes]) + "…"
 }
 
+// limitsControl — /limits: show this chat's limits and today's usage, or set/reset them.
+//
+// Who may write: an administrator anywhere; in a private chat its owner too (the chats.user_id of the
+// row). A group is managed by an administrator only — a group member must never be able to lift the
+// group's limit just because the group id happens to resemble a user id. Reading /limits is open to
+// every allowed user of the chat.
+func (d *Dispatcher) limitsControl(ctx context.Context, ev Event, arg string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
+	if d.deps.DB == nil {
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "limits.usage"))
+	}
+	action := strings.TrimSpace(arg)
+	if action == "" || strings.EqualFold(action, "menu") {
+		return d.replyChatLimits(ctx, ev, lang)
+	}
+	if !d.canManageChatLimits(ctx, ev) {
+		d.logEvent(ctx, ev.UserID, store.EventDenied, "limits")
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "limits.denied"))
+	}
+	fields := strings.Fields(action)
+	switch strings.ToLower(fields[0]) {
+	case "reset":
+		_, err := store.ResetChatLimits(ctx, d.deps.DB, ev.ChatID)
+		if err != nil {
+			return err
+		}
+		d.logChatEvent(ctx, ev.ChatID, ev.UserID, store.EventCommand, "limits:reset")
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "limits.reset"))
+	case "model", "network", "minute":
+		if len(fields) != 2 {
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "limits.usage"))
+		}
+		value, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil || value < 0 || value > store.ChatLimitMax {
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "limits.invalid_number", store.ChatLimitMax))
+		}
+		limits, _, err := store.GetChatLimits(ctx, d.deps.DB, ev.ChatID)
+		if err != nil {
+			return err
+		}
+		limits.ChatID = ev.ChatID
+		switch strings.ToLower(fields[0]) {
+		case "model":
+			limits.DailyModelLimit = value
+		case "network":
+			limits.DailyNetworkLimit = value
+		case "minute":
+			limits.PerMinuteLimit = value
+		}
+		if err := d.saveChatLimits(ctx, ev, limits); err != nil {
+			return err
+		}
+		d.logChatEvent(ctx, ev.ChatID, ev.UserID, store.EventCommand, "limits:set "+strings.ToLower(fields[0]))
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "limits.saved"))
+	case "tools":
+		raw := strings.TrimSpace(strings.TrimPrefix(action, fields[0]))
+		if strings.EqualFold(raw, "none") {
+			raw = ""
+		}
+		tools, err := store.NormalizeDisabledTools([]string{raw})
+		if err != nil {
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "limits.invalid_tool", raw, strings.Join(store.ChatTools(), ", ")))
+		}
+		limits, _, err := store.GetChatLimits(ctx, d.deps.DB, ev.ChatID)
+		if err != nil {
+			return err
+		}
+		limits.ChatID = ev.ChatID
+		limits.DisabledTools = tools
+		if err := d.saveChatLimits(ctx, ev, limits); err != nil {
+			return err
+		}
+		d.logChatEvent(ctx, ev.ChatID, ev.UserID, store.EventCommand, "limits:set tools")
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "limits.saved"))
+	default:
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "limits.usage"))
+	}
+}
+
+// canManageChatLimits is the write permission of /limits. Admin anywhere; the owner of a private chat.
+func (d *Dispatcher) canManageChatLimits(ctx context.Context, ev Event) bool {
+	if d.deps.Cfg.IsAdmin(ev.UserID) {
+		return true
+	}
+	if ev.ChatID < 0 {
+		return false
+	}
+	owner, found, err := store.ChatOwner(ctx, d.deps.DB, ev.ChatID)
+	if err != nil {
+		d.deps.Logger.Error("the chat owner could not be read", "chat_id", ev.ChatID, "error", Sanitize(err, d.deps.Token))
+		return false
+	}
+	if !found {
+		// A private chat that has no row yet: Telegram's private chat id IS the owner's user id, and a
+		// negative id was refused above, so this is not a group id mistaken for a user.
+		return ev.ChatID == ev.UserID
+	}
+	return owner == ev.UserID
+}
+
+// saveChatLimits ensures the chats row exists (a first /limits on a fresh chat is not stored by the
+// dispatcher: only model commands are) and upserts the validated row.
+func (d *Dispatcher) saveChatLimits(ctx context.Context, ev Event, limits store.ChatLimits) error {
+	if err := store.EnsureChat(ctx, d.deps.DB, ev.ChatID, ev.UserID, ev.ChatTitle); err != nil {
+		return err
+	}
+	return store.SetChatLimits(ctx, d.deps.DB, limits)
+}
+
+// replyChatLimits renders the /limits report: the source of the limits, today's counters (the same
+// events.chat_id rows enforcement reads) and the disabled tools.
+func (d *Dispatcher) replyChatLimits(ctx context.Context, ev Event, lang string) error {
+	limits, found, err := store.GetChatLimits(ctx, d.deps.DB, ev.ChatID)
+	if err != nil {
+		return err
+	}
+	usage, err := store.ChatDailyUsage(ctx, d.deps.DB, ev.ChatID, d.now())
+	if err != nil {
+		return err
+	}
+	limitText := func(value int64) string {
+		if value == 0 {
+			return i18n.T(lang, "limits.unlimited")
+		}
+		return strconv.FormatInt(value, 10)
+	}
+	source := i18n.T(lang, "limits.source_default")
+	if found {
+		source = i18n.T(lang, "limits.source_chat")
+	}
+	disabled := i18n.T(lang, "limits.tools_none")
+	if len(limits.DisabledTools) > 0 {
+		disabled = strings.Join(limits.DisabledTools, ", ")
+	}
+	kind := "private"
+	if ev.ChatID < 0 {
+		kind = "group"
+	}
+	lines := []string{
+		i18n.T(lang, "limits.title", ev.ChatID, kind),
+		i18n.T(lang, "limits.source", source),
+		i18n.T(lang, "limits.today", usage.ModelCalls, limitText(limits.DailyModelLimit),
+			usage.NetworkToolCalls(), limitText(limits.DailyNetworkLimit)),
+		i18n.T(lang, "limits.tools", usage.ReadURL, usage.WebSearch, usage.Calculator, disabled),
+		i18n.T(lang, "limits.per_minute", limitText(limits.PerMinuteLimit)),
+	}
+	return d.reply(ctx, ev.ChatID, strings.Join(lines, "\n"))
+}
+
 // modelLimitNoticeFor — the /ask form of modelLimitNotice. The original stays Russian for the Mini App
 // and the task scheduler, which are outside this change.
 func modelLimitNoticeFor(lang string, err error) (string, bool) {
@@ -1163,6 +1365,13 @@ func modelLimitNoticeFor(lang string, err error) (string, bool) {
 		return i18n.T(lang, "ask.rate_limited"), true
 	case errors.Is(err, ErrModelDailyLimited):
 		return i18n.T(lang, "ask.daily_limited"), true
+	case errors.Is(err, ErrChatModelDailyLimited):
+		// The refusal already carries the sentence in the chat's language; the fallback keeps the
+		// Russian constant for a caller that built the error without a language (a unit test).
+		if text := chatLimitRefusalText(err); text != "" {
+			return text, true
+		}
+		return i18n.T(lang, "ask.chat_daily_limited", 0), true
 	default:
 		return "", false
 	}

@@ -154,6 +154,7 @@ Fallback без compose: `TELEGRAM_BOT_TOKEN` и `STRATA_API_KEY` в окруж�
 | `STRATA_MODEL` | `qwen2.5-7b-instruct` | id модели из `GET /v1/models` |
 | `STRATA_FALLBACK_MODEL` | пусто = fallback выключен | резервная модель после retryable-ошибки основной |
 | `STRATA_FALLBACKS` | пусто | упорядоченная цепочка резервов в JSON (до 8), взаимоисключающая с `STRATA_FALLBACK_MODEL` |
+| `MODEL_PROVIDERS` | пусто | именованные OpenAI-совместимые провайдеры (JSON, до 6): выбор `name:model` в `/model` и Settings |
 | `STRATA_FALLBACK_API_KEY` | пусто | ключ резервного эндпоинта, если он не совпадает с основным (иначе `STRATA_API_KEY`) |
 | `STRATA_FALLBACK_BASE_URL` | `STRATA_BASE_URL` | отдельный endpoint fallback; absolute http(s) без userinfo |
 | `STRATA_FALLBACK_TIMEOUT_SECONDS` | 120 | таймаут одной попытки резерва: модель может загружаться по требованию |
@@ -217,6 +218,30 @@ Fallback без compose: `TELEGRAM_BOT_TOKEN` и `STRATA_API_KEY` в окруж�
 Если endpoint отдаёт **ровно одну** модель и её имя не совпадает с `STRATA_MODEL`, бот на старте принимает имя загруженной модели (в лог уходит `WARN` с обоими именами). Это нужно одномодельной STRATA: она может отвечать загруженной моделью на любой запрос или отклонить имя, которого больше нет. При недоступном списке или нескольких моделях конфигурация не меняется — угадывать в неоднозначном случае бот не будет.
 
 `STRATA_FALLBACK_MODEL` включает один повторный запрос на резервную модель. `STRATA_FALLBACKS` задаёт упорядоченную цепочку из нескольких резервов в JSON (до 8 записей `{model, base_url?, api_key?, timeout_seconds?}`): запрос идёт по списку, пока очередной провайдер не ответит, и останавливается на неретраибельной ошибке. Обе переменные взаимоисключающие; без `base_url` резерв использует основной endpoint, без `api_key` — не получает чужой ключ. Fallback срабатывает только на retryable-ошибку основной: 5xx, 429, transient error внутри 200-стрима или сетевой сбой; 400/401/404 и ошибки разбора возвращаются как есть. `STRATA_FALLBACK_BASE_URL` задаёт отдельный endpoint, пустое значение означает тот же `STRATA_BASE_URL`; непустой URL обязан быть absolute http(s) без userinfo, а та же модель на том же endpoint отклоняется как ошибка конфигурации. `STRATA_FALLBACK_TIMEOUT_SECONDS` (по умолчанию 120) — таймаут одной попытки резерва: локальный сервер вроде LM Studio загружает модель на первый запрос (27B холодной занял ~61 с), и общий таймаут основной модели его бы обрезал. Частично доставленный стрим не переигрывается: если хотя бы один `delta` уже ушёл в чат, второй запрос не делается и возвращается исходная ошибка, поэтому ответ не дублируется. Список `/model` по-прежнему строится по основной `GET /models`, а явно выбранная fallback-модель работает как обычная per-chat модель и не сохраняется как fallback.
+
+### Именованные провайдеры (MODEL_PROVIDERS, opt-in)
+
+`MODEL_PROVIDERS` добавляет до шести именованных OpenAI-совместимых endpoint'ов, между которыми чат переключается строкой `name:model`. Пустая или отсутствующая переменная означает «провайдеров нет»: запросы идут ровно тем путём, что и раньше, а вывод `/model` не меняется. `strata` зарезервировано за основным endpoint и не может быть именем провайдера.
+
+Формат — JSON-массив записей:
+
+```json
+[
+  {"name":"kimi","base_url":"https://api.moonshot.ai/v1","api_key":"sk-...",
+   "models":["kimi-k3.1-pro","kimi-k2.6"],"default_model":"kimi-k3.1-pro","timeout_seconds":120},
+  {"name":"deepseek","base_url":"https://api.deepseek.com/v1","api_key":"",
+   "models":["deepseek-chat"]}
+]
+```
+
+Правила загрузчика: `name` уникально, в нижнем регистре, `[a-z0-9_-]+`; `base_url` — absolute http(s) URL без userinfo (`/v1` нормализуется так же, как у `STRATA_BASE_URL`); `models` обязателен, 1..20 уникальных непустых id; `default_model` необязателен, обязан входить в `models` и по умолчанию равен первому; `timeout_seconds` — 5..600, по умолчанию 120. Одна неверная запись отклоняет весь список: частично настроенный провайдер не должен выглядеть доступным. Для обратной совместимости одиночная строка `model` читается как список из одного элемента, но при наличии `models` она игнорируется.
+
+Маршрутизация: id без префикса или с `strata:` уходит в прежний клиент (основной endpoint + цепочка fallback), модель отправляется без префикса; `kimi:model`, `deepseek:model` и любое имя из `MODEL_PROVIDERS` уходит в клиент этого провайдера, причём модель обязана быть в его `models` — незаявленный id и неизвестное имя провайдера возвращают понятную ошибку без подстановки другого провайдера. Если выбранный провайдер падает ретраибельной ошибкой (5xx/429/transient/сеть) до первого `delta`, роутер один раз повторяет запрос на основном клиенте с моделью `STRATA_MODEL` и пишет `WARN`; частично показанный стрим не переигрывается. Ошибки 400/401/404 остаются ошибками выбранного провайдера.
+
+`/model` и `GET /api/settings` показывают основную модель плюс все `name:model` из конфигурации, сгруппированные по имени провайдера; выбор и сброс работают через существующую колонку `chat_settings.model`, поэтому схема БД не меняется. Обычные имена моделей продолжают работать как раньше.
+
+Запись с пустым `api_key` на стороннем хосте пропускается на старте с `WARN` (DeepSeek в этом окружении не активируется, пока не задан ключ; ключ не хардкодится). Локальный endpoint (LM Studio style: `host.docker.internal`, `localhost`, частный IP, имя без точки или `*.local`) собирается без ключа. Административный редактор этих списков в Mini App появится вместе с работами по limits/admin; сейчас источник — переменная окружения.
+
 
 При `PARSE_MODE=MarkdownV2` сохраняются заголовки, жирный и курсивный текст, `code`, code fences и
 http/https-ссылки. Обычные специальные символы экранируются, а небезопасные схемы ссылок не пропускаются.
@@ -395,7 +420,7 @@ Reverse proxy или туннель должен перенаправлять п
 | `/search <текст>` | до 20 совпадений по всей истории чата через FTS5-индекс; префиксный поиск по последнему слову, операторы FTS трактуются как текст |
 | `/delete` | одноразовые Confirm/Cancel с TTL 5 минут, привязкой к пользователю и сообщению; настройки сохраняются |
 | `/model [check]` | модель, endpoint и проверка доступности |
-| `/model select <id>` | выбрать модель текущего чата из `GET /models` |
+| `/model select <id>` | выбрать модель текущего чата: id из `GET /models` или `<provider>:<model>` из `MODEL_PROVIDERS` |
 | `/model reset` | вернуть модель по умолчанию `STRATA_MODEL` |
 | `/stream [on\|off\|reset]` | стриминг текущего чата; без аргумента — состояние |
 | `/language [ru\|en\|reset]` | язык интерфейса чата; без аргумента — текущий язык и источник (этот чат или `DEFAULT_LANGUAGE`) |
@@ -404,6 +429,24 @@ Reverse proxy или туннель должен перенаправлять п
 | `/usage` | дневные вызовы и tokens по моделям, использование tools и остаток лимитов без текстов запросов |
 | `/whoami` | `user_id`, `chat_id` и состояние allowlist |
 | `/admin` | агрегаты, usage RAG/calculator/read_url, активные model calls и busy chats; только для `TELEGRAM_ADMIN_USERS` |
+| `/limits [model N\|network N\|minute N\|tools read_url,web_search\|reset]` | лимиты текущего чата или группы и расход за UTC-сутки; без аргумента — отчёт, `reset` — снять ограничения; запись разрешена администратору, в личном чате — его владельцу |
+
+## Лимиты чатов и групп
+
+Схема 20 (миграция `020_chat_limits.sql`) добавляет `chat_limits(chat_id → chats.chat_id ON DELETE CASCADE, daily_model_limit, daily_network_limit, per_minute_limit, disabled_tools)`. `0` означает «без ограничения», отсутствие строки — состояние по умолчанию v1.63.0 (всё без ограничений, все инструменты включены). Приватный чат и группа живут в одной таблице; группа имеет отрицательный `chat_id` и никогда не сравнивается с `user_id`. Личные лимиты и дневные квоты пользователя (`USER_DAILY_*`, `daily_quota_reservations`) продолжают работать независимо и складываются с чатовыми.
+
+Миграция также добавляет nullable `events.chat_id` и индексы `events(chat_id, kind, detail, created_at)`, `messages(chat_id, created_at)`: дневные счётчики чата читаются из тех же `events`, а не из отдельного счётчика, поэтому UI, `/limits` и enforcement видят одно число. Исторические события остаются без `chat_id`, поэтому в день обновления счётчики чата начинаются с нуля.
+
+Семантика (UTC-сутки, как у `daily_quota_reservations`):
+
+- `daily_model_limit`: перед каждым вызовом модели считается `events(kind='model_call', chat_id=…)` за текущие UTC-сутки; при `used >= limit` модель не вызывается, пользователь получает локализованный отказ RU/EN, пишется `events(kind='limit', detail='chat_model_daily …')`. Отказ не расходует per-user дневную квоту.
+- `daily_network_limit`: перед выполнением `read_url`/`web_search` считается `events(kind='usage', detail IN ('read_url','web_search'), chat_id=…)` за сутки; при исчерпании возвращается существующий JSON-отказ `{"error":"daily_network_tool_limit_exceeded"}`, инструмент не выполняется и per-user бронь не тратится. `calculator` в сетевой лимит не входит.
+- `per_minute_limit`: считаются сохранённые сообщения `role='user'` этого чата за последние 60 секунд (индекс `messages(chat_id, created_at)`); текущее сообщение ещё не сохранено, поэтому лимит N разрешает N вопросов в минуту. Отказ локализован, событие `limit` пишется, update подтверждается (иначе Telegram переотправлял бы его). Меню-callback, recovery и `AlwaysAllowed`-команды (`/start`, `/whoami`) не блокируются.
+- `disabled_tools`: список известных инструментов (`read_url`, `web_search`, `calculator`) убирается из tool-схем запроса к модели; если модель всё равно вызывает инструмент, он не выполняется и получает JSON-результат `{"error":"tool_disabled"}`. Существующие approvals и task auto-approval не меняются: отключённый инструмент до подтверждения не доходит.
+
+Telegram: `/limits` показывает источник (этот чат или значения по умолчанию), сегодняшние вызовы модели/сети/инструментов и отключённые инструменты; `/limits model N`, `/limits network N`, `/limits minute N`, `/limits tools read_url,web_search` (пусто или `none` — включить все), `/limits reset`. В группе писать может только администратор, в личном чате — владелец; читать может любой допущенный пользователь.
+
+Mini App (только администратор из `TELEGRAM_ADMIN_USERS`): `GET /api/admin/chats?limit=50` отдаёт активные чаты с `id/title/type/user_id/last_activity`, счётчиками `today` и текущими `limits`; `PUT /api/admin/chats/{id}/limits` принимает строгий JSON `{"daily_model_limit":N,"daily_network_limit":N,"per_minute_limit":N,"disabled_tools":["read_url",…]}` (все поля обязательны, числа 0..1 000 000, только известные инструменты); `DELETE /api/admin/chats/{id}/limits` сбрасывает строку. Не-администратор получает `403 admin_required`, неизвестный чат — `404`, некорректное тело — `400`; успешные операции аудируются как `admin.limits.set` / `admin.limits.reset`. `/api/settings` отдаёт `is_admin`, по которому Settings показывает раздел «Лимиты чатов»; у не-администратора интерфейс не меняется. Ограничения `chat_limits` — «мягкие»: параллельные вызовы одной задачи могут превысить дневной лимит на число одновременно выполняемых вызовов (обычные сообщения сериализуются per-chat lock).
 
 ## Группы
 
@@ -473,11 +516,26 @@ Traefik использует только static file provider: `/etc/traefik/tr
 
 Raw `initData` проверяется через Telegram HMAC и `auth_date`, session — на 15 минут. Inline launch ticket привязан к chat/user на 2 минуты и остаётся одноразовым. Direct launch через нижнюю кнопку работает без ticket только с private scope `ChatID=UserID`, полученным из подписанного `user.id`; client-supplied `chat_id` не используется. Доступ и allowlist проверяются при каждом запросе. Нет model keys, task plans/results или tool arguments. Настройки Model/Persona/Stream/Mini App fallback работают через те же store-операции и проверку allowlist, без прямых обращений браузера к STRATA. Интерфейс по умолчанию русский, есть переключатель RU/EN и адаптивная мобильная вёрстка без горизонтального скролла. `watch_container.ps1` дополнительно проверяет `/healthz` при включённом Mini App.
 
-History поддерживает поиск через `GET /api/history/search?q=...`, полный просмотр через `/api/history/item`, MD/JSON export с bearer fetch/Blob, удаление отдельных user/assistant сообщений и очистку с подтверждением. Links поддерживает добавление HTTPS-страниц через общий Dispatcher lifecycle, поиск, полный просмотр и delete/clear. Reminders поддерживает создание once/daily, Cancel active и Retry/Delete failed; Tasks — создание безопасного плана через общий Dispatcher lifecycle, Cancel/Resume/Delete/Clear. Settings при включённом TTS позволяет выбрать скорость 0.75/1/1.25/1.5 через `/api/settings/tts-speed` или вернуть 1. Bearer mutations ограничены 30/min/user, History export — 5/min/user с HTTP 429 и `Retry-After`.
+History поддерживает поиск через `GET /api/history/search?q=...`, полный просмотр через `/api/history/item`, MD/JSON export с bearer fetch/Blob, удаление отдельных user/assistant сообщений и очистку с подтверждением. Links поддерживает добавление HTTPS-страниц через общий Dispatcher lifecycle, поиск, полный просмотр и delete/clear. Reminders поддерживает создание once/daily, Cancel active и Retry/Delete failed; Tasks — создание безопасного плана через общий Dispatcher lifecycle, Cancel/Resume/Delete/Clear. Settings при включённом TTS позволяет выбрать скорость 0.75/1/1.25/1.5 через `/api/settings/tts-speed` или вернуть 1. Bearer mutations ограничены 30/min/user, History export — 5/min/user с HTTP 429 и `Retry-After`. Администратору Settings дополнительно показывает раздел «Лимиты чатов»: выбор активного чата или группы, сегодняшний расход, три числовых лимита, переключатели `read_url`/`web_search`/`calculator`, Save и Reset через `/api/admin/chats`; у остальных пользователей раздел скрыт.
 
 Mini App использует современную responsive-навигацию, карточки, badges, inline creation forms с валидацией, loading/notices, focus-visible и reduced-motion transitions. Управление с клавиатуры поддерживает ArrowLeft/ArrowRight/Home/End; разрушительные действия требуют inline Confirm/Cancel.
 
 Documents поддерживает загрузку текстового файла, PDF и DOCX через `POST /api/documents` (`multipart/form-data`, одна часть `file`, необязательный `name`) с теми же типами и лимитами, что `/docs add`: UTF-8 текст без NUL до 64 КиБ, PDF/DOCX до 20 МиБ (предел Bot API `getFile`), `RAG_MAX_DOCUMENTS` на чат; chat/user берутся из сессии, тело запроса ограничено `DocumentBinaryMaxBytes` + 1 МиБ multipart-overhead, ответ `201 {"id","name","chunks","embedded"}` без текста документа. Для PDF/DOCX сохраняется извлечённый и нормализованный текст, а не binary-байты; скан без текстового слоя и `.doc` возвращают `400 document_no_text`/`unsupported_document`. Дальше Documents поддерживает поиск через `GET /api/documents/search?q=...` с corpus truncation warning, удаление отдельного документа вместе с RAG-фрагментами через `POST /api/documents/{id}/delete` и очистку базы текущего чата через `POST /api/documents/clear`. Links позволяет удалить отдельную ссылку через `POST /api/links/{id}/delete` или очистить весь список текущего чата через `POST /api/links/clear`. Tasks показывает для failed sanitized error и expiry. Cancel отменяет active, Resume возобновляет последнюю failed/cancelled через общий TaskLifecycle; network approvals остаются только в Telegram. Отдельная terminal задача удаляется через `POST /api/tasks/{id}/delete`; active нужно сначала отменить. Для любого непустого списка доступна общая очистка через `POST /api/tasks/clear`. Reminders показывает active/failed и поддерживает Cancel active, Retry/Delete failed. Все удаления и очистки требуют отдельного inline Confirm/Cancel и строгого пустого POST body без query params. Loading/mutations показывают индикатор и блокируют повторные действия. Успешные mutations создают best-effort `miniapp_mutation` audit только с operation/chat_id/numeric id/count, без текстов. Вкладка Usage получает данные через `GET /api/usage` и показывает за UTC-сутки model calls и tokens по моделям, вызовы calculator/RAG/read_url/web_search, дневные limits/remaining; для unlimited `remaining` равен `null`. Вкладка не содержит текстов запросов, целей задач и event detail.
+
+### Usage: диапазоны, агрегаты и графики
+
+`GET /api/usage?range=hour|day|week|month` (по умолчанию `day`) сохраняет прежние дневные поля `date`, `models`, `tools`, `limits` и добавляет `range`, `truncated`, `series` и `totals`. Все значения — агрегаты текущего пользователя по UTC.
+
+- `hour` — 24 часовых интервала, последний содержит текущий час;
+- `day` — 7 дневных интервалов, последний — сегодня;
+- `week` — 8 недельных интервалов с понедельника, последний — текущая неделя;
+- `month` — 12 календарных месяцев, последний — текущий месяц.
+
+Каждый элемент `series` — `{start, model_calls, tokens_in, tokens_out, tools, tools_total}`, где `start` — RFC3339 UTC. `totals` содержит те же суммы за диапазон, `totals.models` — разбивку по моделям, `totals.tools` — по инструментам. `model_calls` считается по событиям `model_call` (detail — модель), `tokens_in`/`tokens_out` — по ответам ассистента из `messages` (NULL считаются нулём), `tools` — по событиям `usage` с detail `read_url`, `web_search`, `calculator`, `rag`; прочие detail игнорируются. Окно ограничено (не более 32 корзин и 400 суток), при усечении `truncated=true`.
+
+Вкладка Usage показывает переключатель «Час/День/Неделя/Месяц», столбцы model calls по интервалам, линии входящих и исходящих токенов и горизонтальные полосы инструментов; это inline SVG, построенный через `createElementNS`, без внешних библиотек и inline-обработчиков (`CSP: script-src 'self'`). Графики имеют `role="img"` и текстовую `aria-label`, масштабируются до 320 px. Прежние текстовые итоги за сегодня и дневные лимиты остаются на месте.
+
+Приватность: ответ и графики содержат только агрегаты — модель, числа вызовов/токенов и имена инструментов; тексты запросов и ответов, цели задач, chat/user id и прочие detail событий не отдаются.
 
 ### «no available server» в Mini App
 

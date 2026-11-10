@@ -1712,6 +1712,8 @@ type usageModel struct {
 }
 
 type usageResponse struct {
+	// The daily fields are kept unchanged for backward compatibility: date/models/tools/limits always
+	// describe the current UTC day. Range series live in their own fields below.
 	Date   string       `json:"date"`
 	Models []usageModel `json:"models"`
 	Tools  struct {
@@ -1724,6 +1726,28 @@ type usageResponse struct {
 		Model        usageLimit `json:"model"`
 		NetworkTools usageLimit `json:"network_tools"`
 	} `json:"limits"`
+	Range     string              `json:"range"`
+	Truncated bool                `json:"truncated"`
+	Series    []usageSeriesBucket `json:"series"`
+	Totals    usageRangeTotals    `json:"totals"`
+}
+
+type usageSeriesBucket struct {
+	Start      string           `json:"start"`
+	ModelCalls int64            `json:"model_calls"`
+	TokensIn   int64            `json:"tokens_in"`
+	TokensOut  int64            `json:"tokens_out"`
+	Tools      map[string]int64 `json:"tools"`
+	ToolsTotal int64            `json:"tools_total"`
+}
+
+type usageRangeTotals struct {
+	ModelCalls int64            `json:"model_calls"`
+	TokensIn   int64            `json:"tokens_in"`
+	TokensOut  int64            `json:"tokens_out"`
+	ToolCalls  int64            `json:"tool_calls"`
+	Models     []usageModel     `json:"models"`
+	Tools      map[string]int64 `json:"tools"`
 }
 
 type usageLimit struct {
@@ -1745,10 +1769,29 @@ func makeUsageLimit(used int64, limit int64) usageLimit {
 }
 
 func (a *App) usage(w http.ResponseWriter, req *http.Request, current scope) {
+	rangeName := store.UsageRangeDay
+	if req.URL.RawQuery != "" {
+		raw, ok := strictQueryValue(req, "range")
+		if !ok {
+			writeError(w, http.StatusBadRequest, "invalid_query", "Use exactly one range of hour, day, week, or month.")
+			return
+		}
+		parsed, ok := store.ParseUsageRange(raw)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "invalid_query", "Use exactly one range of hour, day, week, or month.")
+			return
+		}
+		rangeName = parsed
+	}
 	now := time.Now().UTC()
 	daily, err := store.UserDailyUsage(req.Context(), a.db, current.UserID, now)
 	if err != nil {
 		a.queryFailed(w, "usage", err)
+		return
+	}
+	series, err := store.UserUsageSeries(req.Context(), a.db, current.UserID, now, rangeName)
+	if err != nil {
+		a.queryFailed(w, "usage series", err)
 		return
 	}
 	var response usageResponse
@@ -1766,5 +1809,37 @@ func (a *App) usage(w http.ResponseWriter, req *http.Request, current scope) {
 	limits := a.cfg.DailyLimitsFor(current.UserID)
 	response.Limits.Model = makeUsageLimit(daily.ModelCalls(), limits.Model)
 	response.Limits.NetworkTools = makeUsageLimit(daily.NetworkToolCalls(), limits.NetworkTools)
+
+	response.Range = string(series.Range)
+	response.Truncated = series.Truncated
+	response.Series = make([]usageSeriesBucket, 0, len(series.Buckets))
+	for _, bucket := range series.Buckets {
+		tools := make(map[string]int64, len(bucket.Tools))
+		for name, count := range bucket.Tools {
+			tools[name] = count
+		}
+		response.Series = append(response.Series, usageSeriesBucket{
+			Start:      bucket.Start.UTC().Format(time.RFC3339),
+			ModelCalls: bucket.ModelCalls,
+			TokensIn:   bucket.TokensIn,
+			TokensOut:  bucket.TokensOut,
+			Tools:      tools,
+			ToolsTotal: bucket.ToolsTotal,
+		})
+	}
+	response.Totals.ModelCalls = series.ModelCalls
+	response.Totals.TokensIn = series.TokensIn
+	response.Totals.TokensOut = series.TokensOut
+	response.Totals.ToolCalls = series.ToolsTotal
+	response.Totals.Models = make([]usageModel, 0, len(series.Models))
+	for _, model := range series.Models {
+		response.Totals.Models = append(response.Totals.Models, usageModel{
+			Model: model.Model, Calls: model.Calls, TokensIn: model.TokensIn, TokensOut: model.TokensOut,
+		})
+	}
+	response.Totals.Tools = make(map[string]int64, len(series.Tools))
+	for name, count := range series.Tools {
+		response.Totals.Tools[name] = count
+	}
 	writeJSON(w, http.StatusOK, response)
 }

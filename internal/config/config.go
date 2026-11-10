@@ -22,6 +22,7 @@ var Env = []string{
 	"DEFAULT_LANGUAGE",
 	"GROUPS_ENABLED",
 	"STRATA_FALLBACKS",
+	"MODEL_PROVIDERS",
 	"STRATA_FALLBACK_MODEL",
 	"STRATA_FALLBACK_BASE_URL",
 	"STRATA_FALLBACK_API_KEY",
@@ -221,10 +222,14 @@ type Config struct {
 	// FallbackProviders is the ordered reserve chain from STRATA_FALLBACKS (JSON). Each entry names its model and
 	// may override the endpoint, the key and the per-attempt timeout; the legacy single fallback variables remain
 	// a one-entry chain. ChatURL/ModelsURL are resolved by the loader so main does not repeat URL joining.
-	FallbackProviders    []FallbackProvider
-	FallbackBase         string
-	FallbackChatURL      string
-	FallbackModelsURL    string
+	FallbackProviders []FallbackProvider
+	FallbackBase      string
+	FallbackChatURL   string
+	FallbackModelsURL string
+	// ModelProviders is the optional named-provider list from MODEL_PROVIDERS. A chat selects one of its models
+	// with a "name:model" id; the primary STRATA endpoint stays the default and the name "strata" is reserved
+	// for it. An empty list keeps every request on the existing default path.
+	ModelProviders       []ProviderConfig
 	TranscriptionModel   string
 	TranscriptionBase    string
 	TranscriptionURL     string
@@ -721,6 +726,19 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 			cfg.FallbackBase = NormalizeBase(endpointBase)
 			cfg.FallbackChatURL = JoinURL(endpointBase, "/chat/completions")
 			cfg.FallbackModelsURL = JoinURL(endpointBase, "/models")
+		}
+	}
+
+	// The named providers are opt-in and silent: no row means no second endpoint is ever called and the default
+	// path stays byte-for-byte what it was. A list with one broken entry is rejected whole, so the loader never
+	// leaves a half-configured provider that looks available.
+	cfg.ModelProviders = nil
+	if rawProviders := strings.TrimSpace(raw["MODEL_PROVIDERS"]); rawProviders != "" {
+		var providers, providerProblems = parseModelProviders(rawProviders)
+		if len(providerProblems) > 0 {
+			problems = append(problems, providerProblems...)
+		} else {
+			cfg.ModelProviders = providers
 		}
 	}
 

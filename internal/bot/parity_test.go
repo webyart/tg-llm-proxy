@@ -38,6 +38,7 @@ var commandParityMatrix = map[string]string{
 	CommandUsage:         "/api/usage",
 	CommandWhoAmI:        "/api/whoami",
 	CommandAdmin:         "telegram-only: admin aggregate metrics are not exposed to the Mini App",
+	CommandLimits:        "/api/admin/chats, /api/admin/chats/{id}/limits",
 }
 
 // Voice is no longer a Telegram-only capability: the Mini App mic path (POST /api/transcribe) calls the

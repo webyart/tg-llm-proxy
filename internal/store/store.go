@@ -310,6 +310,8 @@ type migrationStatementGuard func(context.Context, *sql.Tx, string) (bool, error
 var migrationStatementGuards = map[int]migrationStatementGuard{
 	// 011_message_user_attribution.sql: ALTER TABLE messages ADD COLUMN user_id …
 	11: addColumnIfMissingGuard("messages", "user_id"),
+	// 020_chat_limits.sql: ALTER TABLE events ADD COLUMN chat_id (the CREATE TABLE part is IF NOT EXISTS).
+	20: addColumnIfMissingGuard("events", "chat_id"),
 }
 
 // addColumnIfMissingGuard skips exactly one `ALTER TABLE <table> ADD COLUMN <column> …` statement when

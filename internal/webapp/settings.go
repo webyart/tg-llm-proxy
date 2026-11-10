@@ -104,6 +104,10 @@ func (a *App) providerModels(ctx context.Context) ([]string, error) {
 
 type settingsResponse struct {
 	Warning string `json:"warning,omitempty"`
+	// IsAdmin tells the Mini App whether to render the admin-only "Chat limits" section. It answers from
+	// the same TELEGRAM_ADMIN_USERS allowlist the admin API enforces, so hiding the section is only a UI
+	// convenience and never the access control.
+	IsAdmin bool `json:"is_admin"`
 	Model   struct {
 		Current            string   `json:"current"`
 		Default            string   `json:"default"`
@@ -174,6 +178,7 @@ func (a *App) settings(w http.ResponseWriter, req *http.Request, current scope) 
 	}
 
 	var response settingsResponse
+	response.IsAdmin = a.cfg.IsAdmin(current.UserID)
 	if modelsErr != nil {
 		response.Warning = "models_unavailable"
 	}
@@ -262,6 +267,42 @@ func emptySettingsBody(req *http.Request) (int, bool) {
 	return 0, true
 }
 
+// settingsModelAllowed validates a model id against the aggregated catalogue. A provider-prefixed id
+// ("kimi:kimi-k3") is listed by the router exactly as configured, and the second check proves the model is in
+// THAT provider's list instead of trusting a colliding id the default endpoint might advertise.
+func (a *App) settingsModelAllowed(available []string, requested string) bool {
+	var listed = false
+	for _, name := range available {
+		if requested == name {
+			listed = true
+			break
+		}
+	}
+	if !listed {
+		return false
+	}
+	var provider, selected, prefixed = strings.Cut(requested, ":")
+	if !prefixed || provider == "strata" {
+		return true
+	}
+	var selectedTrimmed = strings.TrimSpace(selected)
+	if selectedTrimmed == "" {
+		return false
+	}
+	for _, configured := range a.cfg.ModelProviders {
+		if configured.Name != provider {
+			continue
+		}
+		for _, model := range configured.Models {
+			if strings.TrimSpace(model) == selectedTrimmed {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
 func settingsDecodeError(w http.ResponseWriter, status int) {
 	if status == http.StatusUnsupportedMediaType {
 		writeError(w, status, "content_type", "Send a strict application/json body.")
@@ -294,15 +335,8 @@ func (a *App) settingsModel(w http.ResponseWriter, req *http.Request, current sc
 			writeError(w, http.StatusBadGateway, "models_unavailable", "The current provider model list could not be read.")
 			return
 		}
-		found := false
-		for _, name := range available {
-			if requested == name {
-				found = true
-				break
-			}
-		}
-		if !found {
-			writeError(w, http.StatusBadRequest, "invalid_model", "Choose a model from the current provider list.")
+		if !a.settingsModelAllowed(available, requested) {
+			writeError(w, http.StatusBadRequest, "invalid_model", "Choose a model from the current provider list (provider ids are name:model).")
 			return
 		}
 		if err := store.EnsureChat(req.Context(), a.db, current.ChatID, current.UserID, ""); err != nil {

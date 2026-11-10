@@ -429,7 +429,78 @@ func isNewTaskGoal(arg string) bool {
 	return len(fields) == 0 || !strings.EqualFold(fields[0], "resume")
 }
 
+// chatScopeKey carries the chat of the update through the call stack. Per-chat limits are enforced deep
+// inside the model and tool paths (callModel, executeNetworkTool), and those functions receive only a
+// context and a user id; the chat id travels in the context instead of a new parameter on every layer.
+// A zero/absent value means "no chat" (unit tests that call the internals directly) and disables
+// per-chat enforcement instead of attributing the call to the wrong chat.
+type chatScopeKey struct{}
+
+func withChatScope(ctx context.Context, chatID int64) context.Context {
+	if chatID == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, chatScopeKey{}, chatID)
+}
+
+func chatScopeID(ctx context.Context) int64 {
+	if chatID, ok := ctx.Value(chatScopeKey{}).(int64); ok {
+		return chatID
+	}
+	return 0
+}
+
+// logChatEvent writes an event attributed to both the user and the chat. The per-chat daily counters
+// read events.chat_id, so every model call and tool use of a chat must go through this function.
+func (d *Dispatcher) logChatEvent(ctx context.Context, chatID int64, userID int64, kind string, detail string) {
+	if d.deps.DB == nil {
+		return
+	}
+	if err := store.LogChatEvent(ctx, d.deps.DB, chatID, userID, kind, detail); err != nil {
+		d.deps.Logger.Error("the chat event was not stored", "kind", kind, "chat_id", chatID, "error", Sanitize(err, d.deps.Token))
+	}
+}
+
+// enforceChatMinuteLimit applies chat_limits.per_minute_limit before the update enters the queue.
+//
+// What is counted: stored role='user' messages of THIS chat whose created_at falls into the trailing
+// 60 seconds (idx_messages_chat_created_at). A model answer is not counted — it is not a new request —
+// and the update being decided right now is not stored yet, so a limit of N allows N questions per
+// minute and refuses the N+1st. Menu callbacks, startup recovery replays and AlwaysAllowed diagnostics
+// (/start, /whoami) are exempt: refusing them would lock a user out of the commands that diagnose the
+// lockout. The refused update is acknowledged on purpose (persistOffset): keeping it unacknowledged
+// would make Telegram redeliver it forever, and the limit is a policy, not a transient failure.
+func (d *Dispatcher) enforceChatMinuteLimit(ctx context.Context, ev Event, cmd Command) (bool, error) {
+	if d.deps.DB == nil || ev.ChatID == 0 || ev.MenuCallback || ev.Recovery || cmd.AlwaysAllowed || ev.TelegramMessageID <= 0 {
+		return false, nil
+	}
+	limits, found, err := store.GetChatLimits(ctx, d.deps.DB, ev.ChatID)
+	if err != nil || !found || limits.PerMinuteLimit <= 0 {
+		return false, err
+	}
+	count, err := store.CountChatUserMessagesSince(ctx, d.deps.DB, ev.ChatID, d.now().Add(-time.Minute))
+	if err != nil {
+		return false, err
+	}
+	if count < limits.PerMinuteLimit {
+		return false, nil
+	}
+	d.logChatEvent(ctx, ev.ChatID, ev.UserID, store.EventLimit,
+		fmt.Sprintf("chat_per_minute %d/%d", count, limits.PerMinuteLimit))
+	lang := d.chatLanguage(ctx, ev.ChatID)
+	if replyErr := d.reply(ctx, ev.ChatID, i18n.T(lang, "chat.limit_minute", limits.PerMinuteLimit)); replyErr != nil {
+		return true, replyErr
+	}
+	d.persistOffset(ctx, ev.UpdateID)
+	return true, nil
+}
+
 func (d *Dispatcher) Dispatch(ctx context.Context, ev Event) error {
+	// The chat id travels through the whole answer: the daily model limit is checked inside callModel,
+	// the network limit inside executeNetworkTool and the disabled tools inside the tool loop, and all
+	// of them need to know WHICH chat they are serving. A group has a negative chat id here and is never
+	// confused with the user id.
+	ctx = withChatScope(ctx, ev.ChatID)
 	// The group gate runs before any queue slot, chat lock, model call or daily-quota reservation. A
 	// private update passes it untouched; a group update that is not addressed to the bot is
 	// acknowledged and dropped here.
@@ -466,6 +537,10 @@ func (d *Dispatcher) Dispatch(ctx context.Context, ev Event) error {
 		d.countUpdate("album")
 		d.collectAlbum(ctx, ev)
 		return nil
+	}
+	if refused, limitErr := d.enforceChatMinuteLimit(ctx, ev, cmd); refused {
+		d.countUpdate("chat_limited")
+		return limitErr
 	}
 	_, err := d.runBounded(ctx, ev, true)
 	return err

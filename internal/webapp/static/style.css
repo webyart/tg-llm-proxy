@@ -438,6 +438,32 @@ option { color: var(--text); background: var(--surface); overflow-wrap: anywhere
 textarea { min-height: 78px; resize: vertical; line-height: 1.45; }
 .settings-row select { flex: 1 1 180px; width: auto; }
 .settings-row button { flex: 0 1 auto; }
+/* Admin-only chat limits: three numeric fields on one row when there is room, stacked on a phone. Every
+   control keeps the 44 px touch target of the generic input/button rules; only the checkbox itself is
+   drawn smaller, inside a 44 px label row that is the real target. */
+.chat-limits-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+  margin-top: 9px;
+  min-width: 0;
+}
+.chat-limits-field { display: grid; gap: 4px; font-size: .82rem; color: var(--muted); min-width: 0; }
+.chat-limits-field input { width: 100%; }
+.chat-limits-tools {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px 12px 10px;
+  margin: 10px 0 0;
+  display: grid;
+  gap: 0;
+  min-width: 0;
+}
+.chat-limits-tools legend { padding: 0 4px; font-size: .82rem; color: var(--muted); }
+.chat-limits-tool { display: flex; align-items: center; gap: 10px; min-height: 44px; font-size: .9rem; min-width: 0; }
+.chat-limits-tool span { overflow-wrap: anywhere; }
+.chat-limits-tool input { width: 22px; height: 22px; min-height: 22px; flex: 0 0 auto; accent-color: var(--accent); }
+.chat-limits select { width: 100%; }
 .settings-toggle {
   min-width: 96px;
   min-height: 44px;
@@ -834,4 +860,59 @@ textarea { min-height: 78px; resize: vertical; line-height: 1.45; }
 #tab-settings { grid-column: auto; }
 @media (min-width: 900px) {
   #tabs.menu-panel { grid-template-columns: repeat(3, minmax(0, 1fr)); width: min(480px, calc(100% - 20px)); }
+}
+
+/* ---- v1.64: Usage ranges and inline SVG charts (no external libraries). ----
+   The SVG keeps a fixed viewBox and scales with width:100%, so the same drawing fits a 320 px
+   phone and a desktop panel without a horizontal scrollbar. */
+.usage-range-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  margin-top: 8px;
+}
+.usage-range-switch button {
+  flex: 1 1 70px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px 10px;
+}
+.usage-range-switch button.active {
+  color: var(--accent-contrast);
+  background: linear-gradient(145deg, #7474ed, #4b4bc4);
+  border-color: transparent;
+}
+.usage-totals { margin: 10px 0 4px; }
+.usage-chart {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  margin: 6px 0 2px;
+  overflow: visible;
+}
+.usage-chart-grid { stroke: #7b899633; stroke-width: 1; }
+.usage-chart-axis { fill: var(--muted); font-size: 9px; font-weight: 650; }
+.usage-chart-bar { fill: #5b5bd6; }
+.usage-chart-track { fill: #7b89961f; }
+.usage-chart-tool { fill: #26966a; }
+.usage-chart-line-in { fill: none; stroke: #5b5bd6; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.usage-chart-line-out { fill: none; stroke: #26966a; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.usage-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 2px 0 6px;
+  color: var(--muted);
+  font-size: .78rem;
+}
+.usage-legend-item { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.usage-legend-swatch { flex: 0 0 10px; width: 10px; height: 10px; border-radius: 3px; }
+.usage-legend-in { background: #5b5bd6; }
+.usage-legend-out { background: #26966a; }
+@media (max-width: 360px) {
+  .usage-range-switch button { flex: 1 1 calc(50% - 6px); }
+  .usage-chart-axis { font-size: 10px; }
 }

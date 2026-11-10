@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"bot/internal/config"
 	"bot/internal/store"
 	"bot/internal/testutil"
 )
@@ -332,4 +333,28 @@ func TestTaskSchedulerRunsPendingPassImmediately(t *testing.T) {
 		}
 		return found && task.Attempts > 0
 	}, func() string { return "pending task pass waited for another tick" })
+}
+
+func TestTaskBudgetsAreIndependentFromTheChatDeadline(t *testing.T) {
+	var dispatcher = &Dispatcher{deps: Deps{Cfg: config.Config{
+		ReplyDeadlineSeconds:    90,
+		TaskModelTimeoutSeconds: 240,
+		TaskStepDeadlineSeconds: 300,
+	}}}
+	var ctx, cancel = dispatcher.taskStepTimeout(context.Background())
+	defer cancel()
+	var deadline, ok = ctx.Deadline()
+	if !ok {
+		t.Fatal("task step context has no deadline")
+	}
+	var left = time.Until(deadline)
+	if left < 290*time.Second || left > 300*time.Second {
+		t.Fatalf("step deadline = %s, want ~300s independent of the 90s chat deadline", left)
+	}
+	if got := dispatcher.taskModelTimeout(); got != 240*time.Second {
+		t.Fatalf("task model timeout = %s, want 240s", got)
+	}
+	if got := dispatcher.taskLease(); got != 330*time.Second {
+		t.Fatalf("task lease = %s, want 330s", got)
+	}
 }

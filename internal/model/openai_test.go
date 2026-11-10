@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -566,4 +567,26 @@ func clientForNoFake(t *testing.T, chatURL string, opts Options) *OpenAI {
 		t.Fatalf("New: %v", err)
 	}
 	return c
+}
+
+// TestCompleteHonoursTheRequestTimeoutOverride — a task step may ask for a budget larger than the chat default.
+func TestCompleteHonoursTheRequestTimeoutOverride(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(120 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"model":"slow","choices":[{"message":{"content":"ok"}}]}`)
+	}))
+	defer server.Close()
+	client, err := New(Options{ChatURL: server.URL + "/chat/completions", ModelsURL: server.URL + "/models",
+		Model: "slow", Timeout: 40 * time.Millisecond, Attempts: 1, Backoff: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Complete(context.Background(), Request{Messages: []Message{{Role: "user", Content: "q"}}}); err == nil {
+		t.Fatal("the 40ms chat budget accepted a 120ms answer")
+	}
+	response, err := client.Complete(context.Background(), Request{Messages: []Message{{Role: "user", Content: "q"}}, Timeout: 500 * time.Millisecond})
+	if err != nil || response.Content != "ok" {
+		t.Fatalf("the request timeout override failed: response=%+v err=%v", response, err)
+	}
 }

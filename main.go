@@ -103,6 +103,8 @@ func startupSummary(logger *slog.Logger, cfg config.Config) {
 		"transcription_model", cfg.TranscriptionModel,
 		"timeout_seconds", cfg.TimeoutSeconds,
 		"reply_deadline_seconds", cfg.ReplyDeadlineSeconds,
+		"task_model_timeout_seconds", cfg.TaskModelTimeoutSeconds,
+		"task_step_deadline_seconds", cfg.TaskStepDeadlineSeconds,
 		"streaming", cfg.Streaming,
 		"tools_enabled", cfg.ToolsEnabled,
 		"url_reader", cfg.URLReaderEnabled,

@@ -48,6 +48,9 @@ type Request struct {
 	Model    string
 	Messages []Message
 	Tools    []ToolDefinition
+	// Timeout overrides the client-wide per-call budget for this request (a long task step). Zero keeps the
+	// configured STRATA_TIMEOUT_SECONDS; the caller's context deadline still wins when it is shorter.
+	Timeout time.Duration
 }
 
 // Latency covers the WHOLE call including the retries, because messages.latency_ms and the

@@ -143,7 +143,7 @@ Fallback без compose: `TELEGRAM_BOT_TOKEN` и `STRATA_API_KEY` в окруж�
 
 ## Конфигурация
 
-Полный список из 73 ENV-строк и их значения по умолчанию находится в `.env.example`; строки `STREAMING_*`, `WEBHOOK_*`, `MINIAPP_*`, `HEALTH_*` и `RAG_EMBEDDINGS_*` описаны в одноимённых разделах ниже. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
+Полный список из 75 ENV-строк и их значения по умолчанию находится в `.env.example`; строки `STREAMING_*`, `WEBHOOK_*`, `MINIAPP_*`, `HEALTH_*` и `RAG_EMBEDDINGS_*` описаны в одноимённых разделах ниже. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
 
 ### Основные параметры
 
@@ -161,7 +161,9 @@ Fallback без compose: `TELEGRAM_BOT_TOKEN` и `STRATA_API_KEY` в окруж�
 | `TRANSCRIPTION_BASE_URL` | `STRATA_BASE_URL`; в compose — Whisper | отдельный transcription endpoint |
 | `STRATA_API_KEY` | пусто | ключ endpoint, если требуется; в compose — файл `secrets/strata_api_key` |
 | `STRATA_TIMEOUT_SECONDS` | 60 | общий бюджет всех попыток одной модели (не таймаут одной попытки) |
-| `TG_REPLY_DEADLINE_SECONDS` | 90 | общий бюджет ответа; должен быть больше timeout |
+| TASK_MODEL_TIMEOUT_SECONDS | 240 | бюджет одного вызова модели внутри шага задачи (веб-поиск + локальная модель) |
+| TASK_STEP_DEADLINE_SECONDS | 300 | бюджет всего шага задачи, включая несколько tool-round'ов; lease = +30 с |
+| TG_REPLY_DEADLINE_SECONDS | 90 | общий бюджет ответа; должен быть больше timeout |
 | `RECOVERY_MAX_AGE_HOURS` | 24 | максимальный возраст unanswered-вопроса для автоматического recovery; `0` отключает лимит |
 | `REMINDER_TIMEZONE` | `UTC` | IANA timezone для напоминаний, например `Europe/Moscow` |
 | `TTS_ENABLED` | false | opt-in `/tts` через существующий Speaches |

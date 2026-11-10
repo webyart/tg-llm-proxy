@@ -2,7 +2,17 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.61.2
+## Новейший выпуск: v1.62.0
+
+# tg-llm-proxy v1.62.0
+
+## Task steps get their own model and step budgets
+
+- A long task that searches the web no longer dies with `the budget of STRATA_TIMEOUT_SECONDS is spent`: every task step (and the final synthesis) asks the model client for `TASK_MODEL_TIMEOUT_SECONDS` (default 240 s) instead of the chat's `STRATA_TIMEOUT_SECONDS` (60 s), and the whole step, including several tool rounds, is bounded by `TASK_STEP_DEADLINE_SECONDS` (default 300 s). The task lease follows the step deadline (+30 s).
+- Private chats are unchanged: the chat answer still uses `STRATA_TIMEOUT_SECONDS` + `TG_REPLY_DEADLINE_SECONDS`. The override lives in `model.Request.Timeout` and is still capped by the caller's context deadline.
+- Config: two new rows (75 total), validation `TASK_MODEL_TIMEOUT_SECONDS < TASK_STEP_DEADLINE_SECONDS`, startup summary prints both; `.env`/README updated. A failed task can be resumed after the restart (`/task resume <id>` or the «Возобновить» button).
+
+## Предыдущий выпуск: v1.61.2
 
 # tg-llm-proxy v1.61.2
 

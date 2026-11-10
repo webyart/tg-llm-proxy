@@ -691,7 +691,7 @@ func TestTaskRestartAfterConsumedApprovalRequiresFreshExactApproval(t *testing.T
 		t.Fatalf("ConsumeTaskApproval ok=%v err=%v", ok, err)
 	}
 	second := newTestDispatcher(t, cfg, m, r, db)
-	if _, err := second.ProcessDueTasks(context.Background(), time.Now().Add(2*time.Minute), TaskBatchLimit); err != nil {
+	if _, err := second.ProcessDueTasks(context.Background(), time.Now().Add(first.taskLease()+time.Second), TaskBatchLimit); err != nil {
 		t.Fatal(err)
 	}
 	current, found, err := store.CurrentTask(context.Background(), db, 100)

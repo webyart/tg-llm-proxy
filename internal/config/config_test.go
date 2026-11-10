@@ -294,8 +294,8 @@ func TestOldNameOfTheRowIsRefusedByName(t *testing.T) {
 }
 
 func TestEnvIsTheRowsOfTheTable(t *testing.T) {
-	if len(Env) != 73 {
-		t.Errorf("Env holds %d names, want 73 including per-user daily limits, HEALTH_LISTEN_HOST/HEALTH_PROBE_PORT/METRICS_LISTEN_HOST, STREAM_DRAFTS_ENABLED, the four RAG_EMBEDDINGS_* rows and STRATA_FALLBACK*, STRATA_FALLBACKS", len(Env))
+	if len(Env) != 75 {
+		t.Errorf("Env holds %d names, want 75 including per-user daily limits, HEALTH_LISTEN_HOST/HEALTH_PROBE_PORT/METRICS_LISTEN_HOST, STREAM_DRAFTS_ENABLED, the four RAG_EMBEDDINGS_* rows and STRATA_FALLBACK*, STRATA_FALLBACKS", len(Env))
 	}
 	var seen = map[string]bool{}
 	var i = 0
@@ -473,5 +473,25 @@ func TestLoadFromFallbackChainRejectsConflictsAndBadJSON(t *testing.T) {
 		if !strings.Contains(joined, "STRATA_FALLBACKS") {
 			t.Errorf("%s: problems do not name STRATA_FALLBACKS: %v", name, problems)
 		}
+	}
+}
+
+func TestLoadFromTaskBudgets(t *testing.T) {
+	cfg, problems := LoadFrom(map[string]string{"TELEGRAM_BOT_TOKEN": "1:secret"})
+	if len(problems) > 0 {
+		t.Fatalf("defaults: %v", problems)
+	}
+	if cfg.TaskModelTimeoutSeconds != DefaultTaskModelTimeoutSeconds || cfg.TaskStepDeadlineSeconds != DefaultTaskStepDeadlineSeconds {
+		t.Fatalf("task budgets = %d/%d, want %d/%d", cfg.TaskModelTimeoutSeconds, cfg.TaskStepDeadlineSeconds,
+			DefaultTaskModelTimeoutSeconds, DefaultTaskStepDeadlineSeconds)
+	}
+	_, problems = LoadFrom(map[string]string{
+		"TELEGRAM_BOT_TOKEN":         "1:secret",
+		"TASK_MODEL_TIMEOUT_SECONDS": "300",
+		"TASK_STEP_DEADLINE_SECONDS": "300",
+	})
+	var joined = strings.Join(problems, " ")
+	if !strings.Contains(joined, "TASK_MODEL_TIMEOUT_SECONDS") {
+		t.Fatalf("equal task budgets were accepted: %v", problems)
 	}
 }

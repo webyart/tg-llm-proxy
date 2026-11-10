@@ -139,6 +139,11 @@ func (c *OpenAI) Complete(ctx context.Context, req Request) (resp Response, err 
 	defer release()
 
 	var budget = c.timeout
+	if req.Timeout > 0 {
+		// A long task step asks for a larger per-call budget than a chat answer; the caller's context still
+		// caps it below when the step deadline is shorter.
+		budget = req.Timeout
+	}
 	if deadline, ok := ctx.Deadline(); ok {
 		var left = time.Until(deadline)
 		if left < budget {

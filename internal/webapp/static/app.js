@@ -13,6 +13,10 @@
       tabLinksShort: "Ссылки", tabTasksShort: "Задачи", tabRemindersShort: "Напом.", tabUsageShort: "Использ.", tabSettingsShort: "Настр.",
       chatPlaceholder: "Напишите сообщение…", chatInputAria: "Текст сообщения", chatSend: "Отправить",
       chatPending: "Модель отвечает…", chatThinking: "Модель думает…", chatReadingURL: "Читаю страницу…", chatSearching: "Ищу информацию…",
+      chatLiveStats: "{stage} · {seconds} с · ~{tokens} токенов",
+      chatStats: "⏱ {seconds} с · {input}→{output} токенов · {rate} · модель {model}",
+      chatStatsNoRate: "⏱ {seconds} с · {input}→{output} токенов · модель {model}",
+      chatRate: "{rate} ток/с",
       chatMessageEmpty: "Введите текст сообщения.", chatMessageTooLong: "Сообщение должно быть не длиннее 2000 символов.",
       chatReset: "Очистить контекст", chatResetConfirm: "Подтвердить", chatResetWarning: "Очистить контекст диалога? История останется, но модель перестанет её видеть.",
       chatResetDone: "Контекст очищен.", chatResetFailed: "Не удалось очистить контекст.",
@@ -208,6 +212,10 @@
       tabLinksShort: "Links", tabTasksShort: "Tasks", tabRemindersShort: "Remind.", tabUsageShort: "Usage", tabSettingsShort: "Settings",
       chatPlaceholder: "Type a message…", chatInputAria: "Message text", chatSend: "Send",
       chatPending: "The model is answering…", chatThinking: "The model is thinking…", chatReadingURL: "Reading the page…", chatSearching: "Searching…",
+      chatLiveStats: "{stage} · {seconds}s · ~{tokens} tokens",
+      chatStats: "⏱ {seconds}s · {input}→{output} tokens · {rate} · model {model}",
+      chatStatsNoRate: "⏱ {seconds}s · {input}→{output} tokens · model {model}",
+      chatRate: "{rate} tok/s",
       chatMessageEmpty: "Enter a message.", chatMessageTooLong: "The message must be at most 2000 characters.",
       chatReset: "Reset context", chatResetConfirm: "Confirm", chatResetWarning: "Reset the conversation context? History stays, but the model will no longer see it.",
       chatResetDone: "Context reset.", chatResetFailed: "The context could not be reset.",
@@ -486,11 +494,12 @@
   // selected chat or the language does not refetch), and null means "fetch on the next render". The
   // state exists even for a non-admin session — it simply stays empty and no request is made.
   let adminLimits = { chats: null, selected: null, loading: false, error: "" };
-  let chat = { messages: [], pending: false, streaming: false, suppressed: false, stage: "", errorText: "", resetArmed: false, identity: null, approval: null };
+  let chat = { messages: [], pending: false, streaming: false, suppressed: false, stage: "", errorText: "", resetArmed: false, identity: null, approval: null, startedAt: 0, streamChars: 0 };
   let chatNodes = { log: null, answer: null, status: null, approvalNote: null };
   let chatLiveTimer = null;
   let chatLiveNode = null;
   let chatLiveText = "";
+  let chatStatsTimer = null;
   let chatApprovalTimer = null;
   // Voice input state survives a re-render of the Chat tab: MediaRecorder lives in this object, the DOM
   // nodes are rebuilt around it, and the timer is rescheduled after every render.
@@ -2611,8 +2620,26 @@
     if (assistant) renderMarkdownInto(body, message.text || "");
     else body.textContent = message.text || "";
     wrapper.appendChild(body);
+    if (assistant && message.stats && !String(message.text || "").includes("⏱")) {
+      wrapper.appendChild(chatStatsNode(message.stats));
+    }
     if (assistant && message.id) wrapper.appendChild(chatFeedbackControls(message));
     return { wrapper, body };
+  }
+
+  // chatStatsNode renders the same numbers as the Telegram latency footer for a history row, whose stored
+  // content has no footer. Live answers already carry the formatter's footer, so chatMessageNode skips this.
+  function chatStatsNode(stats) {
+    const latency = Math.max(0, Number(stats.latencyMs) || 0);
+    const input = Math.max(0, Number(stats.tokensIn) || 0);
+    const output = Math.max(0, Number(stats.tokensOut) || 0);
+    const seconds = latency > 0 ? (latency / 1000).toFixed(latency < 10000 ? 1 : 0) : "0";
+    const rate = latency > 0 && output > 0 ? output / (latency / 1000) : 0;
+    const rateText = rate > 0 ? t("chatRate", { rate: rate < 10 ? rate.toFixed(1) : String(Math.round(rate)) }) : "";
+    const text = rateText
+      ? t("chatStats", { seconds, input, output, rate: rateText, model: stats.model || "" })
+      : t("chatStatsNoRate", { seconds, input, output, model: stats.model || "" });
+    return element("div", "chat-stats", text);
   }
 
   function applyChatFeedbackState(controls, value) {
@@ -2707,10 +2734,33 @@
       if (answer.text) scheduleChatLiveRender(chatNodes.answer, answer.text);
       else chatNodes.answer.textContent = "…";
     }
-    if (chatNodes.status && chat.streaming) {
-      chatNodes.status.replaceChildren(element("span", "chat-pending", chatStageText(chat.stage)));
-    }
+    chat.streamChars = Array.from(answer.text || "").length;
+    updateChatStatus();
     scrollChat();
+  }
+
+  function stopChatStatsTimer() {
+    if (chatStatsTimer !== null) {
+      clearInterval(chatStatsTimer);
+      chatStatsTimer = null;
+    }
+  }
+
+  function updateChatStatus() {
+    if (!chatNodes.status || !chat.streaming) return;
+    const seconds = chat.startedAt > 0 ? Math.max(0, (Date.now() - chat.startedAt) / 1000) : 0;
+    const tokens = Math.round(chat.streamChars / 4);
+    chatNodes.status.replaceChildren(element("span", "chat-pending", t("chatLiveStats", {
+      stage: chatStageText(chat.stage),
+      seconds: seconds.toFixed(seconds < 10 ? 1 : 0),
+      tokens,
+    })));
+  }
+
+  function startChatStatsTimer() {
+    stopChatStatsTimer();
+    if (!chat.streaming || typeof setInterval !== "function") return;
+    chatStatsTimer = setInterval(updateChatStatus, 500);
   }
 
   function autoGrowChatInput(input) {
@@ -3037,6 +3087,7 @@
     ui.content.replaceChildren();
     cancelChatLiveRender();
     stopChatApprovalTimer();
+    stopChatStatsTimer();
     const section = element("section", "chat-panel");
     section.appendChild(element("h3", "chat-title", t("chatTitle")));
     section.appendChild(element("p", "meta chat-intro", t("chatIntro")));
@@ -3067,6 +3118,7 @@
     if (chat.errorText) status.appendChild(element("p", "chat-error", chat.errorText));
     chatNodes.status = status;
     log.appendChild(status);
+    if (chat.streaming) startChatStatsTimer();
     section.appendChild(log);
 
     if (chat.resetArmed) {
@@ -3181,6 +3233,7 @@
   function finishChatError(message, pending) {
     cancelChatLiveRender();
     stopChatApprovalTimer();
+    stopChatStatsTimer();
     chat.streaming = false;
     chat.stage = "";
     chat.pending = pending;
@@ -3276,6 +3329,7 @@
     chat.stage = "";
     chat.errorText = "";
     cancelChatLiveRender();
+    stopChatStatsTimer();
     if (activeTab === "chat") renderChat();
   }
 
@@ -3299,6 +3353,8 @@
     chat.pending = true;
     chat.streaming = true;
     chat.approval = null;
+    chat.startedAt = Date.now();
+    chat.streamChars = 0;
     stopChatApprovalTimer();
     chat.messages.push({ role: "user", text, id: null, feedback: 0 });
     const answer = { role: "assistant", text: "", id: null, feedback: 0 };
@@ -3442,6 +3498,14 @@
               text: item.content,
               id: item.id,
               feedback: Number(item.feedback) === -1 ? -1 : Number(item.feedback) === 1 ? 1 : 0,
+              stats: item.role === "assistant" && (item.tokens_in != null || item.latency_ms != null)
+                ? {
+                  latencyMs: Number(item.latency_ms) || 0,
+                  tokensIn: Number(item.tokens_in) || 0,
+                  tokensOut: Number(item.tokens_out) || 0,
+                  model: typeof item.model === "string" ? item.model : "",
+                }
+                : null,
             }));
           renderChat();
         }

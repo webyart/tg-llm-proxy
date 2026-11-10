@@ -254,6 +254,7 @@ var ruMessages = map[string]string{
 	"ask.tool_markup_failed":        "Модель не смогла корректно вызвать инструмент. Попробуйте ещё раз.",
 	"ask.latency_no_tokens":         "⏱ %s · модель %s · попыток %d (токены не возвращены)",
 	"ask.latency_tokens":            "⏱ %s · %d→%d токенов · модель %s · попыток %d",
+	"ask.latency_tokens_rate":       "⏱ %s · %d→%d токенов · %s · модель %s · попыток %d",
 
 	// Attachment errors surfaced by /ask.
 	"ask.attachment_too_large":        "Вложение слишком большое. Для текста лимит — 64 КиБ, для PDF/DOCX — 20 МиБ (предел Bot API getFile); фото и аудио/видео ограничивает MEDIA_MAX_MB.",
@@ -806,6 +807,7 @@ var enMessages = map[string]string{
 	"ask.tool_markup_failed":        "The model could not form a valid tool call. Please try again.",
 	"ask.latency_no_tokens":         "⏱ %s · model %s · attempts %d (no token counts returned)",
 	"ask.latency_tokens":            "⏱ %s · %d→%d tokens · model %s · attempts %d",
+	"ask.latency_tokens_rate":       "⏱ %s · %d→%d tokens · %s · model %s · attempts %d",
 
 	// Attachment errors surfaced by /ask.
 	"ask.attachment_too_large":        "The attachment is too large. Text is limited to 64 KiB, PDF/DOCX to 20 MiB (the Bot API getFile limit); MEDIA_MAX_MB limits photos and audio/video.",

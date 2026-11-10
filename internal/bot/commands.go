@@ -1196,8 +1196,25 @@ func latencyLineFor(lang string, resp model.Response, configured string) string 
 	if resp.TokensOut != nil {
 		out = *resp.TokensOut
 	}
+	if rate, ok := tokensPerSecond(out, resp.Latency); ok {
+		return i18n.T(lang, "ask.latency_tokens_rate",
+			resp.Latency.Round(time.Millisecond), in, out, rate, name, resp.Attempts)
+	}
 	return i18n.T(lang, "ask.latency_tokens",
 		resp.Latency.Round(time.Millisecond), in, out, name, resp.Attempts)
+}
+
+// tokensPerSecond renders the generation speed. It needs a positive latency and output count; the caller
+// falls back to the token-only footer otherwise.
+func tokensPerSecond(out int64, latency time.Duration) (string, bool) {
+	if out <= 0 || latency <= 0 {
+		return "", false
+	}
+	rate := float64(out) / latency.Seconds()
+	if rate < 10 {
+		return fmt.Sprintf("%.1f ток/с", rate), true
+	}
+	return fmt.Sprintf("%.0f ток/с", rate), true
 }
 
 func brief(text string, maxRunes int) string {

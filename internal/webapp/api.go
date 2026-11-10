@@ -430,6 +430,12 @@ type historyItem struct {
 	Content   string `json:"content"`
 	Truncated bool   `json:"truncated"`
 	CreatedAt string `json:"created_at"`
+	// Assistant answer metrics: the same numbers the latency footer shows. They let the Mini App render
+	// the stats under a history row, whose stored content intentionally has no footer.
+	Model     string `json:"model,omitempty"`
+	TokensIn  *int64 `json:"tokens_in,omitempty"`
+	TokensOut *int64 `json:"tokens_out,omitempty"`
+	LatencyMs *int64 `json:"latency_ms,omitempty"`
 	// Feedback — the current user's rating of this assistant answer: 1, -1 or 0 when unrated.
 	Feedback int `json:"feedback"`
 }
@@ -460,7 +466,7 @@ func (a *App) history(w http.ResponseWriter, req *http.Request, current scope) {
 		return
 	}
 	rows, err := a.db.QueryContext(req.Context(), `
-		SELECT id, role, content, created_at FROM messages
+		SELECT id, role, content, created_at, COALESCE(model, ''), tokens_in, tokens_out, latency_ms FROM messages
 		WHERE chat_id = ? AND role IN ('user', 'assistant') AND (? = 0 OR id < ?)
 		ORDER BY id DESC LIMIT ?`, current.ChatID, page.Before, page.Before, page.Limit+1)
 	if err != nil {
@@ -471,9 +477,21 @@ func (a *App) history(w http.ResponseWriter, req *http.Request, current scope) {
 	items := []historyItem{}
 	for rows.Next() {
 		var item historyItem
-		if err := rows.Scan(&item.ID, &item.Role, &item.Content, &item.CreatedAt); err != nil {
+		var model string
+		var tokensIn, tokensOut, latency sql.NullInt64
+		if err := rows.Scan(&item.ID, &item.Role, &item.Content, &item.CreatedAt, &model, &tokensIn, &tokensOut, &latency); err != nil {
 			a.queryFailed(w, "history", err)
 			return
+		}
+		item.Model = model
+		if tokensIn.Valid {
+			item.TokensIn = &tokensIn.Int64
+		}
+		if tokensOut.Valid {
+			item.TokensOut = &tokensOut.Int64
+		}
+		if latency.Valid {
+			item.LatencyMs = &latency.Int64
 		}
 		item.Content, item.Truncated = boundedText(item.Content, maxHistoryRunes)
 		items = append(items, item)

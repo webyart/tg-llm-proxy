@@ -2,7 +2,18 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.64.0
+## Новейший выпуск: v1.64.1
+
+# tg-llm-proxy v1.64.1
+
+## Answer speed in tokens/s and Mini App answer stats
+
+- The latency footer (Telegram and the Mini App finalizer share it) now includes generation speed: `⏱ 4.6s · 1714→52 токенов · 11.3 ток/с · модель … · попыток 1`. Speed is output tokens divided by model latency; when latency or token counts are absent the old footer is kept.
+- Mini App live status now shows elapsed seconds and an approximate token count (`Модель отвечает… · 12.4 с · ~85 токенов`) while the answer streams.
+- History assistant rows expose `model`, `tokens_in`, `tokens_out`, `latency_ms`; the Mini App renders the same stats line under a loaded history answer, so the numbers no longer disappear after a reload.
+- Tests: Go bot/webapp/i18n/store, JS 55/55 (history, stream, approval).
+
+## Предыдущий выпуск: v1.64.0
 
 # tg-llm-proxy v1.64.0
 

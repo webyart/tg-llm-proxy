@@ -545,6 +545,7 @@ textarea { min-height: 78px; resize: vertical; line-height: 1.45; }
 .chat-message .role { margin-bottom: 3px; }
 .chat-message .badge { margin-bottom: 0; }
 .chat-text { line-height: 1.55; overflow-wrap: anywhere; word-break: break-word; }
+.chat-stats { margin-top: 6px; font-size: 12px; color: var(--muted); line-height: 1.4; }
 .chat-text:not(.markdown) { white-space: pre-wrap; }
 .chat-message-live .chat-text::after { content: "▍"; margin-left: 2px; color: var(--accent); animation: chat-caret 900ms steps(2, start) infinite; }
 @keyframes chat-caret { to { visibility: hidden; } }

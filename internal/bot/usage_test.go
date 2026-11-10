@@ -439,3 +439,12 @@ func TestGroupUsageAttributionSurvivesMiniAppSettingsMutation(t *testing.T) {
 		}
 	}
 }
+
+func TestUsageModelNameStripsProviderPrefix(t *testing.T) {
+	if got := usageModelName("kimi:kimi-k3.1-pro"); got != "kimi-k3.1-pro" {
+		t.Fatalf("usageModelName = %q", got)
+	}
+	if got := usageModelName("qwen3.8-flash-next-iq3_s"); got != "qwen3.8-flash-next-iq3_s" {
+		t.Fatalf("plain model changed: %q", got)
+	}
+}

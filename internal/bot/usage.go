@@ -18,7 +18,17 @@ func (d *Dispatcher) recordModelCall(ctx context.Context, userID int64, modelNam
 	if strings.TrimSpace(modelName) == "" {
 		modelName = d.deps.Cfg.StrataModel
 	}
-	return store.LogEvent(ctx, d.deps.DB, userID, store.EventModelCall, modelName)
+	// Messages store the provider's response model without a "provider:" prefix. Strip it here too, otherwise
+	// usage calls land under "kimi:model" while their tokens land under "model" and the charts split one model.
+	return store.LogEvent(ctx, d.deps.DB, userID, store.EventModelCall, usageModelName(modelName))
+}
+
+func usageModelName(modelName string) string {
+	var trimmed = strings.TrimSpace(modelName)
+	if index := strings.IndexByte(trimmed, ':'); index > 0 && index < len(trimmed)-1 {
+		return trimmed[index+1:]
+	}
+	return trimmed
 }
 
 func (d *Dispatcher) reserveDailyNetworkToolCall(ctx context.Context, userID int64) (bool, error) {

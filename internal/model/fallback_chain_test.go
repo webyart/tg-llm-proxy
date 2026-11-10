@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -144,5 +145,38 @@ func TestFallbackChainWithoutUsableReservesReturnsThePrimary(t *testing.T) {
 	}
 	if _, err := chain.Complete(context.Background(), Request{}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestFallbackChainTreatsAnEmptyAnswerAsAProviderQuirk(t *testing.T) {
+	var primary = &chainFake{name: "primary", err: ErrEmptyAnswer}
+	var reserve = &chainFake{name: "reserve", content: "reserve answer"}
+	var chain = NewFallbackChain(primary, []Reserve{{Model: "reserve", Client: reserve}}, ChainOptions{PrimaryModel: "primary"})
+	var response, err = chain.Complete(context.Background(), Request{})
+	if err != nil || response.Content != "reserve answer" {
+		t.Fatalf("empty primary did not fall through: response=%+v err=%v", response, err)
+	}
+	if primary.calls != 1 || reserve.calls != 1 {
+		t.Fatalf("calls primary=%d reserve=%d", primary.calls, reserve.calls)
+	}
+}
+
+func TestFallbackChainSkipsAnEmptyReserveForTheNextOne(t *testing.T) {
+	var primary = &chainFake{name: "primary", err: ErrEmptyAnswer}
+	var first = &chainFake{name: "first", err: ErrEmptyAnswer}
+	var second = &chainFake{name: "second", content: "second answer"}
+	var chain = NewFallbackChain(primary, []Reserve{{Model: "first", Client: first}, {Model: "second", Client: second}}, ChainOptions{PrimaryModel: "primary"})
+	var response, err = chain.Complete(context.Background(), Request{})
+	if err != nil || response.Content != "second answer" {
+		t.Fatalf("empty reserve did not fall through: response=%+v err=%v", response, err)
+	}
+}
+
+func TestFallbackChainReportsWhenEveryProviderIsEmpty(t *testing.T) {
+	var primary = &chainFake{name: "primary", err: ErrEmptyAnswer}
+	var reserve = &chainFake{name: "reserve", err: ErrEmptyAnswer}
+	var chain = NewFallbackChain(primary, []Reserve{{Model: "reserve", Client: reserve}}, ChainOptions{PrimaryModel: "primary"})
+	if _, err := chain.Complete(context.Background(), Request{}); !errors.Is(err, ErrEmptyAnswer) {
+		t.Fatalf("all-empty chain error=%v, want ErrEmptyAnswer", err)
 	}
 }

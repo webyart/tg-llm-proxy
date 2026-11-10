@@ -93,7 +93,8 @@ func (c *chainClient) Complete(ctx context.Context, req Request) (Response, erro
 	if err == nil {
 		return response, nil
 	}
-	if !Retryable(err) || ctx.Err() != nil {
+	// An empty 200 is a provider quirk, not a property of the request: a reserve may well answer it.
+	if (!Retryable(err) && !errors.Is(err, ErrEmptyAnswer)) || ctx.Err() != nil {
 		return response, err
 	}
 	var failures = []error{err}
@@ -115,7 +116,7 @@ func (c *chainClient) Complete(ctx context.Context, req Request) (Response, erro
 			return response, nil
 		}
 		failures = append(failures, err)
-		if !Retryable(err) {
+		if !Retryable(err) && !errors.Is(err, ErrEmptyAnswer) {
 			break
 		}
 	}
@@ -140,7 +141,7 @@ func (c *chainStreamer) Stream(ctx context.Context, req Request, handler StreamH
 	if err == nil {
 		return response, nil
 	}
-	if delivered || !Retryable(err) || ctx.Err() != nil {
+	if delivered || ((!Retryable(err) && !errors.Is(err, ErrEmptyAnswer)) || ctx.Err() != nil) {
 		return response, err
 	}
 	var failures = []error{err}
@@ -184,7 +185,7 @@ func (c *chainStreamer) Stream(ctx context.Context, req Request, handler StreamH
 			c.metrics.fallbackAttempt("error")
 			return response, chainFailed("Stream", c.primaryModel, c.reserveModels(), failures)
 		}
-		if !Retryable(err) {
+		if !Retryable(err) && !errors.Is(err, ErrEmptyAnswer) {
 			break
 		}
 	}

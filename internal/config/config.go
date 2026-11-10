@@ -246,7 +246,7 @@ type Config struct {
 	// TaskAutoApproveNetwork lets a read-only task step execute read_url/web_search without a per-call button.
 	// The task itself is an explicit user request and both tools only read; chat answers keep their approvals.
 	TaskAutoApproveNetwork bool
-	RecoveryMaxAgeHours     int64
+	RecoveryMaxAgeHours    int64
 	// rewritten as the model writes; StreamEditIntervalMS is the cadence of those rewrites; StreamIdleSeconds
 	// is the pause between two SSE events past which the stream is considered dead; StreamTotalSeconds is the
 	// ceiling of one streamed answer. The semantics of TimeoutSeconds and ReplyDeadlineSeconds do NOT change

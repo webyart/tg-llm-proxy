@@ -2,7 +2,17 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.62.5
+## Новейший выпуск: v1.62.6
+
+# tg-llm-proxy v1.62.6
+
+## An empty 200 from the primary model falls through to the reserve
+
+- Local STRATA sometimes answers a task step with `200` and no content. The reserve chain used to return that empty answer immediately; it now treats `ErrEmptyAnswer` like a provider quirk and tries the reserve (Kimi), and an empty reserve no longer stops the chain — the next provider is tried.
+- This fixes task #10's `the model returned a 200 without any content` without weakening chat behaviour: an empty answer from every provider still returns `ErrEmptyAnswer`, and a partially streamed answer is never replayed.
+- Tests: empty primary → reserve answer, empty first reserve → second reserve, all-empty → `ErrEmptyAnswer`.
+
+## Предыдущий выпуск: v1.62.5
 
 # tg-llm-proxy v1.62.5
 

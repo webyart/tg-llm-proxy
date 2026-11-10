@@ -331,6 +331,11 @@ func (d *Dispatcher) executeClaimedTask(ctx context.Context, task store.Task) er
 			selectedModel: task.Model, taskID: task.ID,
 		})
 		response, err = d.completeWithTools(toolCtx, task.UserID, model.Request{Model: task.Model, Messages: messages, Timeout: d.taskModelTimeout()}, nil, nil)
+		if err == nil && strings.TrimSpace(response.Content) == "" && len(response.ToolCalls) == 0 {
+			d.deps.Logger.Warn("task step returned no content; retrying once with a correction", "task_id", task.ID, "step", task.NextStep+1)
+			retryMessages := append([]model.Message{{Role: model.RoleSystem, Content: "Your previous step answer was empty. Return the result of this step now as plain text. Do not call a tool unless the step truly requires it."}}, messages...)
+			response, err = d.completeWithTools(toolCtx, task.UserID, model.Request{Model: task.Model, Messages: retryMessages, Timeout: d.taskModelTimeout()}, nil, nil)
+		}
 	} else {
 		return d.synthesizeAndCompleteTask(stepCtx, task, plan, results)
 	}
@@ -379,6 +384,18 @@ func (d *Dispatcher) synthesizeAndCompleteTask(ctx context.Context, task store.T
 		return err
 	}
 	response.Content = strings.TrimSpace(stripTextualToolCalls(response.Content))
+	if response.Content == "" {
+		d.deps.Logger.Warn("task synthesis returned no content; retrying once with a correction", "task_id", task.ID)
+		retryMessages := []model.Message{
+			{Role: model.RoleSystem, Content: "Your previous synthesis was empty. Return the final answer for the user's goal now as plain text."},
+			{Role: model.RoleUser, Content: input.String()},
+		}
+		response, err = d.callModel(ctx, task.UserID, model.Request{Model: task.Model, Timeout: d.taskModelTimeout(), Messages: retryMessages}, nil, nil)
+		if err != nil {
+			return err
+		}
+		response.Content = strings.TrimSpace(stripTextualToolCalls(response.Content))
+	}
 	if response.Content == "" {
 		return model.ErrEmptyAnswer
 	}

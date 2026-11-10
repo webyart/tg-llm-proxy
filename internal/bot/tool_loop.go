@@ -294,7 +294,7 @@ func (d *Dispatcher) recordChatModelCall(ctx context.Context, chatID int64, user
 	if d.deps.DB == nil {
 		return nil
 	}
-	return store.LogChatEvent(ctx, d.deps.DB, chatID, userID, store.EventModelCall, modelName)
+	return store.LogChatEvent(ctx, d.deps.DB, chatID, userID, store.EventModelCall, usageModelName(modelName))
 }
 
 func (d *Dispatcher) callModel(ctx context.Context, userID int64, req model.Request, streamer model.Streamer, session *streamSession) (model.Response, error) {

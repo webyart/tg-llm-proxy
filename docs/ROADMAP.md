@@ -122,11 +122,16 @@ ingest-helper с `/docs add`), PDF/DOCX для обоих путей добав�
 ## Мелкий техдолг (можно параллельно)
 
 - Заменить 38 `time.Sleep` в тестах инъектируемыми часами (часть уже есть через `Dispatcher.now`).
-- `-shuffle=on` в тестовых прогонах.
-- Renovate/Dependabot для двух прямых зависимостей.
-- Разбить `RELEASE_NOTES.md` (102 КБ) на CHANGELOG по мажорам.
-- Закрыть открытые решения: GitLab-токен с `api`-скоупом для release, `tuya-dashboard` для корня сайта,
-  судьба исторических `deploy/*` (архив), правило рестарта контейнера (ADR-0006 уже фиксирует выбор).
+- ✅ `-shuffle=on` добавлен в CI (unit/integration/race) и локальные обёртки `test.ps1`, `test-race.ps1`, `smoke.ps1`, `release-check.ps1`; seed печатается при падении, повтор — `-shuffle=<seed>` (2026-11-10).
+- ✅ Renovate: `renovate.json` — weekly, grouped (три Go-модуля, Docker base images, GitHub Actions), automerge off, dependency dashboard on (2026-11-10).
+- ✅ `RELEASE_NOTES.md` разбит на `CHANGELOG/` по шести диапазонам; индекс оставляет v1.56.0 inline, 92 заголовка до и после (2026-11-10).
+
+### Открытые решения (owner / trigger)
+
+- [ ] **GitLab-токен со scope `api` для release** — owner: владелец репозитория (release). Trigger: первая публикация образа в registry или первый тег после включения push. Сейчас `release` собирает образ и сохраняет артефакты, но не пушит его: registry credential/scope отсутствует (комментарий у job `release` в `.gitlab-ci.yml`).
+- [ ] **`tuya-dashboard` в корне сайта** — owner: владелец инфраструктуры. Trigger: изменение владельца корня `/` или остановка dashboard. Корень обслуживает отдельный проект `tuya-dashboard`; на 2026-11-10 контейнер `tuya-llm-dashboard` запущен и `/` отвечает 200 (в ревью 2026-11-08 он был остановлен и `/` отдавал 503, `docs/CODE_REVIEW_2026-11-08.md:351`). Mini App от него не зависит, пока `MINIAPP_PUBLIC_URL` содержит `/miniapp`.
+- [ ] **Судьба исторических `deploy/*`** — owner: владелец инфраструктуры. Trigger: удаление остановленного контейнера `tg-llm-proxy-gateway-1` или отказ от обещанного rollback. Сейчас `deploy/Caddyfile`, `deploy/traefik.yml`, `deploy/dynamic.yml` и `scripts/test-gateway.ps1` оставлены как rollback-артефакты: bind-mounts старого контейнера ссылаются на эти пути (`deploy/README.md`).
+- [ ] **Правило рестарта контейнера (ADR-0006)** — owner: владелец репозитория. Trigger: изменение `restart:` в compose или пересмотр ADR. ADR-0006 accepted 2026-11-08: `restart: unless-stopped` сохраняется, crash loop обнаруживает монитор; альтернатива `on-failure:3` отклонена. Открыт только вопрос формального закрытия/пересмотра записи.
 
 ## Рекомендация
 

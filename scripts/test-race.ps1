@@ -1,6 +1,6 @@
 #Requires -Version 7
 <#
-docker run --rm tg-llm-proxy-test (CGO_ENABLED=1 go test -race ./...)».
+docker run --rm tg-llm-proxy-test (CGO_ENABLED=1 go test -race -shuffle=on ./...)».
 
 has none. The `test` stage of the Dockerfile installs gcc + musl-dev and runs gofmt + vet + `go test -race`
 
@@ -44,12 +44,14 @@ try {
     }
 
     if ($Tagged) {
-        $cmd = 'set -e; gofmt -l . > /tmp/f.txt; if [ -s /tmp/f.txt ]; then cat /tmp/f.txt; exit 1; fi; go vet -tags integration ./...; CGO_ENABLED=1 go test -race -tags integration ./... -count=1'
-        $run = (docker run --rm $image sh -c $cmd 2>&1 | Out-String)
+        $cmd = 'set -e; gofmt -l . > /tmp/f.txt; if [ -s /tmp/f.txt ]; then cat /tmp/f.txt; exit 1; fi; go vet -tags integration ./...; CGO_ENABLED=1 go test -race -tags integration ./... -count=1 -shuffle=on'
     }
     else {
-        $run = (docker run --rm $image 2>&1 | Out-String)
+        # The Dockerfile test CMD is left unchanged so the image config (and its digest) stays stable.
+        # Repeat the same steps here with -shuffle=on; on failure the seed is printed for a -shuffle=<seed> rerun.
+        $cmd = 'set -e; gofmt -l . > /tmp/fmt.txt; if [ -s /tmp/fmt.txt ]; then cat /tmp/fmt.txt; echo ''gofmt -l listed files above (§16 lint)''; exit 1; fi; go vet ./...; CGO_ENABLED=1 go test -race ./... -count=1 -shuffle=on'
     }
+    $run = (docker run --rm $image sh -c $cmd 2>&1 | Out-String)
     Write-Output (($run -split "`r?`n" | Select-Object -Last 40) -join "`n")
     if ($LASTEXITCODE -ne 0) {
         Write-Output "test-race: RED (exit $LASTEXITCODE) — Concurrency level: a race or a red test inside the container"

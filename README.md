@@ -97,7 +97,7 @@ docker compose logs -f bot
 
 ## Конфигурация
 
-Полный список из 68 ENV-строк и их значения по умолчанию находится в `.env.example`; строки `STREAMING_*`, `WEBHOOK_*`, `MINIAPP_*`, `HEALTH_*` и `RAG_EMBEDDINGS_*` описаны в одноимённых разделах ниже. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
+Полный список из 69 ENV-строк и их значения по умолчанию находится в `.env.example`; строки `STREAMING_*`, `WEBHOOK_*`, `MINIAPP_*`, `HEALTH_*` и `RAG_EMBEDDINGS_*` описаны в одноимённых разделах ниже. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
 
 ### Основные параметры
 
@@ -107,6 +107,7 @@ docker compose logs -f bot
 | `STRATA_BASE_URL` | `http://host.docker.internal:8000` | OpenAI-compatible base URL без обязательного `/v1` |
 | `STRATA_MODEL` | `qwen2.5-7b-instruct` | id модели из `GET /v1/models` |
 | `STRATA_FALLBACK_MODEL` | пусто = fallback выключен | резервная модель после retryable-ошибки основной |
+| `STRATA_FALLBACKS` | пусто | упорядоченная цепочка резервов в JSON (до 8), взаимоисключающая с `STRATA_FALLBACK_MODEL` |
 | `STRATA_FALLBACK_API_KEY` | пусто | ключ резервного эндпоинта, если он не совпадает с основным (иначе `STRATA_API_KEY`) |
 | `STRATA_FALLBACK_BASE_URL` | `STRATA_BASE_URL` | отдельный endpoint fallback; absolute http(s) без userinfo |
 | `STRATA_FALLBACK_TIMEOUT_SECONDS` | 120 | таймаут одной попытки резерва: модель может загружаться по требованию |
@@ -163,7 +164,7 @@ docker compose logs -f bot
 
 Если endpoint отдаёт **ровно одну** модель и её имя не совпадает с `STRATA_MODEL`, бот на старте принимает имя загруженной модели (в лог уходит `WARN` с обоими именами). Это нужно одномодельной STRATA: она может отвечать загруженной моделью на любой запрос или отклонить имя, которого больше нет. При недоступном списке или нескольких моделях конфигурация не меняется — угадывать в неоднозначном случае бот не будет.
 
-`STRATA_FALLBACK_MODEL` включает один повторный запрос на резервную модель. Fallback срабатывает только на retryable-ошибку основной: 5xx, 429, transient error внутри 200-стрима или сетевой сбой; 400/401/404 и ошибки разбора возвращаются как есть. `STRATA_FALLBACK_BASE_URL` задаёт отдельный endpoint, пустое значение означает тот же `STRATA_BASE_URL`; непустой URL обязан быть absolute http(s) без userinfo, а та же модель на том же endpoint отклоняется как ошибка конфигурации. `STRATA_FALLBACK_TIMEOUT_SECONDS` (по умолчанию 120) — таймаут одной попытки резерва: локальный сервер вроде LM Studio загружает модель на первый запрос (27B холодной занял ~61 с), и общий таймаут основной модели его бы обрезал. Частично доставленный стрим не переигрывается: если хотя бы один `delta` уже ушёл в чат, второй запрос не делается и возвращается исходная ошибка, поэтому ответ не дублируется. Список `/model` по-прежнему строится по основной `GET /models`, а явно выбранная fallback-модель работает как обычная per-chat модель и не сохраняется как fallback.
+`STRATA_FALLBACK_MODEL` включает один повторный запрос на резервную модель. `STRATA_FALLBACKS` задаёт упорядоченную цепочку из нескольких резервов в JSON (до 8 записей `{model, base_url?, api_key?, timeout_seconds?}`): запрос идёт по списку, пока очередной провайдер не ответит, и останавливается на неретраибельной ошибке. Обе переменные взаимоисключающие; без `base_url` резерв использует основной endpoint, без `api_key` — не получает чужой ключ. Fallback срабатывает только на retryable-ошибку основной: 5xx, 429, transient error внутри 200-стрима или сетевой сбой; 400/401/404 и ошибки разбора возвращаются как есть. `STRATA_FALLBACK_BASE_URL` задаёт отдельный endpoint, пустое значение означает тот же `STRATA_BASE_URL`; непустой URL обязан быть absolute http(s) без userinfo, а та же модель на том же endpoint отклоняется как ошибка конфигурации. `STRATA_FALLBACK_TIMEOUT_SECONDS` (по умолчанию 120) — таймаут одной попытки резерва: локальный сервер вроде LM Studio загружает модель на первый запрос (27B холодной занял ~61 с), и общий таймаут основной модели его бы обрезал. Частично доставленный стрим не переигрывается: если хотя бы один `delta` уже ушёл в чат, второй запрос не делается и возвращается исходная ошибка, поэтому ответ не дублируется. Список `/model` по-прежнему строится по основной `GET /models`, а явно выбранная fallback-модель работает как обычная per-chat модель и не сохраняется как fallback.
 
 При `PARSE_MODE=MarkdownV2` сохраняются заголовки, жирный и курсивный текст, `code`, code fences и
 http/https-ссылки. Обычные специальные символы экранируются, а небезопасные схемы ссылок не пропускаются.
@@ -177,7 +178,7 @@ http/https-ссылки. Обычные специальные символы э
 Поведение на реальной сети проверяется отдельной opt-in проверкой под build tag `livecheck` — она не входит в стандартный pipeline:
 
 ```powershell
-go test -count=1 -tags=livecheck -run TestLiveURLReaderRealNetwork ./internal/bot
+go test -count=1 -shuffle=on -tags=livecheck -run TestLiveURLReaderRealNetwork ./internal/bot
 ```
 
 Она читает реальный публичный HTTPS-сайт и подтверждает, что metadata-endpoint `169.254.169.254`, `http://` и `localhost`
@@ -439,7 +440,7 @@ docker compose -f docker-compose.yml -f compose.production.yaml up -d --force-re
 ..\edge-gateway\scripts\test-traefik.ps1   # изолированные Compose и HTTP gateway regressions
 ```
 
-Pipeline включает gofmt/vet, PowerShell parser, unit/store, fixture backup/restore/external-copy/rotate/prune/migration, loopback Telegram alerts, fake Telegram + fake STRATA, build, secret leak scan и Docker race. `-WithVolumeRestore` добавляет volume restore и container-monitor acceptance. Явные package roots исключают `zzscratch`; `go mod tidy -diff` проверяет module files без изменений. Docker base images и CI images/tools закреплены по digest/версии.
+Pipeline включает gofmt/vet, PowerShell parser, unit/store, fixture backup/restore/external-copy/rotate/prune/migration, loopback Telegram alerts, fake Telegram + fake STRATA, build, secret leak scan и Docker race. `-WithVolumeRestore` добавляет volume restore и container-monitor acceptance. Явные package roots исключают `zzscratch`; `go mod tidy -diff` проверяет module files без изменений. Docker base images и CI images/tools закреплены по digest/версии. Go-тесты во всех обёртках идут с `-shuffle=on`: при падении seed печатается в логе, повтор — `go test -shuffle=<seed>`. Обновления зависимостей (`go.mod`, Docker base images, GitHub Actions) ведёт Renovate по `renovate.json` — еженедельно, сгруппированно и без automerge.
 
 `scripts/restore-drill.sh` — та же rehearsal без Docker: fixture-база во временном каталоге, backup, restore в новый каталог (замена восстановленному volume), сравнение `integrity`, `schema_version`, `table_*` и `events_*` с оригиналом, проверка read-write и идемпотентности повторного restore. В GitLab CI job `restore-drill` выполняет его на Linux в образе `golang:1.27-bookworm` и блокирует pipeline; `--keep` оставляет временный каталог для разбора. Windows-сценарий `.\scripts\test-maintenance.ps1 -WithVolumeRestore` с изолированным Docker volume и container monitor остаётся для ручного запуска на self-hosted Windows runner.
 
@@ -463,7 +464,7 @@ Pipeline включает gofmt/vet, PowerShell parser, unit/store, fixture back
 
 Host fallback сохраняет прежние `go test` и на Windows может снова вызвать firewall prompt; он не является стандартом для разработки или CI. Прямой host `go test ./...` также не заменяет штатные обёртки.
 
-Существующий race path не изменён: `scripts\test-race.ps1` по-прежнему собирает Docker target `test` и запускает `go test -race` в контейнере; `-Tagged` включает integration, `-SkipBuild` повторно использует race image. В `verify.ps1` для этого по-прежнему предусмотрен `-SkipRaceBuild`.
+Существующий race path не изменён: `scripts\test-race.ps1` по-прежнему собирает Docker target `test` и запускает `go test -race -shuffle=on` в контейнере; `-Tagged` включает integration, `-SkipBuild` повторно использует race image. В `verify.ps1` для этого по-прежнему предусмотрен `-SkipRaceBuild`.
 
 `docker-build.ps1`, `test.ps1` и `test-race.ps1` сериализуют только Docker image builds кроссплатформенным named mutex, уникальным для полного repo root. Ожидание ограничено 30 минутами; `go test` и `-SkipBuild` lock не используют. Лёгкий двухпроцессный acceptance запускается через `.\scripts\test-docker-build-lock.ps1` и не требует Docker.
 

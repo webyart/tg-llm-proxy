@@ -70,6 +70,22 @@ func LoadConfig() (config.Config, []string, map[string]string) {
 	return cfg, problems, raw
 }
 
+// configuredReserves names the ordered reserve chain for the startup summary: STRATA_FALLBACKS entries keep their
+// order, and the legacy single reserve appears as a one-element list.
+func configuredReserves(cfg config.Config) []string {
+	if len(cfg.FallbackProviders) > 0 {
+		var names = make([]string, len(cfg.FallbackProviders))
+		for index, provider := range cfg.FallbackProviders {
+			names[index] = provider.Model
+		}
+		return names
+	}
+	if cfg.StrataFallbackModel != "" {
+		return []string{cfg.StrataFallbackModel}
+	}
+	return nil
+}
+
 // startupSummary logs the configuration an operator asks about first. Secrets are never printed — only their
 // presence and length — and rows that are simply unset are not listed: the previous version printed one
 // "is not set" line per optional row on every start, which buried the six lines that mattered.
@@ -80,6 +96,7 @@ func startupSummary(logger *slog.Logger, cfg config.Config) {
 		"strata_base", cfg.StrataBase,
 		"model", cfg.StrataModel,
 		"fallback_model", cfg.StrataFallbackModel,
+		"fallback_models", configuredReserves(cfg),
 		"fallback_timeout_seconds", cfg.StrataFallbackTimeoutSeconds,
 		"transcription_model", cfg.TranscriptionModel,
 		"timeout_seconds", cfg.TimeoutSeconds,
@@ -211,37 +228,59 @@ func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, l
 		cfg.StrataModel = discovered
 	}
 
-	// The chat client is the primary unless a fallback is configured. The fallback wrapper deliberately has
-	// no Transcribe method, so voice keeps using the primary: the composite reattaches that optional
-	// interface to the wrapper the dispatcher sees.
+	// The chat client is the primary unless a reserve chain is configured. The wrapper deliberately has no
+	// Transcribe method, so voice keeps using the primary: the composite reattaches that optional interface to
+	// the wrapper the dispatcher sees. Legacy STRATA_FALLBACK_* is a one-entry chain; STRATA_FALLBACKS is the
+	// ordered list.
 	var client model.Client = primary
-	if cfg.StrataFallbackModel != "" {
-		var fallbackOptions = modelOptions
-		fallbackOptions.ChatURL = cfg.FallbackChatURL
-		fallbackOptions.ModelsURL = cfg.FallbackModelsURL
-		fallbackOptions.Model = cfg.StrataFallbackModel
-		// A reserve on someone else's endpoint must not receive the primary key: an explicit fallback key wins,
-		// and a distinct endpoint without one is called unauthenticated (LM Studio-style local reserves) instead
-		// of leaking STRATA_API_KEY to a third party.
-		if cfg.StrataFallbackAPIKey != "" {
-			fallbackOptions.APIKey = cfg.StrataFallbackAPIKey
-		} else if cfg.FallbackBase != "" {
-			fallbackOptions.APIKey = ""
+	var reserves []model.Reserve
+	var buildReserve = func(name, chatURL, modelsURL, apiKey string, timeoutSeconds int64, distinct bool) error {
+		var options = modelOptions
+		if distinct {
+			options.ChatURL = chatURL
+			options.ModelsURL = modelsURL
+		}
+		options.Model = name
+		// A reserve on someone else's endpoint must not receive the primary key: an explicit key wins, and a
+		// distinct endpoint without one is called unauthenticated (LM Studio-style local reserves) instead of
+		// leaking STRATA_API_KEY to a third party.
+		if apiKey != "" {
+			options.APIKey = apiKey
+		} else if distinct {
+			options.APIKey = ""
 		}
 		// A reserve model may load on demand: its own timeout must not be the primary per-attempt one.
-		fallbackOptions.Timeout = time.Duration(cfg.StrataFallbackTimeoutSeconds) * time.Second
-		fallbackOptions.TranscriptionModel = ""
-		fallbackOptions.TranscriptionURL = ""
-		fallbackOptions.TranscriptionNoAuth = false
-		var fallbackClient, fallbackErr = model.New(fallbackOptions)
-		if fallbackErr != nil {
-			return fmt.Errorf("model.New (fallback %q): %w", cfg.StrataFallbackModel, fallbackErr)
+		options.Timeout = time.Duration(timeoutSeconds) * time.Second
+		options.TranscriptionModel = ""
+		options.TranscriptionURL = ""
+		options.TranscriptionNoAuth = false
+		var reserveClient, reserveErr = model.New(options)
+		if reserveErr != nil {
+			return fmt.Errorf("model.New (reserve %q): %w", name, reserveErr)
 		}
-		var wrapped = model.NewFallback(primary, fallbackClient, model.FallbackOptions{
-			PrimaryModel:  cfg.StrataModel,
-			FallbackModel: cfg.StrataFallbackModel,
-			Metrics:       modelMetrics,
-			Logger:        logger,
+		reserves = append(reserves, model.Reserve{Model: name, Client: reserveClient})
+		return nil
+	}
+	if len(cfg.FallbackProviders) > 0 {
+		for _, provider := range cfg.FallbackProviders {
+			var distinct = strings.TrimSpace(provider.BaseURL) != ""
+			if err := buildReserve(provider.Model, provider.ChatURL, provider.ModelsURL, provider.APIKey, provider.TimeoutSeconds, distinct); err != nil {
+				return err
+			}
+		}
+	} else if cfg.StrataFallbackModel != "" {
+		// FallbackBase is empty when the reserve shares the primary endpoint; then the primary key stays valid.
+		var distinct = cfg.FallbackBase != ""
+		if err := buildReserve(cfg.StrataFallbackModel, cfg.FallbackChatURL, cfg.FallbackModelsURL, cfg.StrataFallbackAPIKey,
+			cfg.StrataFallbackTimeoutSeconds, distinct); err != nil {
+			return err
+		}
+	}
+	if len(reserves) > 0 {
+		var wrapped = model.NewFallbackChain(primary, reserves, model.ChainOptions{
+			PrimaryModel: cfg.StrataModel,
+			Metrics:      modelMetrics,
+			Logger:       logger,
 		})
 		client = withPrimaryTranscription(wrapped, primary)
 	}

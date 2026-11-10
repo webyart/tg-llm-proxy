@@ -19,6 +19,7 @@ var Env = []string{
 	"TELEGRAM_BOT_TOKEN",
 	"STRATA_BASE_URL",
 	"STRATA_MODEL",
+	"STRATA_FALLBACKS",
 	"STRATA_FALLBACK_MODEL",
 	"STRATA_FALLBACK_BASE_URL",
 	"STRATA_FALLBACK_API_KEY",
@@ -198,23 +199,27 @@ type Config struct {
 	// took ~61 s for a 27B model), so its per-attempt timeout is separate from STRATA_TIMEOUT_SECONDS. The outer
 	// reply budget still bounds the whole answer.
 	StrataFallbackTimeoutSeconds int64
-	FallbackBase                 string
-	FallbackChatURL              string
-	FallbackModelsURL            string
-	TranscriptionModel           string
-	TranscriptionBase            string
-	TranscriptionURL             string
-	TTSURL                       string
-	TTSEnabled                   bool
-	TTSModel                     string
-	TTSVoice                     string
-	TTSMaxChars                  int64
-	TTSTimeoutSeconds            int64
-	MediaMaxBytes                int64
-	SpeechMaxSeconds             int64
-	TimeoutSeconds               int64
-	ReplyDeadlineSeconds         int64
-	RecoveryMaxAgeHours          int64
+	// FallbackProviders is the ordered reserve chain from STRATA_FALLBACKS (JSON). Each entry names its model and
+	// may override the endpoint, the key and the per-attempt timeout; the legacy single fallback variables remain
+	// a one-entry chain. ChatURL/ModelsURL are resolved by the loader so main does not repeat URL joining.
+	FallbackProviders    []FallbackProvider
+	FallbackBase         string
+	FallbackChatURL      string
+	FallbackModelsURL    string
+	TranscriptionModel   string
+	TranscriptionBase    string
+	TranscriptionURL     string
+	TTSURL               string
+	TTSEnabled           bool
+	TTSModel             string
+	TTSVoice             string
+	TTSMaxChars          int64
+	TTSTimeoutSeconds    int64
+	MediaMaxBytes        int64
+	SpeechMaxSeconds     int64
+	TimeoutSeconds       int64
+	ReplyDeadlineSeconds int64
+	RecoveryMaxAgeHours  int64
 	// rewritten as the model writes; StreamEditIntervalMS is the cadence of those rewrites; StreamIdleSeconds
 	// is the pause between two SSE events past which the stream is considered dead; StreamTotalSeconds is the
 	// ceiling of one streamed answer. The semantics of TimeoutSeconds and ReplyDeadlineSeconds do NOT change
@@ -653,6 +658,14 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	// leftover base of a disabled fallback is not a configuration of the running bot.
 	cfg.StrataFallbackModel = strings.TrimSpace(raw["STRATA_FALLBACK_MODEL"])
 	cfg.StrataFallbackAPIKey = strings.TrimSpace(raw["STRATA_FALLBACK_API_KEY"])
+	cfg.FallbackProviders = nil
+	if rawChain := strings.TrimSpace(raw["STRATA_FALLBACKS"]); rawChain != "" {
+		if cfg.StrataFallbackModel != "" {
+			problems = Push(problems, "ENV STRATA_FALLBACKS and STRATA_FALLBACK_MODEL are both set: use the chain or the single reserve, not both ")
+		} else {
+			problems = append(problems, parseFallbackChain(rawChain, cfg, &cfg.FallbackProviders)...)
+		}
+	}
 	if cfg.StrataFallbackModel != "" {
 		var fallbackBase = strings.TrimSpace(raw["STRATA_FALLBACK_BASE_URL"])
 		if fallbackBase == "" {

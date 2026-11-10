@@ -87,7 +87,7 @@ try {
 
     $integrationExit = 1
     if ($testsReady) {
-        $goArgs = @('test', '-count=1', '-tags=integration', './test/...')
+        $goArgs = @('test', '-count=1', '-shuffle=on', '-tags=integration', './test/...')
         if ($HostTests) {
             $integrationOut = (& go @goArgs 2>&1 | Out-String)
         }
@@ -101,14 +101,14 @@ try {
         $integrationOut = $testSetupError
     }
     $integrationOk = ($integrationExit -eq 0)
-    $integrationNote = "go test -count=1 -tags=integration ./test/... exit $integrationExit"
+    $integrationNote = "go test -count=1 -shuffle=on -tags=integration ./test/... exit $integrationExit"
     if (-not $integrationOk) { $integrationNote += " — output: $($integrationOut.Trim())" }
     Check 'integration tests ' $integrationOk $integrationNote $false
 
     if ($Unit) {
         $unitExit = 1
         if ($testsReady) {
-            $goArgs = @('test', '-count=1', './...')
+            $goArgs = @('test', '-count=1', '-shuffle=on', './...')
             if ($HostTests) {
                 $unitOut = (& go @goArgs 2>&1 | Out-String)
             }
@@ -122,7 +122,7 @@ try {
             $unitOut = $testSetupError
         }
         $unitOk = ($unitExit -eq 0)
-        $unitNote = "go test -count=1 ./... exit $unitExit"
+        $unitNote = "go test -count=1 -shuffle=on ./... exit $unitExit"
         if (-not $unitOk) { $unitNote += " — output: $($unitOut.Trim())" }
         Check 'unit tests ' $unitOk $unitNote $false
     }

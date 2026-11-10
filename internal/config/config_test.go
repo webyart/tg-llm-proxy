@@ -294,8 +294,8 @@ func TestOldNameOfTheRowIsRefusedByName(t *testing.T) {
 }
 
 func TestEnvIsTheRowsOfTheTable(t *testing.T) {
-	if len(Env) != 68 {
-		t.Errorf("Env holds %d names, want 68 including per-user daily limits, HEALTH_LISTEN_HOST, STREAM_DRAFTS_ENABLED, the four RAG_EMBEDDINGS_* rows and the two STRATA_FALLBACK_* rows", len(Env))
+	if len(Env) != 69 {
+		t.Errorf("Env holds %d names, want 69 including per-user daily limits, HEALTH_LISTEN_HOST, STREAM_DRAFTS_ENABLED, the four RAG_EMBEDDINGS_* rows and STRATA_FALLBACK*, STRATA_FALLBACKS", len(Env))
 	}
 	var seen = map[string]bool{}
 	var i = 0
@@ -426,4 +426,52 @@ func hasProblemNamed(problems []string, phrase string) bool {
 		i += 1
 	}
 	return false
+}
+
+// TestLoadFromFallbackChain — STRATA_FALLBACKS is an ordered JSON list; a reserve without base_url shares the
+// primary endpoint, and the per-entry timeout defaults to the single-reserve default.
+func TestLoadFromFallbackChain(t *testing.T) {
+	var cfg, problems = LoadFrom(map[string]string{
+		"TELEGRAM_BOT_TOKEN": "1:secret",
+		"STRATA_FALLBACKS":   `[{"model":"kimi-k3.1-pro","base_url":"https://api.moonshot.ai/v1","api_key":"sk-test","timeout_seconds":90},{"model":"local-reserve"}]`,
+	})
+	if len(problems) > 0 {
+		t.Fatalf("LOAD PROBLEMS: %v", problems)
+	}
+	if len(cfg.FallbackProviders) != 2 {
+		t.Fatalf("FallbackProviders = %d, want 2", len(cfg.FallbackProviders))
+	}
+	var first = cfg.FallbackProviders[0]
+	if first.Model != "kimi-k3.1-pro" || first.APIKey != "sk-test" || first.TimeoutSeconds != 90 {
+		t.Fatalf("first provider = %+v", first)
+	}
+	if !strings.HasSuffix(first.ChatURL, "/chat/completions") || !strings.HasPrefix(first.ChatURL, "https://api.moonshot.ai/v1") {
+		t.Fatalf("first ChatURL = %q", first.ChatURL)
+	}
+	var second = cfg.FallbackProviders[1]
+	if second.Model != "local-reserve" || second.ChatURL != cfg.ChatURL || second.TimeoutSeconds != DefaultFallbackTimeoutSeconds {
+		t.Fatalf("second provider = %+v (primary ChatURL %q)", second, cfg.ChatURL)
+	}
+}
+
+func TestLoadFromFallbackChainRejectsConflictsAndBadJSON(t *testing.T) {
+	for name, env := range map[string]map[string]string{
+		"both rows": {"STRATA_FALLBACK_MODEL": "old", "STRATA_FALLBACKS": `[{"model":"new"}]`},
+		"bad json":  {"STRATA_FALLBACKS": `[{"model":`},
+		"empty":     {"STRATA_FALLBACKS": `[]`},
+		"no model":  {"STRATA_FALLBACKS": `[{"base_url":"https://example.test/v1"}]`},
+		"bad url":   {"STRATA_FALLBACKS": `[{"model":"m","base_url":"not-a-url"}]`},
+		"timeout":   {"STRATA_FALLBACKS": `[{"model":"m","timeout_seconds":1}]`},
+	} {
+		env["TELEGRAM_BOT_TOKEN"] = "1:secret"
+		var _, problems = LoadFrom(env)
+		if len(problems) == 0 {
+			t.Errorf("%s: no problems reported", name)
+			continue
+		}
+		var joined = strings.Join(problems, " ")
+		if !strings.Contains(joined, "STRATA_FALLBACKS") {
+			t.Errorf("%s: problems do not name STRATA_FALLBACKS: %v", name, problems)
+		}
+	}
 }

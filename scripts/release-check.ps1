@@ -110,7 +110,7 @@ try {
         Write-Output 'go test: SKIP — -SkipTests was given; a real release gate must run it'
     }
     else {
-        $testArgs = @('test') + $packageRoots + @('-count=1', '-timeout', '20m')
+        $testArgs = @('test') + $packageRoots + @('-count=1', '-shuffle=on', '-timeout', '20m')
         $watch = [System.Diagnostics.Stopwatch]::StartNew()
         $testOutput = (& go @testArgs 2>&1 | Out-String)
         $testCode = $LASTEXITCODE

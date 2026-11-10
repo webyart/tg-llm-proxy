@@ -1,0 +1,32 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "schedule": ["before 6am on monday"],
+  "dependencyDashboard": true,
+  "automerge": false,
+  "packageRules": [
+    {
+      "groupName": "go-telegram-bot",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["github.com/go-telegram/bot"]
+    },
+    {
+      "groupName": "ledongthuc-pdf",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["github.com/ledongthuc/pdf"]
+    },
+    {
+      "groupName": "modernc-sqlite",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["modernc.org/sqlite"]
+    },
+    {
+      "groupName": "docker base images",
+      "matchDatasources": ["docker"]
+    },
+    {
+      "groupName": "github actions",
+      "matchManagers": ["github-actions"]
+    }
+  ]
+}

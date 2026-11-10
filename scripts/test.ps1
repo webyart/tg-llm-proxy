@@ -54,7 +54,8 @@ try {
     }
 
     # $goArgs, not $args: the latter is the automatic PowerShell variable of the caller's rest arguments.
-    $goArgs = @('test') + $Pkg + @("-count=$Count")
+    # -shuffle=on randomizes test order; the seed is printed on failure, rerun with -shuffle=<seed>.
+    $goArgs = @('test') + $Pkg + @("-count=$Count", '-shuffle=on')
     if ($VerboseOut) { $goArgs += '-v' }
     if ($HostTests) {
         $out = (& go @goArgs 2>&1 | Out-String)
@@ -70,7 +71,7 @@ try {
         exit 1
     }
     $mode = if ($HostTests) { 'host' } else { 'container' }
-    Write-Output "test: GREEN — packages: $($Pkg -join ' '); $mode run without -race"
+    Write-Output "test: GREEN — packages: $($Pkg -join ' '); $mode run without -race, shuffle=on"
     exit 0
 }
 finally {

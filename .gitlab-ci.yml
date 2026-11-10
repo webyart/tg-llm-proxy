@@ -144,44 +144,25 @@ production-image:
       test "$code" -eq 1
       grep -q "TELEGRAM_BOT_TOKEN is not set" /tmp/start.txt
 
-# Isolated restore rehearsal: a fixture database is backed up, restored into a throwaway `bot-data` volume of
-# the fixed project tg-llm-proxy-restore-rehearsal, ownership and read/write access are checked as the runtime
-# user, the file is copied back and every integrity/table/event counter is compared. The bot process is never
-# started and the production project/volume is never addressed.
+# Isolated restore rehearsal without Docker: scripts/restore-drill.sh creates a fixture database in a temp
+# directory, backs it up, restores the backup into a fresh directory (the stand-in for the restored volume),
+# compares integrity/schema_version/table_*/events_* with the original, checks that the restored file opens
+# read-write and proves that a second restore of the same backup is idempotent. It needs only the Go toolchain
+# of this image: no Docker daemon, no PowerShell, no Windows tooling. The bot process is never started and no
+# live database or volume is addressed.
 #
-# MANUAL, and deliberately so. The entry point `scripts/test-maintenance.ps1 -WithVolumeRestore` is Windows-first:
-# it builds `bin/dbfixture.exe` and writes a fake `docker.cmd` into a scratch directory to steer the script under
-# test, neither of which works inside a Linux job image (a Linux runner has no `cmd.exe`). Until a Windows
-# self-hosted runner is registered for this project, the drill stays a manual job an operator triggers on such a
-# runner; it is NOT silently green on Linux. `allow_failure: true` keeps an unrun rehearsal from blocking the
-# merge of unrelated changes, and the comment names the condition for making it blocking again.
+# The Windows-first entry point `scripts/test-maintenance.ps1 -WithVolumeRestore` — which builds
+# `bin/dbfixture.exe`, writes a fake `docker.cmd`, and additionally rehearses the isolated compose volume and
+# container monitor — remains available for the self-hosted Windows runner, but it is no longer the CI entry
+# point. This Linux job is blocking: the file-level rehearsal needs no Docker daemon, so a missing daemon can no
+# longer turn the drill into a silent skip.
 restore-drill:
+  <<: *tag-skip
   stage: test
   image: golang:1.27-bookworm@sha256:dc0963f32053e4bc451d24d87e3892d42d01021b61f093e98eb95c0352bb84b0
-  when: manual
-  allow_failure: true
-  before_script:
-    - |
-      if ! command -v pwsh >/dev/null 2>&1; then
-        if [ "$(id -u)" -ne 0 ]; then
-          echo "Install PowerShell on the self-hosted runner before CI" >&2
-          exit 1
-        fi
-        apt-get update
-        apt-get install -y --no-install-recommends wget ca-certificates
-        wget -q https://github.com/PowerShell/PowerShell/releases/download/v7.6.0/powershell_7.6.0-1.deb_amd64.deb -O /tmp/powershell.deb
-        apt-get install -y /tmp/powershell.deb
-      fi
+  allow_failure: false
   script:
-    - |
-      if ! docker info > /dev/null 2>&1; then
-        echo "no Docker daemon on this runner: the isolated restore drill is skipped"
-        exit 0
-      fi
-    # test-volume-restore.ps1 and test-container-monitor.ps1 address the fixed local tag tg-llm-proxy-bot:latest,
-    # so the rehearsal builds the run target under exactly that name rather than the SHA tag of production-image.
-    - docker build --target run --build-arg BUILD_COMMIT="$CI_COMMIT_SHA" -t tg-llm-proxy-bot:latest .
-    - pwsh -NoLogo -NoProfile -File scripts/test-maintenance.ps1 -WithVolumeRestore
+    - bash scripts/restore-drill.sh
 
 # Tag-driven release. `workflow.rules` above admits only vMAJOR.MINOR.PATCH tags, and this job repeats the
 # filter so a tag pipeline that also matches another rule still cannot release: pushing `v1.41.0` is the

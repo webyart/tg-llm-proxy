@@ -1,3 +1,10 @@
+# tg-llm-proxy v1.55.0
+
+## Cost and fallback observability, a Kimi reserve, and a Linux restore drill
+
+- `model_tokens_total{direction="in"|"out",model="…"}` records the usage the provider reports for every Complete and Stream response; the model label is bounded to 64 safe characters so a provider cannot blow up label cardinality. Dashboard panels "Tokens per hour by direction/model", fallback attempts and RAG embedding outcomes/dimensions are provisioned, with alerts `BotFallbackEngaged` (info) and `BotEmbeddingErrors` (warning) and promtool tests.
+- `STRATA_FALLBACK_API_KEY` (row 68, `_FILE` supported) lets the reserve live on someone else's endpoint. A distinct reserve endpoint without its own key is now called unauthenticated instead of receiving `STRATA_API_KEY`. Production uses `https://api.moonshot.ai/v1` with `kimi-k3.1-pro`; a dead-primary drill answered "работает" in 4 s with 94/63 tokens.
+- `scripts/restore-drill.sh` rehearses fixture → backup → restore → 33-counter comparison, read-write and a second idempotent restore inside the plain Go image; the blocking `restore-drill` CI job no longer needs Docker or PowerShell. The Windows volume/ownership rehearsal stays available manually.
 # tg-llm-proxy v1.54.0
 
 ## Per-chat Mini App → Telegram fallback

@@ -124,7 +124,11 @@ func New(o Options) (*OpenAI, error) {
 // The returned Latency covers the whole call, retries and the wait for a free slot included,
 func (c *OpenAI) Complete(ctx context.Context, req Request) (resp Response, err error) {
 	var start = time.Now()
-	defer func() { c.metrics.observe(err, time.Since(start)) }()
+	var requested string
+	defer func() {
+		c.metrics.observe(err, time.Since(start))
+		c.metrics.recordTokens(resp, requested)
+	}()
 
 	// The slot is the GPU: it stays busy for the whole call, and waiting for it is bounded by
 	// admissionTimeout so a saturated endpoint says so instead of burning the reply budget.
@@ -150,6 +154,7 @@ func (c *OpenAI) Complete(ctx context.Context, req Request) (resp Response, err 
 	if err != nil {
 		return Response{}, err
 	}
+	requested = model
 
 	var lastErr error
 	for attempt := 1; attempt <= c.attempts; attempt++ {

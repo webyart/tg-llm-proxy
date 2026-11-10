@@ -220,6 +220,14 @@ func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, l
 		fallbackOptions.ChatURL = cfg.FallbackChatURL
 		fallbackOptions.ModelsURL = cfg.FallbackModelsURL
 		fallbackOptions.Model = cfg.StrataFallbackModel
+		// A reserve on someone else's endpoint must not receive the primary key: an explicit fallback key wins,
+		// and a distinct endpoint without one is called unauthenticated (LM Studio-style local reserves) instead
+		// of leaking STRATA_API_KEY to a third party.
+		if cfg.StrataFallbackAPIKey != "" {
+			fallbackOptions.APIKey = cfg.StrataFallbackAPIKey
+		} else if cfg.FallbackBase != "" {
+			fallbackOptions.APIKey = ""
+		}
 		// A reserve model may load on demand: its own timeout must not be the primary per-attempt one.
 		fallbackOptions.Timeout = time.Duration(cfg.StrataFallbackTimeoutSeconds) * time.Second
 		fallbackOptions.TranscriptionModel = ""

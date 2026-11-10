@@ -21,6 +21,7 @@ var Env = []string{
 	"STRATA_MODEL",
 	"STRATA_FALLBACK_MODEL",
 	"STRATA_FALLBACK_BASE_URL",
+	"STRATA_FALLBACK_API_KEY",
 	"STRATA_FALLBACK_TIMEOUT_SECONDS",
 	"STRATA_TRANSCRIPTION_MODEL",
 	"TRANSCRIPTION_BASE_URL",
@@ -190,6 +191,9 @@ type Config struct {
 	// empty when the fallback shares the primary endpoint, so a startup summary can print only a real second
 	// endpoint. FallbackChatURL/FallbackModelsURL are always the URLs to call when the fallback is enabled.
 	StrataFallbackModel string
+	// StrataFallbackAPIKey is the key of a reserve endpoint that is not the primary (for example the Moonshot/Kimi
+	// API): the primary STRATA_API_KEY must not be sent to a third party. Empty means "use the primary key".
+	StrataFallbackAPIKey string
 	// A reserve endpoint may need to load its model on the first request (a cold LM Studio/LM Studio-style server
 	// took ~61 s for a 27B model), so its per-attempt timeout is separate from STRATA_TIMEOUT_SECONDS. The outer
 	// reply budget still bounds the whole answer.
@@ -648,6 +652,7 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	// The fallback is opt-in and silent by default. Its base URL is validated only when the model is set: a
 	// leftover base of a disabled fallback is not a configuration of the running bot.
 	cfg.StrataFallbackModel = strings.TrimSpace(raw["STRATA_FALLBACK_MODEL"])
+	cfg.StrataFallbackAPIKey = strings.TrimSpace(raw["STRATA_FALLBACK_API_KEY"])
 	if cfg.StrataFallbackModel != "" {
 		var fallbackBase = strings.TrimSpace(raw["STRATA_FALLBACK_BASE_URL"])
 		if fallbackBase == "" {

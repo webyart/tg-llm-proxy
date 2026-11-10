@@ -101,7 +101,11 @@ type StreamHandler struct {
 // the first delivered delta a retry is forbidden: the user is already reading that text, and a second attempt
 func (c *OpenAI) Stream(ctx context.Context, req Request, h StreamHandler) (resp Response, err error) {
 	var start = time.Now()
-	defer func() { c.metrics.observe(err, time.Since(start)) }()
+	var requested string
+	defer func() {
+		c.metrics.observe(err, time.Since(start))
+		c.metrics.recordTokens(resp, requested)
+	}()
 
 	// busy for all of it, and pretending otherwise would let a second answer start on the same GPU.
 	release, admitErr := c.acquire(ctx)
@@ -126,6 +130,7 @@ func (c *OpenAI) Stream(ctx context.Context, req Request, h StreamHandler) (resp
 	if err != nil {
 		return Response{}, err
 	}
+	requested = model
 
 	var lastErr error
 	for attempt := 1; attempt <= c.attempts; attempt++ {

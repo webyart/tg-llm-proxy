@@ -97,7 +97,7 @@ docker compose logs -f bot
 
 ## Конфигурация
 
-Полный список из 67 ENV-строк и их значения по умолчанию находится в `.env.example`; строки `STREAMING_*`, `WEBHOOK_*`, `MINIAPP_*`, `HEALTH_*` и `RAG_EMBEDDINGS_*` описаны в одноимённых разделах ниже. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
+Полный список из 68 ENV-строк и их значения по умолчанию находится в `.env.example`; строки `STREAMING_*`, `WEBHOOK_*`, `MINIAPP_*`, `HEALTH_*` и `RAG_EMBEDDINGS_*` описаны в одноимённых разделах ниже. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
 
 ### Основные параметры
 
@@ -107,6 +107,7 @@ docker compose logs -f bot
 | `STRATA_BASE_URL` | `http://host.docker.internal:8000` | OpenAI-compatible base URL без обязательного `/v1` |
 | `STRATA_MODEL` | `qwen2.5-7b-instruct` | id модели из `GET /v1/models` |
 | `STRATA_FALLBACK_MODEL` | пусто = fallback выключен | резервная модель после retryable-ошибки основной |
+| `STRATA_FALLBACK_API_KEY` | пусто | ключ резервного эндпоинта, если он не совпадает с основным (иначе `STRATA_API_KEY`) |
 | `STRATA_FALLBACK_BASE_URL` | `STRATA_BASE_URL` | отдельный endpoint fallback; absolute http(s) без userinfo |
 | `STRATA_FALLBACK_TIMEOUT_SECONDS` | 120 | таймаут одной попытки резерва: модель может загружаться по требованию |
 | `STRATA_TRANSCRIPTION_MODEL` | `Systran/faster-whisper-small` | модель для `/audio/transcriptions` |
@@ -431,6 +432,8 @@ docker compose -f docker-compose.yml -f compose.production.yaml up -d --force-re
 ```
 
 Pipeline включает gofmt/vet, PowerShell parser, unit/store, fixture backup/restore/external-copy/rotate/prune/migration, loopback Telegram alerts, fake Telegram + fake STRATA, build, secret leak scan и Docker race. `-WithVolumeRestore` добавляет volume restore и container-monitor acceptance. Явные package roots исключают `zzscratch`; `go mod tidy -diff` проверяет module files без изменений. Docker base images и CI images/tools закреплены по digest/версии.
+
+`scripts/restore-drill.sh` — та же rehearsal без Docker: fixture-база во временном каталоге, backup, restore в новый каталог (замена восстановленному volume), сравнение `integrity`, `schema_version`, `table_*` и `events_*` с оригиналом, проверка read-write и идемпотентности повторного restore. В GitLab CI job `restore-drill` выполняет его на Linux в образе `golang:1.27-bookworm` и блокирует pipeline; `--keep` оставляет временный каталог для разбора. Windows-сценарий `.\scripts\test-maintenance.ps1 -WithVolumeRestore` с изолированным Docker volume и container monitor остаётся для ручного запуска на self-hosted Windows runner.
 
 ### Unit и integration без Windows test listeners
 

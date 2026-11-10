@@ -17,6 +17,7 @@ import (
 var secretFileRows = []string{
 	"TELEGRAM_BOT_TOKEN",
 	"STRATA_API_KEY",
+	"STRATA_FALLBACK_API_KEY",
 	"WEBHOOK_SECRET_TOKEN",
 }
 

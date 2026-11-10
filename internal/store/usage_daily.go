@@ -72,7 +72,7 @@ func UserDailyUsage(ctx context.Context, db *sql.DB, userID int64, now time.Time
 	}
 
 	callRows, err := db.QueryContext(ctx, `
-		SELECT COALESCE(detail, ''), COUNT(*)
+		SELECT CASE WHEN instr(COALESCE(detail, ''), ':') > 0 THEN substr(detail, instr(detail, ':') + 1) ELSE COALESCE(detail, '') END, COUNT(*)
 		FROM events
 		WHERE user_id = ? AND kind = ? AND created_at >= ? AND created_at < ?
 		GROUP BY detail

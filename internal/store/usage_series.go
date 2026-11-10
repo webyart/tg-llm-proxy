@@ -222,7 +222,9 @@ func UserUsageSeries(ctx context.Context, db *sql.DB, userID int64, now time.Tim
 	// One grouped events query supplies both the model_call counts and the tool counts. Detail is
 	// either a model id (model_call) or one of the fixed tool names (usage); nothing else is read.
 	eventRows, err := db.QueryContext(ctx, `
-		SELECT `+spec.bucketSQL+` AS bucket, kind, COALESCE(detail, ''), COUNT(*)
+		SELECT `+spec.bucketSQL+` AS bucket, kind,
+			CASE WHEN kind = 'model_call' AND instr(COALESCE(detail, ''), ':') > 0
+				THEN substr(detail, instr(detail, ':') + 1) ELSE COALESCE(detail, '') END, COUNT(*)
 		FROM events
 		WHERE user_id = ? AND kind IN (?, ?) AND created_at >= ? AND created_at < ?
 		GROUP BY bucket, kind, detail`, userID, EventModelCall, EventUsage, startText, endText)

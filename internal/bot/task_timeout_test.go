@@ -31,3 +31,16 @@ func TestTaskRequestTimeoutSurvivesToolRounds(t *testing.T) {
 		}
 	}
 }
+
+func TestTaskAutoApprovalIsScopedToTaskSteps(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TASK_AUTO_APPROVE_NETWORK": "true"})
+	var d = newTestDispatcher(t, cfg, &scriptedToolModel{}, &fakeReplier{}, nil)
+	var taskState = &toolLoopContinuation{metadata: toolLoopMetadata{taskID: 7}}
+	if !d.taskAutoApprovesNetwork(taskState) {
+		t.Fatal("a task step was not auto-approved")
+	}
+	var chatState = &toolLoopContinuation{metadata: toolLoopMetadata{}}
+	if d.taskAutoApprovesNetwork(chatState) {
+		t.Fatal("a chat answer was auto-approved")
+	}
+}

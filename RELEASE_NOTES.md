@@ -2,7 +2,17 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.62.4
+## Новейший выпуск: v1.62.5
+
+# tg-llm-proxy v1.62.5
+
+## Tasks stop stalling on network approvals
+
+- `TASK_AUTO_APPROVE_NETWORK=true` lets a read-only task step execute `read_url`/`web_search` without a per-call button. A task is an explicit user request and both tools only read; chat answers keep their per-call approval. Scoped by `TaskID`, never by chat.
+- A saved task continuation without a live approval token is treated as stale when auto-approval is on: the step restarts instead of parking the task until the lease expires. That was the “step hangs and idles” state.
+- Config row 76, README/.env.example documented; a test pins that chat answers are never auto-approved.
+
+## Предыдущий выпуск: v1.62.4
 
 # tg-llm-proxy v1.62.4
 

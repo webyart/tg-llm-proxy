@@ -38,6 +38,7 @@ var Env = []string{
 	"STRATA_API_KEY",
 	"STRATA_TIMEOUT_SECONDS",
 	"TG_REPLY_DEADLINE_SECONDS",
+	"TASK_AUTO_APPROVE_NETWORK",
 	"TASK_MODEL_TIMEOUT_SECONDS",
 	"TASK_STEP_DEADLINE_SECONDS",
 	"RECOVERY_MAX_AGE_HOURS",
@@ -242,6 +243,9 @@ type Config struct {
 	// TaskStepDeadlineSeconds bounds the whole step (including several tool rounds) and the lease is its +30s.
 	TaskModelTimeoutSeconds int64
 	TaskStepDeadlineSeconds int64
+	// TaskAutoApproveNetwork lets a read-only task step execute read_url/web_search without a per-call button.
+	// The task itself is an explicit user request and both tools only read; chat answers keep their approvals.
+	TaskAutoApproveNetwork bool
 	RecoveryMaxAgeHours     int64
 	// rewritten as the model writes; StreamEditIntervalMS is the cadence of those rewrites; StreamIdleSeconds
 	// is the pause between two SSE events past which the stream is considered dead; StreamTotalSeconds is the
@@ -749,6 +753,9 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 		problems = Push(problems, "ENV TG_REPLY_DEADLINE_SECONDS is not greater than STRATA_TIMEOUT_SECONDS: the total budget of the retries, the timeout and the answer into Telegram must exceed the timeout of one attempt ")
 	}
 
+	taskAutoApprove, badTaskAutoApprove := Flag(raw, "TASK_AUTO_APPROVE_NETWORK", false)
+	cfg.TaskAutoApproveNetwork = taskAutoApprove
+	problems = Push(problems, badTaskAutoApprove)
 	var taskModelTimeout, badTaskModelTimeout = Num(raw, "TASK_MODEL_TIMEOUT_SECONDS", DefaultTaskModelTimeoutSeconds, 30, 1800)
 	cfg.TaskModelTimeoutSeconds = taskModelTimeout
 	problems = Push(problems, badTaskModelTimeout)

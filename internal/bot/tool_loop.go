@@ -708,6 +708,11 @@ func (d *Dispatcher) runToolLoop(ctx context.Context, state *toolLoopContinuatio
 			if index >= 2 {
 				continue
 			}
+			if (call.Name == "read_url" || call.Name == "web_search") && d.taskAutoApprovesNetwork(state) {
+				// A read-only task was created by an explicit user request; its network reads do not need a
+				// second button and must not park the task in an approval continuation.
+				state.approvedCalls[index] = true
+			}
 			if (call.Name == "read_url" || call.Name == "web_search") && !state.approvedCalls[index] &&
 				!d.networkScopeAllows(ctx, state, call) && !directNetworkIntent(state.metadata.originalRequest, call) {
 				if state.approvalWaiter == nil {
@@ -787,4 +792,10 @@ func (d *Dispatcher) logTaskModelFailure(state *toolLoopContinuation, err error)
 		"task_id", state.metadata.taskID,
 		"request_timeout_seconds", int(state.request.Timeout/time.Second),
 		"error", Sanitize(err, d.deps.Token))
+}
+
+// taskAutoApprovesNetwork reports whether a task step may execute a read-only network call without a per-call
+// confirmation. Chat answers never take this path: taskID is zero outside a task step.
+func (d *Dispatcher) taskAutoApprovesNetwork(state *toolLoopContinuation) bool {
+	return state != nil && state.metadata.taskID != 0 && d.deps.Cfg.TaskAutoApproveNetwork
 }

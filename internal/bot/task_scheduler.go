@@ -293,6 +293,12 @@ func (d *Dispatcher) executeClaimedTask(ctx context.Context, task store.Task) er
 	stepCtx, cancel := d.taskStepTimeout(ctx)
 	defer cancel()
 	var response model.Response
+	if task.ContinuationJSON != "" && task.ApprovalToken == "" && d.deps.Cfg.TaskAutoApproveNetwork {
+		// The old continuation was saved for a per-call approval that no longer has a live token. With task
+		// auto-approval it is stale: restart the step instead of parking the task forever.
+		d.deps.Logger.Warn("dropping a stale task continuation without an approval token", "task_id", task.ID)
+		task.ContinuationJSON = ""
+	}
 	if task.ContinuationJSON != "" {
 		continuation, restoreErr := restoreTaskContinuation(task, d.currentTaskTools())
 		if restoreErr != nil {

@@ -131,3 +131,7 @@ func (d *Dispatcher) recoverTextualToolCalls(ctx context.Context, state *toolLoo
 	}
 	return resp
 }
+
+// SanitizeToolMarkup is the exported form of stripTextualToolCalls for the webapp history/API layer: a stored
+// answer from before v1.62.2 may still contain raw tool-call markup and must not be shown to a user.
+func SanitizeToolMarkup(content string) string { return stripTextualToolCalls(content) }

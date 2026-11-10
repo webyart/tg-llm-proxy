@@ -620,6 +620,9 @@ func (d *Dispatcher) networkApprovalControl(ctx context.Context, ev Event, actio
 }
 
 func (d *Dispatcher) completeWithTools(ctx context.Context, userID int64, req model.Request, streamer model.Streamer, session *streamSession) (model.Response, error) {
+	if streamer != nil {
+		streamer = &textualToolStreamGuard{inner: streamer}
+	}
 	allowedTools := map[string]bool{
 		"calculator": d.deps.Cfg.ToolsEnabled,
 		"read_url":   d.deps.Cfg.ToolsEnabled && d.deps.Cfg.URLReaderEnabled,
@@ -664,23 +667,39 @@ func (d *Dispatcher) runToolLoop(ctx context.Context, state *toolLoopContinuatio
 				}
 			}
 		}
-		normalized := make([]model.ToolCall, len(resp.ToolCalls))
-		for index, call := range resp.ToolCalls {
+		normalized := make([]model.ToolCall, 0, len(resp.ToolCalls))
+		for _, call := range resp.ToolCalls {
 			allowed, known := state.allowedTools[call.Name]
-			if !known {
-				return model.Response{}, errors.New("unknown tool")
-			}
-			if !allowed {
+			if !known || !allowed {
+				// A textual call the model invented (e.g. web_extractor) must not turn the whole answer
+				// into an "unknown tool" error: drop that call and keep whatever text remains.
+				if strings.HasPrefix(call.ID, "textual-") {
+					continue
+				}
+				if !known {
+					return model.Response{}, errors.New("unknown tool")
+				}
 				return model.Response{}, errors.New("tool disabled")
 			}
-			normalized[index] = call
+			var normalizedCall = call
 			if call.Name == "read_url" || call.Name == "web_search" {
-				var err error
-				normalized[index], err = normalizeNetworkCall(call)
-				if err != nil {
-					return model.Response{}, err
+				var normalizeErr error
+				normalizedCall, normalizeErr = normalizeNetworkCall(call)
+				if normalizeErr != nil {
+					return model.Response{}, normalizeErr
 				}
 			}
+			normalized = append(normalized, normalizedCall)
+		}
+		if len(normalized) == 0 {
+			// Every call was an invented textual tool: keep the model's remaining text, or tell the user
+			// plainly instead of returning an empty answer or an "unknown tool" error.
+			resp.ToolCalls = nil
+			resp.Content = strings.TrimSpace(resp.Content)
+			if resp.Content == "" {
+				resp.Content = i18n.T(d.chatLanguage(ctx, state.metadata.event.ChatID), "ask.tool_markup_failed")
+			}
+			return resp, nil
 		}
 		resp.ToolCalls = normalized
 		state.response = resp

@@ -156,7 +156,7 @@ func (d *Dispatcher) turnMessages(turn []store.Message) ([]model.Message, int) {
 
 func (d *Dispatcher) forModel(row store.Message) string {
 	if row.Role != store.RoleUser {
-		return row.Content
+		return SanitizeToolMarkup(row.Content)
 	}
 	var cut, changed = CutRunes(row.Content, int(d.deps.Cfg.MaxInputChars))
 	if !changed {

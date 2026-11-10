@@ -2,7 +2,18 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.62.1
+## Новейший выпуск: v1.62.2
+
+# tg-llm-proxy v1.62.2
+
+## Regression fix: task creation, stored XML and streamed markup
+
+- Task planning now uses the task budgets too (`TASK_MODEL_TIMEOUT_SECONDS` / `TASK_STEP_DEADLINE_SECONDS`), so creating a long task no longer fails with `the budget of STRATA_TIMEOUT_SECONDS is spent`.
+- Raw tool-call markup is stripped before it is written to the message store, before the Mini App history/API returns a row, and before stored rows enter the model context; old answers that contain the markup no longer reappear in the chat or poison the next turn.
+- A streamed textual tool call is held back by a stream guard and parsed after the stream ends, so XML never flashes in the Mini App; ordinary text (including a literal `<`) still streams normally.
+- An invented textual tool (`web_extractor`, etc.) is dropped instead of failing the whole answer: the model's remaining text is returned, or a localized «не удалось вызвать инструмент» when nothing is left.
+
+## Предыдущий выпуск: v1.62.1
 
 # tg-llm-proxy v1.62.1
 

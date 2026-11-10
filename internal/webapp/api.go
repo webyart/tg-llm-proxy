@@ -542,7 +542,7 @@ func (a *App) searchHistory(w http.ResponseWriter, req *http.Request, current sc
 	}
 	items := make([]historyItem, 0, len(rows))
 	for _, row := range rows {
-		item := historyItem{ID: row.ID, Role: row.Role, Content: row.Content, CreatedAt: row.CreatedAt}
+		item := historyItem{ID: row.ID, Role: row.Role, Content: bot.SanitizeToolMarkup(row.Content), CreatedAt: row.CreatedAt}
 		item.Content, item.Truncated = boundedText(item.Content, maxHistoryRunes)
 		items = append(items, item)
 	}

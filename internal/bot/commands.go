@@ -980,7 +980,7 @@ func (d *Dispatcher) finishModelAnswer(ctx context.Context, replyCtx context.Con
 		ChatID:    ev.ChatID,
 		UserID:    ev.UserID,
 		Role:      store.RoleAssistant,
-		Content:   resp.Content,
+		Content:   SanitizeToolMarkup(resp.Content),
 		TokensIn:  resp.TokensIn,
 		TokensOut: resp.TokensOut,
 		Model:     replyModel(resp.Model, selectedModel),

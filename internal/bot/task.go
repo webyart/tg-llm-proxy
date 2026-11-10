@@ -290,13 +290,13 @@ func (d *Dispatcher) ClearTasks(ctx context.Context, chatID int64) (int64, error
 }
 
 func (d *Dispatcher) planTask(ctx context.Context, userID int64, selectedModel string, goal string) (TaskPlan, error) {
-	replySeconds := d.deps.Cfg.ReplyDeadlineSeconds
-	if replySeconds <= 0 {
-		replySeconds = 30
+	planSeconds := d.deps.Cfg.TaskStepDeadlineSeconds
+	if planSeconds <= 0 {
+		planSeconds = 300
 	}
-	planCtx, cancel := context.WithTimeout(ctx, time.Duration(replySeconds)*time.Second)
+	planCtx, cancel := context.WithTimeout(ctx, time.Duration(planSeconds)*time.Second)
 	defer cancel()
-	response, err := d.callModel(planCtx, userID, model.Request{Model: selectedModel, Messages: []model.Message{
+	response, err := d.callModel(planCtx, userID, model.Request{Model: selectedModel, Timeout: d.taskModelTimeout(), Messages: []model.Message{
 		{Role: model.RoleSystem, Content: "Create a SHORT plan for the user's goal. Return ONLY one JSON object with exactly this shape: {\"steps\":[{\"description\":\"...\"}]}. Use 1 to 3 steps. Each description is at most 240 characters and describes reasoning or information gathering in plain language. Do not include URLs, tool names, network actions, code, shell commands, file operations, agents, or any extra JSON fields. Do not use Markdown fences."},
 		{Role: model.RoleUser, Content: goal},
 	}}, nil, nil)

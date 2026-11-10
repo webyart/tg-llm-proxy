@@ -19,7 +19,7 @@ const (
 	TaskStatusFailed           = "failed"
 	TaskMaxSteps               = 3
 	TaskMaxGoalRunes           = 2000
-	TaskMaxStepResultRunes     = 4000
+	TaskMaxStepResultRunes     = 12000
 )
 
 var (

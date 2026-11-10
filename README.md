@@ -162,7 +162,7 @@ Fallback без compose: `TELEGRAM_BOT_TOKEN` и `STRATA_API_KEY` в окруж�
 | `STRATA_API_KEY` | пусто | ключ endpoint, если требуется; в compose — файл `secrets/strata_api_key` |
 | `STRATA_TIMEOUT_SECONDS` | 60 | общий бюджет всех попыток одной модели (не таймаут одной попытки) |
 | TASK_MODEL_TIMEOUT_SECONDS | 240 | бюджет одного вызова модели внутри шага задачи (веб-поиск + локальная модель) |
-| TASK_STEP_DEADLINE_SECONDS | 300 | бюджет всего шага задачи, включая несколько tool-round'ов; lease = +30 с |
+| TASK_STEP_DEADLINE_SECONDS | 300 | бюджет всего шага задачи, включая несколько tool-round'ов; lease = +30 с; результат шага хранится до 12 000 рун |
 | TG_REPLY_DEADLINE_SECONDS | 90 | общий бюджет ответа; должен быть больше timeout |
 | `RECOVERY_MAX_AGE_HOURS` | 24 | максимальный возраст unanswered-вопроса для автоматического recovery; `0` отключает лимит |
 | `REMINDER_TIMEZONE` | `UTC` | IANA timezone для напоминаний, например `Europe/Moscow` |

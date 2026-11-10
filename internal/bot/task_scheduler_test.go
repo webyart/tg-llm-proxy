@@ -383,3 +383,14 @@ func TestTaskStepTextDropsNULAndControls(t *testing.T) {
 		t.Fatalf("sanitize lost meaningful text: %q", got)
 	}
 }
+
+func TestTaskStepLimitAllowsTwelveThousandRunes(t *testing.T) {
+	if store.TaskMaxStepResultRunes < 12000 {
+		t.Fatalf("TaskMaxStepResultRunes = %d, want at least 12000", store.TaskMaxStepResultRunes)
+	}
+	var long = strings.Repeat("данные ", 4000)
+	var cut = taskStepResultWithinLimit(long)
+	if got := len([]rune(cut)); got > store.TaskMaxStepResultRunes {
+		t.Fatalf("cut = %d runes > %d", got, store.TaskMaxStepResultRunes)
+	}
+}

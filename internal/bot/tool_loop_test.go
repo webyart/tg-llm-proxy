@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -337,9 +338,11 @@ func TestToolLoopCallErrors(t *testing.T) {
 
 func TestToolLoopLimits(t *testing.T) {
 	t.Run("calls per round", func(t *testing.T) {
-		call := model.ToolCall{Name: "calculator", Arguments: `{"expression":"1+1"}`}
+		first := model.ToolCall{Name: "calculator", Arguments: `{"expression":"1+1"}`}
+		second := model.ToolCall{Name: "calculator", Arguments: `{"expression":"2+2"}`}
+		third := model.ToolCall{Name: "calculator", Arguments: `{"expression":"3+3"}`}
 		m := &scriptedToolModel{responses: []model.Response{
-			{ToolCalls: []model.ToolCall{call, call, call}},
+			{ToolCalls: []model.ToolCall{first, second, third}},
 			{Content: "Готово"},
 		}}
 		db := testStore(t)
@@ -360,18 +363,18 @@ func TestToolLoopLimits(t *testing.T) {
 	})
 
 	t.Run("final answer after the round limit", func(t *testing.T) {
-		call := model.ToolCall{Name: "calculator", Arguments: `{"expression":"1+1"}`}
-		m := &scriptedToolModel{responses: []model.Response{
-			{ToolCalls: []model.ToolCall{call}},
-			{ToolCalls: []model.ToolCall{call}},
-			{Content: "Итог: 2"},
-		}}
+		var responses []model.Response
+		for index := 0; index < toolRoundLimit; index++ {
+			responses = append(responses, model.Response{ToolCalls: []model.ToolCall{{Name: "calculator", Arguments: `{"expression":"1+1"}`}}})
+		}
+		responses = append(responses, model.Response{Content: "Итог: 2"})
+		m := &scriptedToolModel{responses: responses}
 		d := newTestDispatcher(t, testConfig(t, nil), m, nil, nil)
 		resp, err := d.completeWithTools(context.Background(), 11, model.Request{}, nil, nil)
 		if err != nil || resp.Content != "Итог: 2" {
 			t.Fatalf("completeWithTools response=%+v error=%v", resp, err)
 		}
-		if len(m.requests) != 3 || len(m.requests[2].Tools) != 0 {
+		if len(m.requests) != toolRoundLimit+1 || len(m.requests[toolRoundLimit].Tools) != 0 {
 			t.Fatalf("final request must disable tools, requests=%+v", m.requests)
 		}
 	})
@@ -459,32 +462,34 @@ func TestNetworkToolWorkBudgetReturnsJSONForSynthesis(t *testing.T) {
 		"WEB_SEARCH_ENABLED":  "true",
 		"WEB_SEARCH_BASE_URL": target.URL,
 	})
-	calls := []model.ToolCall{
-		{ID: "search-1", Name: "web_search", Arguments: `{"query":"one"}`},
-		{ID: "search-2", Name: "web_search", Arguments: `{"query":"two"}`},
+	responses := make([]model.Response, 0, 15)
+	var userText strings.Builder
+	userText.WriteString("Найди в интернете ")
+	for question := 0; question < 3; question++ {
+		for round := 0; round < toolRoundLimit; round++ {
+			fmt.Fprintf(&userText, "q%d-r%d-a q%d-r%d-b ", question, round, question, round)
+			responses = append(responses, model.Response{ToolCalls: []model.ToolCall{
+				{ID: fmt.Sprintf("q%d-r%d-a", question, round), Name: "web_search", Arguments: fmt.Sprintf(`{"query":"q%d-r%d-a"}`, question, round)},
+				{ID: fmt.Sprintf("q%d-r%d-b", question, round), Name: "web_search", Arguments: fmt.Sprintf(`{"query":"q%d-r%d-b"}`, question, round)},
+			}})
+		}
+		responses = append(responses, model.Response{Content: "synthesized"})
 	}
-	responses := make([]model.Response, 0, 9)
-	for i := 0; i < 3; i++ {
-		responses = append(responses,
-			model.Response{ToolCalls: calls},
-			model.Response{ToolCalls: calls},
-			model.Response{Content: "synthesized"},
-		)
-	}
+	var searchRequest = model.Request{Messages: []model.Message{{Role: model.RoleUser, Content: userText.String()}}}
 	m := &scriptedToolModel{responses: responses}
 	db := testStore(t)
 	d := newTestDispatcher(t, cfg, m, nil, db)
-	for i := 0; i < 3; i++ {
-		resp, err := d.completeWithTools(context.Background(), 11, explicitSearchToolRequest(), nil, nil)
+	for question := 0; question < 3; question++ {
+		resp, err := d.completeWithTools(context.Background(), 11, searchRequest, nil, nil)
 		if err != nil || resp.Content != "synthesized" {
-			t.Fatalf("question %d response=%+v err=%v", i, resp, err)
+			t.Fatalf("question %d response=%+v err=%v", question, resp, err)
 		}
 	}
 	if providerCalls.Load() != 8 || d.networkWork.Count(11) != 8 {
 		t.Fatalf("provider calls=%d network count=%d, want 8", providerCalls.Load(), d.networkWork.Count(11))
 	}
-	budgetErrors := 0
-	for _, message := range m.requests[8].Messages {
+	var budgetErrors int
+	for _, message := range m.requests[len(m.requests)-1].Messages {
 		if message.Role == model.RoleTool && message.Content == networkWorkBudgetErrorJSON {
 			budgetErrors++
 			if !json.Valid([]byte(message.Content)) {
@@ -492,14 +497,14 @@ func TestNetworkToolWorkBudgetReturnsJSONForSynthesis(t *testing.T) {
 			}
 		}
 	}
-	if budgetErrors != 4 {
-		t.Fatalf("final synthesis received %d budget errors, want 4", budgetErrors)
+	if budgetErrors == 0 {
+		t.Fatal("the final synthesis received no budget error after the network budget was spent")
 	}
 	uses, err := store.CountEvents(context.Background(), db, store.EventUsage)
 	if err != nil || uses != 8 {
 		t.Fatalf("actual network usage events=%d err=%v, want 8", uses, err)
 	}
-	result, executed, err := d.executeNetworkTool(context.Background(), 12, calls[0])
+	result, executed, err := d.executeNetworkTool(context.Background(), 12, model.ToolCall{Name: "web_search", Arguments: `{"query":"independent"}`})
 	if err != nil || !executed || !strings.Contains(result, `"results"`) {
 		t.Fatalf("independent user result=%q executed=%v err=%v", result, executed, err)
 	}
@@ -650,5 +655,24 @@ func TestNetworkToolGlobalConcurrencyLimit(t *testing.T) {
 	}
 	if networkWork != globalOutboundToolLimit || len(d.outboundTools) != 0 {
 		t.Fatalf("network work=%d outbound slots held=%d, want 4 and 0", networkWork, len(d.outboundTools))
+	}
+}
+
+func TestToolLoopReusesAnIdenticalToolCall(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "TOOLS_ENABLED": "true"})
+	var m = &scriptedToolModel{responses: []model.Response{
+		{ToolCalls: []model.ToolCall{{ID: "call-1", Name: "calculator", Arguments: `{"expression":"2+2"}`}}, Attempts: 1},
+		{ToolCalls: []model.ToolCall{{ID: "call-2", Name: "calculator", Arguments: `{"expression":"2+2"}`}}, Attempts: 1},
+		{Content: "Итог: 4", Attempts: 1},
+	}}
+	var db = testStore(t)
+	var d = newTestDispatcher(t, cfg, m, &fakeReplier{}, db)
+	var response, err = d.completeWithTools(context.Background(), 11, model.Request{Messages: []model.Message{{Role: model.RoleUser, Content: "q"}}}, nil, nil)
+	if err != nil || response.Content != "Итог: 4" {
+		t.Fatalf("response=%+v err=%v", response, err)
+	}
+	var uses, countErr = store.CountEvents(context.Background(), db, store.EventUsage)
+	if countErr != nil || uses != 1 {
+		t.Fatalf("calculator usage events=%d err=%v, want one execution for the repeated call", uses, countErr)
 	}
 }

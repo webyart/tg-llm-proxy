@@ -2,7 +2,17 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.62.9
+## Новейший выпуск: v1.63.0
+
+# tg-llm-proxy v1.63.0
+
+## More tool rounds, deduplicated calls and roomier step results
+
+- The tool loop allows **4 rounds** (was 2) and caches identical `name + arguments` calls, so a repeated search/URL is answered from the previous result instead of consuming network budget and time. The native-tool instruction now asks the model to stop calling tools once the result answers the step and to return plain text.
+- A task step result may be **12 000 runes** (was 4000), so a data-collection step no longer loses most of its content to the truncation marker; the marker still reserves room and the store limit is never exceeded.
+- A restored approval continuation initializes the tool cache (a nil-map assignment could otherwise abort the resumed stream). Tests were updated for the new round limit and now cover deduplication and the 12 000-rune step.
+
+## Предыдущий выпуск: v1.62.9
 
 # tg-llm-proxy v1.62.9
 

@@ -19,6 +19,8 @@ var Env = []string{
 	"TELEGRAM_BOT_TOKEN",
 	"STRATA_BASE_URL",
 	"STRATA_MODEL",
+	"DEFAULT_LANGUAGE",
+	"GROUPS_ENABLED",
 	"STRATA_FALLBACKS",
 	"STRATA_FALLBACK_MODEL",
 	"STRATA_FALLBACK_BASE_URL",
@@ -188,6 +190,12 @@ type Config struct {
 	ChatURL     string
 	ModelsURL   string
 	StrataModel string
+	// DefaultLanguage is the language for NEW chats ("ru" or "en"); a per-chat override lives in chat_language
+	// (migration 019).
+	DefaultLanguage string
+	// GroupsEnabled permits negative chat IDs. Group messages are answered only on a mention or a reply to the
+	// bot; private chats behave exactly as before.
+	GroupsEnabled bool
 	// The optional reserve model. StrataFallbackModel is empty when the feature is off; FallbackBase stays
 	// empty when the fallback shares the primary endpoint, so a startup summary can print only a real second
 	// endpoint. FallbackChatURL/FallbackModelsURL are always the URLs to call when the fallback is enabled.
@@ -658,6 +666,18 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	// leftover base of a disabled fallback is not a configuration of the running bot.
 	cfg.StrataFallbackModel = strings.TrimSpace(raw["STRATA_FALLBACK_MODEL"])
 	cfg.StrataFallbackAPIKey = strings.TrimSpace(raw["STRATA_FALLBACK_API_KEY"])
+
+	var defaultLanguage = strings.ToLower(strings.TrimSpace(raw["DEFAULT_LANGUAGE"]))
+	if defaultLanguage == "" {
+		defaultLanguage = "ru"
+	}
+	if defaultLanguage != "ru" && defaultLanguage != "en" {
+		problems = Push(problems, "ENV DEFAULT_LANGUAGE must be ru or en ")
+	}
+	cfg.DefaultLanguage = defaultLanguage
+	groupsEnabled, badGroupsEnabled := Flag(raw, "GROUPS_ENABLED", false)
+	cfg.GroupsEnabled = groupsEnabled
+	problems = Push(problems, badGroupsEnabled)
 	cfg.FallbackProviders = nil
 	if rawChain := strings.TrimSpace(raw["STRATA_FALLBACKS"]); rawChain != "" {
 		if cfg.StrataFallbackModel != "" {

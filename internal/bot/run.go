@@ -149,8 +149,11 @@ func (d *Dispatcher) NewTelegram(opts Options) (*tgbot.Bot, error) {
 		if meErr != nil {
 			d.deps.Logger.Warn("getMe did not answer, so the @BotName suffix of will not be stripped",
 				"error", Sanitize(meErr, token))
-		} else if strings.TrimSpace(me.Username) != "" {
-			d.deps.BotName = strings.TrimSpace(me.Username)
+		} else {
+			d.deps.BotID = me.ID
+			if strings.TrimSpace(me.Username) != "" {
+				d.deps.BotName = strings.TrimSpace(me.Username)
+			}
 		}
 	}
 	return tg, nil
@@ -202,6 +205,18 @@ func (d *Dispatcher) telegramHandler(ctx context.Context, tg *tgbot.Bot, upd *mo
 		d.deps.Logger.Info("the update has no supported content, skipped", "update_id", updateID, "chat_id", chatID)
 		return
 	}
+	// The gate runs before pendingEvent: that function can rewrite the text of a group message into
+	// `/ask …`, dropping the @mention the user wrote. Once accepted, the event carries GroupAccepted,
+	// so Dispatch does not gate the rewritten command a second time.
+	var accepted, gateErr = d.groupGate(ctx, &ev)
+	if gateErr != nil {
+		d.deps.Logger.Error("the group gate failed, the update is not dispatched",
+			"chat_id", ev.ChatID, "update_id", ev.UpdateID, "error", Sanitize(gateErr, d.deps.Token))
+		return
+	}
+	if !accepted {
+		return
+	}
 	if pendingEv, consumed := d.pendingEvent(ev); consumed {
 		ev = pendingEv
 	}
@@ -233,6 +248,14 @@ func eventOf(upd *models.Update) (Event, bool) {
 	if message.From != nil {
 		ev.UserID = message.From.ID
 		ev.Username = message.From.Username
+	}
+	if message.ReplyToMessage != nil {
+		ev.ReplyToMessageID = int64(message.ReplyToMessage.ID)
+		if message.ReplyToMessage.From != nil {
+			ev.ReplyToUserID = message.ReplyToMessage.From.ID
+			ev.ReplyToUsername = message.ReplyToMessage.From.Username
+			ev.ReplyToIsBot = message.ReplyToMessage.From.IsBot
+		}
 	}
 	if len(message.Photo) > 0 {
 		photo := message.Photo[0]

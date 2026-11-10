@@ -3,20 +3,16 @@ package bot
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 
+	"bot/internal/i18n"
 	"bot/internal/store"
-)
-
-const (
-	msgFeedbackNoAnswer = "В этом чате ещё нет ответа модели — оценивать нечего."
-	msgFeedbackUsage    = "Поставь оценку последнему ответу: /feedback up — 👍, /feedback down — 👎."
 )
 
 // feedback — 👍/👎 on the newest assistant answer of the chat. Without an argument it prints the
 // counters and the usage line; anything but up/down (or their emoji) is a usage error, never a rating.
 func (d *Dispatcher) feedback(ctx context.Context, ev Event, arg string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	var value int
 	switch strings.ToLower(strings.TrimSpace(arg)) {
 	case "":
@@ -24,13 +20,13 @@ func (d *Dispatcher) feedback(ctx context.Context, ev Event, arg string) error {
 		if err != nil {
 			return err
 		}
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Оценки: 👍 %d / 👎 %d\n%s", up, down, msgFeedbackUsage))
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "feedback.count", up, down, i18n.T(lang, "feedback.usage")))
 	case "up", "👍":
 		value = 1
 	case "down", "👎":
 		value = -1
 	default:
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Не понял оценку %q. %s", brief(arg, 40), msgFeedbackUsage))
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "feedback.unknown", brief(arg, 40), i18n.T(lang, "feedback.usage")))
 	}
 
 	var messageID, err = store.LastAssistantMessageID(ctx, d.deps.DB, ev.ChatID)
@@ -38,12 +34,12 @@ func (d *Dispatcher) feedback(ctx context.Context, ev Event, arg string) error {
 		return err
 	}
 	if messageID == 0 {
-		return d.reply(ctx, ev.ChatID, msgFeedbackNoAnswer)
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "feedback.no_answer"))
 	}
 	var changed bool
 	changed, err = store.SetMessageFeedback(ctx, d.deps.DB, ev.ChatID, ev.UserID, messageID, value)
 	if errors.Is(err, store.ErrFeedbackNotAllowed) || errors.Is(err, store.ErrFeedbackNotFound) {
-		return d.reply(ctx, ev.ChatID, msgFeedbackNoAnswer)
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "feedback.no_answer"))
 	}
 	if err != nil {
 		return err
@@ -53,7 +49,7 @@ func (d *Dispatcher) feedback(ctx context.Context, ev Event, arg string) error {
 		label = "👎"
 	}
 	if !changed {
-		return d.reply(ctx, ev.ChatID, "Оценка уже стоит: "+label+".")
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "feedback.already", label))
 	}
-	return d.reply(ctx, ev.ChatID, "Спасибо! Оценка сохранена: "+label+".")
+	return d.reply(ctx, ev.ChatID, i18n.T(lang, "feedback.thanks", label))
 }

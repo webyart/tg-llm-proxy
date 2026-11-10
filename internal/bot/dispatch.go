@@ -44,6 +44,17 @@ type Event struct {
 	UnsupportedMedia      bool
 	Recovery              bool
 	MenuCallback          bool
+	// ReplyToMessageID, ReplyToUserID, ReplyToUsername and ReplyToIsBot describe the message this
+	// update answers. Group mode recognises a reply to one of the bot's own messages with them, so
+	// the gate needs no second API call.
+	ReplyToMessageID int64
+	ReplyToUserID    int64
+	ReplyToUsername  string
+	ReplyToIsBot     bool
+	// GroupAccepted is set by groupGate once a group update passed the mention/reply/command gate. It
+	// keeps the Telegram handler from gating the same update twice after a pending menu input
+	// rewrites its text into a command without the original mention.
+	GroupAccepted bool
 	// "/ask" prefixes makes the model see the shell instead of the conversation. Dispatch fills it
 	// after Normalize and resolve, so the `stored` middleware does not need the argument of the
 	// handler.
@@ -101,6 +112,9 @@ type Deps struct {
 	// monotonic guard of persistOffset continues the previous run instead of starting at 0.
 	StartOffset int64
 	BotName     string
+	// BotID is the numeric id from getMe; replyToBot uses it first and falls back to BotName when it
+	// is 0.
+	BotID       int64
 	BuildCommit string
 	// the model and never written to SQLite — it is here so the errors of the library, which carry
 	// `https://api.telegram.org/bot<TOKEN>/<method>`, cannot leak it into slog.
@@ -195,6 +209,9 @@ type Dispatcher struct {
 	// was being produced, and a placeholder or draft sitting above that update must not be edited into the final
 	// answer — deliver() sends the answer as a new message instead.
 	turns chatTurns
+	// missingUsername makes the "getMe did not answer" degradation visible once per dispatcher, not on
+	// every group message.
+	missingUsername sync.Once
 }
 
 // logger. A missing model client or replier is a wiring mistake and stays visible as one.
@@ -395,6 +412,18 @@ func isNewTaskGoal(arg string) bool {
 }
 
 func (d *Dispatcher) Dispatch(ctx context.Context, ev Event) error {
+	// The group gate runs before any queue slot, chat lock, model call or daily-quota reservation. A
+	// private update passes it untouched; a group update that is not addressed to the bot is
+	// acknowledged and dropped here.
+	if !ev.GroupAccepted {
+		accepted, gateErr := d.groupGate(ctx, &ev)
+		if gateErr != nil {
+			return gateErr
+		}
+		if !accepted {
+			return nil
+		}
+	}
 	// Only a real incoming message starts a new user turn. A menu callback continues the current answer (an
 	// approval of a network tool, for example) and must not make the stream finalize as a new message. The turn
 	// counter is what lets deliver() notice that the NEXT question arrived mid-answer.

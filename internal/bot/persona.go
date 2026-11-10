@@ -2,9 +2,9 @@ package bot
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
+	"bot/internal/i18n"
 	"bot/internal/store"
 
 	"github.com/go-telegram/bot/models"
@@ -104,29 +104,31 @@ func personaMenuMarkup() models.InlineKeyboardMarkup {
 }
 
 func (d *Dispatcher) showPersonaMenu(ctx context.Context, ev Event, note ...string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	_, current, override, err := d.effectivePersona(ctx, ev.ChatID)
 	if err != nil {
 		return err
 	}
-	source := "глобальный SYSTEM_PROMPT"
+	source := i18n.T(lang, "persona.source_global")
 	if override {
-		source = "настройка этого чата"
+		source = i18n.T(lang, "persona.source_chat")
 	}
-	text := menuText(fmt.Sprintf("Текущая persona: %s (%s).", current, source), note)
+	text := menuText(i18n.T(lang, "persona.current", current, source), note)
 	return d.renderMenu(ctx, ev, text, personaMenuMarkup())
 }
 
 func (d *Dispatcher) personaMenuControl(ctx context.Context, ev Event, action string, lower string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	switch lower {
 	case "menu":
 		return d.showPersonaMenu(ctx, ev)
 	case "menu:custom":
-		return d.beginPendingInput(ctx, ev, CommandPersona, "menu:persona", "Отправь системный промпт для пользовательской persona. Ввод действует 2 минуты.")
+		return d.beginPendingInput(ctx, ev, CommandPersona, "menu:persona", i18n.T(lang, "persona.custom_hint"))
 	case "menu:reset":
 		if err := store.ClearChatPersona(ctx, d.deps.DB, ev.ChatID); err != nil {
 			return err
 		}
-		return d.showPersonaMenu(ctx, ev, "Восстановлен глобальный SYSTEM_PROMPT.")
+		return d.showPersonaMenu(ctx, ev, i18n.T(lang, "persona.menu_reset"))
 	}
 	name, ok := strings.CutPrefix(lower, "menu:set:")
 	if !ok {
@@ -142,12 +144,13 @@ func (d *Dispatcher) personaMenuControl(ctx context.Context, ev Event, action st
 		if err := store.SetChatPersona(ctx, d.deps.DB, ev.ChatID, preset.prompt); err != nil {
 			return err
 		}
-		return d.showPersonaMenu(ctx, ev, "Для этого чата выбрана persona "+preset.name+".")
+		return d.showPersonaMenu(ctx, ev, i18n.T(lang, "persona.menu_selected", preset.name))
 	}
 	return d.showPersonaMenu(ctx, ev, menuExpiredText)
 }
 
 func (d *Dispatcher) personaControl(ctx context.Context, ev Event, arg string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	action := strings.TrimSpace(arg)
 	lower := strings.ToLower(action)
 	if ev.MenuCallback && !strings.HasPrefix(lower, "menu") {
@@ -163,7 +166,7 @@ func (d *Dispatcher) personaControl(ctx context.Context, ev Event, arg string) e
 					return d.personaMenuControl(ctx, ev, action, action)
 				}
 			}
-			return d.renderMenu(ctx, ev, "Неизвестная или истёкшая persona.", simpleBackMarkup("menu:persona"))
+			return d.renderMenu(ctx, ev, i18n.T(lang, "persona.menu_unknown"), simpleBackMarkup("menu:persona"))
 		}
 	}
 	if strings.HasPrefix(lower, "menu") {
@@ -173,12 +176,12 @@ func (d *Dispatcher) personaControl(ctx context.Context, ev Event, arg string) e
 		if err := store.ClearChatPersona(ctx, d.deps.DB, ev.ChatID); err != nil {
 			return err
 		}
-		return d.reply(ctx, ev.ChatID, "Для этого чата восстановлен глобальный SYSTEM_PROMPT. Изменение применится к следующему запросу.")
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "persona.reset"))
 	}
 	if lower == "custom" || strings.HasPrefix(lower, "custom ") || strings.HasPrefix(lower, "custom\n") {
 		prompt := strings.TrimSpace(action[len("custom"):])
 		if prompt == "" {
-			return d.reply(ctx, ev.ChatID, "После custom нужен текст роли: /persona custom <системный промпт>.")
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "persona.custom_needs_text"))
 		}
 		if err := store.EnsureChat(ctx, d.deps.DB, ev.ChatID, ev.UserID, ev.ChatTitle); err != nil {
 			return err
@@ -186,7 +189,7 @@ func (d *Dispatcher) personaControl(ctx context.Context, ev Event, arg string) e
 		if err := store.SetChatPersona(ctx, d.deps.DB, ev.ChatID, prompt); err != nil {
 			return err
 		}
-		return d.reply(ctx, ev.ChatID, "Пользовательская persona сохранена для этого чата и будет применяться со следующего запроса. /persona reset — возврат к SYSTEM_PROMPT.")
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "persona.custom_saved"))
 	}
 	if action != "" {
 		for _, preset := range personaPresets {
@@ -197,24 +200,24 @@ func (d *Dispatcher) personaControl(ctx context.Context, ev Event, arg string) e
 				if err := store.SetChatPersona(ctx, d.deps.DB, ev.ChatID, preset.prompt); err != nil {
 					return err
 				}
-				return d.reply(ctx, ev.ChatID, fmt.Sprintf("Для этого чата выбрана persona %s. Изменение применится к следующему запросу. /persona reset — возврат к SYSTEM_PROMPT.", preset.name))
+				return d.reply(ctx, ev.ChatID, i18n.T(lang, "persona.selected", preset.name))
 			}
 		}
-		return d.reply(ctx, ev.ChatID, "Неизвестная persona. Используйте /persona, чтобы увидеть список, или /persona custom <текст>.")
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "persona.unknown"))
 	}
 
 	_, current, override, err := d.effectivePersona(ctx, ev.ChatID)
 	if err != nil {
 		return err
 	}
-	source := "глобальный SYSTEM_PROMPT"
+	source := i18n.T(lang, "persona.source_global")
 	if override {
-		source = "настройка этого чата"
+		source = i18n.T(lang, "persona.source_chat")
 	}
-	lines := []string{fmt.Sprintf("Текущая persona: %s (%s).", current, source), "", "Доступные пресеты:"}
+	lines := []string{i18n.T(lang, "persona.current", current, source), "", i18n.T(lang, "persona.presets_header")}
 	for _, preset := range personaPresets {
-		lines = append(lines, fmt.Sprintf("/persona %s — %s", preset.name, preset.description))
+		lines = append(lines, i18n.T(lang, "persona.preset_line", preset.name, preset.description))
 	}
-	lines = append(lines, "/persona custom <текст> — своя роль", "/persona reset — вернуть глобальный SYSTEM_PROMPT")
+	lines = append(lines, i18n.T(lang, "persona.custom_line"), i18n.T(lang, "persona.reset_line"))
 	return d.sendPersonaMenu(ctx, ev.ChatID, strings.Join(lines, "\n"))
 }

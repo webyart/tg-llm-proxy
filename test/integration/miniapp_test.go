@@ -291,10 +291,11 @@ func TestMiniAppSettingsMutationPreservesGroupTokenAttribution(t *testing.T) {
 		"TELEGRAM_ALLOWED_USERS": "1717,1818",
 		"MINIAPP_ENABLED":        "true",
 		"MINIAPP_PUBLIC_URL":     "https://example.test/companion",
+		"GROUPS_ENABLED":         "true",
 	})
 	db := openStore(t, path)
 	client := newClient(t, cfg, strata)
-	startBot(t, ctx, cfg, db, client, tgAPI, bot.Options{ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second}, 0)
+	run := startBot(t, ctx, cfg, db, client, tgAPI, bot.Options{ServerURL: tgAPI.URL(), PollTimeout: 2 * time.Second}, 0)
 	app := webapp.New(cfg, db, client, slog.Default())
 	server := httptest.NewServer(app.Handler())
 	defer server.Close()
@@ -305,8 +306,14 @@ func TestMiniAppSettingsMutationPreservesGroupTokenAttribution(t *testing.T) {
 			From: &models.User{ID: senderID, FirstName: "Tester"}, Text: text,
 		}})
 	}
-	pushGroupQuestion(800, userID, "first user question")
-	waitFor(t, "first group answer", func() bool { return tgAPI.Calls("sendMessage") == 1 && strata.ChatCalls() == 1 })
+	pushGroupQuestion(800, userID, "@FakeBot first user question")
+	var deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !(tgAPI.Calls("sendMessage") == 1 && strata.ChatCalls() == 1) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !(tgAPI.Calls("sendMessage") == 1 && strata.ChatCalls() == 1) {
+		t.Fatalf("first group answer did not happen: logs=%s", run.logs.String())
+	}
 
 	// The Mini App is a private-chat companion since v1.40: a group ticket must be refused instead of issued,
 	// and a private session must attribute its mutation to that private chat only.
@@ -350,7 +357,7 @@ func TestMiniAppSettingsMutationPreservesGroupTokenAttribution(t *testing.T) {
 		t.Fatalf("the group chat received a Mini App setting: found=%v err=%v", found, err)
 	}
 
-	pushGroupQuestion(801, secondID, "second user question")
+	pushGroupQuestion(801, secondID, "@FakeBot second user question")
 	waitFor(t, "second group answer", func() bool { return tgAPI.Calls("sendMessage") == 2 && strata.ChatCalls() == 2 })
 	rows, err := store.HistoryOfChat(ctx, db, groupID, 10)
 	if err != nil || len(rows) != 4 {

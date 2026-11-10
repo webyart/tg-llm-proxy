@@ -403,13 +403,13 @@ func TestUnlimitedNetworkToolDoesNotNeedReservationTable(t *testing.T) {
 }
 
 func TestGroupUsageAttributionSurvivesMiniAppSettingsMutation(t *testing.T) {
-	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11,12", "STRATA_MODEL": "model-a"})
+	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11,12", "STRATA_MODEL": "model-a", "GROUPS_ENABLED": "true"})
 	tokensIn, tokensOut := int64(7), int64(9)
 	m := &fakeModel{response: model.Response{Content: "answer", Model: "model-a", TokensIn: &tokensIn, TokensOut: &tokensOut}}
 	db := testStore(t)
 	d := newTestDispatcher(t, cfg, m, nil, db)
 	const groupID int64 = -100500
-	first := testEvent(groupID, 11, 5001, "first user question")
+	first := testEvent(groupID, 11, 5001, "@TestBot first user question")
 	first.ChatType = "group"
 	if err := dispatch(t, d, first); err != nil {
 		t.Fatal(err)
@@ -420,7 +420,7 @@ func TestGroupUsageAttributionSurvivesMiniAppSettingsMutation(t *testing.T) {
 	if err := store.SetChatModel(context.Background(), db, groupID, "model-a"); err != nil {
 		t.Fatal(err)
 	}
-	second := testEvent(groupID, 12, 5002, "second user question")
+	second := testEvent(groupID, 12, 5002, "@TestBot second user question")
 	second.ChatType = "group"
 	if err := dispatch(t, d, second); err != nil {
 		t.Fatal(err)

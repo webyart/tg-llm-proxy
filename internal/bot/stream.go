@@ -17,6 +17,7 @@ import (
 	"github.com/go-telegram/bot/models"
 
 	"bot/internal/config"
+	"bot/internal/i18n"
 	"bot/internal/model"
 	"bot/internal/store"
 )
@@ -145,19 +146,20 @@ func (d *Dispatcher) streamingPossible(ctx context.Context, chatID int64) (model
 }
 
 func (d *Dispatcher) showStreamMenu(ctx context.Context, ev Event, note ...string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	enabled, override, err := d.streamingEnabled(ctx, ev.ChatID)
 	if err != nil {
 		return err
 	}
-	state := "выключен"
+	state := i18n.T(lang, "stream.state_off")
 	if enabled {
-		state = "включён"
+		state = i18n.T(lang, "stream.state_on")
 	}
-	source := "общий STREAMING_ENABLED"
+	source := i18n.T(lang, "stream.source_global")
 	if override {
-		source = "настройка этого чата"
+		source = i18n.T(lang, "stream.source_chat")
 	}
-	text := menuText(fmt.Sprintf("Стриминг: %s.\nИсточник: %s.", state, source), note)
+	text := menuText(i18n.T(lang, "stream.menu", state, source), note)
 	markup := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
 		menuRow(menuButton("Включить", "menu:stream:on"), menuButton("Выключить", "menu:stream:off")),
 		menuRow(menuButton("Сбросить", "menu:stream:reset")),
@@ -167,6 +169,7 @@ func (d *Dispatcher) showStreamMenu(ctx context.Context, ev Event, note ...strin
 }
 
 func (d *Dispatcher) streamMenuControl(ctx context.Context, ev Event, action string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	switch action {
 	case "menu":
 		return d.showStreamMenu(ctx, ev)
@@ -178,18 +181,19 @@ func (d *Dispatcher) streamMenuControl(ctx context.Context, ev Event, action str
 		if err := store.SetChatStreaming(ctx, d.deps.DB, ev.ChatID, enabled); err != nil {
 			return err
 		}
-		return d.showStreamMenu(ctx, ev, "Настройка сохранена для этого чата.")
+		return d.showStreamMenu(ctx, ev, i18n.T(lang, "stream.menu_saved"))
 	case "menu:reset":
 		if err := store.ClearChatStreaming(ctx, d.deps.DB, ev.ChatID); err != nil {
 			return err
 		}
-		return d.showStreamMenu(ctx, ev, "Восстановлен общий STREAMING_ENABLED.")
+		return d.showStreamMenu(ctx, ev, i18n.T(lang, "stream.menu_reset"))
 	default:
 		return d.showStreamMenu(ctx, ev, menuExpiredText)
 	}
 }
 
 func (d *Dispatcher) streamControl(ctx context.Context, ev Event, arg string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	action := strings.ToLower(strings.TrimSpace(arg))
 	if strings.HasPrefix(action, "menu") {
 		return d.streamMenuControl(ctx, ev, action)
@@ -203,33 +207,33 @@ func (d *Dispatcher) streamControl(ctx context.Context, ev Event, arg string) er
 		if err := store.SetChatStreaming(ctx, d.deps.DB, ev.ChatID, enabled); err != nil {
 			return err
 		}
-		state := "выключен"
+		state := i18n.T(lang, "stream.state_off")
 		if enabled {
-			state = "включён"
+			state = i18n.T(lang, "stream.state_on")
 		}
-		return d.reply(ctx, ev.ChatID, "Стриминг для этого чата "+state+". Настройка сохранена и переживёт рестарт. /stream reset — вернуть общий STREAMING_ENABLED.")
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "stream.saved", state))
 	case "reset":
 		if err := store.ClearChatStreaming(ctx, d.deps.DB, ev.ChatID); err != nil {
 			return err
 		}
 	case "":
 	default:
-		return d.reply(ctx, ev.ChatID, "Использование: /stream — состояние, /stream on, /stream off, /stream reset — общий STREAMING_ENABLED.")
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "stream.usage"))
 	}
 
 	enabled, override, err := d.streamingEnabled(ctx, ev.ChatID)
 	if err != nil {
 		return err
 	}
-	state := "выключен"
+	state := i18n.T(lang, "stream.state_off")
 	if enabled {
-		state = "включён"
+		state = i18n.T(lang, "stream.state_on")
 	}
-	source := "общий STREAMING_ENABLED"
+	source := i18n.T(lang, "stream.source_global")
 	if override {
-		source = "настройка этого чата"
+		source = i18n.T(lang, "stream.source_chat")
 	}
-	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Стриминг для этого чата: %s. Источник: %s. /stream on, /stream off, /stream reset.", state, source))
+	return d.reply(ctx, ev.ChatID, i18n.T(lang, "stream.state", state, source))
 }
 
 func (d *Dispatcher) newStreamSession(ctx context.Context, chatID int64, sender StreamSender) *streamSession {

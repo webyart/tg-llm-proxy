@@ -95,6 +95,8 @@ func startupSummary(logger *slog.Logger, cfg config.Config) {
 		"token_length", len(cfg.BotToken),
 		"strata_base", cfg.StrataBase,
 		"model", cfg.StrataModel,
+		"default_language", cfg.DefaultLanguage,
+		"groups_enabled", cfg.GroupsEnabled,
 		"fallback_model", cfg.StrataFallbackModel,
 		"fallback_models", configuredReserves(cfg),
 		"fallback_timeout_seconds", cfg.StrataFallbackTimeoutSeconds,

@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-telegram/bot/models"
 
+	"bot/internal/i18n"
 	"bot/internal/store"
 )
 
@@ -275,19 +276,20 @@ func (d *Dispatcher) historyActionReply(ctx context.Context, ev Event, text stri
 }
 
 func (d *Dispatcher) exportHistory(ctx context.Context, ev Event, arg string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	format := strings.ToLower(strings.TrimSpace(arg))
 	data, err := ExportHistoryData(ctx, d.deps.DB, ev.ChatID, format)
 	if errors.Is(err, ErrHistoryExportFormat) {
-		return d.historyActionReply(ctx, ev, "Используй /export md или /export json.")
+		return d.historyActionReply(ctx, ev, i18n.T(lang, "export.usage"))
 	}
 	if errors.Is(err, ErrHistoryExportTooLarge) {
-		return d.historyActionReply(ctx, ev, "Экспорт превышает 5 МиБ. Удали старую историю или используй более поздний чат.")
+		return d.historyActionReply(ctx, ev, i18n.T(lang, "export.too_large"))
 	}
 	if err != nil {
 		return err
 	}
 	if len(data) == 0 {
-		return d.historyActionReply(ctx, ev, msgHistoryEmpty)
+		return d.historyActionReply(ctx, ev, i18n.T(lang, "history.empty"))
 	}
 	if format == "" {
 		format = "md"
@@ -296,13 +298,14 @@ func (d *Dispatcher) exportHistory(ctx context.Context, ev Event, arg string) er
 	if !ok {
 		return errors.New("telegram document sender is unavailable")
 	}
-	return sender.SendDocument(ctx, ev.ChatID, Document{Name: fmt.Sprintf("history-%d.%s", ev.ChatID, format), Data: data, MIME: exportMIME(format), Caption: "Экспорт истории"})
+	return sender.SendDocument(ctx, ev.ChatID, Document{Name: fmt.Sprintf("history-%d.%s", ev.ChatID, format), Data: data, MIME: exportMIME(format), Caption: i18n.T(lang, "export.caption")})
 }
 
 func (d *Dispatcher) searchHistory(ctx context.Context, ev Event, arg string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	query := strings.TrimSpace(arg)
 	if query == "" {
-		return d.reply(ctx, ev.ChatID, "Нужен текст поиска: /search <текст>.")
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "search.needs_text"))
 	}
 	// One extra row is asked for only to tell the user whether older matches exist; the FTS index answers the
 	// query over the whole history, so there is no window to warn about any more.
@@ -316,30 +319,31 @@ func (d *Dispatcher) searchHistory(ctx context.Context, ev Event, arg string) er
 		matches = matches[len(matches)-SearchRowLimit:]
 	}
 	if len(matches) == 0 {
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Совпадений не найдено. Область поиска: вся история чата; вывод — до %d совпадений.", SearchRowLimit))
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "search.no_matches", SearchRowLimit))
 	}
-	var lines = []string{fmt.Sprintf("Найдено сообщений: %d. Область поиска: вся история чата; вывод — до %d совпадений.", len(matches), SearchRowLimit)}
+	var lines = []string{i18n.T(lang, "search.header", len(matches), SearchRowLimit)}
 	if truncated {
-		lines[0] += " Показаны самые новые совпадения."
+		lines[0] += i18n.T(lang, "search.truncated_suffix")
 	}
 	for _, row := range matches {
-		lines = append(lines, fmt.Sprintf("%d. %s · %s: %s", row.ID, row.Role, row.CreatedAt, brief(row.Content, 160)))
+		lines = append(lines, i18n.T(lang, "search.line", row.ID, row.Role, row.CreatedAt, brief(row.Content, 160)))
 	}
 	return d.reply(ctx, ev.ChatID, strings.Join(lines, "\n"))
 }
 
 func (d *Dispatcher) promptDeleteHistory(ctx context.Context, ev Event) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	token, err := newDeleteConfirmationToken()
 	if err != nil {
 		return err
 	}
 	markup := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{
-		{Text: "Подтвердить удаление", CallbackData: "delete:confirm:" + token},
-		{Text: "Отмена", CallbackData: "delete:cancel:" + token},
+		{Text: i18n.T(lang, "delete.confirm_button"), CallbackData: "delete:confirm:" + token},
+		{Text: i18n.T(lang, "delete.cancel_button"), CallbackData: "delete:cancel:" + token},
 	}}}
-	text := Escape("Удалить всю историю этого чата? Настройки модели и persona сохранятся. Кнопки действуют 5 минут.", d.deps.Cfg.ParseMode)
+	text := Escape(i18n.T(lang, "delete.confirm_text"), d.deps.Cfg.ParseMode)
 	if ev.MenuCallback {
-		if err := d.renderMenu(ctx, ev, "Удалить всю историю этого чата? Настройки модели и persona сохранятся. Кнопки действуют 5 минут.", markup); err != nil {
+		if err := d.renderMenu(ctx, ev, i18n.T(lang, "delete.confirm_text"), markup); err != nil {
 			return err
 		}
 		d.rememberDeleteConfirmation(token, ev, ev.TelegramMessageID)
@@ -367,7 +371,7 @@ func (d *Dispatcher) promptDeleteHistory(ctx context.Context, ev Event) error {
 		d.rememberDeleteConfirmation(token, ev, 0)
 		return nil
 	}
-	return d.reply(ctx, ev.ChatID, "Для подтверждения отправь /delete confirm. Для отмены — /delete cancel.")
+	return d.reply(ctx, ev.ChatID, i18n.T(lang, "delete.fallback"))
 }
 
 func (d *Dispatcher) rememberDeleteConfirmation(token string, ev Event, messageID int64) {
@@ -430,47 +434,49 @@ func (d *Dispatcher) removeDeleteMenu(ctx context.Context, chatID int64, message
 }
 
 func (d *Dispatcher) handleDeleteCallback(ctx context.Context, ev Event, arg string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	action, token, ok := strings.Cut(strings.TrimSpace(arg), ":")
 	if !ok || (action != "confirm" && action != "cancel") {
-		return d.showHistoryMenu(ctx, ev, "Это меню удаления истекло или уже использовано. Отправь /delete заново.")
+		return d.showHistoryMenu(ctx, ev, i18n.T(lang, "delete.stale"))
 	}
 	status := consumeDeleteConfirmation(d, token, ev)
 	switch status {
 	case deleteConfirmationStale:
-		return d.showHistoryMenu(ctx, ev, "Это меню удаления истекло или уже использовано. Отправь /delete заново.")
+		return d.showHistoryMenu(ctx, ev, i18n.T(lang, "delete.stale"))
 	case deleteConfirmationWrongUser:
-		return d.showHistoryMenu(ctx, ev, "Это меню удаления принадлежит другому пользователю. Отправь /delete самостоятельно.")
+		return d.showHistoryMenu(ctx, ev, i18n.T(lang, "delete.wrong_user"))
 	case deleteConfirmationWrongMessage:
-		return d.showHistoryMenu(ctx, ev, "Это меню удаления недействительно для этого чата или сообщения. Отправь /delete заново.")
+		return d.showHistoryMenu(ctx, ev, i18n.T(lang, "delete.wrong_message"))
 	}
 	if action == "cancel" {
-		return d.showHistoryMenu(ctx, ev, "Удаление истории отменено.")
+		return d.showHistoryMenu(ctx, ev, i18n.T(lang, "delete.cancelled"))
 	}
 	deleted, err := store.DeleteChatHistory(ctx, d.deps.DB, ev.ChatID)
 	if err != nil {
 		return err
 	}
-	return d.showHistoryMenu(ctx, ev, fmt.Sprintf("Удалено сообщений: %d. Настройки чата сохранены.", deleted))
+	return d.showHistoryMenu(ctx, ev, i18n.T(lang, "delete.done", deleted))
 }
 
 func (d *Dispatcher) deleteHistory(ctx context.Context, ev Event, arg string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	action := strings.ToLower(strings.TrimSpace(arg))
 	switch action {
 	case "":
 		return d.promptDeleteHistory(ctx, ev)
 	case "cancel":
-		return d.reply(ctx, ev.ChatID, "Удаление истории отменено.")
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "delete.cancelled"))
 	case "confirm":
 		deleted, err := store.DeleteChatHistory(ctx, d.deps.DB, ev.ChatID)
 		if err != nil {
 			return err
 		}
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Удалено сообщений: %d. Настройки чата сохранены.", deleted))
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "delete.done", deleted))
 	default:
 		if callback, ok := strings.CutPrefix(action, "callback "); ok {
 			return d.handleDeleteCallback(ctx, ev, callback)
 		}
-		return d.reply(ctx, ev.ChatID, "Используй /delete, затем подтверди или отмени удаление кнопкой.")
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "delete.usage"))
 	}
 }
 

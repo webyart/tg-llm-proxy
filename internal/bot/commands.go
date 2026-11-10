@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"bot/internal/i18n"
 	"bot/internal/model"
 	"bot/internal/store"
 )
@@ -26,6 +27,7 @@ const (
 	CommandStream    = "stream"
 	CommandMiniApp   = "miniapp"
 	CommandPersona   = "persona"
+	CommandLanguage  = "language"
 	CommandAsk       = "ask"
 	CommandReset     = "reset"
 	CommandSkip      = "skip"
@@ -49,18 +51,13 @@ const (
 	CommandFeedbackAlias = "fb"
 )
 
-// answer to be exact («Модель не ответила за 60 с, попробуй ещё раз»).
+// The Mini App still renders these Russian texts directly (miniapp_chat.go); the Telegram command
+// surface uses the language-aware catalog in internal/i18n instead.
 const (
-	msgAskNeedsText = "Нужен текст вопроса: /ask <текст>."
-	// budgets (STRATA_TIMEOUT_SECONDS for one model call, TG_REPLY_DEADLINE_SECONDS for the whole answer), and
-	// citing a fixed one in the text made the sentence disagree with the events row (see the ask handler).
-	msgTimeoutFormat  = "Модель не ответила за %d с (%s), попробуй ещё раз."
-	msgModelError     = "Модель не ответила: %s. Запрос записан в events(kind='model_error')."
-	msgEmptyAnswer    = "Модель вернула пустой ответ — это ошибка, а не ответ. Попробуй ещё раз."
-	msgNoRoom         = "Все слоты модели заняты. Подожди немного."
-	msgModelCheckFail = "STRATA не отвечает: %s."
-	msgHistoryEmpty   = "История чата пуста."
-	msgResetFormat    = "Контекст очищен: модель больше не видит %d сообщений. История осталась — /history."
+	msgTimeoutFormat = "Модель не ответила за %d с (%s), попробуй ещё раз."
+	msgModelError    = "Модель не ответила: %s. Запрос записан в events(kind='model_error')."
+	msgEmptyAnswer   = "Модель вернула пустой ответ — это ошибка, а не ответ. Попробуй ещё раз."
+	msgNoRoom        = "Все слоты модели заняты. Подожди немного."
 )
 
 // auditBudget — how long the audit of a failed call may take once the call itself gave up. The audit of a
@@ -126,6 +123,7 @@ func (d *Dispatcher) registry() []Command {
 		{Name: CommandStream, Description: "стриминг для этого чата: on, off, reset", Handler: d.streamControl},
 		{Name: CommandMiniApp, Description: "доставка ответа Mini App в Telegram: on, off, reset", Handler: d.miniappControl},
 		{Name: CommandPersona, Description: "роль модели для этого чата: пресеты, custom, reset", Handler: d.personaControl},
+		{Name: CommandLanguage, Description: "язык интерфейса бота: ru, en, reset", Handler: d.languageControl},
 		{Name: CommandAsk, Description: "вопрос модели", NeedsArgs: true, UsesModel: true, Handler: d.ask},
 		{Name: CommandReset, Description: "очистить контекст чата", Handler: d.reset},
 		{Name: CommandSkip, Description: "не восстанавливать текущий unanswered-вопрос при старте", Handler: d.skip},
@@ -155,8 +153,9 @@ func (d *Dispatcher) start(ctx context.Context, ev Event, arg string) error {
 	if err != nil {
 		return err
 	}
-	var lines = []string{"Привет! Я прокси к локальной модели STRATA. Команды:"}
-	lines = append(lines, d.helpLines()...)
+	lang := d.chatLanguage(ctx, ev.ChatID)
+	var lines = []string{i18n.T(lang, "start.greeting")}
+	lines = append(lines, d.helpLinesFor(lang)...)
 	if d.deps.Cfg.DenyByDefault {
 		lines = append(lines, refuseClosed(ev.UserID))
 	}
@@ -167,33 +166,48 @@ func (d *Dispatcher) help(ctx context.Context, ev Event, arg string) error {
 	if strings.HasPrefix(strings.TrimSpace(arg), "menu:") {
 		return d.helpMenu(ctx, ev, strings.TrimSpace(arg))
 	}
-	return d.sendMenu(ctx, ev.ChatID, strings.Join(d.helpLines(), "\n"))
+	return d.sendMenu(ctx, ev.ChatID, strings.Join(d.helpLinesFor(d.chatLanguage(ctx, ev.ChatID)), "\n"))
 }
 
+// helpLines keeps the historical Russian rendering for callers without a chat language (the menu
+// layer of menu.go). Chat-facing /help and /start use helpLinesFor with the resolved language.
 func (d *Dispatcher) helpLines() []string {
+	return d.helpLinesFor(i18n.Default)
+}
+
+// helpLinesFor renders the registry in lang. The command registry keeps one language-independent
+// Description for setMyCommands (run.go) — this is the parallel translation map for /help.
+func (d *Dispatcher) helpLinesFor(lang string) []string {
 	var lines = []string{}
 	var i = 0
 	for i < len(d.commands) {
 		var cmd = d.commands[i]
 		var usage = "/" + cmd.Name
-		if cmd.Name == CommandRemind {
-			usage += " <время> <текст>"
-		} else if cmd.NeedsArgs {
-			usage += " <текст>"
+		switch {
+		case cmd.Name == CommandRemind:
+			usage += i18n.T(lang, "help.remind_suffix")
+		case cmd.Name == CommandLanguage:
+			usage += i18n.T(lang, "help.language_suffix")
+		case cmd.NeedsArgs:
+			usage += i18n.T(lang, "help.args_suffix")
 		}
-		lines = append(lines, fmt.Sprintf("%s — %s", usage, cmd.Description))
+		var description = cmd.Description
+		if translated, ok := i18n.Lookup(lang, "command."+cmd.Name+".description"); ok {
+			description = translated
+		}
+		lines = append(lines, i18n.T(lang, "help.line", usage, description))
 		if cmd.Name == CommandRemind {
-			lines = append(lines, "Пример: /remind через 1 минуту купить молоко")
+			lines = append(lines, i18n.T(lang, "help.remind_example"))
 		}
 		i++
 	}
-	lines = append(lines, "Можно отправить альбом фото, текстовый документ, голосовое, аудио или видеосообщение.")
+	lines = append(lines, i18n.T(lang, "help.attachments"))
 	return lines
 }
 
 func (d *Dispatcher) ping(ctx context.Context, ev Event, arg string) error {
 	var up = time.Since(d.created).Round(time.Second)
-	return d.menuReply(ctx, ev, fmt.Sprintf("pong %s ", up), refreshBackMarkup("menu:ping", "menu:status"))
+	return d.menuReply(ctx, ev, i18n.T(d.chatLanguage(ctx, ev.ChatID), "ping.pong", up), refreshBackMarkup("menu:ping", "menu:status"))
 }
 
 // status — operational diagnostics for an allowed chat without a model call. LastVisibleMessage uses the same
@@ -209,6 +223,7 @@ func (d *Dispatcher) status(ctx context.Context, ev Event, arg string) error {
 }
 
 func (d *Dispatcher) statusText(ctx context.Context, ev Event) (string, error) {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	var rowID, role, err = store.LastVisibleMessage(ctx, d.deps.DB, ev.ChatID)
 	if err != nil {
 		return "", err
@@ -217,23 +232,23 @@ func (d *Dispatcher) statusText(ctx context.Context, ev Event) (string, error) {
 	if streamErr != nil {
 		return "", streamErr
 	}
-	var streaming = "выключен"
+	var streaming = i18n.T(lang, "status.streaming_off")
 	if streamEnabled {
-		streaming = fmt.Sprintf("включён — правки каждые %d мс, idle %d с, total %d с",
+		streaming = i18n.T(lang, "status.streaming_on",
 			d.deps.Cfg.StreamEditIntervalMS, d.deps.Cfg.StreamIdleSeconds, d.deps.Cfg.StreamTotalSeconds)
 	}
 	if streamOverride {
-		streaming += " (override этого чата)"
+		streaming += i18n.T(lang, "status.override")
 	}
-	var pending = "нет"
+	var pending = i18n.T(lang, "status.pending_no")
 	if rowID > 0 && role == store.RoleUser {
-		pending = fmt.Sprintf("да — сообщение id=%d", rowID)
+		pending = i18n.T(lang, "status.pending_yes", rowID)
 		var skipped, suppress, skipErr = store.ResumeSkip(ctx, d.deps.DB, ev.ChatID)
 		if skipErr != nil {
 			return "", skipErr
 		}
 		if suppress && skipped == rowID {
-			pending += "; автовосстановление отключено (/skip)"
+			pending += i18n.T(lang, "status.pending_skipped")
 		}
 	}
 	var commit = d.deps.BuildCommit
@@ -249,16 +264,16 @@ func (d *Dispatcher) statusText(ctx context.Context, ev Event) (string, error) {
 		return "", personaErr
 	}
 	if personaOverride {
-		persona += " (override этого чата)"
+		persona += i18n.T(lang, "status.override")
 	}
 	var lines = []string{
-		"Состояние бота:",
-		"Build: " + commit,
-		"Uptime: " + time.Since(d.created).Round(time.Second).String(),
-		"Модель: " + selected,
-		"Persona: " + persona,
-		"Стриминг: " + streaming,
-		"Последний вопрос чата ждёт ответа: " + pending,
+		i18n.T(lang, "status.title"),
+		i18n.T(lang, "status.build", commit),
+		i18n.T(lang, "status.uptime", time.Since(d.created).Round(time.Second).String()),
+		i18n.T(lang, "status.model", selected),
+		i18n.T(lang, "status.persona", persona),
+		i18n.T(lang, "status.streaming", streaming),
+		i18n.T(lang, "status.pending", pending),
 	}
 	return strings.Join(lines, "\n"), nil
 }
@@ -267,6 +282,7 @@ func (d *Dispatcher) statusText(ctx context.Context, ev Event) (string, error) {
 // keeps no menu state: the same switch is edited from the Mini App Settings, and this command must always report
 // the value that the delivery path would actually use.
 func (d *Dispatcher) miniappControl(ctx context.Context, ev Event, arg string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	action := strings.ToLower(strings.TrimSpace(arg))
 	switch action {
 	case "on", "off":
@@ -277,22 +293,22 @@ func (d *Dispatcher) miniappControl(ctx context.Context, ev Event, arg string) e
 		if err := store.SetChatMiniAppFallback(ctx, d.deps.DB, ev.ChatID, enabled); err != nil {
 			return err
 		}
-		state := "выключена"
+		state := i18n.T(lang, "miniapp.state_off")
 		if enabled {
-			state = "включена"
+			state = i18n.T(lang, "miniapp.state_on")
 		}
-		return d.reply(ctx, ev.ChatID, "Доставка ответа Mini App в Telegram "+state+" для этого чата. Настройка сохранена и переживёт рестарт. /miniapp reset — вернуть общий MINIAPP_TELEGRAM_FALLBACK.")
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "miniapp.saved", state))
 	case "reset":
 		if err := store.ResetChatMiniAppFallback(ctx, d.deps.DB, ev.ChatID); err != nil {
 			return err
 		}
 	case "":
 	default:
-		return d.reply(ctx, ev.ChatID, "Использование: /miniapp — состояние, /miniapp on, /miniapp off, /miniapp reset — общий MINIAPP_TELEGRAM_FALLBACK.")
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "miniapp.usage"))
 	}
 
 	enabled := d.deps.Cfg.MiniAppTelegramFallback
-	source := "общий MINIAPP_TELEGRAM_FALLBACK"
+	source := i18n.T(lang, "miniapp.source_global")
 	if d.deps.DB != nil {
 		override, found, err := store.ChatMiniAppFallback(ctx, d.deps.DB, ev.ChatID)
 		if err != nil {
@@ -300,29 +316,30 @@ func (d *Dispatcher) miniappControl(ctx context.Context, ev Event, arg string) e
 		}
 		if found {
 			enabled = override
-			source = "настройка этого чата"
+			source = i18n.T(lang, "miniapp.source_chat")
 		}
 	}
-	state := "выключена"
+	state := i18n.T(lang, "miniapp.state_off")
 	if enabled {
-		state = "включена"
+		state = i18n.T(lang, "miniapp.state_on")
 	}
 	prefix := ""
 	if action == "reset" {
-		prefix = "Настройка этого чата сброшена. "
+		prefix = i18n.T(lang, "miniapp.reset_prefix")
 	}
-	return d.reply(ctx, ev.ChatID, prefix+fmt.Sprintf("Доставка ответа Mini App в Telegram: %s. Источник: %s. /miniapp on, /miniapp off, /miniapp reset.", state, source))
+	return d.reply(ctx, ev.ChatID, prefix+i18n.T(lang, "miniapp.state", state, source))
 }
 
 // skip — suppress startup recovery of only the newest visible unanswered question. The row and its history stay
 // untouched, and a newer question has another id, so it does not inherit the suppression.
 func (d *Dispatcher) skip(ctx context.Context, ev Event, arg string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	var rowID, role, err = store.LastVisibleMessage(ctx, d.deps.DB, ev.ChatID)
 	if err != nil {
 		return err
 	}
 	if rowID == 0 || role != store.RoleUser {
-		text := "Нет ожидающего ответа вопроса: пропускать нечего."
+		text := i18n.T(lang, "skip.none")
 		if ev.MenuCallback {
 			return d.showMoreMenu(ctx, ev, text)
 		}
@@ -331,8 +348,7 @@ func (d *Dispatcher) skip(ctx context.Context, ev Event, arg string) error {
 	if err := store.SetResumeSkip(ctx, d.deps.DB, ev.ChatID, rowID); err != nil {
 		return err
 	}
-	text := fmt.Sprintf(
-		"Автовосстановление вопроса id=%d отключено при следующих запусках. История сохранена; следующий вопрос будет обрабатываться как обычно.", rowID)
+	text := i18n.T(lang, "skip.done", rowID)
 	if ev.MenuCallback {
 		return d.showMoreMenu(ctx, ev, text)
 	}
@@ -342,12 +358,13 @@ func (d *Dispatcher) skip(ctx context.Context, ev Event, arg string) error {
 // unskip removes this chat's suppression without making an immediate model call. Startup still applies its
 // newest-visible-question rule, so an older row does not jump ahead of a newer conversation.
 func (d *Dispatcher) unskip(ctx context.Context, ev Event, arg string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	var questionID, found, err = store.ResumeSkip(ctx, d.deps.DB, ev.ChatID)
 	if err != nil {
 		return err
 	}
 	if !found {
-		text := "Нет отключённого автовосстановления для этого чата: изменений не требуется."
+		text := i18n.T(lang, "unskip.none")
 		if ev.MenuCallback {
 			return d.showMoreMenu(ctx, ev, text)
 		}
@@ -356,8 +373,7 @@ func (d *Dispatcher) unskip(ctx context.Context, ev Event, arg string) error {
 	if err := store.ClearResumeSkip(ctx, d.deps.DB, ev.ChatID); err != nil {
 		return err
 	}
-	text := fmt.Sprintf(
-		"Автовосстановление вопроса id=%d снова разрешено. Модель сейчас не вызывается: попытка будет сделана при следующем перезапуске, если этот вопрос останется самым новым без ответа и не превысит RECOVERY_MAX_AGE_HOURS.", questionID)
+	text := i18n.T(lang, "unskip.done", questionID)
 	if ev.MenuCallback {
 		return d.showMoreMenu(ctx, ev, text)
 	}
@@ -366,6 +382,7 @@ func (d *Dispatcher) unskip(ctx context.Context, ev Event, arg string) error {
 
 // learns the id to put into TELEGRAM_ALLOWED_USERS.
 func (d *Dispatcher) whoami(ctx context.Context, ev Event, arg string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	var lines = []string{fmt.Sprintf("user_id: %d", ev.UserID), fmt.Sprintf("chat_id: %d", ev.ChatID)}
 	if ev.ChatType != "" {
 		lines = append(lines, "chat_type: "+ev.ChatType)
@@ -377,11 +394,11 @@ func (d *Dispatcher) whoami(ctx context.Context, ev Event, arg string) error {
 		lines = append(lines, "username: @"+ev.Username)
 	}
 	if d.deps.Cfg.Allows(ev.UserID) {
-		lines = append(lines, "в allowlist: да ")
+		lines = append(lines, i18n.T(lang, "whoami.allowed"))
 	} else if d.deps.Cfg.DenyByDefault {
-		lines = append(lines, "в allowlist: нет — бот закрыт, добавь "+strconv.FormatInt(ev.UserID, 10)+" в "+AllowlistHint+" и перезапусти ")
+		lines = append(lines, i18n.T(lang, "whoami.closed", ev.UserID))
 	} else {
-		lines = append(lines, "в allowlist: нет — добавь "+strconv.FormatInt(ev.UserID, 10)+" в "+AllowlistHint+" и перезапусти ")
+		lines = append(lines, i18n.T(lang, "whoami.denied", ev.UserID))
 	}
 	return d.menuReply(ctx, ev, strings.Join(lines, "\n"), simpleBackMarkup("menu:more"))
 }
@@ -417,6 +434,7 @@ func (d *Dispatcher) modelName(ctx context.Context, chatID int64) (string, error
 func (d *Dispatcher) modelInfo(ctx context.Context, ev Event, arg string) error {
 	var endpoint = d.deps.Cfg.StrataBase
 	var action = strings.TrimSpace(arg)
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	if strings.HasPrefix(action, "menu") {
 		return d.modelMenuControl(ctx, ev, action)
 	}
@@ -430,26 +448,26 @@ func (d *Dispatcher) modelInfo(ctx context.Context, ev Event, arg string) error 
 		if err := store.ClearChatModel(ctx, d.deps.DB, ev.ChatID); err != nil {
 			return err
 		}
-		return d.reply(ctx, ev.ChatID, "Для этого чата восстановлена модель по умолчанию: "+d.deps.Cfg.StrataModel)
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "model.reset", d.deps.Cfg.StrataModel))
 	}
 	if strings.EqualFold(control, "check") && requested == "" || strings.EqualFold(control, "select") {
 		var names, err = d.deps.Model.Models(ctx)
 		if err != nil {
 			d.logEvent(ctx, ev.UserID, store.EventModelError, "models:"+Sanitize(err, d.deps.Token))
-			return d.reply(ctx, ev.ChatID, fmt.Sprintf(msgModelCheckFail, Sanitize(err, d.deps.Token)))
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "model.check_fail", Sanitize(err, d.deps.Token)))
 		}
 		if len(names) == 0 {
-			return d.reply(ctx, ev.ChatID, fmt.Sprintf("STRATA отвечает, но список моделей пуст. Endpoint: %s", endpoint))
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "model.empty_list", endpoint))
 		}
 		if strings.EqualFold(control, "check") {
-			return d.reply(ctx, ev.ChatID, fmt.Sprintf("Endpoint: %s\nМодели (%d): %s", endpoint, len(names), strings.Join(names, ", ")))
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "model.check_result", endpoint, len(names), strings.Join(names, ", ")))
 		}
 		if requested == "" {
 			var current, currentErr = d.modelName(ctx, ev.ChatID)
 			if currentErr != nil {
 				return currentErr
 			}
-			return d.reply(ctx, ev.ChatID, fmt.Sprintf("Текущая модель чата: %s\nДоступны (%d): %s\n/model select <id>, /model reset — вернуть %s",
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "model.select_current",
 				current, len(names), strings.Join(names, ", "), d.deps.Cfg.StrataModel))
 		}
 		var allowed = false
@@ -460,7 +478,7 @@ func (d *Dispatcher) modelInfo(ctx context.Context, ev Event, arg string) error 
 			}
 		}
 		if !allowed {
-			return d.reply(ctx, ev.ChatID, fmt.Sprintf("Модель %q отсутствует в GET /models. Доступны: %s", requested, strings.Join(names, ", ")))
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "model.not_found", requested, strings.Join(names, ", ")))
 		}
 		if err := store.EnsureChat(ctx, d.deps.DB, ev.ChatID, ev.UserID, ev.ChatTitle); err != nil {
 			return err
@@ -468,7 +486,7 @@ func (d *Dispatcher) modelInfo(ctx context.Context, ev Event, arg string) error 
 		if err := store.SetChatModel(ctx, d.deps.DB, ev.ChatID, requested); err != nil {
 			return err
 		}
-		return d.reply(ctx, ev.ChatID, "Для этого чата выбрана модель: "+requested+". /model reset — вернуть "+d.deps.Cfg.StrataModel)
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "model.selected", requested, d.deps.Cfg.StrataModel))
 	}
 	var selected, err = d.modelName(ctx, ev.ChatID)
 	if err != nil {
@@ -476,23 +494,24 @@ func (d *Dispatcher) modelInfo(ctx context.Context, ev Event, arg string) error 
 	}
 	var note = ""
 	if selected != d.deps.Cfg.StrataModel {
-		note = " (override; default " + d.deps.Cfg.StrataModel + ")"
+		note = i18n.T(lang, "model.override_note", d.deps.Cfg.StrataModel)
 	}
-	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Модель: %s%s\nEndpoint: %s \n/model check — проверка доступности; /model select <id>, /model reset.", selected, note, endpoint))
+	return d.reply(ctx, ev.ChatID, i18n.T(lang, "model.info", selected, note, endpoint))
 }
 
 func (d *Dispatcher) modelMenuControl(ctx context.Context, ev Event, action string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	switch {
 	case action == "menu" || action == "menu:check":
 		if action == "menu:check" {
-			return d.showModelMenu(ctx, ev, "Проверка endpoint выполнена.")
+			return d.showModelMenu(ctx, ev, i18n.T(lang, "model.menu_checking"))
 		}
 		return d.showModelMenu(ctx, ev)
 	case action == "menu:reset":
 		if err := store.ClearChatModel(ctx, d.deps.DB, ev.ChatID); err != nil {
 			return err
 		}
-		return d.showModelMenu(ctx, ev, "Восстановлена модель по умолчанию: "+d.deps.Cfg.StrataModel)
+		return d.showModelMenu(ctx, ev, i18n.T(lang, "model.menu_reset", d.deps.Cfg.StrataModel))
 	}
 	value, ok := strings.CutPrefix(action, "menu:set:")
 	index, err := strconv.Atoi(value)
@@ -502,7 +521,7 @@ func (d *Dispatcher) modelMenuControl(ctx context.Context, ev Event, action stri
 	names, err := d.deps.Model.Models(ctx)
 	if err != nil {
 		d.logEvent(ctx, ev.UserID, store.EventModelError, "models:"+Sanitize(err, d.deps.Token))
-		return d.showModelMenu(ctx, ev, fmt.Sprintf(msgModelCheckFail, Sanitize(err, d.deps.Token)))
+		return d.showModelMenu(ctx, ev, i18n.T(lang, "model.check_fail", Sanitize(err, d.deps.Token)))
 	}
 	if index >= len(names) {
 		return d.showModelMenu(ctx, ev, menuExpiredText)
@@ -517,25 +536,26 @@ func (d *Dispatcher) modelMenuControl(ctx context.Context, ev Event, action stri
 	if err := store.SetChatModel(ctx, d.deps.DB, ev.ChatID, selected); err != nil {
 		return err
 	}
-	return d.showModelMenu(ctx, ev, "Для этого чата выбрана модель: "+selected)
+	return d.showModelMenu(ctx, ev, i18n.T(lang, "model.menu_selected", selected))
 }
 
 func (d *Dispatcher) showModelMenu(ctx context.Context, ev Event, note ...string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	selected, err := d.modelName(ctx, ev.ChatID)
 	if err != nil {
 		return err
 	}
-	text := menuText(fmt.Sprintf("Текущая модель: %s\nEndpoint: %s", selected, d.deps.Cfg.StrataBase), note)
+	text := menuText(i18n.T(lang, "model.menu_current", selected, d.deps.Cfg.StrataBase), note)
 	names, modelsErr := d.deps.Model.Models(ctx)
 	if modelsErr != nil {
 		d.logEvent(ctx, ev.UserID, store.EventModelError, "models:"+Sanitize(modelsErr, d.deps.Token))
-		text += "\n" + fmt.Sprintf(msgModelCheckFail, Sanitize(modelsErr, d.deps.Token))
+		text += "\n" + i18n.T(lang, "model.check_fail", Sanitize(modelsErr, d.deps.Token))
 		names = nil
-	} else if len(note) > 0 && strings.HasPrefix(note[0], "Проверка endpoint") {
-		text += fmt.Sprintf("\nEndpoint отвечает; моделей доступно: %d.", len(names))
+	} else if len(note) > 0 && note[0] == i18n.T(lang, "model.menu_checking") {
+		text += i18n.T(lang, "model.endpoint_ok", len(names))
 	}
 	if len(names) > menuModelChoiceLimit {
-		text += fmt.Sprintf("\nПоказаны первые %d моделей из %d.", menuModelChoiceLimit, len(names))
+		text += i18n.T(lang, "model.first_n", menuModelChoiceLimit, len(names))
 	}
 	return d.renderMenu(ctx, ev, text, modelMenuMarkup(names, selected))
 }
@@ -699,11 +719,12 @@ func speechRequestMetadata(attachment Attachment, file DownloadedAttachment) (st
 
 // responsibility: exactly one assistant row, and only after the final successful Response.
 func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	if ev.UnsupportedMedia {
-		return d.reply(ctx, ev.ChatID, "Этот тип вложения пока не поддерживается. Отправь фото, текстовый документ, голосовое, аудио или видеосообщение.")
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "ask.unsupported_media"))
 	}
 	if ev.Recovery && isStoredAttachment(ev.Text) && ev.Attachment == nil {
-		return d.reply(ctx, ev.ChatID, "Вложение недоступно после перезапуска, поэтому отправь вложение повторно вместе с вопросом.")
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "ask.attachment_unavailable"))
 	}
 	var text = strings.TrimSpace(arg)
 	originalRequest := text
@@ -711,7 +732,7 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 		text = attachmentPrompt(ev)
 	}
 	if text == "" {
-		return d.reply(ctx, ev.ChatID, msgAskNeedsText)
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "ask.needs_text"))
 	}
 
 	streamer, sender, canStream, streamErr := d.streamingPossible(ctx, ev.ChatID)
@@ -739,16 +760,16 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 		noticeCtx, stopNotice := context.WithTimeout(context.WithoutCancel(ctx), auditBudget)
 		defer stopNotice()
 		d.logEvent(noticeCtx, ev.UserID, store.EventModelError, "attachment:"+attachmentErrorKind(downloadErr))
-		return d.reply(noticeCtx, ev.ChatID, attachmentUserError(downloadErr))
+		return d.reply(noticeCtx, ev.ChatID, attachmentUserErrorFor(lang, downloadErr))
 	}
 
 	if isSpeechAttachment(ev.Attachment) {
 		if !validSpeechAttachment(*ev.Attachment, downloaded[0].Data) {
-			return d.reply(ctx, ev.ChatID, attachmentUserError(ErrAttachmentType))
+			return d.reply(ctx, ev.ChatID, attachmentUserErrorFor(lang, ErrAttachmentType))
 		}
 		transcriber, ok := d.deps.Model.(model.Transcriber)
 		if !ok {
-			return d.reply(ctx, ev.ChatID, "Транскрипция голосовых сообщений не настроена в этом клиенте модели.")
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "ask.transcription_unavailable"))
 		}
 		name, mime := speechRequestMetadata(*ev.Attachment, downloaded[0])
 		transcript, transcribeErr := transcriber.Transcribe(replyCtx, model.TranscriptionRequest{
@@ -762,7 +783,7 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 			defer stopNotice()
 			d.deps.Logger.Error("speech transcription failed", "chat_id", ev.ChatID, "user_id", ev.UserID, "error", Sanitize(transcribeErr, d.deps.Token))
 			d.logEvent(noticeCtx, ev.UserID, store.EventModelError, "transcription:"+attachmentErrorKind(transcribeErr))
-			return d.reply(noticeCtx, ev.ChatID, "Не удалось распознать голосовое сообщение. Попробуй записать его короче или отправь текстом.")
+			return d.reply(noticeCtx, ev.ChatID, i18n.T(lang, "ask.transcription_failed"))
 		}
 		text = voiceModelPrompt(text, transcript)
 		stored := speechStoredMarker(ev.Attachment.Kind) + "\n" + text
@@ -822,7 +843,7 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 			}
 		}
 		if err != nil {
-			return d.reply(ctx, ev.ChatID, attachmentUserError(err))
+			return d.reply(ctx, ev.ChatID, attachmentUserErrorFor(lang, err))
 		}
 	}
 	var selectedModel, modelErr = d.modelName(replyCtx, ev.ChatID)
@@ -855,21 +876,31 @@ func (d *Dispatcher) deliverModelResult(ctx context.Context, ev Event, text stri
 // finishReasonNotice — what the user must know when the provider stopped on its own, not when the bot lost
 // the tail. `length` is the context/output limit of the model, `content_filter` is the provider's own filter.
 func finishReasonNotice(reason string) string {
+	return finishReasonNoticeFor(i18n.Default, reason)
+}
+
+// finishReasonNoticeFor is the language-aware form used by the Telegram command surface. The Mini App
+// and the task scheduler still call the Russian wrapper, so their output is unchanged.
+func finishReasonNoticeFor(lang string, reason string) string {
 	switch strings.ToLower(strings.TrimSpace(reason)) {
 	case "length":
-		return "Внимание: ответ обрезан лимитом модели (finish_reason=length)."
+		return i18n.T(lang, "ask.finish_length")
 	case "content_filter":
-		return "Внимание: провайдер отфильтровал часть ответа (finish_reason=content_filter)."
+		return i18n.T(lang, "ask.finish_content_filter")
 	default:
 		return ""
 	}
 }
 
 func (d *Dispatcher) finishModelAnswer(ctx context.Context, replyCtx context.Context, ev Event, resp model.Response, modelErr error, selectedModel string, ragSources []string, documentTruncated bool, session *streamSession) error {
+	// The language must stay readable after the reply budget expired: a timeout notice is exactly the
+	// moment the request context is already cancelled, and falling back to DEFAULT_LANGUAGE there would
+	// answer a chat with an override in the wrong language.
+	lang := d.chatLanguage(context.WithoutCancel(ctx), ev.ChatID)
 	if errors.Is(modelErr, errNetworkApprovalPending) {
 		return nil
 	}
-	if notice, limited := modelLimitNotice(modelErr); limited {
+	if notice, limited := modelLimitNoticeFor(lang, modelErr); limited {
 		if session == nil {
 			return d.deliverModelResult(replyCtx, ev, notice)
 		}
@@ -919,18 +950,18 @@ func (d *Dispatcher) finishModelAnswer(ctx context.Context, replyCtx context.Con
 					Runes(resp.Content), edits, skipped, failures)
 			}
 			d.logEvent(auditCtx, ev.UserID, store.EventTimeout, detail)
-			return d.deliverModelResult(ctx, ev, fmt.Sprintf(msgTimeoutFormat, seconds, spent))
+			return d.deliverModelResult(ctx, ev, i18n.T(lang, "ask.timeout", seconds, spent))
 		}
 		if errors.Is(modelErr, model.ErrEmptyAnswer) {
 			d.logEvent(auditCtx, ev.UserID, store.EventModelError, "empty_answer")
-			return d.deliverModelResult(ctx, ev, msgEmptyAnswer)
+			return d.deliverModelResult(ctx, ev, i18n.T(lang, "ask.empty"))
 		}
 		if errors.Is(modelErr, model.ErrNoRoom) {
 			d.logEvent(auditCtx, ev.UserID, store.EventModelError, "no_room")
-			return d.deliverModelResult(ctx, ev, msgNoRoom)
+			return d.deliverModelResult(ctx, ev, i18n.T(lang, "ask.no_room"))
 		}
 		d.logEvent(auditCtx, ev.UserID, store.EventModelError, Sanitize(modelErr, d.deps.Token))
-		return d.deliverModelResult(ctx, ev, fmt.Sprintf(msgModelError, Sanitize(modelErr, d.deps.Token)))
+		return d.deliverModelResult(ctx, ev, i18n.T(lang, "ask.model_error", Sanitize(modelErr, d.deps.Token)))
 	}
 
 	var _, writeErr = store.Append(replyCtx, d.deps.DB, store.Message{
@@ -972,10 +1003,10 @@ func (d *Dispatcher) finishModelAnswer(ctx context.Context, replyCtx context.Con
 	// filtered answer was stored and shown exactly like a complete one, and the user could not tell that the
 	// model was cut off rather than the bot losing the tail. The assembly itself is shared with the Mini App
 	// (answer_format.go), so both clients show the same notices and the Telegram text stays byte-identical.
-	if notice := finishReasonNotice(resp.FinishReason); notice != "" {
+	if notice := finishReasonNoticeFor(lang, resp.FinishReason); notice != "" {
 		d.logEvent(ctx, ev.UserID, store.EventModelError, "finish_reason "+brief(resp.FinishReason, 40))
 	}
-	var full = formatModelAnswer(resp.Content, resp, selectedModel, answerFormatOptions{
+	var full = formatModelAnswerFor(lang, resp.Content, resp, selectedModel, answerFormatOptions{
 		Latency:           true,
 		Sources:           ragSources,
 		DocumentTruncated: documentTruncated,
@@ -992,7 +1023,8 @@ func (d *Dispatcher) reset(ctx context.Context, ev Event, arg string) error {
 	if err != nil {
 		return err
 	}
-	text := fmt.Sprintf(msgResetFormat, hidden)
+	lang := d.chatLanguage(ctx, ev.ChatID)
+	text := i18n.T(lang, "reset.done", hidden)
 	if ev.MenuCallback {
 		return d.showRootMenu(ctx, ev, text)
 	}
@@ -1000,6 +1032,7 @@ func (d *Dispatcher) reset(ctx context.Context, ev Event, arg string) error {
 }
 
 func (d *Dispatcher) history(ctx context.Context, ev Event, arg string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	if strings.TrimSpace(arg) == "menu" {
 		return d.showHistoryMenu(ctx, ev)
 	}
@@ -1007,7 +1040,7 @@ func (d *Dispatcher) history(ctx context.Context, ev Event, arg string) error {
 	if trimmed := strings.TrimSpace(arg); trimmed != "" {
 		var n, err = strconv.Atoi(trimmed)
 		if err != nil || n <= 0 {
-			return d.menuReply(ctx, ev, fmt.Sprintf("/history ждёт число: /history 10 (по умолчанию %d).", HistoryDefault), historyMenuMarkup())
+			return d.menuReply(ctx, ev, i18n.T(lang, "history.usage", HistoryDefault), historyMenuMarkup())
 		}
 		if n > HistoryMax {
 			n = HistoryMax
@@ -1020,45 +1053,46 @@ func (d *Dispatcher) history(ctx context.Context, ev Event, arg string) error {
 	}
 	if len(rows) == 0 {
 		if ev.MenuCallback {
-			return d.showHistoryMenu(ctx, ev, msgHistoryEmpty)
+			return d.showHistoryMenu(ctx, ev, i18n.T(lang, "history.empty"))
 		}
-		return d.reply(ctx, ev.ChatID, msgHistoryEmpty)
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "history.empty"))
 	}
-	var lines = []string{fmt.Sprintf("Последние %d сообщений :", len(rows))}
+	var lines = []string{i18n.T(lang, "history.header", len(rows))}
 	var i = 0
 	for i < len(rows) {
 		var row = rows[i]
-		lines = append(lines, fmt.Sprintf("%d. %s: %s", i+1, row.Role, brief(row.Content, 120)))
+		lines = append(lines, i18n.T(lang, "history.line", i+1, row.Role, brief(row.Content, 120)))
 		i++
 	}
 	return d.menuReply(ctx, ev, strings.Join(lines, "\n"), historyMenuMarkup())
 }
 
 func (d *Dispatcher) stats(ctx context.Context, ev Event, arg string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	var stats, err = store.Stats(ctx, d.deps.DB, ev.ChatID)
 	if err != nil {
 		return err
 	}
 	var lines = []string{
-		fmt.Sprintf("Сообщений: %d ", stats.Messages),
-		fmt.Sprintf("Токенов: %d входящих, %d исходящих ", stats.TokensIn, stats.TokensOut),
-		fmt.Sprintf("Ошибок модели: %d ", stats.Errors),
+		i18n.T(lang, "stats.messages", stats.Messages),
+		i18n.T(lang, "stats.tokens", stats.TokensIn, stats.TokensOut),
+		i18n.T(lang, "stats.errors", stats.Errors),
 	}
 	// after the bot had answered «Модель не ответила за 15 с, попробуй ещё раз» this line still read
 	// «Ошибок модели: 3» — which reads to an operator as nothing having happened. The line shows up only when
 	if stats.Timeouts > 0 {
-		lines = append(lines, fmt.Sprintf("Таймаутов модели: %d ", stats.Timeouts))
+		lines = append(lines, i18n.T(lang, "stats.timeouts", stats.Timeouts))
 	}
 	var up, down, feedbackErr = store.MessageFeedbackCounts(ctx, d.deps.DB, ev.ChatID)
 	if feedbackErr != nil {
 		return feedbackErr
 	}
-	lines = append(lines, fmt.Sprintf("Оценки: 👍 %d / 👎 %d", up, down))
+	lines = append(lines, i18n.T(lang, "stats.feedback", up, down))
 	if stats.Model != "" {
-		lines = append(lines, "Модель: "+stats.Model)
+		lines = append(lines, i18n.T(lang, "stats.model", stats.Model))
 	}
 	if stats.LastAt != "" {
-		lines = append(lines, "Последнее сообщение: "+stats.LastAt+" ")
+		lines = append(lines, i18n.T(lang, "stats.last", stats.LastAt))
 	}
 	return d.menuReply(ctx, ev, strings.Join(lines, "\n"), refreshBackMarkup("menu:stats", "menu:status"))
 }
@@ -1078,9 +1112,15 @@ func tokensOrNull(value *int64) any {
 }
 
 func latencyLine(resp model.Response, configured string) string {
+	return latencyLineFor(i18n.Default, resp, configured)
+}
+
+// latencyLineFor is the language-aware latency footer. The Mini App and the task scheduler still use
+// the Russian wrapper.
+func latencyLineFor(lang string, resp model.Response, configured string) string {
 	var name = replyModel(resp.Model, configured)
 	if resp.TokensIn == nil && resp.TokensOut == nil {
-		return fmt.Sprintf("⏱ %s · модель %s · попыток %d (токены не возвращены)",
+		return i18n.T(lang, "ask.latency_no_tokens",
 			resp.Latency.Round(time.Millisecond), name, resp.Attempts)
 	}
 	var in = int64(0)
@@ -1091,7 +1131,7 @@ func latencyLine(resp model.Response, configured string) string {
 	if resp.TokensOut != nil {
 		out = *resp.TokensOut
 	}
-	return fmt.Sprintf("⏱ %s · %d→%d токенов · модель %s · попыток %d",
+	return i18n.T(lang, "ask.latency_tokens",
 		resp.Latency.Round(time.Millisecond), in, out, name, resp.Attempts)
 }
 
@@ -1101,4 +1141,43 @@ func brief(text string, maxRunes int) string {
 		return string(runes)
 	}
 	return string(runes[:maxRunes]) + "…"
+}
+
+// modelLimitNoticeFor — the /ask form of modelLimitNotice. The original stays Russian for the Mini App
+// and the task scheduler, which are outside this change.
+func modelLimitNoticeFor(lang string, err error) (string, bool) {
+	switch {
+	case errors.Is(err, ErrModelRateLimited):
+		return i18n.T(lang, "ask.rate_limited"), true
+	case errors.Is(err, ErrModelDailyLimited):
+		return i18n.T(lang, "ask.daily_limited"), true
+	default:
+		return "", false
+	}
+}
+
+// attachmentUserErrorFor is the language-aware form of attachmentUserError for the /ask path.
+func attachmentUserErrorFor(lang string, err error) string {
+	switch {
+	case errors.Is(err, ErrAttachmentTooLarge), errors.Is(err, ErrRAGDocumentTooLarge):
+		return i18n.T(lang, "ask.attachment_too_large")
+	case errors.Is(err, ErrRAGDocumentEmpty):
+		return i18n.T(lang, "ask.attachment_empty_document")
+	case errors.Is(err, ErrVoiceTooLong):
+		return i18n.T(lang, "ask.attachment_voice_too_long")
+	case errors.Is(err, ErrDocumentNoText):
+		return i18n.T(lang, "ask.attachment_no_text")
+	case errors.Is(err, ErrDocumentEncrypted):
+		return i18n.T(lang, "ask.attachment_encrypted")
+	case errors.Is(err, ErrDocumentUnsupported):
+		return i18n.T(lang, "ask.attachment_unsupported_doc")
+	case errors.Is(err, ErrDocumentCorrupt):
+		return i18n.T(lang, "ask.attachment_corrupt")
+	case errors.Is(err, ErrAttachmentType):
+		return i18n.T(lang, "ask.attachment_type")
+	case errors.Is(err, ErrAttachmentUnavailable):
+		return i18n.T(lang, "ask.attachment_unavailable_file")
+	default:
+		return i18n.T(lang, "ask.attachment_read_failed")
+	}
 }

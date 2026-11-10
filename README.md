@@ -127,6 +127,8 @@ docker compose logs -f bot
 | `USER_DAILY_NETWORK_TOOL_LIMIT` | 0 = без ограничений | дневной лимит read_url/web_search пользователя по UTC |
 | `USER_LIMITS_JSON` | `{}` | per-user overrides: `{"id":{"model":N,"network_tools":N}}` |
 | `MINIAPP_ENABLED` | false | opt-in Telegram Mini App |
+| `DEFAULT_LANGUAGE` | ru | язык новых чатов: `ru` или `en`; `/language` переопределяет для чата |
+| `GROUPS_ENABLED` | false | отвечать в группах только на mention/reply/`/cmd@bot` |
 | `MINIAPP_TELEGRAM_FALLBACK` | true | глобальное значение по умолчанию: ответ, досчитанный после закрытия Mini App, отправляется в Telegram; для конкретного чата переопределяется `/miniapp` и настройкой Mini App |
 | `MINIAPP_LISTEN_HOST` | `127.0.0.1`; в compose — `0.0.0.0` | listener Mini App |
 | `MINIAPP_PORT` | 8084 | loopback port Mini App |
@@ -346,11 +348,20 @@ Reverse proxy или туннель должен перенаправлять п
 | `/model select <id>` | выбрать модель текущего чата из `GET /models` |
 | `/model reset` | вернуть модель по умолчанию `STRATA_MODEL` |
 | `/stream [on\|off\|reset]` | стриминг текущего чата; без аргумента — состояние |
+| `/language [ru\|en\|reset]` | язык интерфейса чата; без аргумента — текущий язык и источник (этот чат или `DEFAULT_LANGUAGE`) |
 | `/persona` | inline-меню и текущая роль; `assistant`, `coder`, `writer`, `translator`, `custom <текст>`, `reset` |
 | `/stats` | сообщения, токены и ошибки текущего чата |
 | `/usage` | дневные вызовы и tokens по моделям, использование tools и остаток лимитов без текстов запросов |
 | `/whoami` | `user_id`, `chat_id` и состояние allowlist |
 | `/admin` | агрегаты, usage RAG/calculator/read_url, активные model calls и busy chats; только для `TELEGRAM_ADMIN_USERS` |
+
+## Группы
+
+`GROUPS_ENABLED=true` разрешает боту работать в группах и супергруппах. Ответ выдаётся только когда бот адресован: `@BotName` в тексте/подписи, reply на сообщение бота или `/команда@BotName`. Упоминание вырезается перед сохранением и запросом к модели. Отправитель обязан быть в `TELEGRAM_ALLOWED_USERS` — allowlist проверяет пользователя, а не чат; per-user лимиты и дневные квоты работают как в приватном чате. Игнорируемое групповое сообщение не вызывает модель и не расходует квоту. При `GROUPS_ENABLED=false` (по умолчанию) группы игнорируются полностью. Без `getMe` (username недоступен) остаются reply- и command-формы.
+
+## Язык интерфейса
+
+`DEFAULT_LANGUAGE=ru|en` задаёт язык новых чатов; `/language en` переопределяет его для конкретного чата, `/language reset` возвращает значение по умолчанию. Переведены команды `/start`, `/help`, `/status`, `/model`, `/stream`, `/miniapp`, `/persona`, `/language`, `/reset`, `/skip`, `/unskip`, `/whoami`, `/stats`, `/usage`, `/feedback`, `/history`, `/export`, `/search`, `/delete` и обёртки ответа модели. Что ещё осталось на русском — в `docs/I18N_STATUS.md`. Ответы модели не переводятся.
 
 ## Интерактивное меню
 

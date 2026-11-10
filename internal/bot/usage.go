@@ -2,10 +2,10 @@ package bot
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
+	"bot/internal/i18n"
 	"bot/internal/store"
 )
 
@@ -48,7 +48,7 @@ func (d *Dispatcher) releaseDailyQuota(ctx context.Context, userID int64, class 
 }
 
 func (d *Dispatcher) usage(ctx context.Context, ev Event, arg string) error {
-	text, err := d.dailyUsageText(ctx, ev.UserID)
+	text, err := d.dailyUsageTextFor(ctx, ev.UserID, d.chatLanguage(ctx, ev.ChatID))
 	if err != nil {
 		return err
 	}
@@ -58,34 +58,39 @@ func (d *Dispatcher) usage(ctx context.Context, ev Event, arg string) error {
 	return d.reply(ctx, ev.ChatID, text)
 }
 
+// dailyUsageText keeps the historical Russian rendering for callers without a chat language.
 func (d *Dispatcher) dailyUsageText(ctx context.Context, userID int64) (string, error) {
+	return d.dailyUsageTextFor(ctx, userID, i18n.Default)
+}
+
+func (d *Dispatcher) dailyUsageTextFor(ctx context.Context, userID int64, lang string) (string, error) {
 	now := d.now().UTC()
 	usage, err := store.UserDailyUsage(ctx, d.deps.DB, userID, now)
 	if err != nil {
 		return "", err
 	}
 	lines := []string{
-		fmt.Sprintf("Использование за %s (UTC):", now.Format("2006-01-02")),
-		"Модели:",
+		i18n.T(lang, "usage.title", now.Format("2006-01-02")),
+		i18n.T(lang, "usage.models"),
 	}
 	if len(usage.Models) == 0 {
-		lines = append(lines, "- обращений не было")
+		lines = append(lines, i18n.T(lang, "usage.no_calls"))
 	}
 	for _, model := range usage.Models {
 		name := model.Model
 		if name == "" {
-			name = "модель не указана"
+			name = i18n.T(lang, "usage.unnamed_model")
 		}
-		lines = append(lines, fmt.Sprintf("- %s: вызовов %d; токены %d входящих / %d исходящих",
+		lines = append(lines, i18n.T(lang, "usage.model_line",
 			name, model.Calls, model.TokensIn, model.TokensOut))
 	}
 	lines = append(lines,
-		"Инструменты:",
-		fmt.Sprintf("- read_url: %d", usage.Tools.ReadURL),
-		fmt.Sprintf("- web_search: %d", usage.Tools.WebSearch),
-		fmt.Sprintf("- calculator: %d", usage.Tools.Calculator),
-		fmt.Sprintf("- RAG: %d", usage.Tools.RAG),
-		"Дневные лимиты:",
+		i18n.T(lang, "usage.tools"),
+		i18n.T(lang, "usage.tool_line", "read_url", usage.Tools.ReadURL),
+		i18n.T(lang, "usage.tool_line", "web_search", usage.Tools.WebSearch),
+		i18n.T(lang, "usage.tool_line", "calculator", usage.Tools.Calculator),
+		i18n.T(lang, "usage.tool_line", "RAG", usage.Tools.RAG),
+		i18n.T(lang, "usage.limits"),
 	)
 	// The limits are enforced on daily_quota_reservations, so the numbers shown here must come from the same
 	// table: «3 из 10» computed from messages once told a user they had room while the reservation table had
@@ -99,19 +104,20 @@ func (d *Dispatcher) dailyUsageText(ctx context.Context, userID int64) (string, 
 		return "", quotaErr
 	}
 	lines = append(lines,
-		formatDailyLimit("Модель", modelQuota, d.deps.Cfg.DailyLimitsFor(userID).Model),
-		formatDailyLimit("Сетевые инструменты", networkQuota, d.deps.Cfg.DailyLimitsFor(userID).NetworkTools),
+		dailyLimitLine(lang, i18n.T(lang, "usage.limit_model"), modelQuota, d.deps.Cfg.DailyLimitsFor(userID).Model),
+		dailyLimitLine(lang, i18n.T(lang, "usage.limit_network"), networkQuota, d.deps.Cfg.DailyLimitsFor(userID).NetworkTools),
 	)
 	return strings.Join(lines, "\n"), nil
 }
 
-func formatDailyLimit(name string, used int64, limit int64) string {
+// dailyLimitLine renders one daily-limit row in lang; a zero limit is reported as unlimited.
+func dailyLimitLine(lang string, name string, used int64, limit int64) string {
 	if limit == 0 {
-		return fmt.Sprintf("%s: лимит 0 (без ограничений); использовано %d; осталось без ограничений", name, used)
+		return i18n.T(lang, "usage.limit_zero", name, used)
 	}
 	remaining := limit - used
 	if remaining < 0 {
 		remaining = 0
 	}
-	return fmt.Sprintf("%s: лимит %d; использовано %d; осталось %d", name, limit, used, remaining)
+	return i18n.T(lang, "usage.limit", name, limit, used, remaining)
 }

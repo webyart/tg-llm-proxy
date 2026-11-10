@@ -181,7 +181,7 @@ func TestStreamDraftFinalAnswerIsCompleteAndChunked(t *testing.T) {
 // TestStreamGroupChatNeverDrafts — groups and channels have negative chat ids, where Bot API drafts do not
 // exist: the answer keeps the placeholder-and-edits path.
 func TestStreamGroupChatNeverDrafts(t *testing.T) {
-	var cfg = streamConfig(t, map[string]string{"STREAM_EDIT_INTERVAL_MS": "250", "STREAM_DRAFTS_ENABLED": "true"})
+	var cfg = streamConfig(t, map[string]string{"STREAM_EDIT_INTERVAL_MS": "250", "STREAM_DRAFTS_ENABLED": "true", "GROUPS_ENABLED": "true"})
 	var m = &fakeStreamModel{steps: []streamStep{
 		{content: "Раз.", wait: 300 * time.Millisecond},
 		{content: " Два.", wait: 300 * time.Millisecond},
@@ -189,7 +189,7 @@ func TestStreamGroupChatNeverDrafts(t *testing.T) {
 	}}
 	var r = &draftReplier{streamReplier: &streamReplier{}}
 	var d = newTestDispatcher(t, cfg, m, r, testStore(t))
-	var ev = testEvent(-100500, 11, 2103, "/ask привет")
+	var ev = testEvent(-100500, 11, 2103, "/ask@TestBot привет")
 	ev.ChatType = "supergroup"
 
 	if err := dispatch(t, d, ev); err != nil {

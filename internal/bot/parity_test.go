@@ -17,6 +17,7 @@ var commandParityMatrix = map[string]string{
 	CommandStream:        "/api/settings/stream",
 	CommandMiniApp:       "/api/settings/miniapp-fallback",
 	CommandPersona:       "/api/settings/persona",
+	CommandLanguage:      "telegram-only: the Mini App has its own UI language and does not read the Telegram chat override",
 	CommandAsk:           "/api/messages",
 	CommandReset:         "/api/context/reset",
 	CommandSkip:          "/api/pending/skip",
@@ -77,7 +78,7 @@ func TestCommandParityMatrixCoversEveryCommand(t *testing.T) {
 			t.Errorf("command %q has neither an /api/ surface nor a telegram-only reason: %q", name, surface)
 		}
 	}
-	if exceptions != 5 {
-		t.Errorf("telegram-only commands = %d, want the 5 documented exceptions (start, help, ping, tts, admin)", exceptions)
+	if exceptions != 6 {
+		t.Errorf("telegram-only commands = %d, want the 6 documented exceptions (start, help, ping, language, tts, admin)", exceptions)
 	}
 }

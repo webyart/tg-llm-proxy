@@ -2,7 +2,17 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.58.0
+## Новейший выпуск: v1.59.0
+
+# tg-llm-proxy v1.59.0
+
+## Group mode and a bilingual command interface
+
+- Groups: `GROUPS_ENABLED=true` lets the bot answer in groups/supergroups only when addressed — an `@BotName` mention in the text/caption, a reply to one of the bot's messages, or `/cmd@BotName`. The mention is stripped before storing and before the model call; the sender must be in `TELEGRAM_ALLOWED_USERS` (the allowlist names users, not chats), per-user limits still apply, and an ignored group update calls no model and consumes no daily quota. `GROUPS_ENABLED=false` (default) ignores groups entirely; private chats are byte-identical to before. The bot id/username come from `getMe`, with reply/command forms still working if it is unavailable.
+- Language: `DEFAULT_LANGUAGE=ru|en` for new chats and `/language ru|en|reset` per chat (migration **19**, `chat_language`). A new `internal/i18n` catalog (RU/EN, key parity test, fallback to RU) drives `/start`, `/help`, `/status`, `/model`, `/stream`, `/miniapp`, `/persona`, `/language`, `/reset`, `/skip`, `/unskip`, `/whoami`, `/stats`, `/usage`, `/feedback`, `/history`, `/export`, `/search`, `/delete` and the answer wrappers (timeout, overloaded, finish_reason, latency, sources, truncation). Model answers are never translated; the remaining RU surfaces are listed in `docs/I18N_STATUS.md`.
+- Startup summary prints `default_language` and `groups_enabled`; the config has 71 rows. The integration group-attribution test now enables group mode and mentions the bot.
+
+## Предыдущий выпуск: v1.58.0
 
 # tg-llm-proxy v1.58.0
 

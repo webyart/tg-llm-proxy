@@ -3,6 +3,7 @@ package bot
 import (
 	"strings"
 
+	"bot/internal/i18n"
 	"bot/internal/model"
 )
 
@@ -10,6 +11,12 @@ import (
 // document before the model saw it. It lives here because both clients now assemble it through the
 // same finalizer instead of one of them silently dropping it.
 const documentTruncationNotice = "Внимание: документ был обрезан по MAX_CONTEXT_CHARS перед отправкой модели."
+
+// documentTruncationNoticeFor returns the truncation notice in lang. The constant stays the Russian
+// template for the Mini App and for callers that have no chat language.
+func documentTruncationNoticeFor(lang string) string {
+	return i18n.T(lang, "ask.doc_truncated")
+}
 
 // answerFormatOptions selects the optional parts of the final answer. The model content itself is
 // always present; each client decides whether it shows the latency footer, the RAG sources and the
@@ -34,21 +41,28 @@ type answerFormatOptions struct {
 // byte-identical. Mini App used to deliver only resp.Content and therefore lost the latency footer
 // and both notices.
 func formatModelAnswer(content string, resp model.Response, selectedModel string, opts answerFormatOptions) string {
+	return formatModelAnswerFor(i18n.Default, content, resp, selectedModel, opts)
+}
+
+// formatModelAnswerFor is the language-aware finalizer used by the Telegram command surface. The
+// Mini App keeps calling formatModelAnswer, so its output is unchanged.
+func formatModelAnswerFor(lang string, content string, resp model.Response, selectedModel string, opts answerFormatOptions) string {
 	full := content
 	if opts.Latency {
-		full += "\n\n" + latencyLine(resp, selectedModel)
+		full += "\n\n" + latencyLineFor(lang, resp, selectedModel)
 	}
 	// A provider that stopped on its own limit (length) or filter (content_filter) must say so. A
 	// response whose content already ends with the notice keeps the single copy it has: streamed
 	// continuations of the same answer must not grow a second warning on every resume.
-	if notice := finishReasonNotice(resp.FinishReason); notice != "" && !answerEndsWith(content, notice) {
+	if notice := finishReasonNoticeFor(lang, resp.FinishReason); notice != "" && !answerEndsWith(content, notice) {
 		full = notice + "\n\n" + full
 	}
 	if len(opts.Sources) > 0 {
-		full += "\n\nИсточники: " + strings.Join(opts.Sources, ", ")
+		full += "\n\n" + i18n.T(lang, "ask.sources", strings.Join(opts.Sources, ", "))
 	}
-	if opts.DocumentTruncated && !answerStartsWith(content, documentTruncationNotice) {
-		full = documentTruncationNotice + "\n\n" + full
+	var truncationNotice = documentTruncationNoticeFor(lang)
+	if opts.DocumentTruncated && !answerStartsWith(content, truncationNotice) {
+		full = truncationNotice + "\n\n" + full
 	}
 	return full
 }

@@ -2,7 +2,17 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.62.3
+## Новейший выпуск: v1.62.4
+
+# tg-llm-proxy v1.62.4
+
+## Task failure diagnostics and larger production budgets
+
+- A failed task model call now logs the actual per-request budget (`request_timeout_seconds`) together with the task id, so the next occurrence names the budget instead of only the generic STRATA notice.
+- The production `.env` raises the budgets for the local STRATA model: `STRATA_TIMEOUT_SECONDS=240`, `TG_REPLY_DEADLINE_SECONDS=300`, `TASK_MODEL_TIMEOUT_SECONDS=300`, `TASK_STEP_DEADLINE_SECONDS=600`.
+- A regression test proves the task request timeout reaches both the first and the post-tool model call.
+
+## Предыдущий выпуск: v1.62.3
 
 # tg-llm-proxy v1.62.3
 

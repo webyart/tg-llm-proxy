@@ -658,6 +658,7 @@ func (d *Dispatcher) runToolLoop(ctx context.Context, state *toolLoopContinuatio
 			var err error
 			resp, err = d.callModel(ctx, state.userID, state.request, state.streamer, state.session)
 			if err != nil {
+				d.logTaskModelFailure(state, err)
 				return resp, err
 			}
 			if len(resp.ToolCalls) == 0 {
@@ -769,5 +770,21 @@ func (d *Dispatcher) runToolLoop(ctx context.Context, state *toolLoopContinuatio
 		state.round++
 	}
 	state.request.Tools = nil
-	return d.callModel(ctx, state.userID, state.request, state.streamer, state.session)
+	var response, err = d.callModel(ctx, state.userID, state.request, state.streamer, state.session)
+	if err != nil {
+		d.logTaskModelFailure(state, err)
+	}
+	return response, err
+}
+
+// logTaskModelFailure records the actual per-request budget when a task call fails: without it the operator sees
+// only the generic STRATA budget notice and cannot tell which budget the step really used.
+func (d *Dispatcher) logTaskModelFailure(state *toolLoopContinuation, err error) {
+	if state == nil || state.metadata.taskID == 0 || d.deps.Logger == nil {
+		return
+	}
+	d.deps.Logger.Warn("task model call failed",
+		"task_id", state.metadata.taskID,
+		"request_timeout_seconds", int(state.request.Timeout/time.Second),
+		"error", Sanitize(err, d.deps.Token))
 }

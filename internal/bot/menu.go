@@ -12,6 +12,7 @@ import (
 	tgbot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
+	"bot/internal/i18n"
 	"bot/internal/store"
 )
 
@@ -81,6 +82,10 @@ var menuCommandCallbacks = map[string]string{
 	"menu:root":                  "/help menu:root",
 }
 
+func menuExpiredFor(lang string) string {
+	return i18n.T(lang, "menu.expired")
+}
+
 func menuButton(text string, data string) models.InlineKeyboardButton {
 	return models.InlineKeyboardButton{Text: text, CallbackData: data}
 }
@@ -90,39 +95,59 @@ func menuRow(buttons ...models.InlineKeyboardButton) []models.InlineKeyboardButt
 }
 
 func backButton(destination string) models.InlineKeyboardButton {
-	return menuButton("← Назад", destination)
+	return backButtonFor(i18n.Default, destination)
+}
+
+func backButtonFor(lang string, destination string) models.InlineKeyboardButton {
+	return menuButton(i18n.T(lang, "menu.back"), destination)
 }
 
 // menuMarkup is the root inline menu shown by /start and /help.
 func (d *Dispatcher) menuMarkup() models.InlineKeyboardMarkup {
+	return menuMarkupFor(i18n.Default)
+}
+
+func menuMarkupFor(lang string) models.InlineKeyboardMarkup {
 	return models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		menuRow(menuButton("Спросить", "menu:ask"), menuButton("Новый контекст", "menu:reset")),
-		menuRow(menuButton("История", "menu:history"), menuButton("Документы", "menu:docs")),
-		menuRow(menuButton("Настройки", "menu:settings"), menuButton("Статус", "menu:status")),
-		menuRow(menuButton("Помощь", "menu:help"), menuButton("Ещё", "menu:more")),
+		menuRow(menuButton(i18n.T(lang, "menu.ask"), "menu:ask"), menuButton(i18n.T(lang, "menu.reset"), "menu:reset")),
+		menuRow(menuButton(i18n.T(lang, "menu.history"), "menu:history"), menuButton(i18n.T(lang, "menu.docs"), "menu:docs")),
+		menuRow(menuButton(i18n.T(lang, "menu.settings"), "menu:settings"), menuButton(i18n.T(lang, "menu.status"), "menu:status")),
+		menuRow(menuButton(i18n.T(lang, "menu.help"), "menu:help"), menuButton(i18n.T(lang, "menu.more"), "menu:more")),
 	}}
 }
 
 func historyMenuMarkup() models.InlineKeyboardMarkup {
+	return historyMenuMarkupFor(i18n.Default)
+}
+
+func historyMenuMarkupFor(lang string) models.InlineKeyboardMarkup {
 	return models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		menuRow(menuButton("Последние 5", "menu:history:5"), menuButton("Последние 20", "menu:history:20")),
-		menuRow(menuButton("Поиск", "menu:search")),
-		menuRow(menuButton("Экспорт MD", "menu:export:md"), menuButton("Экспорт JSON", "menu:export:json")),
-		menuRow(menuButton("Удалить историю", "menu:delete")),
-		menuRow(backButton("menu:root")),
+		menuRow(menuButton(i18n.T(lang, "menu.history_5"), "menu:history:5"), menuButton(i18n.T(lang, "menu.history_20"), "menu:history:20")),
+		menuRow(menuButton(i18n.T(lang, "menu.search"), "menu:search")),
+		menuRow(menuButton(i18n.T(lang, "menu.export_md"), "menu:export:md"), menuButton(i18n.T(lang, "menu.export_json"), "menu:export:json")),
+		menuRow(menuButton(i18n.T(lang, "menu.delete_history"), "menu:delete")),
+		menuRow(backButtonFor(lang, "menu:root")),
 	}}
 }
 
 func settingsMenuMarkup() models.InlineKeyboardMarkup {
+	return settingsMenuMarkupFor(i18n.Default)
+}
+
+func settingsMenuMarkupFor(lang string) models.InlineKeyboardMarkup {
 	return models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		menuRow(menuButton("Модель", "menu:model")),
-		menuRow(menuButton("Persona", "menu:persona")),
-		menuRow(menuButton("Стриминг", "menu:stream")),
-		menuRow(backButton("menu:root")),
+		menuRow(menuButton(i18n.T(lang, "menu.model"), "menu:model")),
+		menuRow(menuButton(i18n.T(lang, "menu.persona"), "menu:persona")),
+		menuRow(menuButton(i18n.T(lang, "menu.streaming"), "menu:stream")),
+		menuRow(backButtonFor(lang, "menu:root")),
 	}}
 }
 
 func modelMenuMarkup(names []string, current string) models.InlineKeyboardMarkup {
+	return modelMenuMarkupFor(i18n.Default, names, current)
+}
+
+func modelMenuMarkupFor(lang string, names []string, current string) models.InlineKeyboardMarkup {
 	rows := [][]models.InlineKeyboardButton{}
 	for index, name := range names {
 		if index >= menuModelChoiceLimit {
@@ -135,38 +160,51 @@ func modelMenuMarkup(names []string, current string) models.InlineKeyboardMarkup
 		rows = append(rows, menuRow(menuButton(label, fmt.Sprintf("menu:model:set:%d", index))))
 	}
 	rows = append(rows,
-		menuRow(menuButton("Проверить endpoint", "menu:model:check")),
-		menuRow(menuButton("Сбросить модель", "menu:model:reset")),
-		menuRow(backButton("menu:settings")),
+		menuRow(menuButton(i18n.T(lang, "menu.model_check"), "menu:model:check")),
+		menuRow(menuButton(i18n.T(lang, "menu.model_reset"), "menu:model:reset")),
+		menuRow(backButtonFor(lang, "menu:settings")),
 	)
 	return models.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
 func statusMenuMarkup() models.InlineKeyboardMarkup {
+	return statusMenuMarkupFor(i18n.Default)
+}
+
+func statusMenuMarkupFor(lang string) models.InlineKeyboardMarkup {
 	return models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		menuRow(menuButton("Обновить", "menu:status")),
-		menuRow(menuButton("Статистика", "menu:stats"), menuButton("Использование", "menu:usage")),
+		menuRow(menuButton(i18n.T(lang, "menu.refresh"), "menu:status")),
+		menuRow(menuButton(i18n.T(lang, "menu.stats"), "menu:stats"), menuButton(i18n.T(lang, "menu.usage"), "menu:usage")),
 		menuRow(menuButton("Ping", "menu:ping")),
-		menuRow(backButton("menu:root")),
+		menuRow(backButtonFor(lang, "menu:root")),
 	}}
 }
 
 func usageMenuMarkup() models.InlineKeyboardMarkup {
+	return usageMenuMarkupFor(i18n.Default)
+}
+
+func usageMenuMarkupFor(lang string) models.InlineKeyboardMarkup {
 	return models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		menuRow(menuButton("Обновить", "menu:usage")),
-		menuRow(backButton("menu:status")),
+		menuRow(menuButton(i18n.T(lang, "menu.refresh"), "menu:usage")),
+		menuRow(backButtonFor(lang, "menu:status")),
 	}}
 }
 
 func simpleBackMarkup(destination string) models.InlineKeyboardMarkup {
-	return models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{menuRow(backButton(destination))}}
+	return simpleBackMarkupFor(i18n.Default, destination)
+}
+
+func simpleBackMarkupFor(lang string, destination string) models.InlineKeyboardMarkup {
+	return models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{menuRow(backButtonFor(lang, destination))}}
 }
 
 func (d *Dispatcher) sendMenu(ctx context.Context, chatID int64, text string) error {
+	lang := d.chatLanguage(ctx, chatID)
 	if sender, ok := d.deps.Replier.(interface {
 		SendMenu(context.Context, int64, string, models.InlineKeyboardMarkup) error
 	}); ok {
-		return sender.SendMenu(ctx, chatID, Escape(text, d.deps.Cfg.ParseMode), d.menuMarkup())
+		return sender.SendMenu(ctx, chatID, Escape(text, d.deps.Cfg.ParseMode), menuMarkupFor(lang))
 	}
 	return d.reply(ctx, chatID, text)
 }
@@ -203,9 +241,13 @@ func (d *Dispatcher) menuReply(ctx context.Context, ev Event, text string, marku
 }
 
 func refreshBackMarkup(refresh string, destination string) models.InlineKeyboardMarkup {
+	return refreshBackMarkupFor(i18n.Default, refresh, destination)
+}
+
+func refreshBackMarkupFor(lang string, refresh string, destination string) models.InlineKeyboardMarkup {
 	return models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		menuRow(menuButton("Обновить", refresh)),
-		menuRow(backButton(destination)),
+		menuRow(menuButton(i18n.T(lang, "menu.refresh"), refresh)),
+		menuRow(backButtonFor(lang, destination)),
 	}}
 }
 
@@ -482,9 +524,13 @@ func (d *Dispatcher) handleCallback(ctx context.Context, tg *tgbot.Bot, upd *mod
 	ev, ok := d.callbackEventOf(upd)
 	if !ok {
 		if tg != nil && upd.CallbackQuery.ID != "" {
-			params := &tgbot.AnswerCallbackQueryParams{CallbackQueryID: upd.CallbackQuery.ID, Text: menuExpiredText, ShowAlert: true}
+			lang := i18n.Default
+			if upd.CallbackQuery.Message.Message != nil {
+				lang = d.chatLanguage(ctx, upd.CallbackQuery.Message.Message.Chat.ID)
+			}
+			params := &tgbot.AnswerCallbackQueryParams{CallbackQueryID: upd.CallbackQuery.ID, Text: menuExpiredFor(lang), ShowAlert: true}
 			if strings.HasPrefix(strings.TrimSpace(upd.CallbackQuery.Data), "delete:") {
-				params.Text = "Это меню удаления истекло или уже использовано. Отправь /delete заново."
+				params.Text = i18n.T(lang, "menu.delete_expired")
 			}
 			if _, err := tg.AnswerCallbackQuery(ctx, params); err != nil {
 				d.deps.Logger.Error("answerCallbackQuery failed", "error", Sanitize(err, d.deps.Token))
@@ -511,22 +557,26 @@ func menuText(title string, note []string) string {
 }
 
 func (d *Dispatcher) showRootMenu(ctx context.Context, ev Event, note ...string) error {
-	return d.renderMenu(ctx, ev, menuText("Главное меню. Выбери раздел:", note), d.menuMarkup())
+	lang := d.chatLanguage(ctx, ev.ChatID)
+	return d.renderMenu(ctx, ev, menuText(i18n.T(lang, "menu.root_title"), note), menuMarkupFor(lang))
 }
 
 func (d *Dispatcher) showHistoryMenu(ctx context.Context, ev Event, note ...string) error {
-	return d.renderMenu(ctx, ev, menuText("История: просмотр, поиск, экспорт и удаление.", note), historyMenuMarkup())
+	lang := d.chatLanguage(ctx, ev.ChatID)
+	return d.renderMenu(ctx, ev, menuText(i18n.T(lang, "menu.history_title"), note), historyMenuMarkupFor(lang))
 }
 
 func (d *Dispatcher) showStatusMenu(ctx context.Context, ev Event) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	text, err := d.statusText(ctx, ev)
 	if err != nil {
 		return err
 	}
-	return d.renderMenu(ctx, ev, text, statusMenuMarkup())
+	return d.renderMenu(ctx, ev, text, statusMenuMarkupFor(lang))
 }
 
 func (d *Dispatcher) showMoreMenu(ctx context.Context, ev Event, note ...string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	rows := [][]models.InlineKeyboardButton{}
 	rowID, role, err := store.LastVisibleMessage(ctx, d.deps.DB, ev.ChatID)
 	if err != nil {
@@ -537,13 +587,13 @@ func (d *Dispatcher) showMoreMenu(ctx context.Context, ev Event, note ...string)
 		return err
 	}
 	if rowID > 0 && role == store.RoleUser && (!suppressed || skipped != rowID) {
-		rows = append(rows, menuRow(menuButton("Пропустить восстановление", "menu:skip")))
+		rows = append(rows, menuRow(menuButton(i18n.T(lang, "menu.skip"), "menu:skip")))
 	}
 	if suppressed {
-		rows = append(rows, menuRow(menuButton("Возобновить восстановление", "menu:unskip")))
+		rows = append(rows, menuRow(menuButton(i18n.T(lang, "menu.unskip"), "menu:unskip")))
 	}
-	rows = append(rows, menuRow(menuButton("Напоминания", "menu:reminders")))
-	rows = append(rows, menuRow(menuButton("Задача", "menu:task")))
+	rows = append(rows, menuRow(menuButton(i18n.T(lang, "menu.reminders"), "menu:reminders")))
+	rows = append(rows, menuRow(menuButton(i18n.T(lang, "menu.task"), "menu:task")))
 	// The Mini App is a private-chat companion: its session is scoped to the chat, so in a group every
 	// allowlisted member would read (and could delete) the history, documents and reminders of the others.
 	// The switch lives here and in the ticket issuer, so neither a stale button nor a hand-made link can
@@ -556,35 +606,36 @@ func (d *Dispatcher) showMoreMenu(ctx context.Context, ev Event, note ...string)
 		rows = append(rows, menuRow(button))
 	}
 	if d.deps.Cfg.TTSEnabled {
-		rows = append(rows, menuRow(menuButton("Озвучить текст", "menu:tts"), menuButton("Последний ответ", "menu:tts:last")))
+		rows = append(rows, menuRow(menuButton(i18n.T(lang, "menu.tts"), "menu:tts"), menuButton(i18n.T(lang, "menu.tts_last"), "menu:tts:last")))
 		speed, speedErr := d.ttsSpeed(ctx, ev.ChatID)
 		if speedErr != nil {
 			return speedErr
 		}
-		rows = append(rows, menuRow(menuButton("Скорость TTS: "+formatTTSSpeed(speed)+"×", "menu:tts:speed")))
+		rows = append(rows, menuRow(menuButton(i18n.T(lang, "menu.tts_speed", formatTTSSpeed(speed)), "menu:tts:speed")))
 	}
-	rows = append(rows, menuRow(menuButton("Кто я", "menu:whoami")))
+	rows = append(rows, menuRow(menuButton(i18n.T(lang, "menu.whoami"), "menu:whoami")))
 	if d.deps.Cfg.IsAdmin(ev.UserID) {
-		rows = append(rows, menuRow(menuButton("Админ", "menu:admin")))
+		rows = append(rows, menuRow(menuButton(i18n.T(lang, "menu.admin"), "menu:admin")))
 	}
-	rows = append(rows, menuRow(backButton("menu:root")))
-	return d.renderMenu(ctx, ev, menuText("Дополнительные команды:", note), models.InlineKeyboardMarkup{InlineKeyboard: rows})
+	rows = append(rows, menuRow(backButtonFor(lang, "menu:root")))
+	return d.renderMenu(ctx, ev, menuText(i18n.T(lang, "menu.more_title"), note), models.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
 
 func (d *Dispatcher) helpMenu(ctx context.Context, ev Event, action string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	switch action {
 	case "menu:root":
 		return d.showRootMenu(ctx, ev)
 	case "menu:help":
-		return d.renderMenu(ctx, ev, strings.Join(d.helpLines(), "\n"), simpleBackMarkup("menu:root"))
+		return d.renderMenu(ctx, ev, strings.Join(d.helpLinesFor(lang), "\n"), simpleBackMarkupFor(lang, "menu:root"))
 	case "menu:settings":
-		return d.renderMenu(ctx, ev, "Настройки текущего чата:", settingsMenuMarkup())
+		return d.renderMenu(ctx, ev, i18n.T(lang, "menu.settings_title"), settingsMenuMarkupFor(lang))
 	case "menu:more":
 		return d.showMoreMenu(ctx, ev)
 	case "menu:ask":
-		return d.beginPendingInput(ctx, ev, CommandAsk, "menu:root", "Отправь вопрос одним сообщением. Он будет обработан как /ask. Ввод действует 2 минуты.")
+		return d.beginPendingInput(ctx, ev, CommandAsk, "menu:root", i18n.T(lang, "menu.ask_prompt"))
 	case "menu:search":
-		return d.beginPendingInput(ctx, ev, CommandSearch, "menu:history", "Отправь текст для поиска по истории. Ввод действует 2 минуты.")
+		return d.beginPendingInput(ctx, ev, CommandSearch, "menu:history", i18n.T(lang, "menu.search_prompt"))
 	case "menu:tts":
 		return d.synthesizeSpeech(ctx, ev, "")
 	case "menu:tts:speed":
@@ -599,7 +650,7 @@ func (d *Dispatcher) helpMenu(ctx context.Context, ev Event, action string) erro
 		if strings.HasPrefix(action, "menu:network:") {
 			return d.networkApprovalControl(ctx, ev, action)
 		}
-		return d.showRootMenu(ctx, ev, menuExpiredText)
+		return d.showRootMenu(ctx, ev, menuExpiredFor(lang))
 	}
 }
 
@@ -635,6 +686,7 @@ func (d *Dispatcher) beginPendingInput(ctx context.Context, ev Event, action str
 	if err != nil {
 		return err
 	}
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	pending := pendingInput{Token: token, MessageID: ev.TelegramMessageID, Origin: origin, ExpiresAt: time.Now().Add(pendingInputTTL)}
 	set := pendingInputsFor(d)
 	set.mu.Lock()
@@ -647,7 +699,7 @@ func (d *Dispatcher) beginPendingInput(ctx context.Context, ev Event, action str
 	set.pending[pendingInputKey{ChatID: ev.ChatID, UserID: ev.UserID, Action: action}] = pending
 	set.mu.Unlock()
 	markup := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		menuRow(menuButton("Отмена", "menu:input:cancel:"+token)),
+		menuRow(menuButton(i18n.T(lang, "menu.cancel"), "menu:input:cancel:"+token)),
 	}}
 	if err := d.renderMenu(ctx, ev, prompt, markup); err != nil {
 		set.mu.Lock()
@@ -706,6 +758,7 @@ func (d *Dispatcher) pendingEvent(ev Event) (Event, bool) {
 }
 
 func (d *Dispatcher) cancelPendingInputMenu(ctx context.Context, ev Event, token string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	set := pendingInputsFor(d)
 	set.mu.Lock()
 	for key, pending := range set.pending {
@@ -715,37 +768,37 @@ func (d *Dispatcher) cancelPendingInputMenu(ctx context.Context, ev Event, token
 		if !time.Now().Before(pending.ExpiresAt) {
 			delete(set.pending, key)
 			set.mu.Unlock()
-			return d.showRootMenu(ctx, ev, menuExpiredText)
+			return d.showRootMenu(ctx, ev, menuExpiredFor(lang))
 		}
 		if key.ChatID != ev.ChatID || key.UserID != ev.UserID {
 			set.mu.Unlock()
-			return d.renderMenu(ctx, ev, "Это меню ввода принадлежит другому пользователю или чату.", simpleBackMarkup("menu:root"))
+			return d.renderMenu(ctx, ev, i18n.T(lang, "menu.input_wrong_user"), simpleBackMarkupFor(lang, "menu:root"))
 		}
 		if pending.MessageID != 0 && pending.MessageID != ev.TelegramMessageID {
 			set.mu.Unlock()
-			return d.renderMenu(ctx, ev, "Это меню ввода недействительно для этого сообщения.", simpleBackMarkup("menu:root"))
+			return d.renderMenu(ctx, ev, i18n.T(lang, "menu.input_wrong_msg"), simpleBackMarkupFor(lang, "menu:root"))
 		}
 		delete(set.pending, key)
 		set.mu.Unlock()
 		switch pending.Origin {
 		case "menu:history":
-			return d.showHistoryMenu(ctx, ev, "Ввод отменён.")
+			return d.showHistoryMenu(ctx, ev, i18n.T(lang, "menu.input_cancelled"))
 		case "menu:links":
-			return d.showLinksMenu(ctx, ev, "Поиск отменён.")
+			return d.showLinksMenu(ctx, ev, i18n.T(lang, "menu.search_cancelled"))
 		case "menu:docs":
-			return d.showDocumentsMenu(ctx, ev, "Поиск отменён.")
+			return d.showDocumentsMenu(ctx, ev, i18n.T(lang, "menu.search_cancelled"))
 		case "menu:persona":
-			return d.showPersonaMenu(ctx, ev, "Ввод отменён.")
+			return d.showPersonaMenu(ctx, ev, i18n.T(lang, "menu.input_cancelled"))
 		case "menu:reminders":
-			return d.showReminderMenu(ctx, ev, "Ввод напоминания отменён.")
+			return d.showReminderMenu(ctx, ev, i18n.T(lang, "menu.remind_cancelled"))
 		case "menu:task":
-			return d.showTaskMenu(ctx, ev, "Ввод новой задачи отменён.")
+			return d.showTaskMenu(ctx, ev, i18n.T(lang, "menu.task_cancelled"))
 		case "menu:more":
 			return d.showMoreMenu(ctx, ev)
 		default:
-			return d.showRootMenu(ctx, ev, "Ввод отменён.")
+			return d.showRootMenu(ctx, ev, i18n.T(lang, "menu.input_cancelled"))
 		}
 	}
 	set.mu.Unlock()
-	return d.showRootMenu(ctx, ev, menuExpiredText)
+	return d.showRootMenu(ctx, ev, menuExpiredFor(lang))
 }

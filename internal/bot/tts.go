@@ -13,6 +13,7 @@ import (
 	tgbot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
+	"bot/internal/i18n"
 	"bot/internal/model"
 	"bot/internal/store"
 )
@@ -114,22 +115,23 @@ func (d *Dispatcher) setTTSSpeed(ctx context.Context, chatID int64, value string
 }
 
 func (d *Dispatcher) ttsSpeedControl(ctx context.Context, ev Event, arg string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	requested := strings.TrimSpace(arg)
 	if requested != "" {
 		speed, err := d.setTTSSpeed(ctx, ev.ChatID, requested)
 		if err != nil {
 			if errors.Is(err, model.ErrTTSSpeed) {
-				return d.reply(ctx, ev.ChatID, msgTTSSpeedUsage)
+				return d.reply(ctx, ev.ChatID, i18n.T(lang, "tts.speed_usage"))
 			}
 			return err
 		}
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Скорость озвучивания для этого чата: %s×. Настройка сохранена.", formatTTSSpeed(speed)))
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "tts.speed_saved", formatTTSSpeed(speed)))
 	}
 	speed, err := d.ttsSpeed(ctx, ev.ChatID)
 	if err != nil {
 		return err
 	}
-	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Текущая скорость озвучивания для этого чата: %s×.\n%s", formatTTSSpeed(speed), msgTTSSpeedUsage))
+	return d.reply(ctx, ev.ChatID, i18n.T(lang, "tts.speed_current", formatTTSSpeed(speed), i18n.T(lang, "tts.speed_usage")))
 }
 
 func (d *Dispatcher) latestAssistantAnswer(ctx context.Context, chatID int64) (string, error) {
@@ -148,6 +150,7 @@ func (d *Dispatcher) latestAssistantAnswer(ctx context.Context, chatID int64) (s
 }
 
 func (d *Dispatcher) showTTSSpeedMenu(ctx context.Context, ev Event, note ...string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	speed, err := d.ttsSpeed(ctx, ev.ChatID)
 	if err != nil {
 		return err
@@ -161,33 +164,35 @@ func (d *Dispatcher) showTTSSpeedMenu(ctx context.Context, ev Event, note ...str
 		}
 		rows = append(rows, menuRow(menuButton(label, "menu:tts:speed:"+value)))
 	}
-	rows = append(rows, menuRow(backButton("menu:more")))
-	text := menuText(fmt.Sprintf("Скорость озвучивания для этого чата: %s×.", formatTTSSpeed(speed)), note)
+	rows = append(rows, menuRow(backButtonFor(lang, "menu:more")))
+	text := menuText(i18n.T(lang, "tts.speed_menu", formatTTSSpeed(speed)), note)
 	return d.renderMenu(ctx, ev, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
 
 func (d *Dispatcher) ttsSpeedMenuControl(ctx context.Context, ev Event, action string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	value, ok := strings.CutPrefix(action, "menu:tts:speed:")
 	if !ok {
-		return d.showTTSSpeedMenu(ctx, ev, menuExpiredText)
+		return d.showTTSSpeedMenu(ctx, ev, menuExpiredFor(lang))
 	}
 	if _, valid := parseTTSSpeed(value); !valid {
-		return d.showTTSSpeedMenu(ctx, ev, menuExpiredText)
+		return d.showTTSSpeedMenu(ctx, ev, menuExpiredFor(lang))
 	}
 	speed, err := d.setTTSSpeed(ctx, ev.ChatID, value)
 	if err != nil {
 		return err
 	}
-	return d.showTTSSpeedMenu(ctx, ev, fmt.Sprintf("Скорость сохранена: %s×.", formatTTSSpeed(speed)))
+	return d.showTTSSpeedMenu(ctx, ev, i18n.T(lang, "tts.speed_menu_saved", formatTTSSpeed(speed)))
 }
 
 func (d *Dispatcher) ttsActionReply(ctx context.Context, ev Event, text string) error {
-	return d.menuReply(ctx, ev, text, simpleBackMarkup("menu:more"))
+	return d.menuReply(ctx, ev, text, simpleBackMarkupFor(d.chatLanguage(ctx, ev.ChatID), "menu:more"))
 }
 
 func (d *Dispatcher) synthesizeSpeech(ctx context.Context, ev Event, arg string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	if !d.deps.Cfg.TTSEnabled {
-		return d.ttsActionReply(ctx, ev, msgTTSDisabled)
+		return d.ttsActionReply(ctx, ev, i18n.T(lang, "tts.disabled"))
 	}
 	text := strings.TrimSpace(arg)
 	if fields := strings.Fields(text); len(fields) > 0 && strings.EqualFold(fields[0], "speed") {
@@ -199,26 +204,26 @@ func (d *Dispatcher) synthesizeSpeech(ctx context.Context, ev Event, arg string)
 			return err
 		}
 		if answer == "" {
-			return d.ttsActionReply(ctx, ev, msgTTSNoAssistant)
+			return d.ttsActionReply(ctx, ev, i18n.T(lang, "tts.no_assistant"))
 		}
 		text = answer
 	}
 	if text == "" {
-		return d.beginPendingInput(ctx, ev, CommandTTS, "menu:more", fmt.Sprintf("Отправь текст для озвучивания одним сообщением (до %d символов). Ввод действует 2 минуты.", d.deps.Cfg.TTSMaxChars))
+		return d.beginPendingInput(ctx, ev, CommandTTS, "menu:more", i18n.T(lang, "tts.prompt", d.deps.Cfg.TTSMaxChars))
 	}
 	maxChars := d.deps.Cfg.TTSMaxChars
 	if maxChars <= 0 {
 		maxChars = 1000
 	}
 	if Runes(text) > int(maxChars) {
-		return d.ttsActionReply(ctx, ev, fmt.Sprintf("Текст слишком длинный для озвучивания: максимум %d символов.", maxChars))
+		return d.ttsActionReply(ctx, ev, i18n.T(lang, "tts.too_long", maxChars))
 	}
 	sender, ok := d.deps.Replier.(AudioSender)
 	if !ok {
-		return d.ttsActionReply(ctx, ev, "Отправка аудио не поддерживается этим Telegram-адаптером.")
+		return d.ttsActionReply(ctx, ev, i18n.T(lang, "tts.audio_unsupported"))
 	}
 	if d.deps.TTS == nil {
-		return d.ttsActionReply(ctx, ev, "Озвучивание не настроено в этом клиенте.")
+		return d.ttsActionReply(ctx, ev, i18n.T(lang, "tts.not_configured"))
 	}
 	speed, err := d.ttsSpeed(ctx, ev.ChatID)
 	if err != nil {
@@ -234,13 +239,13 @@ func (d *Dispatcher) synthesizeSpeech(ctx context.Context, ev Event, arg string)
 			return err
 		}
 		if errors.Is(err, model.ErrTTSTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return d.ttsActionReply(ctx, ev, fmt.Sprintf("Сервис озвучивания не ответил за %d с. Попробуй ещё раз позже.", d.deps.Cfg.TTSTimeoutSeconds))
+			return d.ttsActionReply(ctx, ev, i18n.T(lang, "tts.timeout", d.deps.Cfg.TTSTimeoutSeconds))
 		}
-		return d.ttsActionReply(ctx, ev, "Не удалось озвучить текст. Попробуй ещё раз позже.")
+		return d.ttsActionReply(ctx, ev, i18n.T(lang, "tts.failed"))
 	}
 	if err := sender.SendAudio(ctx, ev.ChatID, Audio{Name: "speech.mp3", Data: audio, MIME: "audio/mpeg"}); err != nil {
 		d.deps.Logger.Error("TTS audio delivery failed", "chat_id", ev.ChatID)
-		return d.ttsActionReply(ctx, ev, "Не удалось доставить аудио в Telegram. Попробуй ещё раз позже.")
+		return d.ttsActionReply(ctx, ev, i18n.T(lang, "tts.delivery_failed"))
 	}
 	return nil
 }

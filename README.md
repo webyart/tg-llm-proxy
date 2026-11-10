@@ -143,7 +143,7 @@ Fallback без compose: `TELEGRAM_BOT_TOKEN` и `STRATA_API_KEY` в окруж�
 
 ## Конфигурация
 
-Полный список из 71 ENV-строк и их значения по умолчанию находится в `.env.example`; строки `STREAMING_*`, `WEBHOOK_*`, `MINIAPP_*`, `HEALTH_*` и `RAG_EMBEDDINGS_*` описаны в одноимённых разделах ниже. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
+Полный список из 73 ENV-строк и их значения по умолчанию находится в `.env.example`; строки `STREAMING_*`, `WEBHOOK_*`, `MINIAPP_*`, `HEALTH_*` и `RAG_EMBEDDINGS_*` описаны в одноимённых разделах ниже. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
 
 ### Основные параметры
 
@@ -203,7 +203,9 @@ Fallback без compose: `TELEGRAM_BOT_TOKEN` и `STRATA_API_KEY` в окруж�
 | `WEB_SEARCH_MAX_RESULTS` | 5 | число результатов; 1..10 |
 | `MAX_MESSAGE_CHUNK` | 3500 | размер части ответа; максимум 4096 |
 | `PARSE_MODE` | `MarkdownV2` | `MarkdownV2`, `HTML` или `plain` |
-| `HEALTH_PORT` | 8081 | loopback health endpoint; canonical value for the edge-gateway scrape |
+| `HEALTH_PORT` | 8081 | порт `/metrics` внутри контейнера и HOST-порт опубликованного health URL; canonical value для scrape |
+| `HEALTH_PROBE_PORT` | 8080 | порт in-container `/healthz`/`/readyz`; compose задаёт его, вне compose не задавайте |
+| `METRICS_LISTEN_HOST` | пусто (в compose `172.24.0.250`) | конкретный loopback/private IP для `/metrics`; при пустом значении `/metrics` остаётся на health-listener |
 | `LOG_LEVEL` | `info` | `error`, `warning`, `info`, `debug` |
 
 `STRATA_BASE_URL` нормализуется к ровно одному `/v1`: chat и models используют этот base. `TRANSCRIPTION_BASE_URL` независимо ведёт в `/audio/transcriptions`. Оба endpoint запрещают userinfo, query и fragment, чтобы credentials не попадали в логи или диагностику. Compose запускает Speaches Whisper без публичного порта и заранее загружает multilingual small-модель. Voice хранится только как текст транскрипции; исходное аудио остаётся в памяти на время запроса.
@@ -445,7 +447,7 @@ docker compose -f docker-compose.yml -f compose.websearch.yaml -f compose.tts.ya
 
 `compose.production.yaml` сохраняет `MINIAPP_PUBLIC_URL=https://desktop-hvobbn7.tail66517e.ts.net/miniapp`. Gateway больше не входит в этот Compose-проект: он находится в независимом проекте `C:\Kimi code\edge-gateway` с Compose project name `edge-gateway` и по-прежнему публикует только `127.0.0.1:8086:8080`.
 
-Telegram `bot` одновременно подключён к обычной Compose-сети `default` и внешней `edge-telegram`, где имеет alias `telegram-miniapp`. Whisper и SearxNG остаются только на `default` и не подключаются к edge-сетям; их исходящий доступ для загрузки моделей и поисковых запросов сохранён. Перед запуском создайте `edge-telegram` по инструкции `edge-gateway/README.md`.
+Telegram `bot` одновременно подключён к обычной Compose-сети `default`, внешней `edge-telegram` (alias `telegram-miniapp`) и внешней `edge-gateway_edge-monitoring`. В `edge-monitoring` он получает статический адрес (по умолчанию `172.24.0.250`) и только на нём слушает `/metrics`; Prometheus из `edge-gateway` уже подключён к этой сети и скрейпит `bot:8081`. Whisper и SearxNG остаются только на `default` и не подключаются к edge-сетям; их исходящий доступ для загрузки моделей и поисковых запросов сохранён. Перед запуском создайте `edge-telegram` по инструкции `edge-gateway/README.md` и поднимите `edge-gateway` (он владеет сетью `edge-monitoring`).
 
 Маршруты независимого Traefik:
 
@@ -453,7 +455,7 @@ Telegram `bot` одновременно подключён к обычной Com
 - `/max` и `/max/*` → `http://max-bot:8090` через external-сеть `edge-max`. Path передаётся без изменений, кроме `/max/healthz`, который переписывается в `/healthz`.
 - `/` и все остальные пути → dashboard `http://dashboard:8787` через external-сеть `edge-dashboard` как fallback без изменения path.
 
-Health и прямые listeners не меняются: bot health остаётся на `127.0.0.1:8080/healthz`, Mini App без gateway по-прежнему принимает запросы без префикса на `127.0.0.1:8084`, а прямой max на `127.0.0.1:8090` отвечает `/healthz` = 200; ответ 404 на его корне `/` допустим и не означает сбой gateway.
+Health и прямые listeners: bot health публикуется как `127.0.0.1:8081/healthz` (host-порт `${HEALTH_PORT}`) и внутри контейнера слушает `HEALTH_PROBE_PORT=8080`; `/metrics` на этот listener не отдаётся. Mini App без gateway по-прежнему принимает запросы без префикса на `127.0.0.1:8084`, а прямой max на `127.0.0.1:8090` отвечает `/healthz` = 200; ответ 404 на его корне `/` допустим и не означает сбой gateway.
 
 Traefik использует только static file provider: `/etc/traefik/traefik.yml` и `/etc/traefik/dynamic.yml` монтируются read-only. Docker provider и Docker socket не используются. Встроенные Traefik API/dashboard не доступны на production entrypoint: локальный dashboard с Basic Auth работает на `127.0.0.1:8089`, а Prometheus/Grafana описаны в `edge-gateway/README.md`; маршрут `/` относится к приложению dashboard на порту 8787. У standalone gateway нет зависимости от Telegram `bot` или `host-gateway`: backends разрешаются через network aliases.
 
@@ -617,7 +619,9 @@ Maintenance останавливает бота и ждёт состояния `
 
 Монитор проверяет bot и Whisper, называет сервис в failure state, отправляет алерт при сбое и восстановлении, повторяет неизменный failure не чаще одного раза в 6 часов и не перезапускает контейнер автоматически. Mini App probe выполняется прямым `docker exec` по уже проверенному container ID без дополнительной зависимости от Compose в среде Task Scheduler, имеет timeout 5 секунд и до трёх попыток с паузой 2 секунды: failure устанавливается только после третьей последовательной ошибки, а лог содержит exit codes и сокращённую диагностику без секретов. Во время штатного clean-stop backup проверка пропускается только по свежему lease с живым PID; stale lease вызывает alert и восстанавливает проверки. Backup freshness по умолчанию ограничен 30 часами, подтверждённые копии записывают verification receipt; независимая телеметрия последнего backup лежит в `data/backup-status.prom` (см. раздел про backup volume). Дополнительно `watch_runtime.ps1` анализирует последние 10 минут логов: три ошибки Telegram, STRATA или Whisper/transcription вызывают алерт, повтор подавляется на 6 часов. Состояния хранятся в `data/monitoring`. Уведомления используют существующие token/allowlist, не принимают token аргументом и не печатают его.
 
-Метрики и готовность бота отдаются на loopback: `GET http://127.0.0.1:8081/metrics` и `GET http://127.0.0.1:8081/readyz` (проверяет БД и доступность модели). Prometheus из `edge-gateway` скрейпит `bot:8081` по общей docker-сети, держит дашборд `Bot overview` и отправляет алерты (down, ошибки модели, p95, очередь, рост БД, смена схемы) в Telegram через Alertmanager; настройка и список правил — в `C:\Kimi code\edge-gateway\README.md`.
+Метрики и готовность бота разведены по разным listener'ам. Готовность: `GET http://127.0.0.1:8081/healthz` и `/readyz` (host-порт `${HEALTH_PORT}` → in-container `HEALTH_PROBE_PORT=8080`; `/readyz` проверяет БД и доступность модели); этот же listener опрашивает Docker HEALTHCHECK. Метрики: `/metrics` слушает только конкретный адрес `METRICS_LISTEN_HOST:${HEALTH_PORT}` — в compose это статический `172.24.0.250` на сети `edge-gateway_edge-monitoring`. Prometheus из `edge-gateway` уже в этой сети и скрейпит `bot:8081`; другие контейнеры (`default`, `edge-telegram`, Whisper, SearxNG) в неё не входят и не могут открыть сокет метрик, а host-публикация `127.0.0.1:8081` ведёт на health-listener, поэтому `curl http://127.0.0.1:8081/metrics` отвечает 404. Если gateway пересоздаст сеть с другой подсетью, задайте свободный адрес этой подсети в `METRICS_LISTEN_HOST_CONTAINER` (он заполняет и `METRICS_LISTEN_HOST`, и `ipv4_address` бота).
+
+Метрики не содержат идентификаторов чатов и пользователей: `queue_depth` — агрегат по всем чатам без labels, рядом `busy_chats` (число чатов с удержанным lock), `active_handlers`, `active_model_requests`; `chat_id`/`user_id` остаются только в логах и БД и никогда не становятся label'ами. Это проверяет тест `internal/bot/metrics_privacy_test.go`, который дампит registry во время ожидания в очереди. Prometheus держит дашборд `Bot overview` и отправляет алерты (down, ошибки модели, p95, очередь, рост БД, смена схемы) в Telegram через Alertmanager; настройка и список правил — в `C:\Kimi code\edge-gateway\README.md`.
 
 Speaches CPU/CUDA images закреплены по digest. Для NVIDIA GPU после настройки Docker GPU support используйте:
 

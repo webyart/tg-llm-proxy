@@ -86,6 +86,8 @@ var Env = []string{
 	"PARSE_MODE",
 	"HEALTH_PORT",
 	"HEALTH_LISTEN_HOST",
+	"HEALTH_PROBE_PORT",
+	"METRICS_LISTEN_HOST",
 	"LOG_LEVEL",
 }
 
@@ -144,9 +146,10 @@ const DefaultMaxChunk = int64(3500)
 const DefaultParseMode = "MarkdownV2"
 const DefaultHealthPort = int64(8080)
 
-// DefaultHealthListenHost — the health/metrics listener is loopback by default. A container sets 0.0.0.0 so the
-// published host port and the Prometheus of the edge gateway (through host.docker.internal) can reach it; the
-// compose publish rule keeps the host side on 127.0.0.1, so nothing becomes externally reachable either way.
+// DefaultHealthListenHost — the health listener is loopback by default. A container sets 0.0.0.0 so the
+// published host port and the HEALTHCHECK reach /healthz and /readyz. This row does NOT decide where metrics
+// bind: a non-empty METRICS_LISTEN_HOST starts a second listener, and in that mode this host only serves the
+// probes, so the metrics port cannot be reached through the bot's default / edge-telegram addresses.
 const DefaultHealthListenHost = "127.0.0.1"
 const DefaultLogLevel = "info"
 const DefaultReminderTimezone = "UTC"
@@ -288,7 +291,9 @@ type Config struct {
 	MaxMessageChunk             int64
 	ParseMode                   string
 	HealthPort                  int64
+	HealthProbePort             int64
 	HealthListenHost            string
+	MetricsListenHost           string
 	LogLevel                    string
 }
 
@@ -903,7 +908,38 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 		cfg.HealthListenHost = listenHost
 	default:
 		cfg.HealthListenHost = DefaultHealthListenHost
+		listenHost = DefaultHealthListenHost
 		problems = Push(problems, "ENV HEALTH_LISTEN_HOST must be 127.0.0.1, ::1 (loopback) or 0.0.0.0 (all interfaces of the container): the listener would otherwise bind an address nobody documented ")
+	}
+
+	// The probe port defaults to HEALTH_PORT: without METRICS_LISTEN_HOST there is one listener for the
+	// probes and /metrics, exactly as before. A split deployment (compose) sets both rows, because the
+	// metrics listener needs its own concrete address while the health probe stays on all interfaces of
+	// the container for the HEALTHCHECK and the host-published port.
+	var probePort = port
+	if rawProbe := strings.TrimSpace(raw["HEALTH_PROBE_PORT"]); rawProbe != "" {
+		var parsed, badProbe = Num(raw, "HEALTH_PROBE_PORT", port, 1, PortMax)
+		probePort = parsed
+		problems = Push(problems, badProbe)
+	}
+	cfg.HealthProbePort = probePort
+
+	var metricsHost = strings.TrimSpace(raw["METRICS_LISTEN_HOST"])
+	if metricsHost != "" {
+		var metricsIP = net.ParseIP(metricsHost)
+		switch {
+		case metricsIP == nil || metricsIP.IsUnspecified() || metricsIP.IsMulticast() || !(metricsIP.IsLoopback() || metricsIP.IsPrivate()):
+			cfg.MetricsListenHost = ""
+			problems = Push(problems, "ENV METRICS_LISTEN_HOST must be a concrete loopback or private IP address (for example 172.24.0.250 on the edge-monitoring network): 0.0.0.0 would put /metrics back on every network of the container ")
+		case strings.TrimSpace(raw["HEALTH_PROBE_PORT"]) == "":
+			cfg.MetricsListenHost = metricsHost
+			problems = Push(problems, "ENV HEALTH_PROBE_PORT is required when METRICS_LISTEN_HOST is set: the health probe needs its own port or the two listeners collide ")
+		case probePort == port && (listenHost == "0.0.0.0" || listenHost == metricsHost):
+			cfg.MetricsListenHost = metricsHost
+			problems = Push(problems, "ENV HEALTH_PROBE_PORT must differ from HEALTH_PORT when the health and metrics listeners bind the same address ")
+		default:
+			cfg.MetricsListenHost = metricsHost
+		}
 	}
 
 	var level, badLevel = Level(raw)

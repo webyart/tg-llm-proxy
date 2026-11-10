@@ -12,11 +12,16 @@ import (
 
 	"github.com/go-telegram/bot/models"
 
+	"bot/internal/i18n"
 	"bot/internal/model"
 	"bot/internal/store"
 )
 
 const linksUsage = "Использование: /links, /links add <https-url>, /links search <текст>, /links summary <id>, /links delete <id>."
+
+func linksUsageFor(lang string) string {
+	return i18n.T(lang, "links.usage")
+}
 
 var (
 	errLinkNetworkBusy  = errors.New("слишком много одновременных сетевых чтений, попробуй позже")
@@ -139,22 +144,47 @@ func (d *Dispatcher) linkActionReply(ctx context.Context, ev Event, text string)
 }
 
 func (d *Dispatcher) addLink(ctx context.Context, ev Event, rawURL string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	saved, replaced, err := d.CreateLink(ctx, ev.ChatID, ev.UserID, rawURL)
 	if err != nil {
 		if errors.Is(err, store.ErrSavedLinkLimit) {
-			return d.linkActionReply(ctx, ev, fmt.Sprintf("В чате уже %d ссылок. Сначала удали одну через /links delete <id>.", store.SavedLinkMaxPerChat))
+			return d.linkActionReply(ctx, ev, i18n.T(lang, "links.limit", store.SavedLinkMaxPerChat))
 		}
 		if errors.Is(err, store.ErrSavedLinkInput) {
 			return err
 		}
-		return d.linkActionReply(ctx, ev, "Не удалось сохранить ссылку: "+Sanitize(err, d.deps.Token))
+		return d.linkActionReply(ctx, ev, d.linksSaveErrorFor(lang, err))
 	}
-	action := "сохранена"
+	action := i18n.T(lang, "links.saved")
 	if replaced {
-		action = "обновлена"
+		action = i18n.T(lang, "links.updated")
 	}
 	d.logEvent(ctx, ev.UserID, store.EventUsage, "links_add")
-	return d.linkActionReply(ctx, ev, fmt.Sprintf("Ссылка #%d %s: %s (%s). Модель при сохранении не вызывалась.", saved.ID, action, saved.Title, saved.CanonicalURL))
+	return d.linkActionReply(ctx, ev, i18n.T(lang, "links.saved_line", saved.ID, action, saved.Title, saved.CanonicalURL))
+}
+
+// linksSaveErrorFor maps the typed save failures to their user-facing text. The errors themselves stay
+// untranslated because they also reach logs and audit rows.
+func (d *Dispatcher) linksSaveErrorFor(lang string, err error) string {
+	key := ""
+	switch {
+	case errors.Is(err, ErrLinkReaderDisabled):
+		key = "links.err_reader_config"
+	case errors.Is(err, errLinkNetworkBusy):
+		key = "links.err_busy"
+	case errors.Is(err, errLinkNetworkLimit):
+		key = "links.err_rate"
+	case errors.Is(err, errLinkDailyLimit):
+		key = "links.err_daily"
+	case errors.Is(err, errLinkEmptyText):
+		key = "links.err_empty_text"
+	case errors.Is(err, errLinkReaderDisabled):
+		key = "links.err_reader_disabled"
+	}
+	if key == "" {
+		return i18n.T(lang, "links.save_failed", Sanitize(err, d.deps.Token))
+	}
+	return i18n.T(lang, "links.save_failed", i18n.T(lang, key))
 }
 
 type linkSaveOffer struct {
@@ -213,17 +243,18 @@ func consumeLinkSaveOffer(d *Dispatcher, token string, ev Event) (linkSaveOffer,
 }
 
 func (d *Dispatcher) offerLinkSave(ctx context.Context, ev Event) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	canonical, ok := bareHTTPSURL(ev.Text)
 	if !ok {
-		return d.reply(ctx, ev.ChatID, linksUsage)
+		return d.reply(ctx, ev.ChatID, linksUsageFor(lang))
 	}
 	token, err := newDeleteConfirmationToken()
 	if err != nil {
 		return err
 	}
-	text := fmt.Sprintf("Сохранить ссылку на потом?\n%s\n\nСтраница будет загружена и сохранена только после подтверждения. Кнопки действуют 5 минут.", canonical)
+	text := i18n.T(lang, "links.save_offer", canonical)
 	markup := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		menuRow(menuButton("Сохранить ссылку", "menu:link:save:confirm:"+token), menuButton("Отмена", "menu:link:save:cancel:"+token)),
+		menuRow(menuButton(i18n.T(lang, "links.save_button"), "menu:link:save:confirm:"+token), menuButton(i18n.T(lang, "menu.cancel"), "menu:link:save:cancel:"+token)),
 	}}
 	if sender, ok := d.deps.Replier.(interface {
 		SendMenuWithID(context.Context, int64, string, models.InlineKeyboardMarkup) (int64, error)
@@ -247,7 +278,7 @@ func (d *Dispatcher) offerLinkSave(ctx context.Context, ev Event) error {
 		d.rememberLinkSaveOffer(token, ev, 0, canonical)
 		return nil
 	}
-	return d.reply(ctx, ev.ChatID, "Для сохранения отправь /links add "+canonical)
+	return d.reply(ctx, ev.ChatID, i18n.T(lang, "links.save_fallback", canonical))
 }
 
 func (d *Dispatcher) removeLinkSaveMenu(ctx context.Context, ev Event) {
@@ -263,21 +294,22 @@ func (d *Dispatcher) removeLinkSaveMenu(ctx context.Context, ev Event) {
 }
 
 func (d *Dispatcher) linkSaveControl(ctx context.Context, ev Event, action string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	operation, token, ok := strings.Cut(strings.TrimPrefix(action, "menu:save:"), ":")
 	if !ok || operation != "confirm" && operation != "cancel" || !validMenuToken(token) {
-		return d.showLinksMenu(ctx, ev, "Это предложение сохранить ссылку истекло или уже использовано.")
+		return d.showLinksMenu(ctx, ev, i18n.T(lang, "links.offer_expired"))
 	}
 	pending, status := consumeLinkSaveOffer(d, token, ev)
 	switch status {
 	case deleteConfirmationStale:
-		return d.showLinksMenu(ctx, ev, "Это предложение сохранить ссылку истекло или уже использовано.")
+		return d.showLinksMenu(ctx, ev, i18n.T(lang, "links.offer_expired"))
 	case deleteConfirmationWrongUser:
-		return d.showLinksMenu(ctx, ev, "Это подтверждение принадлежит другому пользователю.")
+		return d.showLinksMenu(ctx, ev, i18n.T(lang, "links.wrong_user"))
 	case deleteConfirmationWrongMessage:
-		return d.showLinksMenu(ctx, ev, "Это подтверждение недействительно для этого чата или сообщения.")
+		return d.showLinksMenu(ctx, ev, i18n.T(lang, "links.wrong_message"))
 	}
 	if operation == "cancel" {
-		return d.showLinksMenu(ctx, ev, "Сохранение отменено. Страница не загружалась и не сохранялась.")
+		return d.showLinksMenu(ctx, ev, i18n.T(lang, "links.save_cancelled"))
 	}
 	return d.addLink(ctx, ev, pending.CanonicalURL)
 }
@@ -338,12 +370,13 @@ func consumeLinkDelete(d *Dispatcher, token string, ev Event) (linkDeleteConfirm
 }
 
 func (d *Dispatcher) promptLinkDelete(ctx context.Context, ev Event, id int64) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	link, found, err := store.GetSavedLink(ctx, d.deps.DB, ev.ChatID, id)
 	if err != nil {
 		return err
 	}
 	if !found {
-		return d.showLinksMenu(ctx, ev, menuExpiredText)
+		return d.showLinksMenu(ctx, ev, menuExpiredFor(lang))
 	}
 	token, err := newDeleteConfirmationToken()
 	if err != nil {
@@ -351,9 +384,9 @@ func (d *Dispatcher) promptLinkDelete(ctx context.Context, ev Event, id int64) e
 	}
 	d.rememberLinkDelete(token, ev, id)
 	markup := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		menuRow(menuButton("Подтвердить удаление", "menu:link:delete:confirm:"+token), menuButton("Отмена", "menu:link:delete:cancel:"+token)),
+		menuRow(menuButton(i18n.T(lang, "links.confirm_button"), "menu:link:delete:confirm:"+token), menuButton(i18n.T(lang, "menu.cancel"), "menu:link:delete:cancel:"+token)),
 	}}
-	if err := d.renderMenu(ctx, ev, fmt.Sprintf("Удалить ссылку #%d %s? Кнопки действуют 5 минут.", id, link.Title), markup); err != nil {
+	if err := d.renderMenu(ctx, ev, i18n.T(lang, "links.delete_confirm", id, link.Title), markup); err != nil {
 		set := linkDeleteConfirmationsFor(d)
 		set.mu.Lock()
 		delete(set.pending, token)
@@ -364,30 +397,31 @@ func (d *Dispatcher) promptLinkDelete(ctx context.Context, ev Event, id int64) e
 }
 
 func (d *Dispatcher) linkDeleteControl(ctx context.Context, ev Event, action string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	operation, token, ok := strings.Cut(strings.TrimPrefix(action, "menu:delete:"), ":")
 	if !ok || operation != "confirm" && operation != "cancel" || !validMenuToken(token) {
-		return d.showLinksMenu(ctx, ev, menuExpiredText)
+		return d.showLinksMenu(ctx, ev, menuExpiredFor(lang))
 	}
 	pending, status := consumeLinkDelete(d, token, ev)
 	switch status {
 	case deleteConfirmationStale:
-		return d.showLinksMenu(ctx, ev, menuExpiredText)
+		return d.showLinksMenu(ctx, ev, menuExpiredFor(lang))
 	case deleteConfirmationWrongUser:
-		return d.showLinksMenu(ctx, ev, "Это подтверждение принадлежит другому пользователю.")
+		return d.showLinksMenu(ctx, ev, i18n.T(lang, "links.wrong_user"))
 	case deleteConfirmationWrongMessage:
-		return d.showLinksMenu(ctx, ev, "Это подтверждение недействительно для этого чата или сообщения.")
+		return d.showLinksMenu(ctx, ev, i18n.T(lang, "links.wrong_message"))
 	}
 	if operation == "cancel" {
-		return d.showLinksMenu(ctx, ev, "Удаление ссылки отменено.")
+		return d.showLinksMenu(ctx, ev, i18n.T(lang, "links.delete_cancelled"))
 	}
 	deleted, err := store.DeleteSavedLink(ctx, d.deps.DB, ev.ChatID, pending.LinkID)
 	if err != nil {
 		return err
 	}
 	if !deleted {
-		return d.showLinksMenu(ctx, ev, menuExpiredText)
+		return d.showLinksMenu(ctx, ev, menuExpiredFor(lang))
 	}
-	return d.showLinksMenu(ctx, ev, fmt.Sprintf("Ссылка #%d удалена.", pending.LinkID))
+	return d.showLinksMenu(ctx, ev, i18n.T(lang, "links.deleted", pending.LinkID))
 }
 
 func linkHost(link store.SavedLink) string {
@@ -399,24 +433,28 @@ func linkHost(link store.SavedLink) string {
 }
 
 func linksMenuMarkup(rows []store.SavedLink) models.InlineKeyboardMarkup {
+	return linksMenuMarkupFor(i18n.Default, rows)
+}
+
+func linksMenuMarkupFor(lang string, rows []store.SavedLink) models.InlineKeyboardMarkup {
 	buttons := [][]models.InlineKeyboardButton{}
 	for _, row := range rows {
 		buttons = append(buttons, menuRow(
-			menuButton(fmt.Sprintf("Кратко #%d", row.ID), fmt.Sprintf("menu:link:summary:%d", row.ID)),
-			menuButton(fmt.Sprintf("Удалить #%d", row.ID), fmt.Sprintf("menu:link:delete:%d", row.ID)),
+			menuButton(i18n.T(lang, "links.summary_button", row.ID), fmt.Sprintf("menu:link:summary:%d", row.ID)),
+			menuButton(i18n.T(lang, "links.delete_button", row.ID), fmt.Sprintf("menu:link:delete:%d", row.ID)),
 		))
 	}
 	buttons = append(buttons,
-		menuRow(menuButton("Поиск", "menu:links:search"), menuButton("Обновить", "menu:links")),
-		menuRow(backButton("menu:docs")),
+		menuRow(menuButton(i18n.T(lang, "links.search_button"), "menu:links:search"), menuButton(i18n.T(lang, "menu.refresh"), "menu:links")),
+		menuRow(backButtonFor(lang, "menu:docs")),
 	)
 	return models.InlineKeyboardMarkup{InlineKeyboard: buttons}
 }
 
-func linksMenuText(rows []store.SavedLink, heading string) string {
+func linksMenuText(rows []store.SavedLink, heading string, empty string) string {
 	lines := []string{heading}
 	if len(rows) == 0 {
-		lines = append(lines, "Ссылок нет. Добавь: /links add <https-url>.")
+		lines = append(lines, empty)
 	}
 	for _, row := range rows {
 		lines = append(lines, fmt.Sprintf("#%d · %s · %s · %s", row.ID, brief(row.Title, 80), linkHost(row), row.UpdatedAt.UTC().Format("2006-01-02")))
@@ -425,12 +463,13 @@ func linksMenuText(rows []store.SavedLink, heading string) string {
 }
 
 func (d *Dispatcher) linksMenuContent(ctx context.Context, ev Event, note ...string) (string, models.InlineKeyboardMarkup, error) {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	rows, err := store.ListSavedLinks(ctx, d.deps.DB, ev.ChatID, store.SavedLinkListLimit)
 	if err != nil {
 		return "", models.InlineKeyboardMarkup{}, err
 	}
-	heading := fmt.Sprintf("Ссылки текущего чата: показано %d, максимум %d; всего можно хранить %d.", len(rows), store.SavedLinkListLimit, store.SavedLinkMaxPerChat)
-	return menuText(linksMenuText(rows, heading), note), linksMenuMarkup(rows), nil
+	heading := i18n.T(lang, "links.heading", len(rows), store.SavedLinkListLimit, store.SavedLinkMaxPerChat)
+	return menuText(linksMenuText(rows, heading, i18n.T(lang, "links.none")), note), linksMenuMarkupFor(lang, rows), nil
 }
 
 func (d *Dispatcher) showLinksMenu(ctx context.Context, ev Event, note ...string) error {
@@ -455,21 +494,22 @@ func (d *Dispatcher) sendLinksMenu(ctx context.Context, ev Event) error {
 }
 
 func (d *Dispatcher) searchLinks(ctx context.Context, ev Event, query string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	query = strings.TrimSpace(query)
 	if query == "" || utf8.RuneCountInString(query) > store.SavedLinkSearchMaxRunes {
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Нужен текст поиска длиной 1–%d символов: /links search <текст>.", store.SavedLinkSearchMaxRunes))
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "links.search_usage", store.SavedLinkSearchMaxRunes))
 	}
 	rows, err := store.SearchSavedLinks(ctx, d.deps.DB, ev.ChatID, query, store.SavedLinkListLimit)
 	if err != nil {
 		return err
 	}
-	scope := fmt.Sprintf("Область поиска: до %d сохранённых ссылок текущего чата, их заголовки, URL и текст; вывод — до %d совпадений, без учёта регистра Unicode.", store.SavedLinkMaxPerChat, store.SavedLinkListLimit)
-	heading := fmt.Sprintf("Поиск ссылок по %q: совпадений %d.\n%s", query, len(rows), scope)
-	text := menuText(linksMenuText(rows, heading), nil)
+	scope := i18n.T(lang, "links.search_scope", store.SavedLinkMaxPerChat, store.SavedLinkListLimit)
+	heading := i18n.T(lang, "links.search_heading", query, len(rows), scope)
+	text := menuText(linksMenuText(rows, heading, i18n.T(lang, "links.none")), nil)
 	if sender, ok := d.deps.Replier.(interface {
 		SendMenu(context.Context, int64, string, models.InlineKeyboardMarkup) error
 	}); ok {
-		return sender.SendMenu(ctx, ev.ChatID, Escape(text, d.deps.Cfg.ParseMode), linksMenuMarkup(rows))
+		return sender.SendMenu(ctx, ev.ChatID, Escape(text, d.deps.Cfg.ParseMode), linksMenuMarkupFor(lang, rows))
 	}
 	return d.reply(ctx, ev.ChatID, text)
 }
@@ -480,16 +520,17 @@ func parseLinkID(value string) (int64, bool) {
 }
 
 func (d *Dispatcher) linkMenuControl(ctx context.Context, ev Event, action string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	switch action {
 	case "menu":
 		return d.showLinksMenu(ctx, ev)
 	case "menu:search":
-		return d.beginPendingInput(ctx, ev, pendingLinkSearch, "menu:links", "Отправь текст для поиска по сохранённым ссылкам этого чата. Ввод действует 2 минуты.")
+		return d.beginPendingInput(ctx, ev, pendingLinkSearch, "menu:links", i18n.T(lang, "links.search_hint"))
 	}
 	if value, ok := strings.CutPrefix(action, "menu:summary:"); ok {
 		id, valid := parseLinkID(value)
 		if !valid {
-			return d.showLinksMenu(ctx, ev, menuExpiredText)
+			return d.showLinksMenu(ctx, ev, menuExpiredFor(lang))
 		}
 		return d.summaryLink(ctx, ev, id)
 	}
@@ -504,10 +545,11 @@ func (d *Dispatcher) linkMenuControl(ctx context.Context, ev Event, action strin
 	if strings.HasPrefix(action, "menu:save:") {
 		return d.linkSaveControl(ctx, ev, action)
 	}
-	return d.showLinksMenu(ctx, ev, menuExpiredText)
+	return d.showLinksMenu(ctx, ev, menuExpiredFor(lang))
 }
 
 func (d *Dispatcher) links(ctx context.Context, ev Event, arg string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	action := strings.TrimSpace(arg)
 	if action == "" || strings.EqualFold(action, "list") {
 		return d.sendLinksMenu(ctx, ev)
@@ -523,7 +565,7 @@ func (d *Dispatcher) links(ctx context.Context, ev Event, arg string) error {
 	switch strings.ToLower(verb) {
 	case "add":
 		if rest == "" {
-			return d.reply(ctx, ev.ChatID, linksUsage)
+			return d.reply(ctx, ev.ChatID, linksUsageFor(lang))
 		}
 		return d.addLink(ctx, ev, rest)
 	case "search":
@@ -531,34 +573,35 @@ func (d *Dispatcher) links(ctx context.Context, ev Event, arg string) error {
 	case "summary":
 		id, valid := parseLinkID(rest)
 		if !valid {
-			return d.reply(ctx, ev.ChatID, "Используй /links summary <id> из /links.")
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "links.summary_usage"))
 		}
 		return d.summaryLink(ctx, ev, id)
 	case "delete":
 		id, valid := parseLinkID(rest)
 		if !valid {
-			return d.reply(ctx, ev.ChatID, "Используй /links delete <id> из /links.")
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "links.delete_usage"))
 		}
 		deleted, err := store.DeleteSavedLink(ctx, d.deps.DB, ev.ChatID, id)
 		if err != nil {
 			return err
 		}
 		if !deleted {
-			return d.reply(ctx, ev.ChatID, fmt.Sprintf("Ссылка #%d в текущем чате не найдена.", id))
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "links.not_found", id))
 		}
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Ссылка #%d удалена.", id))
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "links.deleted", id))
 	default:
-		return d.reply(ctx, ev.ChatID, linksUsage)
+		return d.reply(ctx, ev.ChatID, linksUsageFor(lang))
 	}
 }
 
 func (d *Dispatcher) summaryLink(ctx context.Context, ev Event, id int64) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	link, found, err := store.GetSavedLink(ctx, d.deps.DB, ev.ChatID, id)
 	if err != nil {
 		return err
 	}
 	if !found || strings.TrimSpace(link.Content) == "" {
-		return d.linkActionReply(ctx, ev, fmt.Sprintf("Ссылка #%d или её сохранённый текст больше недоступны в текущем чате. Сеть не запрашивалась.", id))
+		return d.linkActionReply(ctx, ev, i18n.T(lang, "links.summary_unavailable", id))
 	}
 	selectedModel, err := d.modelName(ctx, ev.ChatID)
 	if err != nil {
@@ -574,7 +617,7 @@ func (d *Dispatcher) summaryLink(ctx context.Context, ev Event, id int64) error 
 	}
 	resp, modelErr := d.callModel(replyCtx, ev.UserID, model.Request{Model: selectedModel, Messages: messages}, nil, nil)
 	if modelErr == nil {
-		resp.Content = fmt.Sprintf("Краткое содержание #%d · %s\n\n%s", id, link.Title, resp.Content)
+		resp.Content = i18n.T(lang, "links.summary_header", id, link.Title, resp.Content)
 	}
 	return d.finishModelAnswer(ctx, replyCtx, ev, resp, modelErr, selectedModel, nil, false, nil)
 }

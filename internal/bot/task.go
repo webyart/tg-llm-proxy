@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-telegram/bot/models"
 
+	"bot/internal/i18n"
 	"bot/internal/model"
 	"bot/internal/store"
 )
@@ -178,6 +179,7 @@ func (d *Dispatcher) createTask(ctx context.Context, chatID int64, userID int64,
 }
 
 func (d *Dispatcher) task(ctx context.Context, ev Event, arg string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	action := strings.TrimSpace(arg)
 	if action == "" {
 		return d.sendTaskMenu(ctx, ev)
@@ -201,7 +203,7 @@ func (d *Dispatcher) task(ctx context.Context, ev Event, arg string) error {
 		return d.clearTasks(ctx, ev)
 	}
 	if action == "menu:new" {
-		return d.beginPendingInput(ctx, ev, CommandTask, "menu:task", "Отправь цель новой задачи одним сообщением. Будет создан новый безопасный план из 1–3 шагов. Ввод действует 2 минуты.")
+		return d.beginPendingInput(ctx, ev, CommandTask, "menu:task", i18n.T(lang, "task.new_hint"))
 	}
 	if strings.EqualFold(action, "cancel") {
 		return d.cancelTask(ctx, ev, false)
@@ -209,65 +211,67 @@ func (d *Dispatcher) task(ctx context.Context, ev Event, arg string) error {
 	fields := strings.Fields(action)
 	if len(fields) > 0 && strings.EqualFold(fields[0], "resume") {
 		if len(fields) != 2 {
-			return d.reply(ctx, ev.ChatID, TaskUsage)
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "task.usage"))
 		}
 		taskID, err := strconv.ParseInt(fields[1], 10, 64)
 		if err != nil || taskID <= 0 {
-			return d.reply(ctx, ev.ChatID, TaskUsage)
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "task.usage"))
 		}
 		return d.resumeTask(ctx, ev, taskID, false)
 	}
 	created, plan, err := d.createTask(ctx, ev.ChatID, ev.UserID, ev.ChatTitle, action)
 	if errors.Is(err, store.ErrTaskGoal) {
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Цель задачи должна быть непустой и не длиннее %d символов.", store.TaskMaxGoalRunes))
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "task.goal_invalid", store.TaskMaxGoalRunes))
 	}
 	if errors.Is(err, ErrTaskRateLimited) {
-		return d.reply(ctx, ev.ChatID, modelWorkBudgetErrorText)
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "ask.rate_limited"))
 	}
 	var active *taskActiveError
 	if errors.As(err, &active) {
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf("В чате уже выполняется задача #%d. Дождись завершения или используй /task cancel.", active.taskID))
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "task.active", active.taskID))
 	}
 	var planning *taskPlanningError
 	if errors.As(err, &planning) {
 		reason := brief(Sanitize(planning.cause, d.deps.Token), 300)
-		if notice, limited := modelLimitNotice(planning.cause); limited {
+		if notice, limited := modelLimitNoticeFor(lang, planning.cause); limited {
 			reason = notice
 		}
-		return d.reply(ctx, ev.ChatID, "Не удалось составить безопасный план. Активная задача не создана. Причина: "+reason)
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "task.plan_failed")+reason)
 	}
 	if errors.Is(err, store.ErrTaskActive) {
-		return d.reply(ctx, ev.ChatID, "В чате уже есть активная задача. Дождись завершения или используй /task cancel.")
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "task.active_generic"))
 	}
 	if err != nil {
 		return err
 	}
-	lines := []string{fmt.Sprintf("Задача #%d создана. План (%d шаг.):", created.ID, len(plan.Steps))}
+	lines := []string{i18n.T(lang, "task.created_header", created.ID, len(plan.Steps))}
 	for index, step := range plan.Steps {
 		lines = append(lines, fmt.Sprintf("%d. %s", index+1, step.Description))
 	}
-	lines = append(lines, "Шаги выполняются последовательно. /task — прогресс, /task cancel — отмена.")
+	lines = append(lines, i18n.T(lang, "task.created_hint"))
 	return d.reply(ctx, ev.ChatID, strings.Join(lines, "\n"))
 }
 
 func (d *Dispatcher) promptTaskClear(ctx context.Context, ev Event) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	token, err := newDeleteConfirmationToken()
 	if err != nil {
 		return err
 	}
 	d.rememberDocumentConfirmation(token, ev, "task_clear", 0)
 	markup := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		menuRow(menuButton("Подтвердить очистку", "menu:doc:confirm:"+token), menuButton("Отмена", "menu:doc:cancel:"+token)),
+		menuRow(menuButton(i18n.T(lang, "task.confirm_clear"), "menu:doc:confirm:"+token), menuButton(i18n.T(lang, "menu.cancel"), "menu:doc:cancel:"+token)),
 	}}
-	return d.renderMenu(ctx, ev, "Удалить все задачи этого чата? Кнопки действуют 5 минут.", markup)
+	return d.renderMenu(ctx, ev, i18n.T(lang, "task.clear_confirm"), markup)
 }
 
 func (d *Dispatcher) clearTasks(ctx context.Context, ev Event) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	deleted, err := d.ClearTasks(ctx, ev.ChatID)
 	if err != nil {
 		return err
 	}
-	return d.showTaskMenu(ctx, ev, fmt.Sprintf("Удалено задач: %d.", deleted))
+	return d.showTaskMenu(ctx, ev, i18n.T(lang, "task.cleared", deleted))
 }
 
 func (d *Dispatcher) ClearTasks(ctx context.Context, chatID int64) (int64, error) {
@@ -310,20 +314,21 @@ func (d *Dispatcher) wakeTasks() {
 }
 
 func (d *Dispatcher) cancelTask(ctx context.Context, ev Event, menu bool) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	cancelled, ok, err := d.CancelTask(ctx, ev.ChatID)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		if menu {
-			return d.showTaskMenu(ctx, ev, "Активной задачи нет или она уже завершена.")
+			return d.showTaskMenu(ctx, ev, i18n.T(lang, "task.none_active_menu"))
 		}
-		return d.reply(ctx, ev.ChatID, "Активной задачи в этом чате нет.")
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "task.none_active"))
 	}
 	if menu {
-		return d.showTaskMenu(ctx, ev, fmt.Sprintf("Задача #%d отменена. Будущие шаги и ожидающие подтверждения остановлены.", cancelled.ID))
+		return d.showTaskMenu(ctx, ev, i18n.T(lang, "task.cancelled", cancelled.ID))
 	}
-	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Задача #%d отменена. Будущие шаги и ожидающие подтверждения остановлены.", cancelled.ID))
+	return d.reply(ctx, ev.ChatID, i18n.T(lang, "task.cancelled", cancelled.ID))
 }
 
 func (d *Dispatcher) CancelTask(ctx context.Context, chatID int64) (store.Task, bool, error) {
@@ -343,13 +348,14 @@ func (d *Dispatcher) CancelTask(ctx context.Context, chatID int64) (store.Task, 
 }
 
 func (d *Dispatcher) resumeTask(ctx context.Context, ev Event, taskID int64, menu bool) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	if menu {
 		current, found, err := store.CurrentTask(ctx, d.deps.DB, ev.ChatID)
 		if err != nil {
 			return err
 		}
 		if !found {
-			return d.showTaskMenu(ctx, ev, "Возобновить можно только последнюю отменённую или остановленную с ошибкой задачу.")
+			return d.showTaskMenu(ctx, ev, i18n.T(lang, "task.resume_only"))
 		}
 		taskID = current.ID
 	}
@@ -358,13 +364,13 @@ func (d *Dispatcher) resumeTask(ctx context.Context, ev Event, taskID int64, men
 		return err
 	}
 	if !ok {
-		message := fmt.Sprintf("Задачу #%d нельзя возобновить: возобновляется только последняя отменённая или остановленная с ошибкой задача этого чата.", taskID)
+		message := i18n.T(lang, "task.resume_rejected", taskID)
 		if menu {
-			return d.showTaskMenu(ctx, ev, "Возобновить можно только последнюю отменённую или остановленную с ошибкой задачу.")
+			return d.showTaskMenu(ctx, ev, i18n.T(lang, "task.resume_only"))
 		}
 		return d.reply(ctx, ev.ChatID, message)
 	}
-	message := fmt.Sprintf("Задача #%d возобновлена. Завершённые шаги и результаты сохранены; сетевые действия потребуют нового подтверждения.", resumed.ID)
+	message := i18n.T(lang, "task.resumed", resumed.ID)
 	if menu {
 		return d.showTaskMenu(ctx, ev, message)
 	}
@@ -405,72 +411,80 @@ func (d *Dispatcher) removeTaskApproval(ctx context.Context, task store.Task) {
 }
 
 func (d *Dispatcher) taskStatusText(ctx context.Context, ev Event) (string, store.Task, error) {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	task, found, err := store.CurrentTask(ctx, d.deps.DB, ev.ChatID)
 	if err != nil || !found {
-		return "Активной или завершённой задачи нет.\n" + TaskUsage, store.Task{}, err
+		return i18n.T(lang, "task.none", i18n.T(lang, "task.usage")), store.Task{}, err
 	}
 	plan, planErr := ParseTaskPlan(task.PlanJSON)
-	status := map[string]string{
-		store.TaskStatusReady: "ожидает выполнения", store.TaskStatusRunning: "выполняется",
-		store.TaskStatusAwaitingApproval: "ждёт подтверждения сетевого действия", store.TaskStatusCompleted: "завершена",
-		store.TaskStatusCancelled: "отменена", store.TaskStatusFailed: "остановлена с ошибкой",
+	statusKey := map[string]string{
+		store.TaskStatusReady: "task.status.ready", store.TaskStatusRunning: "task.status.running",
+		store.TaskStatusAwaitingApproval: "task.status.approval", store.TaskStatusCompleted: "task.status.completed",
+		store.TaskStatusCancelled: "task.status.cancelled", store.TaskStatusFailed: "task.status.failed",
 	}[task.Status]
-	if status == "" {
-		status = "недействительное состояние"
+	if statusKey == "" {
+		statusKey = "task.status.invalid"
 	}
-	lines := []string{fmt.Sprintf("Задача #%d: %s.", task.ID, status), "Цель: " + brief(task.Goal, 300)}
+	status := i18n.T(lang, statusKey)
+	lines := []string{i18n.T(lang, "task.status_line", task.ID, status), i18n.T(lang, "task.goal_line", brief(task.Goal, 300))}
 	if planErr == nil {
 		progress := task.NextStep
 		if progress > len(plan.Steps) {
 			progress = len(plan.Steps)
 		}
-		lines = append(lines, fmt.Sprintf("Прогресс: %d/%d.", progress, len(plan.Steps)))
+		lines = append(lines, i18n.T(lang, "task.progress", progress, len(plan.Steps)))
 		for index, step := range plan.Steps {
 			lines = append(lines, fmt.Sprintf("%d. %s", index+1, step.Description))
 		}
 	} else if store.ActiveTaskStatus(task.Status) {
-		lines = append(lines, "Сохранённый план недействителен; выполнение будет остановлено без новых действий.")
+		lines = append(lines, i18n.T(lang, "task.plan_invalid"))
 	}
 	if task.Error != "" {
-		lines = append(lines, "Причина: "+brief(task.Error, 300))
+		lines = append(lines, i18n.T(lang, "task.reason", brief(task.Error, 300)))
 	}
 	if store.ActiveTaskStatus(task.Status) {
-		lines = append(lines, "/task cancel — отменить.")
+		lines = append(lines, i18n.T(lang, "task.cancel_hint"))
 	} else {
 		if task.Status == store.TaskStatusFailed || task.Status == store.TaskStatusCancelled {
-			lines = append(lines, fmt.Sprintf("/task resume %d — возобновить с сохранением прогресса.", task.ID))
+			lines = append(lines, i18n.T(lang, "task.resume_hint", task.ID))
 		}
-		lines = append(lines, "/task <новая цель> — создать другую задачу.")
+		lines = append(lines, i18n.T(lang, "task.new_line"))
 	}
 	return strings.Join(lines, "\n"), task, nil
 }
 
 func taskMenuMarkup(task store.Task) models.InlineKeyboardMarkup {
-	rows := [][]models.InlineKeyboardButton{menuRow(menuButton("Обновить", "menu:task"))}
+	return taskMenuMarkupFor(i18n.Default, task)
+}
+
+func taskMenuMarkupFor(lang string, task store.Task) models.InlineKeyboardMarkup {
+	rows := [][]models.InlineKeyboardButton{menuRow(menuButton(i18n.T(lang, "task.refresh"), "menu:task"))}
 	if task.ID > 0 && store.ActiveTaskStatus(task.Status) {
-		rows = append(rows, menuRow(menuButton("Отменить задачу", "menu:task:cancel")))
+		rows = append(rows, menuRow(menuButton(i18n.T(lang, "task.cancel"), "menu:task:cancel")))
 	} else {
-		rows = append(rows, menuRow(menuButton("Новая задача", "menu:task:new")))
+		rows = append(rows, menuRow(menuButton(i18n.T(lang, "task.new"), "menu:task:new")))
 	}
 	if task.ID > 0 && (task.Status == store.TaskStatusFailed || task.Status == store.TaskStatusCancelled) {
-		rows = append(rows, menuRow(menuButton("Возобновить задачу", "menu:task:resume")))
+		rows = append(rows, menuRow(menuButton(i18n.T(lang, "task.resume"), "menu:task:resume")))
 	}
 	if task.ID > 0 {
-		rows = append(rows, menuRow(menuButton("Очистить задачи", "menu:task:clear")))
+		rows = append(rows, menuRow(menuButton(i18n.T(lang, "task.clear"), "menu:task:clear")))
 	}
-	rows = append(rows, menuRow(backButton("menu:more")))
+	rows = append(rows, menuRow(backButtonFor(lang, "menu:more")))
 	return models.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
 func (d *Dispatcher) showTaskMenu(ctx context.Context, ev Event, note ...string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	text, task, err := d.taskStatusText(ctx, ev)
 	if err != nil {
 		return err
 	}
-	return d.renderMenu(ctx, ev, menuText(text, note), taskMenuMarkup(task))
+	return d.renderMenu(ctx, ev, menuText(text, note), taskMenuMarkupFor(lang, task))
 }
 
 func (d *Dispatcher) sendTaskMenu(ctx context.Context, ev Event) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	text, task, err := d.taskStatusText(ctx, ev)
 	if err != nil {
 		return err
@@ -478,7 +492,7 @@ func (d *Dispatcher) sendTaskMenu(ctx context.Context, ev Event) error {
 	if sender, ok := d.deps.Replier.(interface {
 		SendMenu(context.Context, int64, string, models.InlineKeyboardMarkup) error
 	}); ok {
-		return sender.SendMenu(ctx, ev.ChatID, Escape(text, d.deps.Cfg.ParseMode), taskMenuMarkup(task))
+		return sender.SendMenu(ctx, ev.ChatID, Escape(text, d.deps.Cfg.ParseMode), taskMenuMarkupFor(lang, task))
 	}
 	return d.reply(ctx, ev.ChatID, text)
 }

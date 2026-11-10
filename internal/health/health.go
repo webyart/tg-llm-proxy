@@ -23,7 +23,8 @@ const (
 	Path = "/healthz"
 	// ReadyPath is the readiness probe: 200 only when the database answers and the model is reachable.
 	ReadyPath = "/readyz"
-	// MetricsPath is served from the same loopback listener as the probes.
+	// MetricsPath is served either from this listener (single-listener default) or from a second Server
+	// bound to a concrete metrics address (see main.go and METRICS_LISTEN_HOST).
 	MetricsPath = "/metrics"
 )
 
@@ -65,10 +66,10 @@ func New(port int64) *Server {
 	return NewOn("127.0.0.1", port)
 }
 
-// NewOn — the same listener on an explicit host. A container passes 0.0.0.0 so the published host port and the
-// edge gateway's Prometheus can reach /readyz and /metrics; the compose publish rule keeps the host side on
-// 127.0.0.1, so the address is still not reachable from outside the machine. Any other value is the caller's
-// mistake and fails at Listen with the address in the error.
+// NewOn — the same listener on an explicit host. A container passes 0.0.0.0 for the health listener so the
+// published host port and the HEALTHCHECK reach /healthz and /readyz. A second Server may be bound to a
+// concrete metrics address (METRICS_LISTEN_HOST) and the same port; the two addresses do not collide, and the
+// metrics socket is then visible only on that network.
 func NewOn(host string, port int64) *Server {
 	if host == "" {
 		host = "127.0.0.1"
@@ -89,8 +90,8 @@ func NewOn(host string, port int64) *Server {
 	return s
 }
 
-// Handle registers one more endpoint on the loopback listener (main uses it for /metrics). Call it
-// before Run; the probe paths themselves cannot be replaced.
+// Handle registers one more endpoint on this listener (main uses it for /metrics when no separate metrics
+// address is configured). Call it before Run; the probe paths themselves cannot be replaced.
 func (s *Server) Handle(pattern string, handler http.Handler) {
 	s.mux.Handle(pattern, handler)
 }

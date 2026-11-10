@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-telegram/bot/models"
 
+	"bot/internal/i18n"
 	"bot/internal/store"
 )
 
@@ -147,14 +148,19 @@ func reminderTimezone(d *Dispatcher) string {
 }
 
 func reminderSchedule(d *Dispatcher, reminder store.Reminder) string {
+	return reminderScheduleFor(i18n.Default, d, reminder)
+}
+
+func reminderScheduleFor(lang string, d *Dispatcher, reminder store.Reminder) string {
 	location := reminderLocation(d)
 	if reminder.Cadence == store.ReminderCadenceDaily {
-		return fmt.Sprintf("каждый день в %s %s (%s)", reminder.DailyTime, reminder.NextRunAt.In(location).Format("MST"), reminderTimezone(d))
+		return i18n.T(lang, "remind.schedule_daily", reminder.DailyTime, reminder.NextRunAt.In(location).Format("MST"), reminderTimezone(d))
 	}
 	return fmt.Sprintf("%s (%s)", reminder.NextRunAt.In(location).Format("2006-01-02 15:04 MST"), reminderTimezone(d))
 }
 
 func (d *Dispatcher) createReminder(ctx context.Context, ev Event, reminder store.Reminder) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	if err := store.EnsureChat(ctx, d.deps.DB, ev.ChatID, ev.UserID, ev.ChatTitle); err != nil {
 		return err
 	}
@@ -162,27 +168,28 @@ func (d *Dispatcher) createReminder(ctx context.Context, ev Event, reminder stor
 	reminder.UserID = ev.UserID
 	created, err := store.CreateReminder(ctx, d.deps.DB, reminder)
 	if errors.Is(err, store.ErrReminderText) {
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Текст напоминания должен быть непустым и не длиннее %d символов.", store.ReminderMaxTextRunes))
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "remind.text_invalid", store.ReminderMaxTextRunes))
 	}
 	if errors.Is(err, store.ErrReminderLimit) {
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf("В чате уже %d активных напоминаний. Сначала отмени одно через /reminders.", store.ReminderMaxActivePerChat))
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "remind.limit", store.ReminderMaxActivePerChat))
 	}
 	if err != nil {
 		return err
 	}
-	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Напоминание #%d сохранено: %s. Текст: %s", created.ID, reminderSchedule(d, created), created.Text))
+	return d.reply(ctx, ev.ChatID, i18n.T(lang, "remind.created", created.ID, reminderScheduleFor(lang, d, created), created.Text))
 }
 
 func (d *Dispatcher) remind(ctx context.Context, ev Event, arg string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	reminder, err := ParseReminder(arg, d.now(), reminderLocation(d))
 	if err != nil {
 		if errors.Is(err, store.ErrReminderText) {
-			return d.reply(ctx, ev.ChatID, fmt.Sprintf("Текст напоминания должен быть непустым и не длиннее %d символов.", store.ReminderMaxTextRunes))
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "remind.text_invalid", store.ReminderMaxTextRunes))
 		}
 		if errors.Is(err, store.ErrReminderTime) {
-			return d.reply(ctx, ev.ChatID, "Время должно быть в формате HH:MM от 00:00 до 23:59. "+ReminderUsage)
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "remind.time_invalid", i18n.T(lang, "remind.usage")))
 		}
-		return d.reply(ctx, ev.ChatID, ReminderUsage)
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "remind.usage"))
 	}
 	return d.createReminder(ctx, ev, reminder)
 }
@@ -205,16 +212,22 @@ func quickReminder(choice string, text string, now time.Time, location *time.Loc
 }
 
 func (d *Dispatcher) beginReminderCreation(ctx context.Context, ev Event, choice string) error {
-	labels := map[string]string{"10m": "через 10 минут", "1h": "через 1 час", "tomorrow": "завтра в 09:00"}
+	lang := d.chatLanguage(ctx, ev.ChatID)
+	labels := map[string]string{
+		"10m":      i18n.T(lang, "remind.quick_10m"),
+		"1h":       i18n.T(lang, "remind.quick_1h"),
+		"tomorrow": i18n.T(lang, "remind.quick_tomorrow"),
+	}
 	label, ok := labels[choice]
 	if !ok {
-		return d.showReminderCreateMenu(ctx, ev, menuExpiredText)
+		return d.showReminderCreateMenu(ctx, ev, menuExpiredFor(lang))
 	}
-	prompt := fmt.Sprintf("Отправь текст напоминания одним сообщением (до %d символов). Время: %s. Часовой пояс: %s. Ввод действует 2 минуты.", store.ReminderMaxTextRunes, label, reminderTimezone(d))
+	prompt := i18n.T(lang, "remind.create_prompt", store.ReminderMaxTextRunes, label, reminderTimezone(d))
 	return d.beginPendingInput(ctx, ev, pendingReminderActionPrefix+choice, "menu:reminders", prompt)
 }
 
 func (d *Dispatcher) reminders(ctx context.Context, ev Event, arg string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	action := strings.TrimSpace(arg)
 	if action == "" {
 		return d.sendReminderMenu(ctx, ev)
@@ -234,32 +247,32 @@ func (d *Dispatcher) reminders(ctx context.Context, ev Event, arg string) error 
 	if value, ok := strings.CutPrefix(action, "menu:create:"); ok {
 		choice, text, found := strings.Cut(value, " ")
 		if !found {
-			return d.reply(ctx, ev.ChatID, ReminderUsage)
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "reminders.usage"))
 		}
 		reminder, err := quickReminder(choice, text, d.now(), reminderLocation(d))
 		if err != nil {
-			return d.showReminderCreateMenu(ctx, ev, menuExpiredText)
+			return d.showReminderCreateMenu(ctx, ev, menuExpiredFor(lang))
 		}
 		return d.createReminder(ctx, ev, reminder)
 	}
 	if value, ok := strings.CutPrefix(action, "menu:cancel:"); ok {
 		id, err := strconv.ParseInt(value, 10, 64)
 		if err != nil || id <= 0 {
-			return d.showReminderMenu(ctx, ev, menuExpiredText)
+			return d.showReminderMenu(ctx, ev, menuExpiredFor(lang))
 		}
 		return d.cancelReminder(ctx, ev, id, true)
 	}
 	if value, ok := strings.CutPrefix(action, "menu:retry:"); ok {
 		id, err := strconv.ParseInt(value, 10, 64)
 		if err != nil || id <= 0 {
-			return d.showFailedReminderMenu(ctx, ev, menuExpiredText)
+			return d.showFailedReminderMenu(ctx, ev, menuExpiredFor(lang))
 		}
 		return d.retryFailedReminder(ctx, ev, id)
 	}
 	if value, ok := strings.CutPrefix(action, "menu:delete:"); ok {
 		id, err := strconv.ParseInt(value, 10, 64)
 		if err != nil || id <= 0 {
-			return d.showFailedReminderMenu(ctx, ev, menuExpiredText)
+			return d.showFailedReminderMenu(ctx, ev, menuExpiredFor(lang))
 		}
 		return d.deleteFailedReminder(ctx, ev, id)
 	}
@@ -270,62 +283,66 @@ func (d *Dispatcher) reminders(ctx context.Context, ev Event, arg string) error 
 			return d.cancelReminder(ctx, ev, id, false)
 		}
 	}
-	return d.reply(ctx, ev.ChatID, RemindersUsage)
+	return d.reply(ctx, ev.ChatID, i18n.T(lang, "reminders.usage"))
 }
 
 func (d *Dispatcher) cancelReminder(ctx context.Context, ev Event, id int64, menu bool) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	cancelled, err := store.CancelReminder(ctx, d.deps.DB, ev.ChatID, id, d.now())
 	if err != nil {
 		return err
 	}
 	if menu {
 		if !cancelled {
-			return d.showReminderMenu(ctx, ev, menuExpiredText)
+			return d.showReminderMenu(ctx, ev, menuExpiredFor(lang))
 		}
-		return d.showReminderMenu(ctx, ev, fmt.Sprintf("Напоминание #%d отменено.", id))
+		return d.showReminderMenu(ctx, ev, i18n.T(lang, "remind.cancelled", id))
 	}
 	if !cancelled {
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Активное напоминание #%d в этом чате не найдено.", id))
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "remind.not_found", id))
 	}
-	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Напоминание #%d отменено.", id))
+	return d.reply(ctx, ev.ChatID, i18n.T(lang, "remind.cancelled", id))
 }
 
 func (d *Dispatcher) retryFailedReminder(ctx context.Context, ev Event, id int64) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	retried, err := store.RetryFailedReminder(ctx, d.deps.DB, ev.ChatID, id, d.now())
 	if err != nil {
 		return err
 	}
 	if !retried {
-		return d.showFailedReminderMenu(ctx, ev, menuExpiredText)
+		return d.showFailedReminderMenu(ctx, ev, menuExpiredFor(lang))
 	}
-	return d.showReminderMenu(ctx, ev, fmt.Sprintf("Напоминание #%d снова активно и будет доставлено при следующем проходе планировщика.", id))
+	return d.showReminderMenu(ctx, ev, i18n.T(lang, "remind.retried", id))
 }
 
 func (d *Dispatcher) deleteFailedReminder(ctx context.Context, ev Event, id int64) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	deleted, err := store.DeleteFailedReminder(ctx, d.deps.DB, ev.ChatID, id)
 	if err != nil {
 		return err
 	}
 	if !deleted {
-		return d.showFailedReminderMenu(ctx, ev, menuExpiredText)
+		return d.showFailedReminderMenu(ctx, ev, menuExpiredFor(lang))
 	}
-	return d.showFailedReminderMenu(ctx, ev, fmt.Sprintf("Недоставленное напоминание #%d удалено.", id))
+	return d.showFailedReminderMenu(ctx, ev, i18n.T(lang, "remind.deleted_failed", id))
 }
 
 func (d *Dispatcher) reminderMenuContent(ctx context.Context, ev Event, note ...string) (string, models.InlineKeyboardMarkup, error) {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	rows, err := store.ListReminders(ctx, d.deps.DB, ev.ChatID, store.ReminderListLimit)
 	if err != nil {
 		return "", models.InlineKeyboardMarkup{}, err
 	}
-	text := "Активных напоминаний нет.\n" + ReminderUsage
+	text := i18n.T(lang, "reminders.none", i18n.T(lang, "reminders.usage"))
 	if len(rows) > 0 {
-		lines := []string{fmt.Sprintf("Активные напоминания (до %d):", store.ReminderListLimit)}
+		lines := []string{i18n.T(lang, "reminders.header", store.ReminderListLimit)}
 		for _, reminder := range rows {
-			lines = append(lines, fmt.Sprintf("#%d · %s · %s", reminder.ID, reminderSchedule(d, reminder), brief(reminder.Text, 100)))
+			lines = append(lines, i18n.T(lang, "reminders.line", reminder.ID, reminderScheduleFor(lang, d, reminder), brief(reminder.Text, 100)))
 		}
 		text = strings.Join(lines, "\n")
 	}
-	return menuText(text, note), reminderMenuMarkup(rows), nil
+	return menuText(text, note), reminderMenuMarkupFor(lang, rows), nil
 }
 
 func (d *Dispatcher) showReminderMenu(ctx context.Context, ev Event, note ...string) error {
@@ -350,57 +367,67 @@ func (d *Dispatcher) sendReminderMenu(ctx context.Context, ev Event) error {
 }
 
 func reminderMenuMarkup(reminders []store.Reminder) models.InlineKeyboardMarkup {
-	rows := [][]models.InlineKeyboardButton{menuRow(menuButton("Создать напоминание", "menu:reminder:new"))}
+	return reminderMenuMarkupFor(i18n.Default, reminders)
+}
+
+func reminderMenuMarkupFor(lang string, reminders []store.Reminder) models.InlineKeyboardMarkup {
+	rows := [][]models.InlineKeyboardButton{menuRow(menuButton(i18n.T(lang, "reminders.create"), "menu:reminder:new"))}
 	for _, reminder := range reminders {
-		rows = append(rows, menuRow(menuButton(fmt.Sprintf("Отменить #%d · %s", reminder.ID, brief(reminder.Text, 30)),
+		rows = append(rows, menuRow(menuButton(i18n.T(lang, "reminders.cancel", reminder.ID, brief(reminder.Text, 30)),
 			fmt.Sprintf("menu:reminder:cancel:%d", reminder.ID))))
 	}
 	rows = append(rows,
-		menuRow(menuButton("Недоставленные", "menu:reminder:failed")),
-		menuRow(menuButton("Обновить", "menu:reminders")),
-		menuRow(backButton("menu:more")),
+		menuRow(menuButton(i18n.T(lang, "reminders.failed"), "menu:reminder:failed")),
+		menuRow(menuButton(i18n.T(lang, "reminders.refresh"), "menu:reminders")),
+		menuRow(backButtonFor(lang, "menu:more")),
 	)
 	return models.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
 func (d *Dispatcher) showReminderCreateMenu(ctx context.Context, ev Event, note ...string) error {
-	text := fmt.Sprintf("Создание напоминания. Выбери время, затем отправь текст одним сообщением. Часовой пояс: %s.", reminderTimezone(d))
+	lang := d.chatLanguage(ctx, ev.ChatID)
+	text := i18n.T(lang, "reminders.create_menu", reminderTimezone(d))
 	markup := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		menuRow(menuButton("Через 10 минут", "menu:reminder:new:10m")),
-		menuRow(menuButton("Через 1 час", "menu:reminder:new:1h")),
-		menuRow(menuButton("Завтра в 09:00", "menu:reminder:new:tomorrow")),
-		menuRow(backButton("menu:reminders")),
+		menuRow(menuButton(i18n.T(lang, "reminders.quick_10m"), "menu:reminder:new:10m")),
+		menuRow(menuButton(i18n.T(lang, "reminders.quick_1h"), "menu:reminder:new:1h")),
+		menuRow(menuButton(i18n.T(lang, "reminders.quick_9am"), "menu:reminder:new:tomorrow")),
+		menuRow(backButtonFor(lang, "menu:reminders")),
 	}}
 	return d.renderMenu(ctx, ev, menuText(text, note), markup)
 }
 
 func (d *Dispatcher) showFailedReminderMenu(ctx context.Context, ev Event, note ...string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	rows, err := store.ListFailedReminders(ctx, d.deps.DB, ev.ChatID, reminderFailedListLimit)
 	if err != nil {
 		return err
 	}
-	text := "Недоставленных напоминаний нет."
+	text := i18n.T(lang, "reminders.no_failed")
 	if len(rows) > 0 {
-		lines := []string{fmt.Sprintf("Недавние недоставленные напоминания (до %d):", reminderFailedListLimit)}
+		lines := []string{i18n.T(lang, "reminders.failed_title", reminderFailedListLimit)}
 		for _, reminder := range rows {
-			lines = append(lines, fmt.Sprintf("#%d · %d попыток · %s", reminder.ID, reminder.Attempts, brief(reminder.Text, 100)))
+			lines = append(lines, i18n.T(lang, "reminders.failed_line", reminder.ID, reminder.Attempts, brief(reminder.Text, 100)))
 		}
 		text = strings.Join(lines, "\n")
 	}
-	return d.renderMenu(ctx, ev, menuText(text, note), failedReminderMenuMarkup(rows))
+	return d.renderMenu(ctx, ev, menuText(text, note), failedReminderMenuMarkupFor(lang, rows))
 }
 
 func failedReminderMenuMarkup(reminders []store.Reminder) models.InlineKeyboardMarkup {
+	return failedReminderMenuMarkupFor(i18n.Default, reminders)
+}
+
+func failedReminderMenuMarkupFor(lang string, reminders []store.Reminder) models.InlineKeyboardMarkup {
 	rows := [][]models.InlineKeyboardButton{}
 	for _, reminder := range reminders {
 		rows = append(rows, menuRow(
-			menuButton(fmt.Sprintf("Повторить #%d", reminder.ID), fmt.Sprintf("menu:reminder:retry:%d", reminder.ID)),
-			menuButton(fmt.Sprintf("Удалить #%d", reminder.ID), fmt.Sprintf("menu:reminder:delete:%d", reminder.ID)),
+			menuButton(i18n.T(lang, "reminders.retry", reminder.ID), fmt.Sprintf("menu:reminder:retry:%d", reminder.ID)),
+			menuButton(i18n.T(lang, "reminders.delete", reminder.ID), fmt.Sprintf("menu:reminder:delete:%d", reminder.ID)),
 		))
 	}
 	rows = append(rows,
-		menuRow(menuButton("Обновить", "menu:reminder:failed")),
-		menuRow(backButton("menu:reminders")),
+		menuRow(menuButton(i18n.T(lang, "reminders.refresh"), "menu:reminder:failed")),
+		menuRow(backButtonFor(lang, "menu:reminders")),
 	)
 	return models.InlineKeyboardMarkup{InlineKeyboard: rows}
 }

@@ -41,6 +41,10 @@ const (
 	msgAnswerBelow = "(ответ ниже)"
 )
 
+func streamPlaceholderFor(lang string) string {
+	return i18n.T(lang, "stream.placeholder")
+}
+
 // fitNotice — a notice whose TEMPLATE must survive, with `part` shortened so the whole fits maxRunes runes
 // failure, never the sentence that tells the user whether they are looking at an answer: a library error is
 // allowed to be long, the meaning of the message may not.
@@ -76,6 +80,7 @@ type streamSession struct {
 	ctx        context.Context
 	chatID     int64
 	sender     StreamSender
+	lang       string
 	draft      draftSender // nil unless this is a private chat and the sender supports drafts
 	draftID    string
 	dispatcher *Dispatcher
@@ -161,9 +166,9 @@ func (d *Dispatcher) showStreamMenu(ctx context.Context, ev Event, note ...strin
 	}
 	text := menuText(i18n.T(lang, "stream.menu", state, source), note)
 	markup := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		menuRow(menuButton("Включить", "menu:stream:on"), menuButton("Выключить", "menu:stream:off")),
-		menuRow(menuButton("Сбросить", "menu:stream:reset")),
-		menuRow(backButton("menu:settings")),
+		menuRow(menuButton(i18n.T(lang, "stream.button_on"), "menu:stream:on"), menuButton(i18n.T(lang, "stream.button_off"), "menu:stream:off")),
+		menuRow(menuButton(i18n.T(lang, "stream.button_reset"), "menu:stream:reset")),
+		menuRow(backButtonFor(lang, "menu:settings")),
 	}}
 	return d.renderMenu(ctx, ev, text, markup)
 }
@@ -188,7 +193,7 @@ func (d *Dispatcher) streamMenuControl(ctx context.Context, ev Event, action str
 		}
 		return d.showStreamMenu(ctx, ev, i18n.T(lang, "stream.menu_reset"))
 	default:
-		return d.showStreamMenu(ctx, ev, menuExpiredText)
+		return d.showStreamMenu(ctx, ev, menuExpiredFor(lang))
 	}
 }
 
@@ -252,6 +257,7 @@ func (d *Dispatcher) newStreamSession(ctx context.Context, chatID int64, sender 
 		ctx:        ctx,
 		chatID:     chatID,
 		sender:     sender,
+		lang:       d.chatLanguage(ctx, chatID),
 		draft:      draft,
 		draftID:    fmt.Sprintf("%d-%d", chatID, time.Now().UnixNano()),
 		dispatcher: d,
@@ -293,7 +299,7 @@ func (s *streamSession) progress(info model.StreamInfo) {
 	}
 	var elapsed = time.Since(s.start).Round(time.Second)
 	if s.answer.Len() == 0 {
-		s.editOrDraft(fmt.Sprintf(msgStreamThinking, info.ReasoningRunes, elapsed), false)
+		s.editOrDraft(i18n.T(s.lang, "stream.thinking", info.ReasoningRunes, elapsed), false)
 		return
 	}
 	chunks, err := s.answerChunks()
@@ -386,10 +392,10 @@ func (s *streamSession) answerChunksForView() []string {
 
 func (s *streamSession) partialViewChunks(chunks []string) string {
 	var total = s.answerRunes
-	var suffix = fmt.Sprintf(msgStreamSuffix, total)
+	var suffix = i18n.T(s.lang, "stream.suffix", total)
 	var marker = ""
 	if total > s.maxRunes {
-		marker = msgStreamCutMarker
+		marker = i18n.T(s.lang, "stream.cut_marker")
 	}
 	// The markers are worth more than the head they decorate, and of the two, the counter («it is still being
 	// 64 symbols) two notices and a head do not fit together, and a rewrite past the limit is the 400 Telegram
@@ -452,7 +458,7 @@ func (s *streamSession) removePlaceholder(ctx context.Context, d *Dispatcher) {
 		d.deps.Logger.Debug("the stream placeholder could not be deleted; pointing it at the answer instead",
 			"chat_id", s.chatID, "error", Sanitize(err, d.deps.Token))
 	}
-	if err := s.edit(ctx, msgAnswerBelow, false); err != nil {
+	if err := s.edit(ctx, i18n.T(s.lang, "stream.answer_below"), false); err != nil {
 		d.deps.Logger.Debug("the stream placeholder could not be replaced either",
 			"chat_id", s.chatID, "error", Sanitize(err, d.deps.Token))
 	}
@@ -465,7 +471,7 @@ func (s *streamSession) due() bool {
 
 // session goes muted: the answer keeps accumulating and leaves through d.Send at the end of the stream.
 func (s *streamSession) post() {
-	text := StreamPlaceholder
+	text := streamPlaceholderFor(s.lang)
 	if s.answer.Len() > 0 {
 		text = s.partialView()
 	}
@@ -477,6 +483,14 @@ func (s *streamSession) post() {
 }
 
 func (s *streamSession) stage(text string) {
+	// tool_loop passes the historical Russian stage constants; the chat-facing view is translated here so
+	// the labels stay stable for the Mini App and the tests while following the chat language.
+	switch text {
+	case streamStageReadURL:
+		text = i18n.T(s.lang, "stream.stage_read_url")
+	case streamStageWebSearch:
+		text = i18n.T(s.lang, "stream.stage_web_search")
+	}
 	if s.muted || text == "" || s.stageText == text {
 		return
 	}
@@ -617,7 +631,7 @@ func (s *streamSession) broken(ctx context.Context, d *Dispatcher, reason string
 // brokenView — the same fit of one message that partialView guarantees, with the notice of the breakage instead
 // Telegram refuses for length leaves the user with the placeholder of «Модель думает…» forever.
 func (s *streamSession) brokenView(reason string) string {
-	var notice = fitNotice(msgStreamBroken, reason, s.maxRunes)
+	var notice = fitNotice(i18n.T(s.lang, "stream.broken"), reason, s.maxRunes)
 	var runes = cutRunesToUnits([]rune(s.currentAnswer()), s.maxRunes-unitsOf([]rune(notice)))
 	return strings.TrimRight(string(runes), " \t\n\r") + notice
 }

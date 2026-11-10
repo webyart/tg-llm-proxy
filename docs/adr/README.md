@@ -14,3 +14,4 @@ The format is deliberately small. Each record answers: what was decided, why, an
 | [0004](0004-search-indexes.md) | FTS5 external-content indexes built at open time |
 | [0005](0005-miniapp-private-chats.md) | The Mini App is a private-chat companion |
 | [0006](0006-restart-policy.md) | The container restarts `unless-stopped`; crash loops are the monitor's job |
+| [0007](0007-store-repo-postgres.md) | Keep SQLite by default; introduce store.Repo and Postgres only when a recorded trigger fires |

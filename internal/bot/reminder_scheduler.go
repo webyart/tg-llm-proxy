@@ -3,10 +3,10 @@ package bot
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 
+	"bot/internal/i18n"
 	"bot/internal/store"
 )
 
@@ -154,7 +154,8 @@ func (d *Dispatcher) processClaimedReminder(ctx context.Context, reminder store.
 	}
 
 	sendCtx, cancel := context.WithTimeout(ctx, ReminderSendTimeout)
-	err := d.sendPlainReminder(sendCtx, reminder.ChatID, "Напоминание: "+reminder.Text)
+	lang := d.chatLanguage(sendCtx, reminder.ChatID)
+	err := d.sendPlainReminder(sendCtx, reminder.ChatID, i18n.T(lang, "remind.delivered", reminder.Text))
 	cancel()
 	if err != nil {
 		if errors.Is(err, context.Canceled) && ctx.Err() != nil {
@@ -176,7 +177,7 @@ func (d *Dispatcher) processClaimedReminder(ctx context.Context, reminder store.
 			"attempt", reminder.Attempts, "exhausted", exhausted, "error", Sanitize(err, d.deps.Token))
 		if retried && exhausted && reminder.Cadence == store.ReminderCadenceOnce {
 			noticeCtx, noticeCancel := context.WithTimeout(ctx, ReminderSendTimeout)
-			notice := fmt.Sprintf("Напоминание #%d не доставлено после %d попыток. Текст: %s\nОткрой /reminders, чтобы повторить или удалить его.", reminder.ID, ReminderMaxSendAttempts, reminder.Text)
+			notice := i18n.T(lang, "remind.not_delivered", reminder.ID, ReminderMaxSendAttempts, reminder.Text)
 			noticeErr := d.sendPlainReminder(noticeCtx, reminder.ChatID, notice)
 			noticeCancel()
 			if noticeErr != nil {

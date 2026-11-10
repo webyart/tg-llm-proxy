@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-telegram/bot/models"
 
+	"bot/internal/i18n"
 	"bot/internal/model"
 	"bot/internal/store"
 )
@@ -177,7 +178,8 @@ func (d *Dispatcher) ProcessDueTasks(ctx context.Context, now time.Time, limit i
 	}
 	for _, task := range expired {
 		d.removeTaskApproval(ctx, task)
-		if err := d.reply(ctx, task.ChatID, fmt.Sprintf("Задача #%d остановлена: срок задачи или подтверждения истёк. Новые действия не выполняются.", task.ID)); err != nil {
+		lang := d.chatLanguage(ctx, task.ChatID)
+		if err := d.reply(ctx, task.ChatID, i18n.T(lang, "task.expired", task.ID)); err != nil {
 			return 0, err
 		}
 	}
@@ -300,7 +302,8 @@ func (d *Dispatcher) executeClaimedTask(ctx context.Context, task store.Task) er
 		return err
 	} else if task.NextStep < len(plan.Steps) {
 		step := plan.Steps[task.NextStep]
-		if err := d.reply(stepCtx, task.ChatID, fmt.Sprintf("Задача #%d · %d/%d\n%s", task.ID, task.NextStep+1, len(plan.Steps), step.Description)); err != nil {
+		lang := d.chatLanguage(stepCtx, task.ChatID)
+		if err := d.reply(stepCtx, task.ChatID, i18n.T(lang, "task.step_line", task.ID, task.NextStep+1, len(plan.Steps), step.Description)); err != nil {
 			return err
 		}
 		messages := []model.Message{
@@ -374,7 +377,8 @@ func (d *Dispatcher) synthesizeAndCompleteTask(ctx context.Context, task store.T
 		return errTaskStale
 	}
 	d.clearTaskNetworkScopes(task.ChatID, task.ID)
-	return d.reply(ctx, task.ChatID, fmt.Sprintf("Задача #%d завершена (%d/%d).\n\n%s\n\n%s", task.ID, len(results), len(results), response.Content, latencyLine(response, task.Model)))
+	lang := d.chatLanguage(ctx, task.ChatID)
+	return d.reply(ctx, task.ChatID, i18n.T(lang, "task.completed", task.ID, len(results), len(results), response.Content, latencyLineFor(lang, response, task.Model)))
 }
 
 func (d *Dispatcher) failClaimedTask(ctx context.Context, task store.Task, cause error) error {
@@ -386,11 +390,12 @@ func (d *Dispatcher) failClaimedTask(ctx context.Context, task store.Task, cause
 		return nil
 	}
 	d.removeTaskApproval(ctx, task)
+	lang := d.chatLanguage(ctx, task.ChatID)
 	reason := brief(Sanitize(cause, d.deps.Token), 300)
-	if notice, limited := modelLimitNotice(cause); limited {
+	if notice, limited := modelLimitNoticeFor(lang, cause); limited {
 		reason = notice
 	}
-	return d.reply(ctx, task.ChatID, fmt.Sprintf("Задача #%d остановлена: %s. Будущие шаги не выполняются.", task.ID, reason))
+	return d.reply(ctx, task.ChatID, i18n.T(lang, "task.stopped", task.ID, reason))
 }
 
 func (d *Dispatcher) processDueTasks(ctx context.Context, now time.Time, limit int) {
@@ -400,6 +405,7 @@ func (d *Dispatcher) processDueTasks(ctx context.Context, now time.Time, limit i
 }
 
 func (d *Dispatcher) promptTaskNetworkApproval(ctx context.Context, state *toolLoopContinuation, callIndex int) (model.Response, error) {
+	lang := d.chatLanguage(ctx, state.metadata.event.ChatID)
 	task, found, err := store.CurrentTask(ctx, d.deps.DB, state.metadata.event.ChatID)
 	if err != nil {
 		return model.Response{}, err
@@ -414,11 +420,11 @@ func (d *Dispatcher) promptTaskNetworkApproval(ctx context.Context, state *toolL
 	}
 	recoveryNotice := ""
 	if state.recoveredApproval {
-		recoveryNotice = "После перезапуска прежнее разрешение недействительно. Требуется новое подтверждение; старое действие не выполнялось повторно.\n"
+		recoveryNotice = i18n.T(lang, "task.approval.recovery")
 	}
-	text := fmt.Sprintf("Задача #%d запросила новое сетевое действие.\n%s: %s\n\n%sРазрешить один раз — только с этими аргументами. Разрешить для задачи — только этот инструмент%s, до завершения/отмены задачи или перезапуска. Кнопки действуют 5 минут. Отмена остановит задачу.", task.ID, call.Name, networkApprovalTarget(call), recoveryNotice, networkScopeExplanation(call))
+	text := i18n.T(lang, "task.approval.request", task.ID, call.Name, networkApprovalTarget(call), recoveryNotice, networkScopeExplanation(call, lang))
 	markup := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		menuRow(menuButton("Разрешить один раз", "menu:network:confirm:"+token), menuButton("Разрешить для задачи", "menu:network:scope:"+token), menuButton("Отмена", "menu:network:cancel:"+token)),
+		menuRow(menuButton(i18n.T(lang, "task.approval.once"), "menu:network:confirm:"+token), menuButton(i18n.T(lang, "task.approval.scope"), "menu:network:scope:"+token), menuButton(i18n.T(lang, "task.approval.cancel"), "menu:network:cancel:"+token)),
 	}}
 	messageID, err := d.sendNetworkApprovalMenu(ctx, state.metadata.event, text, markup)
 	if err != nil {
@@ -483,6 +489,7 @@ func (d *Dispatcher) restoreTaskNetworkConfirmation(token string) bool {
 }
 
 func (d *Dispatcher) taskNetworkApprovalControl(ctx context.Context, ev Event, operation string, token string, pending networkConfirmation) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	taskID := pending.continuation.metadata.taskID
 	if operation == "cancel" {
 		cancelled, ok, err := store.CancelTask(ctx, d.deps.DB, ev.ChatID, d.now())
@@ -490,17 +497,17 @@ func (d *Dispatcher) taskNetworkApprovalControl(ctx context.Context, ev Event, o
 			return err
 		}
 		if !ok || cancelled.ID != taskID {
-			return d.showTaskMenu(ctx, ev, "Это подтверждение сетевого действия истекло или уже использовано.")
+			return d.showTaskMenu(ctx, ev, i18n.T(lang, "task.approval.expired"))
 		}
 		d.clearTaskNetworkScopes(ev.ChatID, taskID)
-		return d.showTaskMenu(ctx, ev, fmt.Sprintf("Задача #%d отменена. Сетевое действие и будущие шаги не выполнены.", taskID))
+		return d.showTaskMenu(ctx, ev, i18n.T(lang, "task.approval.cancelled", taskID))
 	}
 	claimed, ok, err := store.ConsumeTaskApproval(ctx, d.deps.DB, taskID, ev.ChatID, ev.UserID, ev.TelegramMessageID, token, d.now(), d.taskLease())
 	if err != nil {
 		return err
 	}
 	if !ok {
-		return d.showTaskMenu(ctx, ev, "Это подтверждение сетевого действия истекло или уже использовано.")
+		return d.showTaskMenu(ctx, ev, i18n.T(lang, "task.approval.expired"))
 	}
 	if operation == "scope" {
 		approved := pending.continuation.response.ToolCalls[pending.continuation.approvedCall]
@@ -508,7 +515,7 @@ func (d *Dispatcher) taskNetworkApprovalControl(ctx context.Context, ev Event, o
 			return d.failClaimedTask(ctx, claimed, errors.New("scoped approval does not match the task and tool"))
 		}
 	}
-	if err := d.showTaskMenu(ctx, ev, "Подтверждение принято. Выполняю разрешённое сетевое действие."); err != nil {
+	if err := d.showTaskMenu(ctx, ev, i18n.T(lang, "task.approval.accepted")); err != nil {
 		return err
 	}
 	stepCtx, cancel := d.taskStepTimeout(ctx)

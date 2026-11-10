@@ -48,12 +48,13 @@ func (d *Dispatcher) releaseDailyQuota(ctx context.Context, userID int64, class 
 }
 
 func (d *Dispatcher) usage(ctx context.Context, ev Event, arg string) error {
-	text, err := d.dailyUsageTextFor(ctx, ev.UserID, d.chatLanguage(ctx, ev.ChatID))
+	lang := d.chatLanguage(ctx, ev.ChatID)
+	text, err := d.dailyUsageTextFor(ctx, ev.UserID, lang)
 	if err != nil {
 		return err
 	}
 	if strings.TrimSpace(arg) == "menu" {
-		return d.renderMenu(ctx, ev, text, usageMenuMarkup())
+		return d.renderMenu(ctx, ev, text, usageMenuMarkupFor(lang))
 	}
 	return d.reply(ctx, ev.ChatID, text)
 }

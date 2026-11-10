@@ -157,7 +157,7 @@ func (d *Dispatcher) start(ctx context.Context, ev Event, arg string) error {
 	var lines = []string{i18n.T(lang, "start.greeting")}
 	lines = append(lines, d.helpLinesFor(lang)...)
 	if d.deps.Cfg.DenyByDefault {
-		lines = append(lines, refuseClosed(ev.UserID))
+		lines = append(lines, refuseClosed(ev.UserID, lang))
 	}
 	return d.sendMenu(ctx, ev.ChatID, strings.Join(lines, "\n"))
 }
@@ -207,7 +207,8 @@ func (d *Dispatcher) helpLinesFor(lang string) []string {
 
 func (d *Dispatcher) ping(ctx context.Context, ev Event, arg string) error {
 	var up = time.Since(d.created).Round(time.Second)
-	return d.menuReply(ctx, ev, i18n.T(d.chatLanguage(ctx, ev.ChatID), "ping.pong", up), refreshBackMarkup("menu:ping", "menu:status"))
+	lang := d.chatLanguage(ctx, ev.ChatID)
+	return d.menuReply(ctx, ev, i18n.T(lang, "ping.pong", up), refreshBackMarkupFor(lang, "menu:ping", "menu:status"))
 }
 
 // status — operational diagnostics for an allowed chat without a model call. LastVisibleMessage uses the same
@@ -400,7 +401,7 @@ func (d *Dispatcher) whoami(ctx context.Context, ev Event, arg string) error {
 	} else {
 		lines = append(lines, i18n.T(lang, "whoami.denied", ev.UserID))
 	}
-	return d.menuReply(ctx, ev, strings.Join(lines, "\n"), simpleBackMarkup("menu:more"))
+	return d.menuReply(ctx, ev, strings.Join(lines, "\n"), simpleBackMarkupFor(lang, "menu:more"))
 }
 
 const HistoryDefault = 5
@@ -410,12 +411,22 @@ const HistoryMax = 50
 // will find when they open.env.
 const AllowlistHint = "TELEGRAM_ALLOWED_USERS"
 
-func refuseClosed(userID int64) string {
-	return fmt.Sprintf("Бот закрыт: TELEGRAM_ALLOWED_USERS пуст. Твой user_id — %d, впиши его в %s и перезапусти бот.", userID, AllowlistHint)
+func refuseClosed(userID int64, langs ...string) string {
+	return i18n.T(refusalLanguage(langs), "refuse.closed", userID, AllowlistHint)
 }
 
-func refuseNotListed(userID int64) string {
-	return fmt.Sprintf("Тебя нет в TELEGRAM_ALLOWED_USERS. Твой user_id — %d, добавь его в %s.", userID, AllowlistHint)
+func refuseNotListed(userID int64, langs ...string) string {
+	return i18n.T(refusalLanguage(langs), "refuse.not_listed", userID, AllowlistHint)
+}
+
+// refusalLanguage keeps the historical Russian default for callers without a chat language while the
+// command surface passes the resolved one. The signature stays variadic so the group-mode dispatcher and
+// middleware call sites do not change.
+func refusalLanguage(langs []string) string {
+	if len(langs) > 0 {
+		return langs[0]
+	}
+	return i18n.Default
 }
 
 // modelName resolves a per-chat override or STRATA_MODEL when the chat has none.
@@ -516,7 +527,7 @@ func (d *Dispatcher) modelMenuControl(ctx context.Context, ev Event, action stri
 	value, ok := strings.CutPrefix(action, "menu:set:")
 	index, err := strconv.Atoi(value)
 	if !ok || err != nil || index < 0 || index >= menuModelChoiceLimit {
-		return d.showModelMenu(ctx, ev, menuExpiredText)
+		return d.showModelMenu(ctx, ev, menuExpiredFor(lang))
 	}
 	names, err := d.deps.Model.Models(ctx)
 	if err != nil {
@@ -524,11 +535,11 @@ func (d *Dispatcher) modelMenuControl(ctx context.Context, ev Event, action stri
 		return d.showModelMenu(ctx, ev, i18n.T(lang, "model.check_fail", Sanitize(err, d.deps.Token)))
 	}
 	if index >= len(names) {
-		return d.showModelMenu(ctx, ev, menuExpiredText)
+		return d.showModelMenu(ctx, ev, menuExpiredFor(lang))
 	}
 	selected := names[index]
 	if selected == "" {
-		return d.showModelMenu(ctx, ev, menuExpiredText)
+		return d.showModelMenu(ctx, ev, menuExpiredFor(lang))
 	}
 	if err := store.EnsureChat(ctx, d.deps.DB, ev.ChatID, ev.UserID, ev.ChatTitle); err != nil {
 		return err
@@ -557,7 +568,7 @@ func (d *Dispatcher) showModelMenu(ctx context.Context, ev Event, note ...string
 	if len(names) > menuModelChoiceLimit {
 		text += i18n.T(lang, "model.first_n", menuModelChoiceLimit, len(names))
 	}
-	return d.renderMenu(ctx, ev, text, modelMenuMarkup(names, selected))
+	return d.renderMenu(ctx, ev, text, modelMenuMarkupFor(lang, names, selected))
 }
 
 func (d *Dispatcher) downloadEventAttachments(ctx context.Context, ev Event) ([]DownloadedAttachment, error) {
@@ -868,7 +879,8 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 
 func (d *Dispatcher) deliverModelResult(ctx context.Context, ev Event, text string) error {
 	if ev.MenuCallback {
-		return d.renderMenu(ctx, ev, text, simpleBackMarkup("menu:links"))
+		lang := d.chatLanguage(ctx, ev.ChatID)
+		return d.renderMenu(ctx, ev, text, simpleBackMarkupFor(lang, "menu:links"))
 	}
 	return d.Send(ctx, ev.ChatID, text)
 }
@@ -1040,7 +1052,7 @@ func (d *Dispatcher) history(ctx context.Context, ev Event, arg string) error {
 	if trimmed := strings.TrimSpace(arg); trimmed != "" {
 		var n, err = strconv.Atoi(trimmed)
 		if err != nil || n <= 0 {
-			return d.menuReply(ctx, ev, i18n.T(lang, "history.usage", HistoryDefault), historyMenuMarkup())
+			return d.menuReply(ctx, ev, i18n.T(lang, "history.usage", HistoryDefault), historyMenuMarkupFor(lang))
 		}
 		if n > HistoryMax {
 			n = HistoryMax
@@ -1064,7 +1076,7 @@ func (d *Dispatcher) history(ctx context.Context, ev Event, arg string) error {
 		lines = append(lines, i18n.T(lang, "history.line", i+1, row.Role, brief(row.Content, 120)))
 		i++
 	}
-	return d.menuReply(ctx, ev, strings.Join(lines, "\n"), historyMenuMarkup())
+	return d.menuReply(ctx, ev, strings.Join(lines, "\n"), historyMenuMarkupFor(lang))
 }
 
 func (d *Dispatcher) stats(ctx context.Context, ev Event, arg string) error {
@@ -1094,7 +1106,7 @@ func (d *Dispatcher) stats(ctx context.Context, ev Event, arg string) error {
 	if stats.LastAt != "" {
 		lines = append(lines, i18n.T(lang, "stats.last", stats.LastAt))
 	}
-	return d.menuReply(ctx, ev, strings.Join(lines, "\n"), refreshBackMarkup("menu:stats", "menu:status"))
+	return d.menuReply(ctx, ev, strings.Join(lines, "\n"), refreshBackMarkupFor(lang, "menu:stats", "menu:status"))
 }
 
 func replyModel(fromResponse string, configured string) string {

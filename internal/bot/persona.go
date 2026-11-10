@@ -59,16 +59,20 @@ func (d *Dispatcher) effectivePersona(ctx context.Context, chatID int64) (string
 }
 
 func personaMarkup() models.InlineKeyboardMarkup {
+	return personaMarkupFor(i18n.Default)
+}
+
+func personaMarkupFor(lang string) models.InlineKeyboardMarkup {
 	labels := []struct {
 		text string
 		data string
 	}{
-		{"Assistant", "persona:assistant"},
-		{"Coder", "persona:coder"},
-		{"Writer", "persona:writer"},
-		{"Translator", "persona:translator"},
-		{"Своя роль", "persona:custom"},
-		{"Сбросить", "persona:reset"},
+		{personaPresetName(lang, "assistant"), "persona:assistant"},
+		{personaPresetName(lang, "coder"), "persona:coder"},
+		{personaPresetName(lang, "writer"), "persona:writer"},
+		{personaPresetName(lang, "translator"), "persona:translator"},
+		{i18n.T(lang, "persona.custom_button"), "persona:custom"},
+		{i18n.T(lang, "persona.reset_button"), "persona:reset"},
 	}
 	rows := make([][]models.InlineKeyboardButton, 0, (len(labels)+1)/2)
 	for index := 0; index < len(labels); index += 2 {
@@ -82,25 +86,46 @@ func personaMarkup() models.InlineKeyboardMarkup {
 }
 
 func (d *Dispatcher) sendPersonaMenu(ctx context.Context, chatID int64, text string) error {
+	lang := d.chatLanguage(ctx, chatID)
 	if sender, ok := d.deps.Replier.(interface {
 		SendMenu(context.Context, int64, string, models.InlineKeyboardMarkup) error
 	}); ok {
-		return sender.SendMenu(ctx, chatID, Escape(text, d.deps.Cfg.ParseMode), personaMarkup())
+		return sender.SendMenu(ctx, chatID, Escape(text, d.deps.Cfg.ParseMode), personaMarkupFor(lang))
 	}
 	return d.reply(ctx, chatID, text)
 }
 
 func personaMenuMarkup() models.InlineKeyboardMarkup {
+	return personaMenuMarkupFor(i18n.Default)
+}
+
+func personaMenuMarkupFor(lang string) models.InlineKeyboardMarkup {
 	rows := [][]models.InlineKeyboardButton{}
 	for _, preset := range personaPresets {
-		rows = append(rows, menuRow(menuButton(preset.description, "menu:persona:set:"+preset.name)))
+		rows = append(rows, menuRow(menuButton(personaPresetDescription(lang, preset), "menu:persona:set:"+preset.name)))
 	}
 	rows = append(rows,
-		menuRow(menuButton("Своя роль", "menu:persona:custom")),
-		menuRow(menuButton("Сбросить", "menu:persona:reset")),
-		menuRow(backButton("menu:settings")),
+		menuRow(menuButton(i18n.T(lang, "persona.custom_button"), "menu:persona:custom")),
+		menuRow(menuButton(i18n.T(lang, "persona.reset_button"), "menu:persona:reset")),
+		menuRow(backButtonFor(lang, "menu:settings")),
 	)
 	return models.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+// personaPresetName and personaPresetDescription localize only the display strings. The stored preset
+// identity stays preset.name ("assistant", "coder", ...), which is what callbacks and chat_persona use.
+func personaPresetName(lang string, name string) string {
+	if translated, ok := i18n.Lookup(lang, "persona.preset."+name+".name"); ok {
+		return translated
+	}
+	return name
+}
+
+func personaPresetDescription(lang string, preset personaPreset) string {
+	if translated, ok := i18n.Lookup(lang, "persona.preset."+preset.name+".description"); ok {
+		return translated
+	}
+	return preset.description
 }
 
 func (d *Dispatcher) showPersonaMenu(ctx context.Context, ev Event, note ...string) error {
@@ -114,7 +139,7 @@ func (d *Dispatcher) showPersonaMenu(ctx context.Context, ev Event, note ...stri
 		source = i18n.T(lang, "persona.source_chat")
 	}
 	text := menuText(i18n.T(lang, "persona.current", current, source), note)
-	return d.renderMenu(ctx, ev, text, personaMenuMarkup())
+	return d.renderMenu(ctx, ev, text, personaMenuMarkupFor(lang))
 }
 
 func (d *Dispatcher) personaMenuControl(ctx context.Context, ev Event, action string, lower string) error {
@@ -132,7 +157,7 @@ func (d *Dispatcher) personaMenuControl(ctx context.Context, ev Event, action st
 	}
 	name, ok := strings.CutPrefix(lower, "menu:set:")
 	if !ok {
-		return d.showPersonaMenu(ctx, ev, menuExpiredText)
+		return d.showPersonaMenu(ctx, ev, menuExpiredFor(lang))
 	}
 	for _, preset := range personaPresets {
 		if name != preset.name {
@@ -144,7 +169,7 @@ func (d *Dispatcher) personaMenuControl(ctx context.Context, ev Event, action st
 		if err := store.SetChatPersona(ctx, d.deps.DB, ev.ChatID, preset.prompt); err != nil {
 			return err
 		}
-		return d.showPersonaMenu(ctx, ev, i18n.T(lang, "persona.menu_selected", preset.name))
+		return d.showPersonaMenu(ctx, ev, i18n.T(lang, "persona.menu_selected", personaPresetName(lang, preset.name)))
 	}
 	return d.showPersonaMenu(ctx, ev, menuExpiredText)
 }
@@ -166,7 +191,7 @@ func (d *Dispatcher) personaControl(ctx context.Context, ev Event, arg string) e
 					return d.personaMenuControl(ctx, ev, action, action)
 				}
 			}
-			return d.renderMenu(ctx, ev, i18n.T(lang, "persona.menu_unknown"), simpleBackMarkup("menu:persona"))
+			return d.renderMenu(ctx, ev, i18n.T(lang, "persona.menu_unknown"), simpleBackMarkupFor(lang, "menu:persona"))
 		}
 	}
 	if strings.HasPrefix(lower, "menu") {
@@ -200,7 +225,7 @@ func (d *Dispatcher) personaControl(ctx context.Context, ev Event, arg string) e
 				if err := store.SetChatPersona(ctx, d.deps.DB, ev.ChatID, preset.prompt); err != nil {
 					return err
 				}
-				return d.reply(ctx, ev.ChatID, i18n.T(lang, "persona.selected", preset.name))
+				return d.reply(ctx, ev.ChatID, i18n.T(lang, "persona.selected", personaPresetName(lang, preset.name)))
 			}
 		}
 		return d.reply(ctx, ev.ChatID, i18n.T(lang, "persona.unknown"))
@@ -216,7 +241,7 @@ func (d *Dispatcher) personaControl(ctx context.Context, ev Event, arg string) e
 	}
 	lines := []string{i18n.T(lang, "persona.current", current, source), "", i18n.T(lang, "persona.presets_header")}
 	for _, preset := range personaPresets {
-		lines = append(lines, i18n.T(lang, "persona.preset_line", preset.name, preset.description))
+		lines = append(lines, i18n.T(lang, "persona.preset_line", preset.name, personaPresetDescription(lang, preset)))
 	}
 	lines = append(lines, i18n.T(lang, "persona.custom_line"), i18n.T(lang, "persona.reset_line"))
 	return d.sendPersonaMenu(ctx, ev.ChatID, strings.Join(lines, "\n"))

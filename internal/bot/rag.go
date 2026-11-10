@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-telegram/bot/models"
 
+	"bot/internal/i18n"
 	"bot/internal/model"
 	"bot/internal/store"
 )
@@ -140,35 +141,37 @@ func consumeDocumentConfirmation(d *Dispatcher, token string, ev Event) (documen
 }
 
 func (d *Dispatcher) showDocumentsMenu(ctx context.Context, ev Event, note ...string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	rows, err := store.ListRAGDocuments(ctx, d.deps.DB, ev.ChatID)
 	if err != nil {
 		return err
 	}
-	lines := []string{"Документы текущего чата:"}
+	lines := []string{i18n.T(lang, "docs.title")}
 	buttons := [][]models.InlineKeyboardButton{}
 	if len(rows) == 0 {
-		lines = append(lines, "Локальная база пуста.")
+		lines = append(lines, i18n.T(lang, "docs.menu_empty"))
 	}
 	if len(rows) > menuDocumentChoiceLimit {
-		lines = append(lines, fmt.Sprintf("Показаны последние %d документов из %d; полный список: /docs.", menuDocumentChoiceLimit, len(rows)))
+		lines = append(lines, i18n.T(lang, "docs.menu_shown", menuDocumentChoiceLimit, len(rows)))
 		rows = rows[:menuDocumentChoiceLimit]
 	}
 	for _, row := range rows {
-		lines = append(lines, fmt.Sprintf("%d. %s — %d байт, %d частей", row.ID, brief(row.Name, 60), row.SizeBytes, row.Chunks))
-		buttons = append(buttons, menuRow(menuButton(fmt.Sprintf("Удалить #%d %s", row.ID, brief(row.Name, 24)), fmt.Sprintf("menu:doc:delete:%d", row.ID))))
+		lines = append(lines, i18n.T(lang, "docs.menu_line", row.ID, brief(row.Name, 60), row.SizeBytes, row.Chunks))
+		buttons = append(buttons, menuRow(menuButton(i18n.T(lang, "docs.menu_delete_button", row.ID, brief(row.Name, 24)), fmt.Sprintf("menu:doc:delete:%d", row.ID))))
 	}
 	buttons = append(buttons,
-		menuRow(menuButton("Поиск по документам", "menu:docs:search")),
-		menuRow(menuButton("Ссылки на потом", "menu:links")),
-		menuRow(menuButton("Как добавить", "menu:docs:add"), menuButton("Экспорт RAG JSON", "menu:docs:export")),
-		menuRow(menuButton("Удалить все документы", "menu:docs:clear")),
-		menuRow(backButton("menu:root")),
+		menuRow(menuButton(i18n.T(lang, "docs.menu_search"), "menu:docs:search")),
+		menuRow(menuButton(i18n.T(lang, "docs.menu_links"), "menu:links")),
+		menuRow(menuButton(i18n.T(lang, "docs.menu_add"), "menu:docs:add"), menuButton(i18n.T(lang, "docs.menu_export"), "menu:docs:export")),
+		menuRow(menuButton(i18n.T(lang, "docs.menu_clear"), "menu:docs:clear")),
+		menuRow(backButtonFor(lang, "menu:root")),
 	)
 	return d.renderMenu(ctx, ev, menuText(strings.Join(lines, "\n"), note), models.InlineKeyboardMarkup{InlineKeyboard: buttons})
 }
 
 func (d *Dispatcher) promptDocumentConfirmation(ctx context.Context, ev Event, action string, documentID int64) error {
-	text := "Удалить все локальные документы этого чата? Кнопки действуют 5 минут."
+	lang := d.chatLanguage(ctx, ev.ChatID)
+	text := i18n.T(lang, "docs.clear_confirm")
 	if action == "delete" {
 		rows, err := store.ListRAGDocuments(ctx, d.deps.DB, ev.ChatID)
 		if err != nil {
@@ -177,13 +180,13 @@ func (d *Dispatcher) promptDocumentConfirmation(ctx context.Context, ev Event, a
 		found := false
 		for _, row := range rows {
 			if row.ID == documentID {
-				text = fmt.Sprintf("Удалить документ #%d %s? Кнопки действуют 5 минут.", row.ID, row.Name)
+				text = i18n.T(lang, "docs.delete_confirm", row.ID, row.Name)
 				found = true
 				break
 			}
 		}
 		if !found {
-			return d.showDocumentsMenu(ctx, ev, menuExpiredText)
+			return d.showDocumentsMenu(ctx, ev, menuExpiredFor(lang))
 		}
 	}
 	token, err := newDeleteConfirmationToken()
@@ -192,7 +195,7 @@ func (d *Dispatcher) promptDocumentConfirmation(ctx context.Context, ev Event, a
 	}
 	d.rememberDocumentConfirmation(token, ev, action, documentID)
 	markup := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		menuRow(menuButton("Подтвердить удаление", "menu:doc:confirm:"+token), menuButton("Отмена", "menu:doc:cancel:"+token)),
+		menuRow(menuButton(i18n.T(lang, "docs.confirm_button"), "menu:doc:confirm:"+token), menuButton(i18n.T(lang, "docs.cancel_button"), "menu:doc:cancel:"+token)),
 	}}
 	if err := d.renderMenu(ctx, ev, text, markup); err != nil {
 		set := documentConfirmationsFor(d)
@@ -207,20 +210,21 @@ func (d *Dispatcher) promptDocumentConfirmation(ctx context.Context, ev Event, a
 const pendingDocumentSearch = "documents_search"
 
 func (d *Dispatcher) documentMenuControl(ctx context.Context, ev Event, action string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	switch action {
 	case "menu":
 		return d.showDocumentsMenu(ctx, ev)
 	case "menu:add":
-		return d.renderMenu(ctx, ev, "Отправь текстовый файл, PDF или DOCX с подписью /docs add. Документ останется доступен только этому чату.", simpleBackMarkup("menu:docs"))
+		return d.renderMenu(ctx, ev, i18n.T(lang, "docs.add_hint"), simpleBackMarkupFor(lang, "menu:docs"))
 	case "menu:search":
-		return d.beginPendingInput(ctx, ev, pendingDocumentSearch, "menu:docs", "Отправь текст для поиска по документам текущего чата. Он будет обработан как /docs search <query>. Ввод действует 2 минуты.")
+		return d.beginPendingInput(ctx, ev, pendingDocumentSearch, "menu:docs", i18n.T(lang, "docs.search_hint"))
 	case "menu:clear":
 		return d.promptDocumentConfirmation(ctx, ev, "clear", 0)
 	}
 	if value, ok := strings.CutPrefix(action, "menu:delete:"); ok {
 		id, err := strconv.ParseInt(value, 10, 64)
 		if err != nil || id <= 0 {
-			return d.showDocumentsMenu(ctx, ev, menuExpiredText)
+			return d.showDocumentsMenu(ctx, ev, menuExpiredFor(lang))
 		}
 		return d.promptDocumentConfirmation(ctx, ev, "delete", id)
 	}
@@ -232,14 +236,14 @@ func (d *Dispatcher) documentMenuControl(ctx context.Context, ev Event, action s
 		pending, status := consumeDocumentConfirmation(d, token, ev)
 		switch status {
 		case deleteConfirmationStale:
-			return d.showDocumentsMenu(ctx, ev, menuExpiredText)
+			return d.showDocumentsMenu(ctx, ev, menuExpiredFor(lang))
 		case deleteConfirmationWrongUser:
-			return d.showDocumentsMenu(ctx, ev, "Это подтверждение принадлежит другому пользователю.")
+			return d.showDocumentsMenu(ctx, ev, i18n.T(lang, "docs.wrong_user"))
 		case deleteConfirmationWrongMessage:
-			return d.showDocumentsMenu(ctx, ev, "Это подтверждение недействительно для этого чата или сообщения.")
+			return d.showDocumentsMenu(ctx, ev, i18n.T(lang, "docs.wrong_message"))
 		}
 		if operation == "cancel" {
-			return d.showDocumentsMenu(ctx, ev, "Удаление документов отменено.")
+			return d.showDocumentsMenu(ctx, ev, i18n.T(lang, "docs.cancelled"))
 		}
 		if pending.Action == "task_clear" {
 			return d.clearTasks(ctx, ev)
@@ -249,21 +253,22 @@ func (d *Dispatcher) documentMenuControl(ctx context.Context, ev Event, action s
 			if err != nil {
 				return err
 			}
-			return d.showDocumentsMenu(ctx, ev, fmt.Sprintf("Удалено документов: %d.", deleted))
+			return d.showDocumentsMenu(ctx, ev, i18n.T(lang, "docs.deleted_count", deleted))
 		}
 		deleted, err := store.DeleteRAGDocument(ctx, d.deps.DB, ev.ChatID, pending.DocumentID)
 		if err != nil {
 			return err
 		}
 		if !deleted {
-			return d.showDocumentsMenu(ctx, ev, menuExpiredText)
+			return d.showDocumentsMenu(ctx, ev, menuExpiredFor(lang))
 		}
-		return d.showDocumentsMenu(ctx, ev, fmt.Sprintf("Документ id=%d удалён.", pending.DocumentID))
+		return d.showDocumentsMenu(ctx, ev, i18n.T(lang, "docs.deleted_one", pending.DocumentID))
 	}
-	return d.showDocumentsMenu(ctx, ev, menuExpiredText)
+	return d.showDocumentsMenu(ctx, ev, menuExpiredFor(lang))
 }
 
 func (d *Dispatcher) documents(ctx context.Context, ev Event, arg string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	action := strings.TrimSpace(arg)
 	if strings.HasPrefix(action, "menu") {
 		return d.documentMenuControl(ctx, ev, action)
@@ -277,11 +282,11 @@ func (d *Dispatcher) documents(ctx context.Context, ev Event, arg string) error 
 			return err
 		}
 		if len(rows) == 0 {
-			return d.reply(ctx, ev.ChatID, "Локальная база документов пуста. Отправь текстовый файл, PDF или DOCX с подписью /docs add.")
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "docs.empty_add"))
 		}
-		lines := []string{"Документы текущего чата:"}
+		lines := []string{i18n.T(lang, "docs.title")}
 		for _, row := range rows {
-			lines = append(lines, fmt.Sprintf("%d. %s — %d байт, %d частей; /docs delete %d", row.ID, row.Name, row.SizeBytes, row.Chunks, row.ID))
+			lines = append(lines, i18n.T(lang, "docs.list_line", row.ID, row.Name, row.SizeBytes, row.Chunks, row.ID))
 		}
 		return d.reply(ctx, ev.ChatID, strings.Join(lines, "\n"))
 	}
@@ -294,79 +299,85 @@ func (d *Dispatcher) documents(ctx context.Context, ev Event, arg string) error 
 	if strings.HasPrefix(action, "delete ") {
 		id, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(action, "delete ")), 10, 64)
 		if err != nil || id <= 0 {
-			return d.reply(ctx, ev.ChatID, "Используй /docs delete <id> из /docs list.")
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "docs.delete_usage"))
 		}
 		deleted, err := store.DeleteRAGDocument(ctx, d.deps.DB, ev.ChatID, id)
 		if err != nil {
 			return err
 		}
 		if !deleted {
-			return d.reply(ctx, ev.ChatID, "Документ с таким id не найден в текущем чате.")
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "docs.not_found"))
 		}
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Документ id=%d удалён.", id))
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "docs.deleted_one", id))
 	}
 	if action == "clear" {
-		return d.reply(ctx, ev.ChatID, "Для удаления всех локальных документов чата отправь /docs clear confirm.")
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "docs.clear_usage"))
 	}
 	if action == "clear confirm" {
 		deleted, err := store.ClearRAGDocuments(ctx, d.deps.DB, ev.ChatID)
 		if err != nil {
 			return err
 		}
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf("Удалено документов: %d.", deleted))
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "docs.deleted_count", deleted))
 	}
-	return d.reply(ctx, ev.ChatID, "Команды: /docs, /docs search <query>, /docs delete <id>, /docs clear. Для добавления отправь текстовый файл, PDF или DOCX с подписью /docs add.")
+	return d.reply(ctx, ev.ChatID, i18n.T(lang, "docs.usage"))
 }
 
 func ragCorpusWarning(result store.RAGSearchResult) string {
+	return ragCorpusWarningFor(i18n.Default, result)
+}
+
+func ragCorpusWarningFor(lang string, result store.RAGSearchResult) string {
 	if !result.CorpusTruncated {
 		return ""
 	}
 	// Truncation now means "more chunks match the query than one search will score", not "the scan did not
 	// reach the whole corpus": the FTS index covers every chunk, and the cap is the candidate budget.
-	return fmt.Sprintf("Внимание: совпадений больше, чем помещается в один поиск — оценены первые %d из %d фрагментов корпуса.", result.ScannedChunks, result.TotalChunks)
+	return i18n.T(lang, "docs.corpus_warning", result.ScannedChunks, result.TotalChunks)
 }
 
 func (d *Dispatcher) searchDocuments(ctx context.Context, ev Event, query string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	if query == "" {
-		return d.reply(ctx, ev.ChatID, "Используй /docs search <query>: укажи непустой запрос.")
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "docs.search_needs_query"))
 	}
 	result, err := d.searchRAG(ctx, ev.ChatID, query, RAGResultLimit, RAGMaxRunes)
 	if err != nil {
 		return err
 	}
 	lines := []string{}
-	if warning := ragCorpusWarning(result); warning != "" {
+	if warning := ragCorpusWarningFor(lang, result); warning != "" {
 		lines = append(lines, warning)
 	}
 	if len(result.Chunks) == 0 {
-		lines = append(lines, "По запросу ничего не найдено в документах текущего чата.")
+		lines = append(lines, i18n.T(lang, "docs.search_empty"))
 	} else {
-		lines = append(lines, "Результаты поиска по документам текущего чата:")
+		lines = append(lines, i18n.T(lang, "docs.search_header"))
 		for i, chunk := range result.Chunks {
-			lines = append(lines, fmt.Sprintf("%d. %s (id=%d), score=%d\n%s", i+1, chunk.Name, chunk.DocumentID, chunk.Score, chunk.Content))
+			lines = append(lines, i18n.T(lang, "docs.search_line", i+1, chunk.Name, chunk.DocumentID, chunk.Score, chunk.Content))
 		}
 	}
 	text := strings.Join(lines, "\n\n")
 	maxRunes := int(d.deps.Cfg.MaxMessageChunk)
 	if Runes(text) > maxRunes {
-		const marker = "\n… (ответ обрезан)"
-		if maxRunes <= Runes(marker) {
+		var translatedMarker = i18n.T(lang, "docs.search_truncated")
+		if maxRunes <= Runes(translatedMarker) {
 			text = string([]rune(text)[:maxRunes])
 		} else {
-			text = string([]rune(text)[:maxRunes-Runes(marker)]) + marker
+			text = string([]rune(text)[:maxRunes-Runes(translatedMarker)]) + translatedMarker
 		}
 	}
 	return d.reply(ctx, ev.ChatID, text)
 }
 
 func (d *Dispatcher) addDocument(ctx context.Context, ev Event) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	files, err := d.downloadEventAttachments(ctx, ev)
 	if err != nil {
-		return d.reply(ctx, ev.ChatID, attachmentUserError(err))
+		return d.reply(ctx, ev.ChatID, attachmentUserErrorFor(lang, err))
 	}
 	if len(files) != 1 {
-		return d.reply(ctx, ev.ChatID, attachmentUserError(ErrAttachmentType))
+		return d.reply(ctx, ev.ChatID, attachmentUserErrorFor(lang, ErrAttachmentType))
 	}
 	mime := strings.TrimSpace(ev.Attachment.MimeType)
 	if mime == "" {
@@ -380,11 +391,11 @@ func (d *Dispatcher) addDocument(ctx context.Context, ev Event) error {
 		if errors.Is(err, ErrAttachmentType) || errors.Is(err, ErrRAGDocumentEmpty) || errors.Is(err, ErrRAGDocumentTooLarge) ||
 			errors.Is(err, ErrDocumentNoText) || errors.Is(err, ErrDocumentEncrypted) ||
 			errors.Is(err, ErrDocumentUnsupported) || errors.Is(err, ErrDocumentCorrupt) {
-			return d.reply(ctx, ev.ChatID, attachmentUserError(err))
+			return d.reply(ctx, ev.ChatID, attachmentUserErrorFor(lang, err))
 		}
 		return err
 	}
-	return d.reply(ctx, ev.ChatID, fmt.Sprintf("Документ %s сохранён с id=%d, частей: %d. Он будет использоваться при следующих вопросах.", result.Name, result.ID, result.Chunks))
+	return d.reply(ctx, ev.ChatID, i18n.T(lang, "docs.added", result.Name, result.ID, result.Chunks))
 }
 
 func (d *Dispatcher) documentActionReply(ctx context.Context, ev Event, text string) error {
@@ -395,25 +406,26 @@ func (d *Dispatcher) documentActionReply(ctx context.Context, ev Event, text str
 }
 
 func (d *Dispatcher) exportDocuments(ctx context.Context, ev Event) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	documents, err := store.ExportRAGDocuments(ctx, d.deps.DB, ev.ChatID, ExportMaxBytes)
 	if err != nil {
 		return err
 	}
 	if len(documents) == 0 {
-		return d.documentActionReply(ctx, ev, "Локальная база документов пуста.")
+		return d.documentActionReply(ctx, ev, i18n.T(lang, "docs.base_empty"))
 	}
 	data, err := json.MarshalIndent(map[string]any{"chat_id": ev.ChatID, "documents": documents}, "", "  ")
 	if err != nil {
 		return err
 	}
 	if len(data) > ExportMaxBytes {
-		return d.documentActionReply(ctx, ev, "Экспорт RAG-базы превышает 5 МиБ.")
+		return d.documentActionReply(ctx, ev, i18n.T(lang, "docs.export_too_large"))
 	}
 	sender, ok := d.deps.Replier.(DocumentSender)
 	if !ok {
 		return errors.New("telegram document sender is unavailable")
 	}
-	return sender.SendDocument(ctx, ev.ChatID, Document{Name: fmt.Sprintf("rag-%d.json", ev.ChatID), Data: data, MIME: "application/json", Caption: "Экспорт RAG-документов"})
+	return sender.SendDocument(ctx, ev.ChatID, Document{Name: fmt.Sprintf("rag-%d.json", ev.ChatID), Data: data, MIME: "application/json", Caption: i18n.T(lang, "docs.export_caption")})
 }
 
 func (d *Dispatcher) addRAGContext(ctx context.Context, chatID int64, userID int64, query string, messages []model.Message) ([]model.Message, []string, error) {

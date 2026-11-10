@@ -61,7 +61,7 @@ func assertValidExposition(t *testing.T, text string) {
 func TestTextFormatIsValid(t *testing.T) {
 	var reg = NewRegistry()
 	reg.Counter("requests_total", "Requests.").Add(map[string]string{"result": "ok"}, 2)
-	reg.Gauge("queue_depth", "Queued updates.").Set(map[string]string{"chat_id": "42"}, 3)
+	reg.Gauge("queue_depth", "Queued updates.").Set(map[string]string{"queue": "42"}, 3)
 	reg.Histogram("latency_seconds", "Latency.", []float64{1, 0.1}).Observe(nil, 0.5)
 
 	var text = render(t, reg)
@@ -77,7 +77,7 @@ func TestTextFormatIsValid(t *testing.T) {
 		"latency_seconds_count 1\n" +
 		"# HELP queue_depth Queued updates.\n" +
 		"# TYPE queue_depth gauge\n" +
-		`queue_depth{chat_id="42"} 3` + "\n" +
+		`queue_depth{queue="42"} 3` + "\n" +
 		"# HELP requests_total Requests.\n" +
 		"# TYPE requests_total counter\n" +
 		`requests_total{result="ok"} 2` + "\n"
@@ -126,11 +126,11 @@ func TestOutputIsDeterministic(t *testing.T) {
 	var build = func(reverse bool) string {
 		var reg = NewRegistry()
 		if reverse {
-			reg.Gauge("z_depth", "Depth.").Set(map[string]string{"chat_id": "2"}, 2)
+			reg.Gauge("z_depth", "Depth.").Set(map[string]string{"queue": "2"}, 2)
 			reg.Counter("a_total", "Total.").Add(map[string]string{"result": "ok"}, 1)
 		} else {
 			reg.Counter("a_total", "Total.").Add(map[string]string{"result": "ok"}, 1)
-			reg.Gauge("z_depth", "Depth.").Set(map[string]string{"chat_id": "2"}, 2)
+			reg.Gauge("z_depth", "Depth.").Set(map[string]string{"queue": "2"}, 2)
 		}
 		reg.Counter("a_total", "Total.").Add(map[string]string{"result": "error"}, 3)
 		return render(t, reg)
@@ -149,10 +149,10 @@ func TestOutputIsDeterministic(t *testing.T) {
 func TestLabelSetsAreSorted(t *testing.T) {
 	var reg = NewRegistry()
 	var counter = reg.Counter("c_total", "C.")
-	counter.Add(map[string]string{"chat_id": "2"}, 1)
-	counter.Add(map[string]string{"chat_id": "10"}, 1)
+	counter.Add(map[string]string{"queue": "2"}, 1)
+	counter.Add(map[string]string{"queue": "10"}, 1)
 	var text = render(t, reg)
-	if strings.Index(text, `chat_id="10"`) > strings.Index(text, `chat_id="2"`) {
+	if strings.Index(text, `queue="10"`) > strings.Index(text, `queue="2"`) {
 		t.Fatalf("label sets are not sorted by value:\n%s", text)
 	}
 }

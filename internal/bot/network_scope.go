@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"sync"
 
+	"bot/internal/i18n"
 	"bot/internal/model"
 	"bot/internal/store"
 )
@@ -32,12 +33,16 @@ func networkApprovalScopesFor(d *Dispatcher) *networkApprovalScopeSet {
 	return d.approvalScopes
 }
 
-func networkScopeExplanation(call model.ToolCall) string {
+func networkScopeExplanation(call model.ToolCall, langs ...string) string {
+	lang := i18n.Default
+	if len(langs) > 0 {
+		lang = langs[0]
+	}
 	if call.Name == "read_url" {
-		return " и этот canonical origin"
+		return i18n.T(lang, "task.scope.read_url")
 	}
 	if call.Name == "web_search" {
-		return " с любым текстом поиска"
+		return i18n.T(lang, "task.scope.web_search")
 	}
 	return ""
 }

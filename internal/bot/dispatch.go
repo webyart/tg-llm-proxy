@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -201,9 +200,11 @@ type Dispatcher struct {
 	documentConfirmations     *documentConfirmationSet
 	documentConfirmationsOnce sync.Once
 	// metrics is registered once by main after NewTelegram; the atomics above are read by gauge
-	// functions at scrape time, and the queue counters below are updated around the chat lock.
+	// functions at scrape time, and queued is the label-free count of updates waiting for a chat lock.
+	// Per-chat identifiers never reach the registry: a metric label would keep one series per chat for
+	// the life of the process and publish who is talking to the bot.
 	metrics atomic.Pointer[metrics.Registry]
-	queues  chatQueues
+	queued  atomic.Int64
 	// turns counts admitted updates per chat. streamSession records the value when it starts and compares it at
 	// delivery: a larger value means a newer update (usually the next question) was admitted while this answer
 	// was being produced, and a placeholder or draft sitting above that update must not be edited into the final
@@ -482,16 +483,17 @@ func (d *Dispatcher) runBounded(ctx context.Context, ev Event, acknowledge bool)
 		result = "overloaded"
 		return false, d.dispatchOverloaded(ctx, ev)
 	}
-	// The update is counted as queued until it owns the chat lock: that is the number an operator sees in
-	// queue_depth{chat_id}, and it drains one step before the handler starts.
+	// The update is counted as queued until it owns the chat lock: that is the aggregate number an
+	// operator sees in queue_depth, and it drains one step before the handler starts. The chat id stays
+	// out of the metric labels and is only logged.
 	var tracked = d.metrics.Load() != nil
 	var started bool
 	if tracked {
-		d.setQueueDepth(ev.ChatID, d.queues.add(ev.ChatID, 1))
+		d.queued.Add(1)
 	}
 	defer func() {
 		if tracked && !started {
-			d.setQueueDepth(ev.ChatID, d.queues.add(ev.ChatID, -1))
+			d.queued.Add(-1)
 		}
 	}()
 	queueCtx, cancel := context.WithTimeout(ctx, d.chatQueueTimeout)
@@ -503,7 +505,7 @@ func (d *Dispatcher) runBounded(ctx context.Context, ev Event, acknowledge bool)
 		inChat = true
 		if tracked && !started {
 			started = true
-			d.setQueueDepth(ev.ChatID, d.queues.add(ev.ChatID, -1))
+			d.queued.Add(-1)
 		}
 		select {
 		case d.execution <- struct{}{}:
@@ -681,11 +683,19 @@ func (d *Dispatcher) SetMetrics(reg *metrics.Registry) {
 	reg.GaugeFunc("active_model_requests", "Model requests in flight right now.", func() float64 {
 		return float64(d.activeModelRequests.Load())
 	})
+	// The queue is aggregate on purpose: chat_id/user_id labels would be unbounded, would never be
+	// dropped by this registry, and would expose which chats use the bot. busy_chats keeps the
+	// "how many chats are busy" signal without naming them.
+	reg.GaugeFunc("queue_depth", "Updates waiting for a per-chat lock, across all chats.", func() float64 {
+		return float64(d.queued.Load())
+	})
+	reg.GaugeFunc("busy_chats", "Chats whose handler chain currently holds a chat lock.", func() float64 {
+		return float64(d.deps.Locks.BusyChats())
+	})
 	// Register the families eagerly so a fresh /metrics lists them at zero before the first update.
 	reg.Counter("updates_total", "Dispatched updates by result.")
 	reg.Counter("tool_calls_total", "Tool calls requested by the model, by tool name.")
 	reg.Counter("telegram_send_failures_total", "Telegram replies that returned an error.")
-	reg.Gauge("queue_depth", "Updates waiting for the per-chat lock, by chat.")
 	d.deps.Model = wrapModelMetrics(d.deps.Model, reg)
 }
 
@@ -695,13 +705,6 @@ func (d *Dispatcher) countUpdate(result string) {
 	if reg := d.metrics.Load(); reg != nil {
 		reg.Counter("updates_total", "Dispatched updates by result.").
 			Add(map[string]string{"result": result}, 1)
-	}
-}
-
-func (d *Dispatcher) setQueueDepth(chatID int64, depth int) {
-	if reg := d.metrics.Load(); reg != nil {
-		reg.Gauge("queue_depth", "Updates waiting for the per-chat lock, by chat.").
-			Set(map[string]string{"chat_id": strconv.FormatInt(chatID, 10)}, float64(depth))
 	}
 }
 
@@ -761,27 +764,6 @@ func (d *Dispatcher) noteChatTurn(chatID int64) int64 { return d.turns.next(chat
 
 // chatTurn is the number of the newest admitted update of the chat.
 func (d *Dispatcher) chatTurn(chatID int64) int64 { return d.turns.current(chatID) }
-
-// chatQueues counts updates that passed admission and still wait for their chat lock.
-type chatQueues struct {
-	mu    sync.Mutex
-	depth map[int64]int
-}
-
-func (q *chatQueues) add(chatID int64, delta int) int {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if q.depth == nil {
-		q.depth = map[int64]int{}
-	}
-	q.depth[chatID] += delta
-	var depth = q.depth[chatID]
-	if depth <= 0 {
-		delete(q.depth, chatID)
-		return 0
-	}
-	return depth
-}
 
 // metricsModel counts the tool calls of a successful answer. It implements Stream only when the wrapped
 // client does, so the Streamer assertion of the tool loop keeps its old answer.

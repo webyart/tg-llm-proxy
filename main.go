@@ -300,17 +300,40 @@ func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, l
 	}
 
 	// The health listener is bound before the bot starts: the compose HEALTHCHECK probes it and a taken
-	// port must fail the start, not sit next to a healthy-looking /healthz.
-	var healthServer = health.NewOn(cfg.HealthListenHost, cfg.HealthPort)
+	// port must fail the start, not sit next to a healthy-looking /healthz. When METRICS_LISTEN_HOST is
+	// set, /metrics moves to a second listener bound to that concrete address (compose: the bot's static
+	// IP on the edge-monitoring network), so /metrics is not reachable over default or edge-telegram.
+	var healthServer = health.NewOn(cfg.HealthListenHost, cfg.HealthProbePort)
 	healthServer.RegisterReadiness(db, client)
-	healthServer.Handle(health.MetricsPath, metrics.Handler(registry))
+	var metricsServer *health.Server
+	if cfg.MetricsListenHost != "" {
+		metricsServer = health.NewOn(cfg.MetricsListenHost, cfg.HealthPort)
+		metricsServer.RegisterReadiness(db, client)
+		metricsServer.Handle(health.MetricsPath, metrics.Handler(registry))
+	} else {
+		healthServer.Handle(health.MetricsPath, metrics.Handler(registry))
+	}
 	if listenErr := healthServer.Listen(); listenErr != nil {
 		return listenErr
 	}
-	var healthErr = make(chan error, 1)
+	if metricsServer != nil {
+		if listenErr := metricsServer.Listen(); listenErr != nil {
+			return listenErr
+		}
+	}
+	var healthErr = make(chan error, 2)
 	go func() { healthErr <- healthServer.Run(ctx) }()
+	if metricsServer != nil {
+		go func() { healthErr <- metricsServer.Run(ctx) }()
+	}
 	fmt.Fprintln(out, "health is listening on", net.JoinHostPort(cfg.HealthListenHost, strconv.FormatInt(healthServer.Port(), 10)),
-		health.Path, "readiness", health.ReadyPath, "metrics", health.MetricsPath)
+		health.Path, "readiness", health.ReadyPath)
+	if metricsServer != nil {
+		fmt.Fprintln(out, "metrics are listening on", net.JoinHostPort(cfg.MetricsListenHost, strconv.FormatInt(metricsServer.Port(), 10)),
+			health.MetricsPath, "only on the metrics network")
+	} else {
+		fmt.Fprintln(out, "metrics are served on the health listener at", health.MetricsPath)
+	}
 
 	var miniApp *webapp.App
 	if cfg.MiniAppEnabled {

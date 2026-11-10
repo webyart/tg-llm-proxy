@@ -49,26 +49,30 @@ services:
       STRATA_TRANSCRIPTION_MODEL: ${STRATA_TRANSCRIPTION_MODEL_CONTAINER:-Systran/faster-whisper-small}
       NO_PROXY: 127.0.0.1,localhost,host.docker.internal,whisper
       no_proxy: 127.0.0.1,localhost,host.docker.internal,whisper
-      # §7: HEALTH_PORT comes from the same interpolation as the published port above. env_file alone would
-      # let a shell override (HEALTH_PORT=18080 …) move only the host side of the mapping, while the process
-      # inside kept listening on the .env value — `environment` wins over `env_file` in compose, so the two
-      # sides cannot drift apart (§12 reliability).
-      HEALTH_PORT: ${HEALTH_PORT:-8080}
-      # The listener binds all interfaces of the CONTAINER so the published host port and the edge gateway's
-      # Prometheus (host.docker.internal:${HEALTH_PORT}) can reach /healthz, /readyz and /metrics. The publish
-      # rule below is 127.0.0.1 on the host, so nothing on the machine's network gains access. Outside a
-      # container the default stays loopback (internal/config DefaultHealthListenHost).
+      # §7: HEALTH_PORT is the in-container METRICS port (Prometheus scrapes bot:${HEALTH_PORT}) and the
+      # HOST port of the published health URL. The health probe itself listens on HEALTH_PROBE_PORT, so the
+      # two ports differ and metrics can bind a single interface without colliding with 0.0.0.0.
+      HEALTH_PORT: ${HEALTH_PORT:-8081}
+      # The /healthz and /readyz listener. It stays on 0.0.0.0: the Docker HEALTHCHECK probes 127.0.0.1 and
+      # the host publish reaches the container interface; this listener has no /metrics.
+      HEALTH_PROBE_PORT: ${HEALTH_PROBE_PORT:-8080}
+      # The health listener binds all interfaces of the CONTAINER: the HEALTHCHECK probes 127.0.0.1, and the
+      # host publish below targets the container's default-network address. It serves only /healthz,/readyz.
       HEALTH_LISTEN_HOST: 0.0.0.0
+      # Where /metrics binds. This is a CONCRETE address on the edge-monitoring network (the bot's static IP
+      # there), never 0.0.0.0: containers on default, edge-telegram, whisper or searxng have no route to it.
+      # METRICS_LISTEN_HOST_CONTAINER is compose-only; METRICS_LISTEN_HOST is the process row.
+      METRICS_LISTEN_HOST: ${METRICS_LISTEN_HOST_CONTAINER:-172.24.0.250}
       WEBHOOK_LISTEN_HOST: ${WEBHOOK_LISTEN_HOST_CONTAINER:-0.0.0.0}
       WEBHOOK_PORT: ${WEBHOOK_PORT:-8082}
       MINIAPP_LISTEN_HOST: ${MINIAPP_LISTEN_HOST_CONTAINER:-0.0.0.0}
       MINIAPP_PORT: ${MINIAPP_PORT:-8084}
     # §9 scripts/smoke.ps1 and the DoD of §10 День 5 probe «GET http://localhost:8080/healthz у запущенного
-    # контейнера» — that is a probe from the HOST, so the port of §7 has to be published. 127.0.0.1 only
-    # (§12 security: /healthz never listens on a public interface of the machine), and the same port on
-    # both sides, because the process inside listens on cfg.HealthPort of §7, not on a fixed 8080.
+    # контейнера» — that is a probe from the HOST. The host side is 127.0.0.1:${HEALTH_PORT} (the URL operators
+    # and scripts already use), forwarded to the in-container health listener HEALTH_PROBE_PORT. /metrics is
+    # deliberately NOT published: the only route to it is the edge-monitoring network (see networks below).
     ports:
-      - "127.0.0.1:${HEALTH_PORT:-8080}:${HEALTH_PORT:-8080}"
+      - "127.0.0.1:${HEALTH_PORT:-8081}:${HEALTH_PROBE_PORT:-8080}"
       - "127.0.0.1:${WEBHOOK_HOST_PORT:-8082}:${WEBHOOK_PORT:-8082}"
       - "127.0.0.1:${MINIAPP_HOST_PORT:-8084}:${MINIAPP_PORT:-8084}"
     # Local Docker secrets, created from .env by scripts/setup_docker_secrets.ps1 (or the .sh twin).
@@ -110,11 +114,18 @@ services:
     extra_hosts:
       - host.docker.internal:host-gateway
     # The image already carries HEALTHCHECK (§8.1); compose surfaces its state in `docker ps`.
+    # Metrics isolation: edge-monitoring is the edge-gateway project's network. Prometheus is already
+    # attached to it, so bot:8081 resolves there and the scrape stays green. The static address is the one
+    # METRICS_LISTEN_HOST binds; containers on default / edge-telegram / whisper / searxng are not on this
+    # network and cannot open the metrics socket. If the gateway recreates the network with another subnet,
+    # set METRICS_LISTEN_HOST_CONTAINER in .env to a free address of that subnet (both rows follow it).
     networks:
       default:
       edge-telegram:
         aliases:
           - telegram-miniapp
+      edge-monitoring:
+        ipv4_address: ${METRICS_LISTEN_HOST_CONTAINER:-172.24.0.250}
 
   whisper:
     image: ghcr.io/speaches-ai/speaches:latest-cpu@sha256:21e3df06d842fb7802ab470dd77c25f0e8c0d22950e8d8c6ae886e851af53ef8
@@ -172,6 +183,11 @@ networks:
   default:
   edge-telegram:
     external: true
+  # Owned by the edge-gateway Compose project (name: edge-gateway, network key: edge-monitoring). The bot
+  # joins it only for the metrics listener; Prometheus is the only intended scraper on it.
+  edge-monitoring:
+    external: true
+    name: edge-gateway_edge-monitoring
 
 volumes:
   bot-data:

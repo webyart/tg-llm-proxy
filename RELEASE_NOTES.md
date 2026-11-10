@@ -2,7 +2,18 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.60.0
+## Новейший выпуск: v1.61.0
+
+# tg-llm-proxy v1.61.0
+
+## Private metrics, complete RU/EN command surface and the Postgres ADR
+
+- Metrics no longer carry chat/user labels: `queue_depth` is an aggregate gauge and `busy_chats` was added, so the registry cannot grow with chats or leak who is talking. A test dumps `/metrics` while a chat is queued and asserts no `chat_id`/`user_id` labels.
+- `/metrics` is isolated: a separate listener binds only the bot's static `edge-monitoring` address (Prometheus still scrapes `bot:8081`), the Docker HEALTHCHECK uses a separate `HEALTH_PROBE_PORT=8080` listener that serves only `/healthz`/`/readyz`, and the host publication `127.0.0.1:8081` now returns 404 for `/metrics`. Containers on `default`/`edge-telegram` cannot reach the metrics socket (verified with curl exit 7). The gateway dashboard panel became "Queue depth (total)".
+- i18n long tail: `/docs`, `/links`, `/remind(s)`, `/task`, `/tts`, `/admin`, all inline menus/`menu:*`, streaming placeholders, persona preset names and refusal texts now render RU or EN by chat language; callbacks and preset IDs stayed byte-stable. The catalog grew to 442 keys per language with a parity test; `docs/I18N_STATUS.md` lists the intentionally language-neutral surfaces (model prompts, logs, export content, Mini App).
+- `docs/adr/0007-store-repo-postgres.md` records the Postgres/`store.Repo` decision: SQLite remains the default, the repository interface and Postgres start only after a recorded trigger (second writer/HA), with five phases, acceptance gates and a "do not start until" list; the roadmap row links to it.
+
+## Предыдущий выпуск: v1.60.0
 
 # tg-llm-proxy v1.60.0
 

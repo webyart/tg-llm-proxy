@@ -776,11 +776,27 @@ func (d *Dispatcher) runToolLoop(ctx context.Context, state *toolLoopContinuatio
 	}
 	state.request.Tools = nil
 	var response, err = d.callModel(ctx, state.userID, state.request, state.streamer, state.session)
+	if err == nil && strings.TrimSpace(stripTextualToolCalls(response.Content)) == "" {
+		// The tool rounds are exhausted. A model that keeps writing tool markup instead of a final answer gets one
+		// corrective call with the tools removed; otherwise the task/chat would see an empty answer.
+		if d.deps.Logger != nil {
+			d.deps.Logger.Warn("the final answer after the tool limit was empty or tool markup; retrying once without tools",
+				"task_id", state.metadata.taskID, "content_length", len(response.Content))
+		}
+		var retryRequest = state.request
+		retryRequest.Messages = append([]model.Message{{Role: model.RoleSystem, Content: finalAnswerWithoutToolsInstruction}}, state.request.Messages...)
+		response, err = d.callModel(ctx, state.userID, retryRequest, state.streamer, state.session)
+	}
+	if err == nil {
+		response.Content = strings.TrimSpace(stripTextualToolCalls(response.Content))
+	}
 	if err != nil {
 		d.logTaskModelFailure(state, err)
 	}
 	return response, err
 }
+
+const finalAnswerWithoutToolsInstruction = "Tools are no longer available for this answer. Return the final answer for the user as plain text. Do not write <tool_call>, <function=...> or <parameter=...> markup."
 
 // logTaskModelFailure records the actual per-request budget when a task call fails: without it the operator sees
 // only the generic STRATA budget notice and cannot tell which budget the step really used.

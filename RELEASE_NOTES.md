@@ -2,7 +2,17 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.62.7
+## Новейший выпуск: v1.62.8
+
+# tg-llm-proxy v1.62.8
+
+## The final answer after the tool limit is retried without tools
+
+- When a task step exhausts its tool rounds, the model is asked once more with tools removed. If that final call returns only tool-call markup (or nothing), one corrective call with an explicit «return plain text, no tool markup» instruction is made before the step is failed.
+- The task-step empty guard now checks the *stripped* content, so a markup-only final answer triggers the existing retry instead of a silent `ErrEmptyAnswer`.
+- This fixes the reproducible #11/#12 signature (two rounds of web_search/read_url, then markup-only final) without changing chat streaming or approval rules.
+
+## Предыдущий выпуск: v1.62.7
 
 # tg-llm-proxy v1.62.7
 

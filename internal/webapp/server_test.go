@@ -1,6 +1,7 @@
 package webapp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"bot/internal/config"
 	"bot/internal/model"
@@ -335,6 +338,41 @@ func TestBodyCapDoesNotLogInitData(t *testing.T) {
 	}
 }
 
+// TestSessionSlowBodyEndsInsteadOfParkingASlot: POST /api/session is unauthenticated and holds a global
+// in-flight slot while io.ReadAll waits for the body. The handler gives the read its own five-second
+// deadline, so a body that never arrives gets a 400 instead of occupying the slot for the server-wide
+// ten-minute ReadTimeout. httptest.Server has no ReadTimeout, so without the handler deadline this test
+// would only end at the test connection deadline below.
+func TestSessionSlowBodyEndsInsteadOfParkingASlot(t *testing.T) {
+	_, server := newTestApp(t)
+	conn, err := net.Dial("tcp", strings.TrimPrefix(server.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(25 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	// Content-Length promises 64 bytes but only one is sent, so the server parks in the body read.
+	if _, err := fmt.Fprintf(conn, "POST /api/session HTTP/1.1\r\nHost: miniapp.test\r\nContent-Type: text/plain\r\nContent-Length: 64\r\n\r\n{"); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("the slow session request did not end with a response: %v", err)
+	}
+	defer response.Body.Close()
+	elapsed := time.Since(started)
+	if response.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("slow session status=%d body=%s, want 400", response.StatusCode, body)
+	}
+	if elapsed >= 15*time.Second {
+		t.Fatalf("the slow body held the request for %s: the session read deadline did not fire", elapsed)
+	}
+}
+
 func TestGlobalInFlightCap(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -400,6 +438,15 @@ func TestHealthzIsPublicMinimalJSONWithSecurityHeaders(t *testing.T) {
 		if status != http.StatusMethodNotAllowed || headers.Get("Allow") != http.MethodGet {
 			t.Errorf("%s /healthz status=%d Allow=%q body=%s", method, status, headers.Get("Allow"), body)
 		}
+	}
+}
+
+func TestPermissionsPolicyAllowsSameOriginMicrophoneOnly(t *testing.T) {
+	_, server := newTestApp(t)
+	_, _, headers := apiRequest(t, server, http.MethodGet, "/healthz", "")
+	const want = "camera=(), microphone=(self), geolocation=()"
+	if got := headers.Get("Permissions-Policy"); got != want {
+		t.Fatalf("Permissions-Policy=%q want=%q", got, want)
 	}
 }
 

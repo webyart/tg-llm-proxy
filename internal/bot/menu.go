@@ -274,6 +274,15 @@ func (r *telegramReplier) EditMenu(ctx context.Context, chatID int64, messageID 
 	return err
 }
 
+// messageDeleter is an OPTIONAL capability of a Replier, deliberately NOT a method of the public Replier
+// interface: a transport (or a test fake) that cannot delete keeps working, and stream.go asserts for this
+// interface only where a placeholder has to disappear. Implemented by telegramReplier below.
+type messageDeleter interface {
+	DeleteMessage(ctx context.Context, chatID int64, messageID int64) error
+}
+
+// RemoveMenu clears the inline keyboard of a message. It does NOT delete the message — the text stays in
+// the chat; DeleteMessage (the optional messageDeleter capability) is what removes it.
 func (r *telegramReplier) RemoveMenu(ctx context.Context, chatID int64, messageID int64) error {
 	if r.bot == nil {
 		return errors.New("the telegram bot is not attached ")
@@ -282,6 +291,19 @@ func (r *telegramReplier) RemoveMenu(ctx context.Context, chatID int64, messageI
 		ChatID:      chatID,
 		MessageID:   int(messageID),
 		ReplyMarkup: models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{}},
+	})
+	return err
+}
+
+// DeleteMessage removes a message entirely. It is the optional capability documented at messageDeleter and
+// used by the placeholder-dropping path of stream.go; a failure there falls back to editing the message.
+func (r *telegramReplier) DeleteMessage(ctx context.Context, chatID int64, messageID int64) error {
+	if r.bot == nil {
+		return errors.New("the telegram bot is not attached ")
+	}
+	_, err := r.bot.DeleteMessage(ctx, &tgbot.DeleteMessageParams{
+		ChatID:    chatID,
+		MessageID: int(messageID),
 	})
 	return err
 }

@@ -48,6 +48,11 @@ type Event struct {
 	// after Normalize and resolve, so the `stored` middleware does not need the argument of the
 	// handler.
 	Question string
+	// QuestionStored is set by the store stage once the user question of this update is in SQLite — a
+	// fresh append, or a duplicate whose row was already there. Dispatch moves the offset only when this
+	// is true or when the command never needs storage: a failed write must stay unacknowledged, otherwise
+	// Telegram will not redeliver the question and recovery has no row to find.
+	QuestionStored bool
 }
 
 // the pieces, the real implementation of run.go adds the parse mode, the chunks and the 429 sleep.
@@ -115,6 +120,9 @@ const (
 	coalescerMaxKeys      = 4096
 	msgOverloaded         = "Бот перегружен: очередь заполнена. Попробуй ещё раз через несколько секунд."
 	msgChatBusy           = "Предыдущий ответ в этом чате ещё не готов. Повтори запрос чуть позже."
+	// msgQuestionNotStored — the update was not acknowledged either, so the question is not lost: Telegram
+	// redelivers it after a restart, and the user is told why this attempt produced no answer.
+	msgQuestionNotStored = "Не удалось сохранить вопрос, попробуйте ещё раз"
 )
 
 // errExecutionSlotBusy — the chat lock was acquired but no global handler slot freed in time. It is a
@@ -287,7 +295,13 @@ func (d *Dispatcher) resolve(ev Event, name string, arg string, isCommand bool) 
 // the previous answer of the same chat is still with the model would land in SQLite after that
 // then end with an assistant turn instead of with the question the user just asked.
 func (d *Dispatcher) chain(next HandlerFunc) HandlerFunc {
-	var wrappers = []Middleware{d.recovered, d.allowed, d.limited, d.locked, d.stored}
+	return d.chainTracking(next, nil)
+}
+
+// chainTracking — chain plus the per-update record of the store stage. A nil track is the startup replay of
+// resume.go: it has no update offset to acknowledge, so it needs no bookkeeping.
+func (d *Dispatcher) chainTracking(next HandlerFunc, track *ackTracking) HandlerFunc {
+	var wrappers = []Middleware{d.recovered, d.allowed, d.limited, d.locked, d.storedTracking(track)}
 	var wrapped = next
 	var i = len(wrappers) - 1
 	for i >= 0 {
@@ -295,6 +309,41 @@ func (d *Dispatcher) chain(next HandlerFunc) HandlerFunc {
 		i--
 	}
 	return wrapped
+}
+
+// ackTracking — what Dispatch needs to know about the store stage of one update. entered separates "the
+// rate limiter refused before any write" from "the store stage ran and returned"; the latter is either a
+// duplicate it handled or a failed write, and only the error tells those apart.
+type ackTracking struct {
+	entered bool
+}
+
+// storedTracking is the store stage of middleware.go with the acknowledgement bookkeeping added here, so a
+// question written during the dispatch and a duplicate are both visible to Dispatch. The tail of d.stored
+// runs only after a successful Append or when its duplicate branch lets the handler answer, so
+// QuestionStored is set exactly when the question is really in SQLite; a failed write returns before the
+// tail and leaves the field false.
+func (d *Dispatcher) storedTracking(track *ackTracking) Middleware {
+	return func(next HandlerFunc) HandlerFunc {
+		var stage = d.stored(func(ctx context.Context, ev Event, cmd Command) error {
+			if commandNeedsStorage(ev, cmd) {
+				ev.QuestionStored = true
+			}
+			return next(ctx, ev, cmd)
+		})
+		return func(ctx context.Context, ev Event, cmd Command) error {
+			if track != nil {
+				track.entered = true
+			}
+			return stage(ctx, ev, cmd)
+		}
+	}
+}
+
+// commandNeedsStorage — whether the store stage has to write the question of this update. /ping, /whoami
+// and menu callbacks never do, and an /ask without text is answered by its handler alone.
+func commandNeedsStorage(ev Event, cmd Command) bool {
+	return cmd.UsesModel && strings.TrimSpace(ev.Question) != ""
 }
 
 func (d *Dispatcher) commandFor(ev Event) (Command, string) {
@@ -474,11 +523,26 @@ func (d *Dispatcher) dispatchEvent(ctx context.Context, ev Event, acknowledge bo
 
 	d.logEvent(ctx, ev.UserID, store.EventCommand, cmd.Name)
 
-	var err = d.chain(func(ctx context.Context, ev Event, cmd Command) error {
+	var track ackTracking
+	var stored bool
+	var err = d.chainTracking(func(ctx context.Context, ev Event, cmd Command) error {
+		stored = ev.QuestionStored
 		return cmd.Handler(ctx, ev, commandArg)
-	})(ctx, ev, cmd)
+	}, &track)(ctx, ev, cmd)
 
-	if acknowledge {
+	var needsStorage = commandNeedsStorage(ev, cmd)
+	// The store stage returned without running the handler and without an error: that is its duplicate
+	// branch, and the row it conflicted with is the proof that the question was stored earlier.
+	if !stored && track.entered && err == nil {
+		stored = true
+	}
+	if err != nil && needsStorage && track.entered && !stored && ctx.Err() == nil {
+		// The question never reached the row: tell the user instead of leaving the chat silent. The offset
+		// stays where it is, so Telegram (or the startup scan) brings the question back.
+		d.notifyQuestionNotStored(ctx, ev)
+	}
+
+	if acknowledge && (stored || !needsStorage) {
 		d.persistOffset(ctx, ev.UpdateID)
 	}
 
@@ -487,6 +551,16 @@ func (d *Dispatcher) dispatchEvent(ctx context.Context, ev Event, acknowledge bo
 			"error", Sanitize(err, d.deps.Token))
 	}
 	return err
+}
+
+// notifyQuestionNotStored — a short, localized notice for the update that stays unacknowledged because its
+// question could not be written. A send failure is logged, not returned: the storage error is the one the
+// caller and the log need to see.
+func (d *Dispatcher) notifyQuestionNotStored(ctx context.Context, ev Event) {
+	if sendErr := d.reply(ctx, ev.ChatID, msgQuestionNotStored); sendErr != nil {
+		d.deps.Logger.Error("the storage failure notice was not delivered", "chat_id", ev.ChatID,
+			"error", Sanitize(sendErr, d.deps.Token))
+	}
 }
 
 // worker goroutines (bot.WithWorkerPool), so "write whatever update ID arrived last" could downgrade

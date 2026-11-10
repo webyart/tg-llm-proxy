@@ -35,6 +35,10 @@ const (
 	approvalRateLimit     = 10
 	rateLimitWindow       = time.Minute
 	maxRateLimitUsers     = 4096
+	// sessionReadBudget: POST /api/session is unauthenticated and already holds a global in-flight
+	// slot while it reads the body, so a slow body must not keep that slot for the 10-minute
+	// server-wide ReadTimeout.
+	sessionReadBudget = 5 * time.Second
 )
 
 //go:embed static/index.html static/app.js static/style.css
@@ -315,7 +319,10 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Content-Security-Policy", contentSecurityPolicy)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		// The voice feature (v1.56.0) records with getUserMedia({audio:true}); denying microphone
+		// outright blocks recording in Chromium-based Telegram clients. Camera and geolocation stay
+		// denied, and the microphone is limited to this origin.
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(self), geolocation=()")
 		w.Header().Set("Cache-Control", "no-store")
 		next.ServeHTTP(w, req)
 	})
@@ -572,6 +579,10 @@ type auditResponseWriter struct {
 	body   []byte
 }
 
+// Unwrap lets http.ResponseController reach the real connection from behind the audit wrapper, so
+// the per-request read and write deadlines of the upload and transcription handlers are not lost.
+func (w *auditResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
 func (w *auditResponseWriter) WriteHeader(status int) {
 	w.status = status
 	w.ResponseWriter.WriteHeader(status)
@@ -683,6 +694,13 @@ func (a *App) exchangeSession(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusUnsupportedMediaType, "content_type", "Send raw Telegram initData as text/plain.")
 		return
 	}
+	// The exchange is unauthenticated and limitInFlight has already taken a global slot, so the body
+	// read gets a short deadline of its own instead of the server-wide ReadTimeout. The cap is the
+	// same small-body limit limitInFlight applies; wrapping again also bounds a direct handler call.
+	if deadlineErr := http.NewResponseController(w).SetReadDeadline(time.Now().Add(sessionReadBudget)); deadlineErr != nil {
+		a.logger.Debug("the session read deadline could not be set", "error", deadlineErr.Error())
+	}
+	req.Body = http.MaxBytesReader(w, req.Body, maxBodyBytes)
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
 		var tooLarge *http.MaxBytesError

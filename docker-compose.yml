@@ -78,6 +78,12 @@ services:
     # loop is caught by scripts/watch_container.ps1 (alert, no auto-restart), not by giving up on the service —
     # see docs/adr/0006-restart-policy.md.
     restart: unless-stopped
+    # §8.1/§12: the shutdown budget measured on this host is ~11 s (Telegram long-poll drain + SQLite close).
+    # Docker's default stop grace period is 10 s, so `docker compose stop` killed the bot just before its clean
+    # close and could leave committed-but-uncheckpointed frames only in bot.db-wal. 60 s leaves headroom for a
+    # slow disk or a busy model call while still bounding a hung shutdown; db_volume_maintenance verifies that
+    # the container really reached `exited` before it copies /data.
+    stop_grace_period: 60s
     logging:
       driver: local
       options:

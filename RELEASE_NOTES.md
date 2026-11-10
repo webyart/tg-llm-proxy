@@ -2,7 +2,18 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.57.0
+## Новейший выпуск: v1.57.1
+
+# tg-llm-proxy v1.57.1
+
+## Hotfix: security, delivery reliability, local backup and monitoring
+
+- Mini App: `Permissions-Policy` now allows same-origin microphone (`microphone=(self)`) — the v1.56 voice feature was blocked in Chromium clients; `auditResponseWriter` implements `Unwrap`, so per-request upload/transcribe deadlines actually reach the connection; `/api/session` reads its body with a 5-second deadline and a byte cap, so slow unauthenticated requests cannot park every global slot; six server error codes (`task_active`, `link_limit`, `reminder_limit`, `url_reader_disabled`, `lifecycle_unavailable`, `internal_error`) are localized, and a frontend test now fails when a new `writeError` code has no translation.
+- Telegram delivery: the update offset is acknowledged only after the user question was actually stored (or the command needs no storage); a failed append sends «Не удалось сохранить вопрос, попробуйте ещё раз» and leaves the update for redelivery instead of silently losing it. The streaming placeholder is now deleted via the optional `DeleteMessage` capability, with an «(ответ ниже)» edit fallback, so a newer question no longer leaves a truncated duplicate above the final answer.
+- Local backup (still on this PC by decision): maintenance stops the bot with `stop_grace_period: 60s`, copies the whole `/data` snapshot (db + wal + shm), verifies integrity/schema and counters, publishes `bot-*.db` atomically via `VACUUM INTO` and rotates `pre-prune-*`; retention now supports all seven classes and runs while the bot is stopped; scheduled tasks use `StartWhenAvailable`, `WakeToRun` and allow battery start. `data/backup-status.prom` feeds monitoring; the local-only RPO remains ~24 h and off-host/encryption is a separate release to an external host.
+- Monitoring and gateway: seven scrape targets (bot, traefik, prometheus, alertmanager, grafana, node_exporter, blackbox whisper), node_exporter with host and backup textfile metrics, `Watchdog` + `absent()` guards, `DiskWillFillIn4Hours`, `BackupStale`, `WhisperDown`, `TelegramSendFailing`; fallback info no longer repeats, schema changes go to a blackhole, the dashboard gained disk-free and backup-age panels, the internet-facing catch-all root now requires BasicAuth (401 anonymous), and edge-gateway got CI (compose config, promtool check/test, dashboard JSON, port contract). `HEALTH_PORT` is canonically 8081. One labelled test alert was delivered to Telegram (counter 1→2, 0 failures).
+
+## Предыдущий выпуск: v1.57.0
 
 # tg-llm-proxy v1.57.0
 

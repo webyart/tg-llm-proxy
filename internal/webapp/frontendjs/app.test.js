@@ -700,6 +700,26 @@ test("every literal translation and static catalog key exists in both RU and EN"
   }
 });
 
+test("every server error code written by writeError is mapped in errorKeys", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const root = path.join(__dirname, "..");
+  const script = fs.readFileSync(path.join(root, "static/app.js"), "utf8");
+  const errorMap = script.match(/const errorKeys = \{([\s\S]*?)\n  \};/);
+  assert.ok(errorMap, "errorKeys map is missing");
+  const mapped = new Set();
+  for (const match of errorMap[1].matchAll(/([a-z][a-z0-9_]*):\s*"[a-zA-Z][a-zA-Z0-9_]*"/g)) mapped.add(match[1]);
+  const sources = fs.readdirSync(root).filter((name) => name.endsWith(".go") && !name.endsWith("_test.go"));
+  assert.ok(sources.length > 5, `only ${sources.length} server sources found`);
+  const codes = new Set();
+  for (const name of sources) {
+    const source = fs.readFileSync(path.join(root, name), "utf8");
+    for (const match of source.matchAll(/writeError\([^,\n]+,\s*[^,\n]+,\s*"([a-z][a-z0-9_]*)"/g)) codes.add(match[1]);
+  }
+  assert.ok(codes.size >= 40, `only ${codes.size} writeError codes found`);
+  for (const code of codes) assert.ok(mapped.has(code), `errorKeys misses server code ${code}`);
+});
+
 test("miniapp base prefixes session, central API and history export fetches", async () => {
   const harness = await createHarness({ base: "/miniapp" });
   assert.deepEqual(harness.requests.map((request) => request.path), [

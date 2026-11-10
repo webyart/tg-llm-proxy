@@ -14,6 +14,45 @@ import (
 	"bot/internal/store"
 )
 
+func TestAuditResponseWriterForwardsResponseControllerDeadlines(t *testing.T) {
+	underlying := &deadlineResponseWriter{}
+	audited := &auditResponseWriter{ResponseWriter: underlying, status: http.StatusOK}
+	control := http.NewResponseController(audited)
+	readDeadline := time.Now().Add(3 * time.Second)
+	writeDeadline := readDeadline.Add(time.Minute)
+	if err := control.SetReadDeadline(readDeadline); err != nil {
+		t.Fatalf("SetReadDeadline through the audit writer = %v, want the underlying writer", err)
+	}
+	if err := control.SetWriteDeadline(writeDeadline); err != nil {
+		t.Fatalf("SetWriteDeadline through the audit writer = %v, want the underlying writer", err)
+	}
+	if !underlying.readDeadline.Equal(readDeadline) {
+		t.Fatalf("underlying read deadline = %s, want %s", underlying.readDeadline, readDeadline)
+	}
+	if !underlying.writeDeadline.Equal(writeDeadline) {
+		t.Fatalf("underlying write deadline = %s, want %s", underlying.writeDeadline, writeDeadline)
+	}
+}
+
+// deadlineResponseWriter is a ResponseWriter whose connection-level deadline methods the controller
+// can reach only through auditResponseWriter.Unwrap.
+type deadlineResponseWriter struct {
+	readDeadline  time.Time
+	writeDeadline time.Time
+}
+
+func (w *deadlineResponseWriter) Header() http.Header            { return http.Header{} }
+func (w *deadlineResponseWriter) Write(body []byte) (int, error) { return len(body), nil }
+func (w *deadlineResponseWriter) WriteHeader(int)                {}
+func (w *deadlineResponseWriter) SetReadDeadline(deadline time.Time) error {
+	w.readDeadline = deadline
+	return nil
+}
+func (w *deadlineResponseWriter) SetWriteDeadline(deadline time.Time) error {
+	w.writeDeadline = deadline
+	return nil
+}
+
 func TestMiniAppMutationAuditCoversAllAreasWithoutContent(t *testing.T) {
 	tests := []struct {
 		name string

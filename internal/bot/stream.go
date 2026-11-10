@@ -35,6 +35,9 @@ const (
 	// msgStreamBroken — the stream stopped with part of the answer already on the screen. The template is short
 	// puts the floor of that row at 64 symbols.
 	msgStreamBroken = "\n\n… (прервано: %s — в истории этого ответа нет)"
+	// msgAnswerBelow replaces a placeholder that cannot be deleted (or whose deletion failed) when the answer
+	// is sent as a separate message below a newer question.
+	msgAnswerBelow = "(ответ ниже)"
 )
 
 // fitNotice — a notice whose TEMPLATE must survive, with `part` shortened so the whole fits maxRunes runes
@@ -426,20 +429,27 @@ func (s *streamSession) headOf(text string, reserve int) string {
 	return strings.TrimRight(string(head), " \t\n\r")
 }
 
-// removePlaceholder drops the message this session was growing, when the transport can delete it. A draft-only
+// removePlaceholder drops the message this session was growing, when the sender can delete it. A draft-only
 // session has nothing to delete: the draft expires on its own after the answer is delivered as a real message.
+//
+// RemoveMenu is not enough here: it only strips the inline keyboard and leaves the truncated interim text
+// above the answer that now leaves as a new message. The optional messageDeleter capability (menu.go) of
+// the sender that posted the placeholder removes the message; a sender without it, or a refused deletion,
+// falls back to the ordinary edit path and points the placeholder at the answer below.
 func (s *streamSession) removePlaceholder(ctx context.Context, d *Dispatcher) {
 	if !s.posted || s.messageID == 0 {
 		return
 	}
-	remover, ok := d.deps.Replier.(interface {
-		RemoveMenu(context.Context, int64, int64) error
-	})
-	if !ok {
-		return
+	if remover, ok := s.sender.(messageDeleter); ok {
+		var err = remover.DeleteMessage(ctx, s.chatID, s.messageID)
+		if err == nil {
+			return
+		}
+		d.deps.Logger.Debug("the stream placeholder could not be deleted; pointing it at the answer instead",
+			"chat_id", s.chatID, "error", Sanitize(err, d.deps.Token))
 	}
-	if err := remover.RemoveMenu(ctx, s.chatID, s.messageID); err != nil {
-		d.deps.Logger.Debug("the stream placeholder could not be removed",
+	if err := s.edit(ctx, msgAnswerBelow, false); err != nil {
+		d.deps.Logger.Debug("the stream placeholder could not be replaced either",
 			"chat_id", s.chatID, "error", Sanitize(err, d.deps.Token))
 	}
 }

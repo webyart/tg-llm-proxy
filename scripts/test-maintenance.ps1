@@ -23,6 +23,7 @@ $backup = Join-Path $work 'manual-backup.db'
 $restored = Join-Path $work 'restored.db'
 $fixtureExe = Join-Path $repoRoot 'bin\dbfixture.exe'
 $maintenanceWork = Join-Path $repoRoot 'zzscratch\volume-maintenance'
+$statusProbe = Join-Path $repoRoot 'zzscratch\maintenance-acceptance-status.prom'
 $leaseGuardCreated = $false
 $failure = $null
 
@@ -49,7 +50,7 @@ try {
     $leaseGuardCreated = $true
     $lease = [pscustomobject]@{ started_at = [DateTime]::UtcNow.ToString('o'); pid = $PID }
     [System.IO.File]::WriteAllText((Join-Path $maintenanceWork 'lease.json'), ($lease | ConvertTo-Json), [System.Text.UTF8Encoding]::new($false))
-    $leaseGuard = & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'db_volume_maintenance.ps1') -NoNotify
+    $leaseGuard = & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'db_volume_maintenance.ps1') -NoNotify -StatusPath $statusProbe
     if ($LASTEXITCODE -ne 1 -or ($leaseGuard | Out-String) -notmatch 'another run may be in progress') {
         throw 'an existing maintenance lease did not protect volume operations'
     }
@@ -69,7 +70,7 @@ try {
     $leaseGuardCreated = $true
     try {
         $env:PATH = "$work$([System.IO.Path]::PathSeparator)$originalPath"
-        $leaseProbe = & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'db_volume_maintenance.ps1') -NoNotify
+        $leaseProbe = & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'db_volume_maintenance.ps1') -NoNotify -StatusPath $statusProbe
     }
     finally {
         $env:PATH = $originalPath
@@ -146,13 +147,20 @@ try {
     & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'db_prune.ps1') -Source $legacy -EventsDays 100000 -Apply -Backup (Join-Path $work 'legacy-pre-migration.db')
     if ($LASTEXITCODE -ne 0) { throw 'pre-versioning adoption failed' }
     $legacyAfter = Get-DatabaseCounts $legacy
-    foreach ($want in @('schema_version=11', 'table_schema_migrations=11', 'table_events=2', 'table_messages=4', 'last_update_id=4242', 'integrity=ok')) {
+    # The migrated head is the newest embedded migration, not a literal: hard-coding it made this acceptance
+    # test fail every time a migration was added (012..017 landed without touching the fixture expectation).
+    $schemaHead = 0
+    foreach ($migration in Get-ChildItem -LiteralPath (Join-Path $repoRoot 'internal\store\migrations') -File -Filter '*.sql') {
+        if ($migration.Name -match '^([0-9]+)_') { $schemaHead = [Math]::Max($schemaHead, [int]$matches[1]) }
+    }
+    if ($schemaHead -le 0) { throw 'could not determine the embedded schema head from internal/store/migrations' }
+    foreach ($want in @("schema_version=$schemaHead", "table_schema_migrations=$schemaHead", 'table_events=2', 'table_messages=4', 'last_update_id=4242', 'integrity=ok')) {
         if ($legacyAfter -notcontains $want) { throw "migration result misses $want" }
     }
     $beforeCore = @($legacyBefore | Where-Object { $_ -notmatch '^(schema_version|table_schema_migrations|table_daily_quota_reservations)=' })
     $afterCore = @($legacyAfter | Where-Object { $_ -notmatch '^(schema_version|table_schema_migrations|table_daily_quota_reservations)=' })
     if (Compare-Object $beforeCore $afterCore) { throw 'migration changed application data' }
-    Write-Output 'maintenance acceptance: pre-versioning backup adopted at schema_version=11 without application-data changes'
+    Write-Output "maintenance acceptance: pre-versioning backup adopted at schema_version=$schemaHead without application-data changes"
 
     $oldNames = @('bot-20000101-000000.db', 'bot-20000102-000000.db')
     foreach ($name in $oldNames + @('bot-manual.db')) {
@@ -210,6 +218,7 @@ catch {
 }
 finally {
     if ($leaseGuardCreated -and (Test-Path -LiteralPath $maintenanceWork)) { Remove-Item -LiteralPath $maintenanceWork -Recurse -Force }
+    if (Test-Path -LiteralPath $statusProbe) { Remove-Item -LiteralPath $statusProbe -Force }
     if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
     Pop-Location
 }

@@ -654,3 +654,94 @@ func TestUpdatesWithoutMessageSurviveTheHandler(t *testing.T) {
 		t.Fatalf("/ask must answer once , %d sends", len(r.sent))
 	}
 }
+
+// TestStorageFailureLeavesTheUpdateUnacknowledgedAndTellsTheUser — the P1 of a failed question write: the
+// store stage returns before the handler, so there is no model call and no answer. The offset must NOT move
+// (Telegram then redelivers the question after a restart) and the user must hear why the chat stayed silent.
+func TestStorageFailureLeavesTheUpdateUnacknowledgedAndTellsTheUser(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	var r = &fakeReplier{}
+	var db = testStore(t)
+	var d = newTestDispatcher(t, cfg, nil, r, db)
+
+	var offsets []int64
+	d.deps.Offset = func(ctx context.Context, updateID int64) error {
+		offsets = append(offsets, updateID)
+		return nil
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("closing the store: %v", err)
+	}
+
+	var ev = testEvent(160, 11, 700, "/ask вопрос, который не сохранится")
+	var err = d.Dispatch(context.Background(), ev)
+	if err == nil {
+		t.Fatal("a failed question write must surface as an error")
+	}
+	if len(offsets) != 0 {
+		t.Fatalf("the update was acknowledged after a failed write: %v", offsets)
+	}
+	if joined := r.joined(); !strings.Contains(joined, msgQuestionNotStored) {
+		t.Fatalf("the user was not told the question was not stored: %q", joined)
+	}
+}
+
+// TestAlreadyAnsweredRedeliveryIsAcknowledged — the duplicate branch of the store stage returns without the
+// handler. The row it conflicted with proves the question WAS stored, so the update may be acknowledged:
+// leaving it unacknowledged would make Telegram redeliver an already answered update on every restart.
+func TestAlreadyAnsweredRedeliveryIsAcknowledged(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	var db = testStore(t)
+	var ctx = context.Background()
+	if _, err := store.Append(ctx, db, store.Message{
+		ChatID: 161, UserID: 11, Role: store.RoleUser, Content: "вопрос", TelegramMessageID: ptr(4242),
+	}); err != nil {
+		t.Fatalf("storing the question: %v", err)
+	}
+	if _, err := store.Append(ctx, db, store.Message{
+		ChatID: 161, UserID: 11, Role: store.RoleAssistant, Content: "ответ",
+	}); err != nil {
+		t.Fatalf("storing the answer: %v", err)
+	}
+	var m = &fakeModel{response: model.Response{Content: "второй ответ"}}
+	var r = &fakeReplier{}
+	var d = newTestDispatcher(t, cfg, m, r, db)
+
+	var ev = testEvent(161, 11, 4242, "/ask вопрос")
+	ev.UpdateID = 5000
+	if err := d.Dispatch(ctx, ev); err != nil {
+		t.Fatalf("the redelivered answered update must not fail: %v", err)
+	}
+	if m.callCount() != 0 || r.count() != 0 {
+		t.Fatalf("an already answered update was answered again: model=%d replies=%q", m.callCount(), r.texts())
+	}
+	var offset, found, err = store.LastUpdateID(ctx, db)
+	if err != nil || !found || offset != 5000 {
+		t.Fatalf("the duplicate was not acknowledged: offset=%d found=%v err=%v", offset, found, err)
+	}
+}
+
+// TestRateLimitedModelUpdateIsNotAcknowledged — the per-minute refusal happens before the store stage, so the
+// question was never written. Acknowledging it would lose it for good, exactly like the failed-write case.
+func TestRateLimitedModelUpdateIsNotAcknowledged(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "RATE_LIMIT_PER_MINUTE": "1"})
+	var db = testStore(t)
+	var d = newTestDispatcher(t, cfg, &fakeModel{response: model.Response{Content: "ответ"}}, &fakeReplier{}, db)
+	var ctx = context.Background()
+
+	var first = testEvent(162, 11, 800, "/ask первый")
+	if err := d.Dispatch(ctx, first); err != nil {
+		t.Fatalf("the first update: %v", err)
+	}
+	var second = testEvent(162, 11, 801, "/ask второй")
+	if err := d.Dispatch(ctx, second); err != nil {
+		t.Fatalf("the limited update must be refused without an error: %v", err)
+	}
+	var offset, found, err = store.LastUpdateID(ctx, db)
+	if err != nil {
+		t.Fatalf("LastUpdateID: %v", err)
+	}
+	if found && offset >= second.UpdateID {
+		t.Fatalf("the rate-limited update was acknowledged: offset=%d second=%d", offset, second.UpdateID)
+	}
+}

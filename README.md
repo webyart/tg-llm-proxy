@@ -155,7 +155,7 @@ docker compose logs -f bot
 | `WEB_SEARCH_MAX_RESULTS` | 5 | число результатов; 1..10 |
 | `MAX_MESSAGE_CHUNK` | 3500 | размер части ответа; максимум 4096 |
 | `PARSE_MODE` | `MarkdownV2` | `MarkdownV2`, `HTML` или `plain` |
-| `HEALTH_PORT` | 8080 | loopback health endpoint |
+| `HEALTH_PORT` | 8081 | loopback health endpoint; canonical value for the edge-gateway scrape |
 | `LOG_LEVEL` | `info` | `error`, `warning`, `info`, `debug` |
 
 `STRATA_BASE_URL` нормализуется к ровно одному `/v1`: chat и models используют этот base. `TRANSCRIPTION_BASE_URL` независимо ведёт в `/audio/transcriptions`. Оба endpoint запрещают userinfo, query и fragment, чтобы credentials не попадали в логи или диагностику. Compose запускает Speaches Whisper без публичного порта и заранее загружает multilingual small-модель. Voice хранится только как текст транскрипции; исходное аудио остаётся в памяти на время запроса.
@@ -519,15 +519,27 @@ Backup использует `VACUUM INTO` и не останавливает wri
 ### Backup production Docker volume и расписание
 
 ```powershell
-.\scripts\db_volume_maintenance.ps1 -Keep 7
+.\scripts\db_volume_maintenance.ps1 -Keep 7 -Apply
 .\scripts\install_maintenance_schedule.ps1           # preview
-.\scripts\install_maintenance_schedule.ps1 -Register # ежедневно в 04:00
+.\scripts\install_maintenance_schedule.ps1 -Register # ежедневно в 04:00, -Keep 7 -Apply
 .\scripts\test-volume-restore.ps1 -Source .\data\backups\bot-YYYYMMDD-HHMMSS.db
 ```
 
-Maintenance чисто останавливает бота, копирует `/data/bot.db`, перезапускает контейнер и проверяет integrity/schema новой копии в `data/backups`. По умолчанию старые backup и история не удаляются; `-Apply` или `-ApplyRetention` включают только ротацию файлов. Ошибка запускает plain-text Telegram-уведомление всем id из `TELEGRAM_ALLOWED_USERS`.
+Maintenance останавливает бота и ждёт состояния `exited` (в compose `stop_grace_period: 60s` при замеренном shutdown ≈11 с), затем копирует весь `/data` — `bot.db`, `bot.db-wal` и `bot.db-shm`, если они есть. Копия публикуется переименованием каталога, а размер каждого файла сверяется с размером в volume: непустой WAL, не попавший в снимок, или расхождение размеров — это exit 1, а не «тихий» backup. Снимок проверяется `db_inspect -Counts` (integrity, `schema_version`, `wal_side_file`, счётчики), причём `schema_version` обязан совпадать с головой `internal/store/migrations`; иначе maintenance падает, пока образ бота не пересобран.
 
-### Внешняя копия backup
+`VACUUM INTO` сворачивает WAL в один самодостаточный `bot-YYYYMMDD-HHMMSS.db`: файл сначала пишется под скрытым `.tmp`, проверяется `db_backup`, и только потом переименовывается в финальное имя (атомарная публикация), после чего `db_inspect` проверяет его ещё раз, а все счётчики сверяются со снимком остановленного volume. В `data/backups` не остаётся `-wal`/`-shm`: они уже внутри проверенного файла. При ручном restore одного `bot-*.db` сначала удалите в volume старые side-файлы — `docker compose run --rm --no-deps --entrypoint /bin/rm bot -f /data/bot.db-wal /data/bot.db-shm` — иначе SQLite применит кадры старого WAL к восстановленному файлу.
+
+Пока бот ещё остановлен, maintenance применяет retention через `cmd/dbprune` в одноразовом контейнере против `/data/bot.db`: VACUUM никогда не выполняется по живому writer'у. Классы и значения по умолчанию: events 90 дней; messages, RAG, quota, tasks, reminders, links — 0 (выключены). `cmd/dbprune` удаляет все семь классов в одной immediate-транзакции (batch-режима у команды нет), затем checkpoint WAL, `integrity_check` и VACUUM. Pre-prune backup создаётся внутри volume, выносится в `data/backups`, проверяется read-only и удаляется из volume; локальные `pre-prune-YYYYMMDD-HHMMSS.db` ротируются по количеству (`-PrePruneKeep 7`) и возрасту (`-PrePruneMaxAgeDays 30`). Любое удаление — только с `-Apply`.
+
+Расписание: `tg-llm-proxy-maintenance` ежедневно в 04:00 запускает `db_volume_maintenance.ps1 -Keep 7 -Apply`; `tg-llm-proxy-container-monitor` — каждые 5 минут. Установщик предпочитает стабильный `C:\Program Files\PowerShell\7\pwsh.exe` и откатывается на текущий `pwsh.exe` только если его нет (с предупреждением). Обе задачи регистрируются с `StartWhenAvailable=True`, `WakeToRun=True`, `DisallowStartIfOnBatteries=False`, `StopIfGoingOnBatteries=False`; существующие задачи обновляются (`Register-ScheduledTask -Force`), потому что старый путь `WindowsApps\Microsoft.PowerShell_*` ломается при обновлении Store.
+
+Ошибка на любом этапе — громкий `FAIL` в лог, exit 1 и plain-text Telegram всем id из `TELEGRAM_ALLOWED_USERS` (если не `-NoNotify`); бот перезапускается даже после сбоя. После успешного backup атомарно обновляется `data/backup-status.prom` (Prometheus textfile): `backup_last_success_unixtime`, `backup_last_size_bytes`, `backup_last_duration_seconds`, `backup_last_ok`; при сбое `backup_last_ok=0`, а последние успешные значения сохраняются. Каталог `data/` монтируется в node_exporter отдельно.
+
+Границы локальной схемы (решение оператора — копии остаются на этом ПК, off-host и шифрование не включаются): RPO ≈ 24 часа — одна проверенная копия в сутки плюс pre-prune backup в окне maintenance; чистый stop checkpointит WAL, поэтому незакоммиченных хвостов в копии нет. RTO — минуты ручного restore по разделу ниже (файл ~1–2 МБ). Потеря, кража или шифрование диска уносит и базу, и все backup: это принятый остаточный риск, а не недосмотр.
+
+### Внешняя копия backup (не используется production-расписанием)
+
+По решению оператора копии остаются только на этом ПК, поэтому ежедневная задача не передаёт `-ExternalDirectory` и `-Encrypt`. Скрипты остаются опциональными для ручного запуска:
 
 ```powershell
 .\scripts\db_volume_maintenance.ps1 -ExternalDirectory E:\tg-llm-proxy-backups -Encrypt
@@ -535,7 +547,7 @@ Maintenance чисто останавливает бота, копирует `/d
 .\scripts\db_offsite_copy.ps1 -Source .\data\backups\bot-YYYYMMDD-HHMMSS.db -Directory \\NAS\backups\tg-llm-proxy -Encrypt
 ```
 
-Без `-Encrypt` копия проверяется по SHA-256 и SQLite. С `-Encrypt` на внешний диск/NAS записывается только `.db.enc`: AES-256-GCM, проверка через временную расшифровку в scratch и SQLite integrity/schema. Ключ `data/backup-encryption.key` не покидает компьютер и должен храниться отдельно от backup — без него восстановление невозможно. Каталог должен действительно быть внешним; скрипт не подтверждает физическое расположение. Если ежедневная задача уже существует, сначала удалите её в Task Scheduler: регистратор намеренно не перезаписывает задачи.
+Без `-Encrypt` копия проверяется по SHA-256 и SQLite. С `-Encrypt` на внешний диск/NAS записывается только `.db.enc`: AES-256-GCM, проверка через временную расшифровку в scratch и SQLite integrity/schema. Ключ `data/backup-encryption.key` не покидает компьютер и должен храниться отдельно от backup — без него восстановление невозможно. Каталог должен действительно быть внешним; скрипт не подтверждает физическое расположение.
 
 ### Мониторинг контейнера и уведомления
 
@@ -546,7 +558,7 @@ Maintenance чисто останавливает бота, копирует `/d
 .\scripts\notify-telegram.ps1 -Message 'tg-llm-proxy: test'
 ```
 
-Монитор проверяет bot и Whisper, называет сервис в failure state, отправляет алерт при сбое и восстановлении, повторяет неизменный failure не чаще одного раза в 6 часов и не перезапускает контейнер автоматически. Mini App probe выполняется прямым `docker exec` по уже проверенному container ID без дополнительной зависимости от Compose в среде Task Scheduler, имеет timeout 5 секунд и до трёх попыток с паузой 2 секунды: failure устанавливается только после третьей последовательной ошибки, а лог содержит exit codes и сокращённую диагностику без секретов. Во время штатного clean-stop backup проверка пропускается только по свежему lease с живым PID; stale lease вызывает alert и восстанавливает проверки. Backup freshness по умолчанию ограничен 30 часами, подтверждённые копии записывают verification receipt. Дополнительно `watch_runtime.ps1` анализирует последние 10 минут логов: три ошибки Telegram, STRATA или Whisper/transcription вызывают алерт, повтор подавляется на 6 часов. Состояния хранятся в `data/monitoring`. Уведомления используют существующие token/allowlist, не принимают token аргументом и не печатают его.
+Монитор проверяет bot и Whisper, называет сервис в failure state, отправляет алерт при сбое и восстановлении, повторяет неизменный failure не чаще одного раза в 6 часов и не перезапускает контейнер автоматически. Mini App probe выполняется прямым `docker exec` по уже проверенному container ID без дополнительной зависимости от Compose в среде Task Scheduler, имеет timeout 5 секунд и до трёх попыток с паузой 2 секунды: failure устанавливается только после третьей последовательной ошибки, а лог содержит exit codes и сокращённую диагностику без секретов. Во время штатного clean-stop backup проверка пропускается только по свежему lease с живым PID; stale lease вызывает alert и восстанавливает проверки. Backup freshness по умолчанию ограничен 30 часами, подтверждённые копии записывают verification receipt; независимая телеметрия последнего backup лежит в `data/backup-status.prom` (см. раздел про backup volume). Дополнительно `watch_runtime.ps1` анализирует последние 10 минут логов: три ошибки Telegram, STRATA или Whisper/transcription вызывают алерт, повтор подавляется на 6 часов. Состояния хранятся в `data/monitoring`. Уведомления используют существующие token/allowlist, не принимают token аргументом и не печатают его.
 
 Метрики и готовность бота отдаются на loopback: `GET http://127.0.0.1:8081/metrics` и `GET http://127.0.0.1:8081/readyz` (проверяет БД и доступность модели). Prometheus из `edge-gateway` скрейпит `bot:8081` по общей docker-сети, держит дашборд `Bot overview` и отправляет алерты (down, ошибки модели, p95, очередь, рост БД, смена схемы) в Telegram через Alertmanager; настройка и список правил — в `C:\Kimi code\edge-gateway\README.md`.
 
@@ -562,9 +574,9 @@ docker compose -f docker-compose.yml -f compose.cuda.yaml up -d
 (≈33 с на том же аудио), поэтому перед первым голосовым сообщением прогрейте whisper одним запросом. Кроссплатформенность не менялась:
 GPU опционален и на macOS/NVIDIA Linux включается тем же override.
 
-Windows Task Scheduler запускает задачи от текущего пользователя в интерактивном сеансе через `conhost.exe --headless` и `pwsh -WindowStyle Hidden`, поэтому окно консоли не появляется. Стандартные ограничения питания также действуют. Существующие задачи не перезаписываются. В действиях сохраняются абсолютные пути к репозиторию и текущему `pwsh.exe` — после их перемещения или обновления пути задачи нужно пересоздать. На macOS/Linux зарегистрируйте maintenance и monitor через cron или systemd; там отдельного консольного окна не создаётся.
+Windows Task Scheduler запускает задачи от текущего пользователя в интерактивном сеансе через `conhost.exe --headless` и `pwsh -WindowStyle Hidden`, поэтому окно консоли не появляется. Обе задачи регистрируются с `StartWhenAvailable=True`, `WakeToRun=True`, `DisallowStartIfOnBatteries=False`, `StopIfGoingOnBatteries=False`; повторный запуск установщика обновляет существующую задачу (`-Force`), а не отказывается от неё. Действие хранит абсолютные пути к репозиторию и к `pwsh.exe`: установщик предпочитает стабильный `C:\Program Files\PowerShell\7\pwsh.exe` и откатывается на текущий исполняемый файл, только если MSI-путь отсутствует. На этой машине MSI-версии нет, поэтому в задачах пока остаётся версионированный путь `WindowsApps\Microsoft.PowerShell_*`: обновление Store может его сдвинуть — тогда поставьте PowerShell 7 через MSI и перерегистрируйте задачи. На macOS/Linux зарегистрируйте maintenance и monitor через cron или systemd; там отдельного консольного окна не создаётся.
 
-Чистая остановка checkpointит WAL. Репетиция использует отдельный compose-проект и не создаёт второй Telegram poller.
+Чистая остановка с `stop_grace_period: 60s` checkpointит WAL. Maintenance дополнительно ждёт `exited`, копирует `bot.db`/`bot.db-wal`/`bot.db-shm` и сверяет размеры с volume, поэтому «graceful» не считается доказанным без фактического состояния контейнера. Репетиция использует отдельный compose-проект и не создаёт второй Telegram poller.
 
 ### Ручной production restore и rollback
 

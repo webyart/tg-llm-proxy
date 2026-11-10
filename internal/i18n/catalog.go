@@ -250,6 +250,7 @@ var ruMessages = map[string]string{
 	"ask.finish_content_filter":     "Внимание: провайдер отфильтровал часть ответа (finish_reason=content_filter).",
 	"ask.doc_truncated":             "Внимание: документ был обрезан по MAX_CONTEXT_CHARS перед отправкой модели.",
 	"ask.sources":                   "Источники: %s",
+	"ask.tool_markup_failed":        "Модель не смогла корректно вызвать инструмент. Попробуйте ещё раз.",
 	"ask.latency_no_tokens":         "⏱ %s · модель %s · попыток %d (токены не возвращены)",
 	"ask.latency_tokens":            "⏱ %s · %d→%d токенов · модель %s · попыток %d",
 
@@ -780,6 +781,7 @@ var enMessages = map[string]string{
 	"ask.finish_content_filter":     "Warning: the provider filtered part of the answer (finish_reason=content_filter).",
 	"ask.doc_truncated":             "Warning: the document was truncated by MAX_CONTEXT_CHARS before it was sent to the model.",
 	"ask.sources":                   "Sources: %s",
+	"ask.tool_markup_failed":        "The model could not form a valid tool call. Please try again.",
 	"ask.latency_no_tokens":         "⏱ %s · model %s · attempts %d (no token counts returned)",
 	"ask.latency_tokens":            "⏱ %s · %d→%d tokens · model %s · attempts %d",
 

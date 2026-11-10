@@ -80,6 +80,7 @@ type toolLoopContinuation struct {
 	approvalScope         *networkApprovalScope
 	suppressApprovalScope bool
 	recoveredApproval     bool
+	textualToolRetry      bool
 	// approvalWaiter replaces promptNetworkApproval for clients that can ask the user on the same
 	// stream (the Mini App). It returns true when that exact call is approved, false when the user
 	// refuses, and an error when the wait itself failed (timeout, cancellation, unavailable).
@@ -653,8 +654,14 @@ func (d *Dispatcher) runToolLoop(ctx context.Context, state *toolLoopContinuatio
 		if len(resp.ToolCalls) == 0 {
 			var err error
 			resp, err = d.callModel(ctx, state.userID, state.request, state.streamer, state.session)
-			if err != nil || len(resp.ToolCalls) == 0 {
+			if err != nil {
 				return resp, err
+			}
+			if len(resp.ToolCalls) == 0 {
+				resp = d.recoverTextualToolCalls(ctx, state, resp)
+				if len(resp.ToolCalls) == 0 {
+					return resp, nil
+				}
 			}
 		}
 		normalized := make([]model.ToolCall, len(resp.ToolCalls))

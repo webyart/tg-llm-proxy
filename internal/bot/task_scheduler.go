@@ -338,7 +338,7 @@ func (d *Dispatcher) executeClaimedTask(ctx context.Context, task store.Task) er
 }
 
 func (d *Dispatcher) completeTaskStepResponse(ctx context.Context, task store.Task, response model.Response) error {
-	content := strings.TrimSpace(response.Content)
+	content := strings.TrimSpace(stripTextualToolCalls(response.Content))
 	if content == "" {
 		return model.ErrEmptyAnswer
 	}
@@ -372,7 +372,8 @@ func (d *Dispatcher) synthesizeAndCompleteTask(ctx context.Context, task store.T
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(response.Content) == "" {
+	response.Content = strings.TrimSpace(stripTextualToolCalls(response.Content))
+	if response.Content == "" {
 		return model.ErrEmptyAnswer
 	}
 	completed, err := store.CompleteTask(ctx, d.deps.DB, task, store.Message{

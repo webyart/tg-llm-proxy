@@ -47,6 +47,7 @@ func formatModelAnswer(content string, resp model.Response, selectedModel string
 // formatModelAnswerFor is the language-aware finalizer used by the Telegram command surface. The
 // Mini App keeps calling formatModelAnswer, so its output is unchanged.
 func formatModelAnswerFor(lang string, content string, resp model.Response, selectedModel string, opts answerFormatOptions) string {
+	content = stripTextualToolCalls(content)
 	full := content
 	if opts.Latency {
 		full += "\n\n" + latencyLineFor(lang, resp, selectedModel)

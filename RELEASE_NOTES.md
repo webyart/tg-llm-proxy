@@ -2,7 +2,17 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.62.0
+## Новейший выпуск: v1.62.1
+
+# tg-llm-proxy v1.62.1
+
+## Textual tool calls are executed instead of being shown
+
+- Some local-model answers write the tool call as text (`<tool_call><function=web_search><parameter=query>…`) instead of the native `tool_calls` field. The tool loop now parses that documented markup, turns it into real calls and runs them through the SAME allowlist, normalisation and approval path, so the raw XML never reaches the chat.
+- If the markup cannot be parsed, the model gets one corrective instruction to use native calls; after that the markup is stripped and, when nothing remains, the chat shows a localized «не удалось вызвать инструмент» instead of XML. The shared answer finalizer and task step/synthesis also strip any leftover markup.
+- Tests cover the exact screenshot shape (two web_search calls), text around the calls, malformed/unclosed markup with the corrective retry, execution of a parsed calculator call and the finalizer guard.
+
+## Предыдущий выпуск: v1.62.0
 
 # tg-llm-proxy v1.62.0
 

@@ -2,7 +2,17 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.62.8
+## Новейший выпуск: v1.62.9
+
+# tg-llm-proxy v1.62.9
+
+## Task step results fit the store limit and survive control bytes
+
+- A long step result was cut to `TaskMaxStepResultRunes` (4000) and then grew by the 36-rune truncation marker, so `CompleteTaskStep` rejected it with `task step result is invalid`. The cut now reserves room for the marker and always fits 4000.
+- NUL and control bytes (except newlines/tabs) are removed before storage, with a WARN carrying `task_id`, rune count and whether a NUL was present, so the next rejection names its cause.
+- Tests: truncation length + marker, short result untouched, control-byte sanitization.
+
+## Предыдущий выпуск: v1.62.8
 
 # tg-llm-proxy v1.62.8
 

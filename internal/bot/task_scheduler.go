@@ -353,9 +353,14 @@ func (d *Dispatcher) completeTaskStepResponse(ctx context.Context, task store.Ta
 	if content == "" {
 		return model.ErrEmptyAnswer
 	}
-	if len([]rune(content)) > store.TaskMaxStepResultRunes {
-		content, _ = CutRunes(content, store.TaskMaxStepResultRunes)
+	var rawRunes = Runes(content)
+	var hadNUL = strings.ContainsRune(content, '\x00')
+	content = sanitizeTaskStepText(content)
+	if hadNUL || rawRunes > store.TaskMaxStepResultRunes {
+		d.deps.Logger.Warn("task step result needed sanitizing before storage",
+			"task_id", task.ID, "runes", rawRunes, "nul", hadNUL, "limit", store.TaskMaxStepResultRunes)
 	}
+	content = taskStepResultWithinLimit(content)
 	completed, err := store.CompleteTaskStep(ctx, d.deps.DB, task, content, d.now())
 	if err != nil {
 		return err
@@ -568,4 +573,28 @@ func (d *Dispatcher) taskNetworkApprovalControl(ctx context.Context, ev Event, o
 	} else {
 		return err
 	}
+}
+
+// taskStepResultWithinLimit cuts a step result to the store limit INCLUDING the truncation marker: CutRunes
+// appends the 36-rune marker, so cutting to the full limit produced limit+36 and CompleteTaskStep rejected it.
+// sanitizeTaskStepText removes NUL and control bytes (except newlines/tabs) that CompleteTaskStep rejects.
+func sanitizeTaskStepText(content string) string {
+	return strings.Map(func(symbol rune) rune {
+		if symbol == '\x00' || (symbol < 0x20 && symbol != '\n' && symbol != '\t' && symbol != '\r') {
+			return -1
+		}
+		return symbol
+	}, content)
+}
+
+func taskStepResultWithinLimit(content string) string {
+	if Runes(content) <= store.TaskMaxStepResultRunes {
+		return content
+	}
+	var room = store.TaskMaxStepResultRunes - Runes(TruncatedMarker)
+	if room < 1 {
+		room = 1
+	}
+	content, _ = CutRunes(content, room)
+	return content
 }

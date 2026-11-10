@@ -358,3 +358,28 @@ func TestTaskBudgetsAreIndependentFromTheChatDeadline(t *testing.T) {
 		t.Fatalf("task lease = %s, want 330s", got)
 	}
 }
+
+func TestTaskStepResultTruncationFitsTheStoreLimit(t *testing.T) {
+	var long = strings.Repeat("данные ", 2000)
+	var cut = taskStepResultWithinLimit(long)
+	if got := len([]rune(cut)); got > store.TaskMaxStepResultRunes {
+		t.Fatalf("truncated step result = %d runes, store limit is %d", got, store.TaskMaxStepResultRunes)
+	}
+	if !strings.HasSuffix(cut, TruncatedMarker) {
+		t.Fatalf("truncated step result lost its marker: %q", cut[len(cut)-80:])
+	}
+	var short = "короткий результат"
+	if taskStepResultWithinLimit(short) != short {
+		t.Fatal("a short step result was modified")
+	}
+}
+
+func TestTaskStepTextDropsNULAndControls(t *testing.T) {
+	var got = sanitizeTaskStepText("данные\x00 \x07 результат\nстрока")
+	if strings.ContainsRune(got, '\x00') || strings.ContainsRune(got, '\x07') {
+		t.Fatalf("control bytes survived: %q", got)
+	}
+	if !strings.Contains(got, "данные") || !strings.Contains(got, "результат") || !strings.Contains(got, "\n") {
+		t.Fatalf("sanitize lost meaningful text: %q", got)
+	}
+}

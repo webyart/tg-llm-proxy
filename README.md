@@ -371,6 +371,14 @@ More → Mini App открывает companion со Status, History, Documents, 
 
 `MINIAPP_TELEGRAM_FALLBACK` — глобальное значение по умолчанию. Для конкретного чата его переопределяют команда `/miniapp on|off|reset` в Telegram и переключатель «Mini App» в Settings: строка `chat_miniapp_fallback` (миграция 17) побеждает env, а `reset` возвращает env. Тот же выбор отдаёт `GET /api/settings` (`miniapp_fallback: {enabled, source}`) и меняют `PUT`/`DELETE /api/settings/miniapp-fallback`.
 
+### Голосовой ввод в чате Mini App
+
+В composer вкладки «Чат» рядом с «Отправить» есть кнопка микрофона (44 px, доступная подпись, `aria-pressed` во время записи). Запись идёт через `MediaRecorder` с первым поддерживаемым MIME: `audio/webm;codecs=opus`, затем `audio/ogg;codecs=opus`, `audio/ogg`, `audio/mp4`. Пока идёт запись, под полем показаны секунды и кнопки «Остановить запись»/«Отменить запись»; отмена останавливает дорожки и ничего не отправляет. После остановки клип уходит на `POST /api/transcribe` (`multipart/form-data`, одна часть `file`), а полученный текст вставляется в поле ввода (обрезанный по краям, не более 2000 символов) и поле получает фокус. Автоотправки нет: текст можно отредактировать и отправить обычным сообщением.
+
+`POST /api/transcribe` использует тот же `model.Transcriber`, что и голосовые в Telegram, и ту же проверку: allow-list аудио MIME/расширений и сигнатуры контейнера, лимит `MEDIA_MAX_MB`, пустое/слишком короткое аудио, allowlist пользователя и per-minute бюджет. Ответ — `200 {"text":"…"}`; ошибки: `400 invalid_body` (нет части `file`, лишняя часть, query-параметры), `400 unsupported_audio`, `400 audio_too_short`, `401` без bearer, `405` для не-POST, `413 body_too_large`, `415 content_type`, `429 rate_limited` (общий лимит mutations 30/мин), `500 transcription_failed`. Тело запроса ограничено `MEDIA_MAX_MB` + 64 КиБ multipart-overhead; аудио не сохраняется ни в `messages`, ни в RAG, ни в audit (audit содержит только operation/chat_id). Успешная транскрипция, как и другие mutations, пишет `miniapp_mutation` с `operation=transcribe`.
+
+Браузерная поддержка: нужен `MediaRecorder` и `navigator.mediaDevices.getUserMedia` (HTTPS или localhost). В iOS Safari `MediaRecorder` может отсутствовать (старые версии WebView): кнопка остаётся видимой, но показывает локализованное сообщение «Браузер не поддерживает запись звука…», и голосовое можно отправить в Telegram — там путь транскрипции прежний. Отказ в доступе к микрофону, слишком короткая запись и обрыв сети также показываются локализованно (RU/EN).
+
 Production Telegram запускается всеми override-файлами одной командой:
 
 ```powershell

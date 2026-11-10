@@ -1,3 +1,13 @@
+# tg-llm-proxy v1.56.0
+
+## Voice input in the Mini App chat
+
+- The Mini App chat composer has a 44 px mic button with an accessible label and `aria-pressed` while recording. `MediaRecorder` picks the first supported type (`audio/webm;codecs=opus`, then `audio/ogg;codecs=opus`, `audio/ogg`, `audio/mp4`); the recording bar shows elapsed seconds plus Stop and Cancel. Cancel releases the microphone tracks and uploads nothing.
+- `POST /api/transcribe` (`multipart/form-data`, one `file` part, bearer session) returns `200 {"text":"…"}`. It reuses the SAME `model.Transcriber`, audio allowlist/signature check, `MEDIA_MAX_MB` and per-minute budget as the Telegram voice handler; there is no second transcription path. Statuses: `400 invalid_body` / `unsupported_audio` / `audio_too_short`, `401`, `405`, `413 body_too_large`, `415 content_type`, `429 rate_limited`, `500 transcription_failed`. The body cap is `MEDIA_MAX_MB` + 64 KiB multipart overhead and the audio is never stored (no message, RAG row or audit detail).
+- The transcript is trimmed, inserted into the composer (merged with existing text, bounded to 2000 runes) and focused; it is never auto-sent. RU/EN messages cover permission denied, unsupported browser, too-short recording and network failure.
+- Browser support: `MediaRecorder` and `getUserMedia` over HTTPS/localhost. iOS Safari/older WebViews may lack `MediaRecorder`; the button then shows a clear localized message and the user can send the voice note in Telegram.
+- Tests: bot dispatcher (shared client request fields, trim, empty transcript, oversize, non-audio/signature mismatch, short audio, allowlist and rate limit), webapp (401/405, missing/wrong field, non-audio, short, 413, 415, 200 with text, backend error → 500, audit, no audio in the DB, mutation rate limit) and Node frontend (start/stop upload and insertion, cancel, permission denied, unsupported browser, too short, network failure).
+
 # tg-llm-proxy v1.55.0
 
 ## Cost and fallback observability, a Kimi reserve, and a Linux restore drill

@@ -47,8 +47,10 @@ Mini App отвечает через ТОТ ЖЕ `Dispatcher`, что и Telegra
 per-chat lock, общий per-minute бюджет и общая дневная квота. Сетевые инструменты (`read_url`, `web_search`) доступны
 и в Mini App: модель запрашивает действие, SSE-событие `approval` показывает карточку, `POST /api/chat/approval`
 возвращает решение и тот же поток продолжается; `calculator` работает без подтверждения.
-Осталось: загрузка голоса, матрица паритета. Загрузка документов закрыта в v1.50.0 (`POST /api/documents` + общий
-ingest-helper с `/docs add`), PDF/DOCX для обоих путей добавлены в v1.51.0, подтверждения сетевых действий — в v1.52.0.
+Осталось: ничего. Загрузка голоса закрыта в v1.56.0 (`POST /api/transcribe` + тот же
+`model.Transcriber`, что и у голосовых в Telegram). Загрузка документов закрыта в v1.50.0 (`POST /api/documents` + общий
+ingest-helper с `/docs add`), PDF/DOCX для обоих путей добавлены в v1.51.0, подтверждения сетевых действий — в v1.52.0,
+матрица паритета — в `internal/bot/parity_test.go` (v1.56.0).
 
 Спринт начинался с read-only панели: задать вопрос, ответить на «ожидает ответа», нажать `/skip`/`/unskip`/`/reset`
 было нельзя, хотя бот умеет стриминг.
@@ -58,10 +60,28 @@ ingest-helper с `/docs add`), PDF/DOCX для обоих путей добав�
 | `POST /api/messages` + SSE-стрим | Чат в Mini App; переиспользовать `Dispatcher` (лимиты, RAG, tools, подтверждения), а не писать второй путь | 5–7 дней |
 | Индикатор «ожидает ответа», `/skip`, `/unskip`, `/reset`, `/whoami` | Паритет с ботом для основного сценария | 2 дня |
 | Подтверждения сетевых действий в Mini App | ✅ v1.52.0: SSE `approval`, одноразовый токен, `POST /api/chat/approval`, тот же поток продолжается после решения | 3 дня |
-| Загрузка документов и голоса | `/docs add` и транскрипция сейчас только в боте | ✅ документы — v1.50.0 (`POST /api/documents`, общий `bot.IngestRAGDocument`), PDF/DOCX — v1.51.0 (`bot.ExtractDocumentText`); голос — остался |
-| Матрица паритета «бот vs Mini App» в тестах | Чтобы третья итерация не забыла половину команд | 1 день |
+| Загрузка документов и голоса | `/docs add` и транскрипция сейчас только в боте | ✅ документы — v1.50.0 (`POST /api/documents`, общий `bot.IngestRAGDocument`), PDF/DOCX — v1.51.0 (`bot.ExtractDocumentText`); ✅ голос — v1.56.0 (`POST /api/transcribe`, общий `model.Transcriber` и та же валидация) |
+| Матрица паритета «бот vs Mini App» в тестах | Чтобы третья итерация не забыла половину команд | ✅ v1.56.0: `internal/bot/parity_test.go` сверяет `registry()` с таблицей «команда → `/api/...` или причина telegram-only»; 5 исключений: `/start`, `/help`, `/ping`, `/tts`, `/admin` |
 
 **DoD:** в Mini App можно вести диалог со стримингом, ставить задачу и загрузить документ; паритет зафиксирован тестом.
+
+### Матрица паритета (источник истины — `registry()`)
+
+| Команда | Мини-апп |
+|---|---|
+| `/status` | `GET /api/status` |
+| `/model` | `GET /api/settings`, `PUT/DELETE /api/settings/model` |
+| `/stream`, `/miniapp` | `PUT/DELETE /api/settings/stream`, `/api/settings/miniapp-fallback` |
+| `/persona` | `PUT/DELETE /api/settings/persona` |
+| `/ask` | `POST /api/messages` (SSE) |
+| `/reset`, `/skip`, `/unskip` | `POST /api/context/reset`, `POST /api/pending/skip` |
+| `/history`, `/search`, `/export`, `/delete` | `GET /api/history`, `/api/history/search`, `/api/history/export`, `POST /api/history/clear` |
+| `/docs` | `GET/POST /api/documents`, `/api/documents/search`, `POST /api/documents/{id}/delete` |
+| `/links` | `GET/POST /api/links`, `/api/links/search`, `/api/links/item` |
+| `/task`, `/remind`, `/reminders` | `GET/POST /api/tasks`, `/api/tasks/{id}`, `/api/tasks/cancel`, `GET/POST /api/reminders`, `/api/reminders/{id}` |
+| `/feedback`, `/fb`, `/usage`, `/stats` | `POST /api/history/{id}/feedback`, `GET /api/usage` |
+| `/whoami` | `GET /api/whoami` |
+| `/start`, `/help`, `/ping`, `/tts`, `/admin` | Telegram-only: сессия, справка, диагностика, синтез аудио клиентом, админ-метрики |
 
 ## Что уже сделано по спринтам
 
@@ -69,7 +89,10 @@ ingest-helper с `/docs add`), PDF/DOCX для обоих путей добав�
   модели/очередей/апдейтов/инструментов/БД, CI `restore-drill` (manual, требует Windows-раннер) и `release`
   (тег → образ + артефакты), `scripts/release-check.ps1`.
 - Спринт 5: чат в Mini App (см. статус выше); загрузка документов в Mini App закрыта в v1.50.0, PDF/DOCX
-  добавлены в v1.51.0, подтверждения сетевых действий — в v1.52.0; остались голос и матрица паритета.
+  добавлены в v1.51.0, подтверждения сетевых действий — в v1.52.0, голос — в v1.56.0; осталась матрица паритета.
+  Голос теперь на обоих клиентах, и это зафиксировано в parity-комментарии `internal/bot/miniapp_voice.go`
+  (Telegram: voice/audio/video_note → Transcribe → ответ в чате; Mini App: микрофон → `POST /api/transcribe` →
+  текст в composer; общий клиент, валидация и лимиты).
 - Спринт 6 в работе: 👍/👎-фидбэк закрыт (миграция 15, `/feedback` и кнопки в Mini App), гибридный RAG закрыт
   (миграция 16, embeddings + FTS5), per-chat доставка ответа Mini App в Telegram — v1.54.0 (миграция 17); остальное — по списку ниже.
 

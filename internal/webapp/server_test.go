@@ -343,7 +343,7 @@ func TestGlobalInFlightCap(t *testing.T) {
 		once.Do(func() { close(entered) })
 		<-release
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-	}), 1, 0)
+	}), 1, 0, 0)
 	done := make(chan struct{})
 	go func() {
 		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))

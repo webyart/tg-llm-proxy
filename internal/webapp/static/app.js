@@ -27,6 +27,15 @@
       chatApprovalAllow: "Разрешить", chatApprovalDeny: "Отклонить", chatApprovalExpires: "Истекает через {seconds} с",
       chatApprovalApproved: "Разрешено. Выполняю действие…", chatApprovalDenied: "Отклонено. Действие не выполнено.",
       chatApprovalExpired: "Время подтверждения истекло. Действие не выполнено.", chatApprovalFailed: "Не удалось передать решение. Повторите попытку.",
+      chatVoiceStart: "Записать голосовое", chatVoiceStop: "Остановить запись", chatVoiceCancel: "Отменить запись",
+      chatVoiceRecording: "Идёт запись", chatVoiceElapsed: "{seconds} с", chatVoiceUploading: "Распознаю запись…",
+      voiceUnsupported: "Браузер не поддерживает запись звука. Отправьте голосовое сообщение в Telegram.",
+      voicePermissionDenied: "Нет доступа к микрофону. Разрешите его в настройках браузера или отправьте голосовое в Telegram.",
+      voiceTooShort: "Запись слишком короткая. Говорите дольше и остановите запись.",
+      voiceNetworkFailed: "Не удалось отправить запись. Проверьте соединение и повторите.",
+      voiceFailed: "Не удалось распознать запись. Попробуйте ещё раз или отправьте голосовое в Telegram.",
+      voiceUnsupportedAudio: "Этот формат записи не поддерживается. Отправьте голосовое в Telegram.",
+      voiceTranscriptReady: "Расшифровка вставлена в поле ввода.",
       sessionExpired: "Сессия истекла. Откройте Mini App заново из Telegram.",
       launchRequired: "Запустите страницу через «Ещё → Mini App» в Telegram.",
       verifyLaunch: "Проверяем запуск из Telegram…", launchFailed: "Не удалось проверить запуск. Откройте Mini App заново из Telegram.",
@@ -181,6 +190,15 @@
       chatApprovalAllow: "Allow", chatApprovalDeny: "Deny", chatApprovalExpires: "Expires in {seconds} s",
       chatApprovalApproved: "Approved. Running the action…", chatApprovalDenied: "Denied. The action was not performed.",
       chatApprovalExpired: "The approval expired. The action was not performed.", chatApprovalFailed: "The decision could not be delivered. Try again.",
+      chatVoiceStart: "Record a voice message", chatVoiceStop: "Stop recording", chatVoiceCancel: "Cancel recording",
+      chatVoiceRecording: "Recording", chatVoiceElapsed: "{seconds} s", chatVoiceUploading: "Transcribing the recording…",
+      voiceUnsupported: "This browser cannot record audio. Send a voice message in Telegram instead.",
+      voicePermissionDenied: "Microphone access is blocked. Allow it in the browser settings or send a voice message in Telegram.",
+      voiceTooShort: "The recording is too short. Speak longer and stop the recording.",
+      voiceNetworkFailed: "The recording could not be uploaded. Check your connection and try again.",
+      voiceFailed: "The recording could not be transcribed. Try again or send a voice message in Telegram.",
+      voiceUnsupportedAudio: "This recording format is not supported. Send a voice message in Telegram instead.",
+      voiceTranscriptReady: "The transcript was inserted into the message field.",
       sessionExpired: "Session expired. Reopen the Mini App from Telegram.",
       launchRequired: "This page needs a launch from More → Mini App in Telegram.",
       verifyLaunch: "Verifying Telegram launch…", launchFailed: "Launch verification failed. Reopen the Mini App from Telegram.",
@@ -333,6 +351,7 @@
     invalid_goal: "taskGoalInvalid", chat_forbidden: "chatForbidden", invalid_text: "chatInvalidText", text_too_long: "chatTooLongError",
     chat_unavailable: "chatUnavailable", chat_failed: "chatFailed", chat_mutation_failed: "chatMutationFailed",
     approval_expired: "chatApprovalExpired", approval_not_found: "chatApprovalExpired", approval_failed: "chatApprovalFailed",
+    audio_too_short: "voiceTooShort", unsupported_audio: "voiceUnsupportedAudio", transcription_failed: "voiceFailed",
   };
 
   function initialLanguage() {
@@ -401,6 +420,9 @@
   let chatLiveNode = null;
   let chatLiveText = "";
   let chatApprovalTimer = null;
+  // Voice input state survives a re-render of the Chat tab: MediaRecorder lives in this object, the DOM
+  // nodes are rebuilt around it, and the timer is rescheduled after every render.
+  let chatVoice = { state: "idle", recorder: null, stream: null, chunks: [], mime: "", startedAt: 0, timer: null };
 
   function resetArmedStates() {
     chat.resetArmed = false;
@@ -467,6 +489,7 @@
   }
 
   function expire(message) {
+    cancelVoiceRecording();
     session = "";
     ui.app.hidden = true;
     ui.logout.hidden = true;
@@ -2242,6 +2265,222 @@
     if (activeTab === "chat") renderChat();
   }
 
+  // Voice input: MediaRecorder -> POST /api/transcribe -> transcript in the composer. The server only
+  // forwards the bytes to the same transcriber as a Telegram voice note and stores nothing; the client
+  // never auto-sends, so the user can edit the inserted text first.
+  const voiceMinBytes = 256;
+  const voiceMimeCandidates = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/ogg", "audio/mp4"];
+
+  function idleChatVoice() {
+    return { state: "idle", recorder: null, stream: null, chunks: [], mime: "", startedAt: 0, timer: null };
+  }
+
+  function voiceSupported() {
+    return typeof navigator === "object" && navigator !== null &&
+      navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function" &&
+      typeof window.MediaRecorder === "function";
+  }
+
+  function voiceMimeType() {
+    if (typeof window.MediaRecorder !== "function" || typeof window.MediaRecorder.isTypeSupported !== "function") return "";
+    for (const mime of voiceMimeCandidates) {
+      try {
+        if (window.MediaRecorder.isTypeSupported(mime)) return mime;
+      } catch (_) {
+        // The next candidate is still worth asking about.
+      }
+    }
+    return "";
+  }
+
+  function voiceExtension(mime) {
+    if (mime.indexOf("ogg") >= 0) return "ogg";
+    if (mime.indexOf("mp4") >= 0 || mime.indexOf("m4a") >= 0) return "mp4";
+    return "webm";
+  }
+
+  function stopVoiceTracks(stream) {
+    if (!stream || typeof stream.getTracks !== "function") return;
+    for (const track of stream.getTracks()) {
+      try { track.stop(); } catch (_) { /* the browser already released it */ }
+    }
+  }
+
+  function scheduleChatVoiceTick() {
+    const voice = chatVoice;
+    if (voice.timer !== null) clearTimeout(voice.timer);
+    voice.timer = null;
+    if (voice.state !== "recording") return;
+    voice.timer = setTimeout(() => {
+      voice.timer = null;
+      if (chatVoice !== voice || voice.state !== "recording") return;
+      if (chatNodes.voiceElapsed) {
+        const seconds = Math.max(0, Math.floor((Date.now() - voice.startedAt) / 1000));
+        chatNodes.voiceElapsed.textContent = t("chatVoiceElapsed", { seconds });
+      }
+      scheduleChatVoiceTick();
+    }, 1000);
+  }
+
+  async function startVoiceRecording() {
+    if (!session || chat.streaming || chatVoice.state !== "idle") return;
+    if (!voiceSupported() || !voiceMimeType()) {
+      showError(t("voiceUnsupported"));
+      return;
+    }
+    let stream = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (_) {
+      showError(t("voicePermissionDenied"));
+      return;
+    }
+    if (!stream) {
+      showError(t("voicePermissionDenied"));
+      return;
+    }
+    let recorder = null;
+    try {
+      recorder = new window.MediaRecorder(stream, { mimeType: voiceMimeType() });
+    } catch (_) {
+      stopVoiceTracks(stream);
+      showError(t("voiceUnsupported"));
+      return;
+    }
+    const voice = {
+      state: "recording", recorder, stream, chunks: [], mime: voiceMimeType(), startedAt: Date.now(), timer: null,
+    };
+    chatVoice = voice;
+    recorder.addEventListener("dataavailable", (event) => {
+      if (event && event.data && event.data.size) voice.chunks.push(event.data);
+    });
+    recorder.addEventListener("stop", () => finishVoiceStop(voice));
+    recorder.addEventListener("error", () => {
+      if (chatVoice !== voice || voice.state !== "recording") return;
+      cancelVoiceRecording();
+      showError(t("voiceFailed"));
+    });
+    try {
+      recorder.start();
+    } catch (_) {
+      resetChatVoice();
+      if (activeTab === "chat") renderChat();
+      showError(t("voiceFailed"));
+      return;
+    }
+    showError("");
+    if (activeTab === "chat") renderChat();
+    scheduleChatVoiceTick();
+  }
+
+  function stopVoiceRecording() {
+    const voice = chatVoice;
+    if (!voice || voice.state !== "recording" || !voice.recorder) return;
+    try {
+      if (voice.recorder.state === "inactive") {
+        finishVoiceStop(voice);
+        return;
+      }
+      voice.recorder.stop();
+    } catch (_) {
+      finishVoiceStop(voice);
+    }
+  }
+
+  function finishVoiceStop(voice) {
+    if (chatVoice !== voice || voice.state !== "recording") return;
+    voice.state = "uploading";
+    if (voice.timer !== null) {
+      clearTimeout(voice.timer);
+      voice.timer = null;
+    }
+    const chunks = voice.chunks.slice();
+    const mime = voice.mime;
+    const stream = voice.stream;
+    voice.recorder = null;
+    voice.stream = null;
+    stopVoiceTracks(stream);
+    if (activeTab === "chat") renderChat();
+    uploadVoiceRecording(chunks, mime);
+  }
+
+  function cancelVoiceRecording() {
+    const voice = chatVoice;
+    if (!voice || voice.state !== "recording") return;
+    chatVoice = idleChatVoice();
+    if (voice.timer !== null) {
+      clearTimeout(voice.timer);
+      voice.timer = null;
+    }
+    // Replace the state first: the stop event of the recorder then sees a different object and never uploads.
+    if (voice.recorder && voice.recorder.state !== "inactive") {
+      try { voice.recorder.stop(); } catch (_) { /* already stopped */ }
+    }
+    stopVoiceTracks(voice.stream);
+    if (activeTab === "chat") renderChat();
+  }
+
+  function resetChatVoice() {
+    const voice = chatVoice;
+    if (voice && voice.timer !== null) clearTimeout(voice.timer);
+    if (voice) stopVoiceTracks(voice.stream);
+    chatVoice = idleChatVoice();
+  }
+
+  function mergeChatTranscript(existing, transcript) {
+    const current = String(existing || "").replace(/\s+$/, "");
+    if (!current) return transcript;
+    return current + " " + transcript;
+  }
+
+  function setChatInputValue(input, value) {
+    const text = String(value || "");
+    const runes = Array.from(text);
+    input.value = runes.length > 2000 ? runes.slice(0, 2000).join("") : text;
+    input.setAttribute("aria-invalid", "false");
+    const counter = document.getElementById("chat-counter");
+    if (counter) counter.textContent = `${Array.from(input.value).length} / 2000`;
+    autoGrowChatInput(input);
+  }
+
+  async function uploadVoiceRecording(chunks, mime) {
+    if (!session) {
+      resetChatVoice();
+      if (activeTab === "chat") renderChat();
+      return;
+    }
+    const blob = new Blob(chunks, { type: mime });
+    if (blob.size < voiceMinBytes) {
+      resetChatVoice();
+      if (activeTab === "chat") renderChat();
+      showError(t("voiceTooShort"));
+      return;
+    }
+    const form = new FormData();
+    form.append("file", blob, `voice.${voiceExtension(mime)}`);
+    let transcript = "";
+    try {
+      const data = await api("/api/transcribe", { method: "POST", body: form });
+      if (!data || typeof data.text !== "string") throw new Error(t("invalidResponse"));
+      transcript = data.text.trim();
+      if (!transcript) throw new Error(t("voiceTooShort"));
+    } catch (error) {
+      const message = error && error.message === t("networkError")
+        ? t("voiceNetworkFailed")
+        : (error && error.message) || t("voiceFailed");
+      showError(message);
+    } finally {
+      resetChatVoice();
+      if (activeTab === "chat") renderChat();
+    }
+    if (!transcript) return;
+    const input = document.getElementById("chat-input");
+    if (!input) return;
+    setChatInputValue(input, mergeChatTranscript(input.value, transcript));
+    input.focus();
+    showNotice(t("voiceTranscriptReady"));
+  }
+
   function renderChat() {
     ui.content.replaceChildren();
     cancelChatLiveRender();
@@ -2255,7 +2494,7 @@
     log.setAttribute("role", "log");
     log.setAttribute("aria-live", "polite");
     log.setAttribute("aria-label", t("chatTitle"));
-    chatNodes = { log, answer: null, status: null, approvalNote: null };
+    chatNodes = { log, answer: null, status: null, approvalNote: null, voiceElapsed: null };
     if (!chat.messages.length) log.appendChild(element("p", "empty", t("emptyHistory")));
     for (const message of chat.messages) {
       const node = chatMessageNode(message);
@@ -2306,14 +2545,46 @@
     input.maxLength = 2000;
     input.placeholder = t("chatPlaceholder");
     input.setAttribute("aria-label", t("chatInputAria"));
-    input.disabled = chat.streaming;
+    input.disabled = chat.streaming || chatVoice.state !== "idle";
     composer.appendChild(input);
+    // The mic sits next to Send: a 44px target (style.css) with an accessible label, and aria-pressed
+    // reflects the recording state that the voice bar below shows in seconds.
+    const mic = element("button", "chat-mic");
+    mic.type = "button";
+    mic.setAttribute("aria-label", t("chatVoiceStart"));
+    mic.setAttribute("aria-pressed", String(chatVoice.state === "recording"));
+    mic.appendChild(element("span", "chat-mic-icon", "🎤"));
+    mic.disabled = chat.streaming || chatVoice.state !== "idle";
+    mic.addEventListener("click", startVoiceRecording);
+    composer.appendChild(mic);
     const send = submitButton(t("chatSend"));
     send.className = "chat-send";
-    send.disabled = chat.streaming;
+    send.disabled = chat.streaming || chatVoice.state !== "idle";
     composer.appendChild(send);
     form.appendChild(composer);
+    if (chatVoice.state === "recording" || chatVoice.state === "uploading") {
+      const bar = element("div", "chat-voice");
+      bar.setAttribute("role", "group");
+      bar.setAttribute("aria-label", t("chatVoiceRecording"));
+      if (chatVoice.state === "recording") {
+        bar.appendChild(element("span", "chat-voice-dot"));
+        const elapsed = element("span", "chat-voice-time", t("chatVoiceElapsed", { seconds: 0 }));
+        elapsed.setAttribute("role", "status");
+        bar.appendChild(elapsed);
+        chatNodes.voiceElapsed = elapsed;
+        const stop = settingsButton(t("chatVoiceStop"), stopVoiceRecording);
+        stop.className = "chat-voice-stop";
+        bar.appendChild(stop);
+        const cancel = settingsButton(t("chatVoiceCancel"), cancelVoiceRecording, true);
+        cancel.className = "chat-voice-cancel";
+        bar.appendChild(cancel);
+      } else {
+        bar.appendChild(element("span", "chat-voice-uploading", t("chatVoiceUploading")));
+      }
+      form.appendChild(bar);
+    }
     const counter = element("div", "counter chat-counter", "0 / 2000");
+    counter.id = "chat-counter";
     form.appendChild(counter);
     input.addEventListener("input", () => {
       counter.textContent = `${Array.from(input.value).length} / 2000`;
@@ -2335,8 +2606,10 @@
     ui.content.appendChild(section);
     syncBusyState();
     // syncBusyState may restore a previous disabled state after a global loading phase.
-    input.disabled = chat.streaming;
-    send.disabled = chat.streaming;
+    input.disabled = chat.streaming || chatVoice.state !== "idle";
+    send.disabled = chat.streaming || chatVoice.state !== "idle";
+    mic.disabled = chat.streaming || chatVoice.state !== "idle";
+    if (chatVoice.state === "recording") scheduleChatVoiceTick();
     autoGrowChatInput(input);
     scrollChat(true);
     scheduleChatApprovalTick();
@@ -2455,7 +2728,7 @@
   }
 
   async function sendChat(value, control) {
-    if (chat.streaming || !session) return;
+    if (chat.streaming || !session || chatVoice.state !== "idle") return;
     const text = String(value || "").trim();
     const length = Array.from(text).length;
     if (!length) {
@@ -2691,6 +2964,8 @@
     if (!button || loading) return;
     resetArmedStates();
     resetSearchState();
+    // A recording is tied to the visible composer: leaving the Chat tab releases the microphone.
+    cancelVoiceRecording();
     setMenuOpen(false); // choosing a section closes the dropdown as it opens the page
     activeTab = button.dataset.tab;
     nextBefore = null;

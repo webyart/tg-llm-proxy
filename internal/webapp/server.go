@@ -157,6 +157,10 @@ type ChatBackend interface {
 	ResolveMiniAppApproval(ctx context.Context, token string, chatID, userID int64, approve bool) error
 	ResetContextForMiniApp(ctx context.Context, chatID, userID int64) error
 	SkipPendingForMiniApp(ctx context.Context, chatID, userID int64, skip bool) (bool, error)
+	// TranscribeForMiniApp validates one recorded clip with the same audio allowlist, MEDIA_MAX_MB and
+	// per-minute budget as the Telegram voice handler and returns the trimmed transcript. The audio is
+	// only forwarded to the shared model.Transcriber and is never stored.
+	TranscribeForMiniApp(ctx context.Context, chatID, userID int64, data []byte, filename, mime string) (string, error)
 }
 
 type storeTaskLifecycle struct {
@@ -219,7 +223,7 @@ func New(cfg config.Config, db *sql.DB, client model.Client, logger *slog.Logger
 	if client != nil {
 		app.chat = bot.New(bot.Deps{Cfg: cfg, DB: db, Model: client, Logger: logger, Token: cfg.BotToken})
 	}
-	app.handler = securityHeaders(limitInFlight(recoverPanics(logger, http.HandlerFunc(app.route)), maxInFlight, documentUploadBodyLimit(cfg)))
+	app.handler = securityHeaders(limitInFlight(recoverPanics(logger, http.HandlerFunc(app.route)), maxInFlight, documentUploadBodyLimit(cfg), transcribeBodyLimit(cfg)))
 	return app
 }
 
@@ -317,9 +321,10 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-// limitInFlight caps concurrent requests and replaces every body with a bounded reader. uploadBodyLimit is the
-// larger cap of POST /api/documents (multipart upload); every other route keeps maxBodyBytes.
-func limitInFlight(next http.Handler, capacity int, uploadBodyLimit int64) http.Handler {
+// limitInFlight caps concurrent requests and replaces every body with a bounded reader. documentLimit and
+// transcribeLimit are the larger caps of the two multipart routes (POST /api/documents and POST
+// /api/transcribe); every other route keeps maxBodyBytes.
+func limitInFlight(next http.Handler, capacity int, documentLimit, transcribeLimit int64) http.Handler {
 	inFlight := make(chan struct{}, capacity)
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		select {
@@ -330,8 +335,17 @@ func limitInFlight(next http.Handler, capacity int, uploadBodyLimit int64) http.
 			return
 		}
 		limit := int64(maxBodyBytes)
-		if uploadBodyLimit > 0 && req.Method == http.MethodPost && req.URL.Path == "/api/documents" {
-			limit = uploadBodyLimit
+		if req.Method == http.MethodPost {
+			switch req.URL.Path {
+			case "/api/documents":
+				if documentLimit > 0 {
+					limit = documentLimit
+				}
+			case "/api/transcribe":
+				if transcribeLimit > 0 {
+					limit = transcribeLimit
+				}
+			}
 		}
 		req.Body = http.MaxBytesReader(w, req.Body, limit)
 		next.ServeHTTP(w, req)
@@ -404,6 +418,10 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 	}
 	if req.URL.Path == "/api/messages" {
 		a.chatMessage(w, req, current)
+		return
+	}
+	if req.URL.Path == "/api/transcribe" {
+		a.transcribe(w, req, current)
 		return
 	}
 	if req.URL.Path == "/api/chat/approval" {
@@ -570,6 +588,8 @@ func miniAppMutationOperation(req *http.Request) (string, bool) {
 		switch path {
 		case "/api/documents":
 			return "documents.add", true
+		case "/api/transcribe":
+			return "transcribe", true
 		case "/api/documents/clear":
 			return "documents.clear", true
 		case "/api/history/clear":

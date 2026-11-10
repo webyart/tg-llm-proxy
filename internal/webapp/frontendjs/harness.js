@@ -323,6 +323,9 @@ async function createHarness(options = {}) {
     },
   };
   sandbox.window = sandbox;
+  // Optional browser capabilities (navigator.mediaDevices, MediaRecorder) are injected per test; the
+  // production script feature-detects them, so the default harness keeps them absent.
+  if (options.globals) Object.assign(sandbox, options.globals);
   sandbox.document = document;
   sandbox.location = { hash: options.hash === undefined ? "#ticket=ticket-1" : options.hash, pathname: "/miniapp/", search: "?source=test" };
   sandbox.history = { replaceState() {} };

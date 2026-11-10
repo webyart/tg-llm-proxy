@@ -48,6 +48,13 @@ type fakeChatBackend struct {
 	skipErr    error
 	approvals  []recordedApproval
 	approveErr error
+
+	transcribeText  string
+	transcribeErr   error
+	transcribeCalls int
+	transcribeData  []byte
+	transcribeName  string
+	transcribeMIME  string
 }
 
 func (f *fakeChatBackend) AnswerForMiniApp(ctx context.Context, chatID, userID int64, text string, emit func(bot.MiniAppStreamEvent) error) error {
@@ -99,6 +106,17 @@ func (f *fakeChatBackend) SkipPendingForMiniApp(ctx context.Context, chatID, use
 	defer f.mu.Unlock()
 	f.skips = append(f.skips, skip)
 	return f.skipSet, f.skipErr
+}
+
+func (f *fakeChatBackend) TranscribeForMiniApp(ctx context.Context, chatID, userID int64, data []byte, filename, mime string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.transcribeCalls++
+	f.chatID, f.userID = chatID, userID
+	f.transcribeData = append([]byte{}, data...)
+	f.transcribeName = filename
+	f.transcribeMIME = mime
+	return f.transcribeText, f.transcribeErr
 }
 
 func (f *fakeChatBackend) callCount() int {

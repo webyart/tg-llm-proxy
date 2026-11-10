@@ -179,6 +179,13 @@ type Dispatcher struct {
 	confirmationsOnce sync.Once
 	approvalScopes    *networkApprovalScopeSet
 	approvalOnce      sync.Once
+	// The same ownership rule for the Mini App approvals and the document confirmations: both used to be
+	// package-level maps keyed by the *Dispatcher, which kept one entry per dispatcher (and every test
+	// dispatcher) alive for the life of the process. They are fields now, lazily built through their Once.
+	miniAppApprovals          *miniAppApprovalSet
+	miniAppApprovalsOnce      sync.Once
+	documentConfirmations     *documentConfirmationSet
+	documentConfirmationsOnce sync.Once
 	// metrics is registered once by main after NewTelegram; the atomics above are read by gauge
 	// functions at scrape time, and the queue counters below are updated around the chat lock.
 	metrics atomic.Pointer[metrics.Registry]
@@ -220,6 +227,8 @@ func New(deps Deps) *Dispatcher {
 	// the accessors, but building them here makes the ownership obvious.
 	networkConfirmationsFor(d)
 	networkApprovalScopesFor(d)
+	miniAppApprovalsFor(d)
+	documentConfirmationsFor(d)
 	d.commands = d.registry()
 	var i = 0
 	for i < len(d.commands) {
@@ -391,6 +400,10 @@ func (d *Dispatcher) Dispatch(ctx context.Context, ev Event) error {
 	// counter is what lets deliver() notice that the NEXT question arrived mid-answer.
 	if !ev.MenuCallback && ev.TelegramMessageID > 0 {
 		d.noteChatTurn(ev.ChatID)
+		// Release this update's turn when IT is done, not when some later update of the chat finishes: the
+		// entry is deleted once the last admitted update of the chat has returned, so chatTurns holds at most
+		// the updates currently in flight instead of one entry per chat forever.
+		defer d.turns.consume(ev.ChatID)
 	}
 	cmd, _ := d.commandFor(ev)
 	if !cmd.AlwaysAllowed && !d.deps.Cfg.Allows(ev.UserID) {
@@ -407,7 +420,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, ev Event) error {
 		d.collectAlbum(ctx, ev)
 		return nil
 	}
-	return d.runBounded(ctx, ev, true)
+	_, err := d.runBounded(ctx, ev, true)
+	return err
 }
 
 func (d *Dispatcher) dispatchDenied(ctx context.Context, ev Event, cmd Command) error {
@@ -424,7 +438,7 @@ func (d *Dispatcher) dispatchDenied(ctx context.Context, ev Event, cmd Command) 
 	return err
 }
 
-func (d *Dispatcher) runBounded(ctx context.Context, ev Event, acknowledge bool) (err error) {
+func (d *Dispatcher) runBounded(ctx context.Context, ev Event, acknowledge bool) (acknowledged bool, err error) {
 	var result = "ok"
 	defer func() {
 		if err != nil && result == "ok" {
@@ -437,7 +451,7 @@ func (d *Dispatcher) runBounded(ctx context.Context, ev Event, acknowledge bool)
 		defer func() { <-d.admission }()
 	default:
 		result = "overloaded"
-		return d.dispatchOverloaded(ctx, ev)
+		return false, d.dispatchOverloaded(ctx, ev)
 	}
 	// The update is counted as queued until it owns the chat lock: that is the number an operator sees in
 	// queue_depth{chat_id}, and it drains one step before the handler starts.
@@ -470,20 +484,22 @@ func (d *Dispatcher) runBounded(ctx context.Context, ev Event, acknowledge bool)
 		}
 		d.activeHandlers.Add(1)
 		defer d.activeHandlers.Add(-1)
-		return d.dispatchEvent(context.WithValue(ctx, chatLockHeldContextKey{}, true), ev, acknowledge)
+		acked, dispatchErr := d.dispatchEvent(context.WithValue(ctx, chatLockHeldContextKey{}, true), ev, acknowledge)
+		acknowledged = acked
+		return dispatchErr
 	})
 	if ctx.Err() != nil {
-		return err
+		return acknowledged, err
 	}
 	switch {
 	case errors.Is(err, ratelimit.ErrChatQueueFull), errors.Is(err, errExecutionSlotBusy):
 		result = "overloaded"
-		return d.dispatchOverloaded(ctx, ev)
+		return false, d.dispatchOverloaded(ctx, ev)
 	case errors.Is(err, context.DeadlineExceeded) && !inChat:
 		result = "chat_busy"
-		return d.dispatchChatBusy(ctx, ev)
+		return false, d.dispatchChatBusy(ctx, ev)
 	}
-	return err
+	return acknowledged, err
 }
 
 // dispatchChatBusy — the chat was still answering when the wait budget of this update expired.
@@ -511,7 +527,7 @@ func (d *Dispatcher) dispatchOverloaded(ctx context.Context, ev Event) error {
 	return err
 }
 
-func (d *Dispatcher) dispatchEvent(ctx context.Context, ev Event, acknowledge bool) error {
+func (d *Dispatcher) dispatchEvent(ctx context.Context, ev Event, acknowledge bool) (acknowledged bool, err error) {
 	cmd, commandArg := d.commandFor(ev)
 	ev.Question = ""
 	if cmd.UsesModel {
@@ -525,7 +541,7 @@ func (d *Dispatcher) dispatchEvent(ctx context.Context, ev Event, acknowledge bo
 
 	var track ackTracking
 	var stored bool
-	var err = d.chainTracking(func(ctx context.Context, ev Event, cmd Command) error {
+	err = d.chainTracking(func(ctx context.Context, ev Event, cmd Command) error {
 		stored = ev.QuestionStored
 		return cmd.Handler(ctx, ev, commandArg)
 	}, &track)(ctx, ev, cmd)
@@ -543,14 +559,14 @@ func (d *Dispatcher) dispatchEvent(ctx context.Context, ev Event, acknowledge bo
 	}
 
 	if acknowledge && (stored || !needsStorage) {
-		d.persistOffset(ctx, ev.UpdateID)
+		acknowledged = d.persistOffsetResult(ctx, ev.UpdateID)
 	}
 
 	if err != nil {
 		d.deps.Logger.Error("dispatch failed", "chat_id", ev.ChatID, "command", cmd.Name,
 			"error", Sanitize(err, d.deps.Token))
 	}
-	return err
+	return acknowledged, err
 }
 
 // notifyQuestionNotStored — a short, localized notice for the update that stays unacknowledged because its
@@ -566,20 +582,28 @@ func (d *Dispatcher) notifyQuestionNotStored(ctx context.Context, ev Event) {
 // worker goroutines (bot.WithWorkerPool), so "write whatever update ID arrived last" could downgrade
 // start of the process, so a restart continues where the previous run stopped.
 func (d *Dispatcher) persistOffset(ctx context.Context, updateID int64) {
+	d.persistOffsetResult(ctx, updateID)
+}
+
+// persistOffsetResult is persistOffset with the outcome its caller needs: false means the offset was NOT
+// stored, so an update that depended on it must stay unacknowledged. A missing writer and an already
+// acknowledged id are both success — there is nothing left to persist.
+func (d *Dispatcher) persistOffsetResult(ctx context.Context, updateID int64) bool {
 	if d.deps.Offset == nil || updateID <= 0 {
-		return
+		return true
 	}
 	d.offsetMu.Lock()
 	defer d.offsetMu.Unlock()
 	if updateID <= d.startOffset {
-		return
+		return true
 	}
 	if err := d.deps.Offset(ctx, updateID); err != nil {
 		d.deps.Logger.Error("bot_state last_update_id was not stored", "update_id", updateID,
 			"error", Sanitize(err, d.deps.Token))
-		return
+		return false
 	}
 	d.startOffset = updateID
+	return true
 }
 
 func (d *Dispatcher) reply(ctx context.Context, chatID int64, text string) error {
@@ -661,10 +685,13 @@ func (d *Dispatcher) countSendFailure() {
 }
 
 // chatTurns numbers the admitted updates of each chat, so a streaming answer can tell whether a newer update
-// arrived while it was being produced.
+// arrived while it was being produced. The maps hold only updates that are currently in flight: consume is the
+// defer of every Dispatch that noted a turn, and the last one deletes the chat's entry. A newer update that
+// arrived during an answer is still counted because its entry waits alongside the older one.
 type chatTurns struct {
 	mu     sync.Mutex
 	number map[int64]int64
+	active map[int64]int
 }
 
 func (t *chatTurns) next(chatID int64) int64 {
@@ -672,8 +699,10 @@ func (t *chatTurns) next(chatID int64) int64 {
 	defer t.mu.Unlock()
 	if t.number == nil {
 		t.number = map[int64]int64{}
+		t.active = map[int64]int{}
 	}
 	t.number[chatID]++
+	t.active[chatID]++
 	return t.number[chatID]
 }
 
@@ -681,6 +710,21 @@ func (t *chatTurns) current(chatID int64) int64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.number[chatID]
+}
+
+// consume releases one admitted update of the chat. The number and the active count disappear together only
+// when the LAST update of the chat returns; deleting on the first return would let the NEXT update restart the
+// numbering at 1 and hide a genuinely newer update from a stream that is still running.
+func (t *chatTurns) consume(chatID int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.active[chatID] > 0 {
+		t.active[chatID]--
+	}
+	if t.active[chatID] <= 0 {
+		delete(t.active, chatID)
+		delete(t.number, chatID)
+	}
 }
 
 // noteChatTurn marks one admitted update and returns its number.

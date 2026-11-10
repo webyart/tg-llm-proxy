@@ -92,11 +92,13 @@ type documentConfirmationSet struct {
 	pending map[string]documentConfirmation
 }
 
-var dispatcherDocumentConfirmations sync.Map
-
+// documentConfirmationsFor — the pending document confirmations of this dispatcher, built lazily for a
+// Dispatcher created as a literal. The package-level sync.Map this replaces leaked one entry per dispatcher.
 func documentConfirmationsFor(d *Dispatcher) *documentConfirmationSet {
-	set, _ := dispatcherDocumentConfirmations.LoadOrStore(d, &documentConfirmationSet{pending: map[string]documentConfirmation{}})
-	return set.(*documentConfirmationSet)
+	d.documentConfirmationsOnce.Do(func() {
+		d.documentConfirmations = &documentConfirmationSet{pending: map[string]documentConfirmation{}}
+	})
+	return d.documentConfirmations
 }
 
 func (d *Dispatcher) rememberDocumentConfirmation(token string, ev Event, action string, documentID int64) {

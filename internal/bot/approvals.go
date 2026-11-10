@@ -73,24 +73,14 @@ type miniAppApprovalSet struct {
 	pending map[string]*miniAppApproval
 }
 
-// miniAppApprovals is a package-level map keyed by the Dispatcher. The per-dispatcher state lives
-// in miniAppApprovalSet; the map only makes the set reachable from approvals.go without adding a
-// field to the Dispatcher struct (which this change is not allowed to touch). One entry per live
-// dispatcher is expected: production builds one.
-var miniAppApprovals = struct {
-	mu   sync.Mutex
-	sets map[*Dispatcher]*miniAppApprovalSet
-}{sets: map[*Dispatcher]*miniAppApprovalSet{}}
-
+// miniAppApprovalsFor — the pending approvals of this dispatcher, built lazily so a Dispatcher created as a
+// literal works too. It used to be a package-level map keyed by the *Dispatcher: one map entry (and all the
+// approval state hanging off it) survived every dispatcher for the life of the process.
 func miniAppApprovalsFor(d *Dispatcher) *miniAppApprovalSet {
-	miniAppApprovals.mu.Lock()
-	defer miniAppApprovals.mu.Unlock()
-	set, found := miniAppApprovals.sets[d]
-	if !found {
-		set = &miniAppApprovalSet{pending: map[string]*miniAppApproval{}}
-		miniAppApprovals.sets[d] = set
-	}
-	return set
+	d.miniAppApprovalsOnce.Do(func() {
+		d.miniAppApprovals = &miniAppApprovalSet{pending: map[string]*miniAppApproval{}}
+	})
+	return d.miniAppApprovals
 }
 
 // pruneMiniAppApprovalsLocked turns expired live entries into tombstones and drops tombstones that

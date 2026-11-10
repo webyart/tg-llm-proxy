@@ -108,10 +108,18 @@ func (d *Dispatcher) flushCollectedAlbum(ctx context.Context, events []Event) {
 			ev.AdditionalAttachments = append(ev.AdditionalAttachments, *collected.Attachment)
 		}
 	}
-	if err := d.runBounded(ctx, ev, false); err == nil && d.deps.DB != nil {
+	// The album is one question with one acknowledgement rule: runBounded reports whether the question was
+	// actually stored (or the command needs no storage) and the update offset was written. Persisting the
+	// offsets of the other photos regardless — what this function used to do — acknowledged a failed append
+	// for all of them, so Telegram never redelivered the album and the question was lost for good.
+	acknowledged, err := d.runBounded(ctx, ev, true)
+	if err == nil && acknowledged && d.deps.DB != nil {
 		if err := store.SetState(ctx, d.deps.DB, albumStateKey(albumKey{chatID: ev.ChatID, mediaGroupID: ev.MediaGroupID}), "done"); err != nil {
 			d.deps.Logger.Error("album dedup state was not stored", "chat_id", ev.ChatID, "error", Sanitize(err, d.deps.Token))
 		}
+	}
+	if !acknowledged {
+		return
 	}
 	for _, collected := range events {
 		d.persistOffset(ctx, collected.UpdateID)

@@ -212,8 +212,9 @@ func TestChatApprovalDecisionResumesTheBlockedStream(t *testing.T) {
 	}
 
 	done := waitChatEvent(t, reader, "done")
-	if done.data["text"] != "Финальный ответ после подтверждения" {
-		t.Fatalf("done text=%v", done.data["text"])
+	doneText, _ := done.data["text"].(string)
+	if !strings.HasPrefix(doneText, "Финальный ответ после подтверждения") || !strings.Contains(doneText, "⏱") {
+		t.Fatalf("done text=%v, want the answer plus the latency footer", done.data["text"])
 	}
 	if providerCalls.Load() != 1 || client.callCount() != 2 {
 		t.Fatalf("provider=%d model=%d after approval", providerCalls.Load(), client.callCount())

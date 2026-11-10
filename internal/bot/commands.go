@@ -968,20 +968,18 @@ func (d *Dispatcher) finishModelAnswer(ctx context.Context, replyCtx context.Con
 		"delivery_failures", failures,
 	)
 
-	var full = resp.Content + "\n\n" + latencyLine(resp, selectedModel)
 	// A provider that stopped on its own limit says so in finish_reason. Without this notice a truncated or
 	// filtered answer was stored and shown exactly like a complete one, and the user could not tell that the
-	// model was cut off rather than the bot losing the tail.
+	// model was cut off rather than the bot losing the tail. The assembly itself is shared with the Mini App
+	// (answer_format.go), so both clients show the same notices and the Telegram text stays byte-identical.
 	if notice := finishReasonNotice(resp.FinishReason); notice != "" {
-		full = notice + "\n\n" + full
 		d.logEvent(ctx, ev.UserID, store.EventModelError, "finish_reason "+brief(resp.FinishReason, 40))
 	}
-	if len(ragSources) > 0 {
-		full += "\n\nИсточники: " + strings.Join(ragSources, ", ")
-	}
-	if documentTruncated {
-		full = "Внимание: документ был обрезан по MAX_CONTEXT_CHARS перед отправкой модели.\n\n" + full
-	}
+	var full = formatModelAnswer(resp.Content, resp, selectedModel, answerFormatOptions{
+		Latency:           true,
+		Sources:           ragSources,
+		DocumentTruncated: documentTruncated,
+	})
 	if session == nil {
 		return d.deliverModelResult(replyCtx, ev, full)
 	}

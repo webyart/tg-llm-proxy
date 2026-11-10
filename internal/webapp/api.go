@@ -180,6 +180,19 @@ func (a *App) chatMessage(w http.ResponseWriter, req *http.Request, current scop
 		writeError(w, http.StatusServiceUnavailable, "chat_unavailable", "The chat is unavailable in this Mini App deployment.")
 		return
 	}
+	// One active answer per user. The global in-flight semaphore does not see identity, so without
+	// this cap a single allowlisted user could occupy every slot with parallel SSE streams. The
+	// second stream is refused BEFORE the backend is called; its own Retry-After is short because
+	// the first answer usually ends in seconds.
+	if a.streams != nil {
+		if !a.streams.acquire(current.UserID) {
+			seconds := int64((streamLimitRetryAfter + time.Second - 1) / time.Second)
+			w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
+			writeError(w, http.StatusTooManyRequests, "stream_limit", "An answer is already streaming in this chat. Wait for it to finish.")
+			return
+		}
+		defer a.streams.release(current.UserID)
+	}
 
 	// http.Server.WriteTimeout is 10s, which is shorter than one answer. Only this response gets a
 	// longer write deadline (see chatStreamWriteBudget in server.go); the listener stays at 10s.

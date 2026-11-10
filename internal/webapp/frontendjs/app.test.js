@@ -259,7 +259,7 @@ test("429 shows the localized rate-limit error without expiring the session", as
   const harness = await createHarness();
   harness.resetRequests();
   harness.setHandler((request, fallback) => {
-    if (request.path === "/api/status") return jsonResponse({ error: { code: "overloaded" } }, 429);
+    if (request.path === "/api/status") return jsonResponse({ error: { code: "rate_limited" } }, 429);
     return fallback();
   });
   harness.element("refresh").click();

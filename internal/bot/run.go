@@ -39,6 +39,9 @@ const (
 	FloodSleepMax = 120 * time.Second
 	// PublishCommandsTimeout — command and Mini App menu publication is cosmetic, so it gets a short deadline.
 	PublishCommandsTimeout = 5 * time.Second
+	// telegramReplierUsersMax bounds the chat→user map used only to attribute a flood audit event. It must not
+	// grow one entry per chat ever seen; the oldest chat is evicted once the ring is full.
+	telegramReplierUsersMax = 4096
 )
 
 type Options struct {
@@ -288,6 +291,11 @@ type telegramReplier struct {
 	logger *slog.Logger
 	mu     sync.Mutex
 	users  map[int64]int64
+	// userRing is the eviction order of users: when the map is full the oldest chat is dropped. The map is
+	// only read for the user attribution of a flood audit event, so dropping history is preferable to an
+	// unbounded per-chat map in a process that can outlive thousands of chats.
+	userRing []int64
+	userNext int
 }
 
 // noteChatUser — remembered by telegramHandler before the dispatch, so the reply that comes later can
@@ -297,6 +305,22 @@ func (r *telegramReplier) noteChatUser(chatID int64, userID int64) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.users == nil {
+		r.users = make(map[int64]int64, telegramReplierUsersMax)
+	}
+	if r.userRing == nil {
+		r.userRing = make([]int64, 0, telegramReplierUsersMax)
+	}
+	if _, known := r.users[chatID]; !known {
+		if len(r.users) >= telegramReplierUsersMax {
+			var evicted = r.userRing[r.userNext]
+			delete(r.users, evicted)
+			r.userRing[r.userNext] = chatID
+			r.userNext = (r.userNext + 1) % telegramReplierUsersMax
+		} else {
+			r.userRing = append(r.userRing, chatID)
+		}
+	}
 	r.users[chatID] = userID
 }
 

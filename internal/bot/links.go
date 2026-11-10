@@ -21,7 +21,10 @@ const linksUsage = "Использование: /links, /links add <https-url>, 
 var (
 	errLinkNetworkBusy  = errors.New("слишком много одновременных сетевых чтений, попробуй позже")
 	errLinkNetworkLimit = errors.New("лимит сетевых чтений за минуту исчерпан, попробуй позже")
-	errLinkEmptyText    = errors.New("страница не содержит читаемого текста")
+	// errLinkDailyLimit — the shared USER_DAILY_NETWORK_TOOL_LIMIT of the account is spent. /links add reads
+	// the page, so it spends the same daily budget as read_url and web_search instead of bypassing it.
+	errLinkDailyLimit = errors.New("дневной лимит сетевых инструментов исчерпан, попробуй позже")
+	errLinkEmptyText  = errors.New("страница не содержит читаемого текста")
 	// errLinkReaderDisabled — the egress path is off; ErrLinkReaderDisabled is what leaves the package.
 	errLinkReaderDisabled = errors.New("чтение страниц выключено")
 	// ErrLinkReaderDisabled tells a caller (the Mini App answers 403, the bot prints the text) that saving
@@ -57,6 +60,22 @@ func (d *Dispatcher) fetchSavedLink(ctx context.Context, userID int64, rawURL st
 	if _, err := parseURLReaderURL(canonical); err != nil {
 		return store.SavedLink{}, err
 	}
+	// The shared daily network quota of the account, the same one read_url and web_search reserve in
+	// executeNetworkTool. Without this /links add fetched pages for free while /usage told the user the
+	// network budget was spent. A failed read returns the reservation below.
+	admitted, quotaErr := d.reserveDailyNetworkToolCall(ctx, userID)
+	if quotaErr != nil {
+		return store.SavedLink{}, fmt.Errorf("reserve daily network tool call: %w", quotaErr)
+	}
+	if !admitted {
+		return store.SavedLink{}, errLinkDailyLimit
+	}
+	releaseQuota := true
+	defer func() {
+		if releaseQuota {
+			d.releaseDailyNetworkToolCall(ctx, userID)
+		}
+	}()
 	select {
 	case d.outboundTools <- struct{}{}:
 		defer func() { <-d.outboundTools }()
@@ -98,6 +117,7 @@ func (d *Dispatcher) fetchSavedLink(ctx context.Context, userID int64, rawURL st
 	if title == "" {
 		return store.SavedLink{}, errLinkEmptyText
 	}
+	releaseQuota = false
 	return store.SavedLink{Title: title, CanonicalURL: canonical, Content: page.text}, nil
 }
 

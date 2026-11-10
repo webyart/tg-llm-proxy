@@ -28,6 +28,7 @@ import (
 	"unicode/utf8"
 
 	"bot/internal/model"
+	"bot/internal/ratelimit"
 	"bot/internal/store"
 )
 
@@ -95,6 +96,10 @@ var errMiniAppInternal = errors.New("the Mini App chat request failed")
 
 // errMiniAppChatBusy — the per-chat lock wait expired before this request even reached the model.
 var errMiniAppChatBusy = errors.New("the chat is still answering the previous request")
+
+// errMiniAppOverloaded — the bounded per-chat queue or the dispatcher's execution slots are full.
+// Telegram answers both conditions with msgOverloaded; the Mini App must show the same words.
+var errMiniAppOverloaded = errors.New("the Mini App chat is overloaded")
 
 // AnswerForMiniApp runs one message through the shared model pipeline and forwards visible events
 // to emit. It returns:
@@ -306,11 +311,13 @@ func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64,
 		return "", 0, ErrMiniAppUnavailable
 	}
 
-	// Streaming is decided before the lock so the reply budget covers the wait too. The budget is
-	// the same pair Telegram uses in commands.go: TG_REPLY_DEADLINE_SECONDS around the whole
-	// answer, plus STREAM_TOTAL_DEADLINE_SECONDS when a stream is possible. model.StreamSettings
-	// itself is configured inside the model client (main.go), so using the configured streamer is
-	// what reuses those timeouts.
+	// Streaming is decided before admission. The budget is the same pair Telegram uses in
+	// commands.go: TG_REPLY_DEADLINE_SECONDS around the whole answer, plus
+	// STREAM_TOTAL_DEADLINE_SECONDS when a stream is possible. model.StreamSettings itself is
+	// configured inside the model client (main.go), so using the configured streamer is what
+	// reuses those timeouts. Like Telegram's runBounded, the budget starts only after the chat
+	// lock and the execution slot are owned, so a request that waited in the queue still gets the
+	// full answer budget.
 	streamer, _ := d.deps.Model.(model.Streamer)
 	streaming := false
 	if streamer != nil {
@@ -336,14 +343,36 @@ func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64,
 	// listens to the client context (a closed window must not keep a pending decision alive), so the two
 	// contexts are kept apart.
 	var clientCtx = ctx
-	workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
-	defer cancel()
+	var baseCtx = context.WithoutCancel(ctx)
+
+	// Admission parity with Telegram's runBounded: the same bounded per-chat queue
+	// (perChatQueueCapacity) and the same wait budget (chatQueueTimeout). A full queue and a full
+	// set of execution slots are the overloaded condition; an expired wait for the chat lock is
+	// the separate "chat is still answering" condition.
+	var queueTimeout = d.chatQueueTimeout
+	if queueTimeout <= 0 {
+		queueTimeout = chatQueueTimeoutFor(d.deps.Cfg.ReplyDeadlineSeconds)
+	}
+	var queueCtx, cancelQueue = context.WithTimeout(baseCtx, queueTimeout)
+	defer cancelQueue()
 
 	var final string
 	var assistantID int64
 	var inChat bool
-	err := d.deps.Locks.WithChat(workCtx, chatID, func() error {
+	err := d.deps.Locks.WithChatBounded(queueCtx, chatID, perChatQueueCapacity, func() error {
 		inChat = true
+
+		// The global execution slot is Telegram's active_handlers guard. It is acquired only after
+		// this chat owns the lock, and released by the deferred function on every path (success,
+		// model error, cancellation and the finalizer's own failure).
+		release, slotErr := d.acquireMiniAppExecution(queueCtx)
+		if slotErr != nil {
+			return slotErr
+		}
+		defer release()
+
+		workCtx, cancelWork := context.WithTimeout(baseCtx, budget)
+		defer cancelWork()
 
 		// The question is stored BEFORE the model call, exactly like the `stored` middleware: a
 		// crash during generation leaves an unanswered user row and no assistant row.
@@ -393,7 +422,8 @@ func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64,
 
 		// The assistant row is written only after the final successful Response, and before the
 		// done event leaves, so a reader can always find the exact text it just received (and its
-		// id, which is what the chat feedback buttons rate).
+		// id, which is what the chat feedback buttons rate). The stored row keeps resp.Content,
+		// exactly like Telegram's assistant row; the notices belong to the delivered final text.
 		rowID, err := store.Append(workCtx, d.deps.DB, store.Message{
 			ChatID:    chatID,
 			UserID:    userID,
@@ -408,16 +438,47 @@ func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64,
 			return fmt.Errorf("%w: store answer: %v", errMiniAppInternal, err)
 		}
 		assistantID = rowID
-		final = resp.Content
+		// The same finalizer the Telegram path uses: latency, finish_reason notice, RAG sources
+		// and the document truncation marker. Without it a finish_reason=length answer looked
+		// complete in the Mini App while Telegram warned about it.
+		final = formatModelAnswer(resp.Content, resp, selectedModel, answerFormatOptions{
+			Latency: true,
+			Sources: ragSources,
+		})
 		return nil
 	})
 	if err != nil {
-		if !inChat && errors.Is(workCtx.Err(), context.DeadlineExceeded) {
+		switch {
+		case errors.Is(err, ratelimit.ErrChatQueueFull), errors.Is(err, errExecutionSlotBusy):
+			return "", 0, fmt.Errorf("%w: %v", errMiniAppOverloaded, err)
+		case !inChat && errors.Is(err, context.DeadlineExceeded):
 			return "", 0, fmt.Errorf("%w: %v", errMiniAppChatBusy, err)
 		}
 		return "", 0, err
 	}
 	return final, assistantID, nil
+}
+
+// acquireMiniAppExecution takes one of the dispatcher's global execution slots, the same bounded
+// resource Telegram's runBounded guards with active_handlers. The returned function must be called
+// on every path; it is what makes a cancelled or failed Mini App answer stop counting as active.
+func (d *Dispatcher) acquireMiniAppExecution(ctx context.Context) (func(), error) {
+	if d.execution == nil {
+		// A Dispatcher built as a literal (only old unit tests do that) has no admission channels.
+		// AnswerForMiniApp is always reached through New in production, so this keeps those tests
+		// honest without inventing an unbounded slot.
+		return func() {}, nil
+	}
+	select {
+	case d.execution <- struct{}{}:
+		d.activeHandlers.Add(1)
+		return func() {
+			d.activeHandlers.Add(-1)
+			<-d.execution
+		}, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("%w: %w", errExecutionSlotBusy, ctx.Err())
+	}
 }
 
 // miniAppToolLoopState builds the continuation for runToolLoop with the same tools the Telegram
@@ -484,6 +545,8 @@ func (d *Dispatcher) miniAppErrorText(err error) string {
 		return "Не удалось обработать сообщение. Попробуй ещё раз."
 	case errors.Is(err, errMiniAppChatBusy):
 		return msgChatBusy
+	case errors.Is(err, errMiniAppOverloaded):
+		return msgOverloaded
 	case errors.Is(err, context.Canceled):
 		return ""
 	case errors.Is(err, errNetworkApprovalPending):

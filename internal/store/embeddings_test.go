@@ -76,18 +76,146 @@ func TestChunkEmbeddingReplacesAndCountsPerModel(t *testing.T) {
 	if err := PutChunkEmbedding(ctx, db, chatID, id, "model-a", []float32{1, 2, 3}); err != nil {
 		t.Fatal(err)
 	}
-	if err := PutChunkEmbedding(ctx, db, chatID, id, "model-a", []float32{4, 5}); err != nil {
+	// Replacing the same model with the same dimension updates the row.
+	if err := PutChunkEmbedding(ctx, db, chatID, id, "model-a", []float32{4, 5, 6}); err != nil {
 		t.Fatalf("replace: %v", err)
 	}
 	loaded, err := ChunkEmbeddings(ctx, db, chatID, "model-a", []int64{id})
-	if err != nil || len(loaded) != 1 || !reflect.DeepEqual(loaded[id], []float32{4, 5}) {
-		t.Fatalf("loaded=%v err=%v, want the two-dimensional replacement", loaded, err)
+	if err != nil || len(loaded) != 1 || !reflect.DeepEqual(loaded[id], []float32{4, 5, 6}) {
+		t.Fatalf("loaded=%v err=%v, want the three-dimensional replacement", loaded, err)
 	}
 	if embedded, _, _ := EmbeddingStats(ctx, db, chatID, "model-a"); embedded != 1 {
 		t.Errorf("model-a embedded=%d, want 1", embedded)
 	}
 	if embedded, _, _ := EmbeddingStats(ctx, db, chatID, "model-b"); embedded != 0 {
 		t.Errorf("model-b embedded=%d, want 0", embedded)
+	}
+}
+
+func TestChunkEmbeddingRejectsWrongDimension(t *testing.T) {
+	ctx, db, chatID, _, targets := embeddingFixture(t, "embedding_dimension_"+t.Name())
+	id := targets[0].ID
+	if err := PutChunkEmbeddingWithDimension(ctx, db, chatID, id, "model-a", 3, []float32{1, 2}); err == nil {
+		t.Fatal("a vector shorter than the configured dimension must be refused")
+	} else if !strings.Contains(err.Error(), "3 dimensions") || !strings.Contains(err.Error(), "got 2") {
+		t.Fatalf("the wrong-length error does not name both dimensions: %v", err)
+	}
+	if embedded, _, _ := EmbeddingStats(ctx, db, chatID, "model-a"); embedded != 0 {
+		t.Fatalf("a rejected vector was stored: embedded=%d", embedded)
+	}
+
+	if err := PutChunkEmbeddingWithDimension(ctx, db, chatID, id, "model-a", 3, []float32{1, 2, 3}); err != nil {
+		t.Fatalf("the configured dimension must accept the matching vector: %v", err)
+	}
+	// Once the model is registered, a later write of another length is rejected even without the caller's
+	// dimension. The valid row stays untouched.
+	if err := PutChunkEmbedding(ctx, db, chatID, id, "model-a", []float32{4, 5}); err == nil {
+		t.Fatal("a vector of another length for an already registered model must be refused")
+	}
+	loaded, err := ChunkEmbeddings(ctx, db, chatID, "model-a", []int64{id})
+	if err != nil || !reflect.DeepEqual(loaded[id], []float32{1, 2, 3}) {
+		t.Fatalf("the rejected write changed the stored vector: loaded=%v err=%v", loaded, err)
+	}
+}
+
+func TestChunkEmbeddingKeepsVectorsOfEveryModel(t *testing.T) {
+	ctx, db, chatID, _, targets := embeddingFixture(t, "embedding_models_"+t.Name())
+	id := targets[0].ID
+	if err := PutChunkEmbedding(ctx, db, chatID, id, "model-a", []float32{1, 2}); err != nil {
+		t.Fatal(err)
+	}
+	// A model change must add a vector, not replace the old model's row. Different dimensions are legal
+	// across models: the dimension is a property of the model, not of the chunk.
+	if err := PutChunkEmbedding(ctx, db, chatID, id, "model-b", []float32{3, 4, 5}); err != nil {
+		t.Fatalf("store the second model's vector: %v", err)
+	}
+	a, err := ChunkEmbeddings(ctx, db, chatID, "model-a", []int64{id})
+	if err != nil || !reflect.DeepEqual(a[id], []float32{1, 2}) {
+		t.Fatalf("model-a vector disappeared after the model change: %v err=%v", a, err)
+	}
+	b, err := ChunkEmbeddings(ctx, db, chatID, "model-b", []int64{id})
+	if err != nil || !reflect.DeepEqual(b[id], []float32{3, 4, 5}) {
+		t.Fatalf("model-b vector = %v err=%v", b, err)
+	}
+	var rows int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM rag_chunk_embeddings WHERE chunk_id = ?`, id).Scan(&rows); err != nil || rows != 2 {
+		t.Fatalf("rows of chunk %d = %d err=%v, want one per model", id, rows, err)
+	}
+	// The backfill of a third model treats the chunk as missing; the model-a/model-b rows are never reused
+	// as a model-c vector. Conversely, model-b must not list the chunk after its own row was stored.
+	missing, err := ChunksMissingEmbedding(ctx, db, chatID, "model-c", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, row := range missing {
+		found = found || row.ID == id
+	}
+	if !found {
+		t.Fatalf("model-c backfill did not list chunk %d: %+v", id, missing)
+	}
+	modelBMissing, err := ChunksMissingEmbedding(ctx, db, chatID, "model-b", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range modelBMissing {
+		if row.ID == id {
+			t.Fatalf("model-b backfill listed chunk %d although its model-b vector exists", id)
+		}
+	}
+}
+
+// TestMigration018PreservesLegacyVectors: a database written before 018 has one row per chunk (016's
+// primary key). The additive rebuild must copy it without changing model, dimensions, vector or created_at.
+func TestMigration018PreservesLegacyVectors(t *testing.T) {
+	ctx := context.Background()
+	db, restore := openMemoryAtVersion(t, 17)
+	const chatID = int64(701)
+	if err := EnsureChat(ctx, db, chatID, 11, "legacy"); err != nil {
+		t.Fatal(err)
+	}
+	documentID, chunks, err := PutRAGDocument(ctx, db, chatID, 11, "legacy.txt", "старый текст для вектора")
+	if err != nil || chunks == 0 {
+		t.Fatalf("PutRAGDocument chunks=%d err=%v", chunks, err)
+	}
+	targets, err := DocumentEmbeddingTargets(ctx, db, documentID)
+	if err != nil || len(targets) == 0 {
+		t.Fatalf("DocumentEmbeddingTargets=%d err=%v", len(targets), err)
+	}
+	legacyVector := encodeVector([]float32{0.5, -0.25, 1})
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO rag_chunk_embeddings (chunk_id, chat_id, model, dimensions, vector, created_at)
+		VALUES (?, ?, 'legacy-model', 3, ?, '2026-01-02 03:04:05')`, targets[0].ID, chatID, legacyVector); err != nil {
+		t.Fatalf("seed a 016 row: %v", err)
+	}
+
+	restore()
+	if err := ApplySchema(ctx, db); err != nil {
+		t.Fatalf("upgrade to 018: %v", err)
+	}
+	version, err := SchemaVersion(ctx, db)
+	if err != nil || version != len(MigrationSQL) {
+		t.Fatalf("SchemaVersion=%d err=%v, want %d", version, err, len(MigrationSQL))
+	}
+	var created string
+	var model string
+	if err := db.QueryRowContext(ctx, `SELECT model, created_at FROM rag_chunk_embeddings WHERE chunk_id = ?`, targets[0].ID).
+		Scan(&model, &created); err != nil {
+		t.Fatalf("read the migrated legacy row: %v", err)
+	}
+	if model != "legacy-model" || created != "2026-01-02 03:04:05" {
+		t.Fatalf("migrated row model=%q created_at=%q, want the original values", model, created)
+	}
+	loaded, err := ChunkEmbeddings(ctx, db, chatID, "legacy-model", []int64{targets[0].ID})
+	if err != nil || !reflect.DeepEqual(loaded[targets[0].ID], []float32{0.5, -0.25, 1}) {
+		t.Fatalf("legacy vector unreadable after 018: %v err=%v", loaded, err)
+	}
+	if err := PutChunkEmbedding(ctx, db, chatID, targets[0].ID, "new-model", []float32{1, 2}); err != nil {
+		t.Fatalf("a new model after 018: %v", err)
+	}
+	var rows int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM rag_chunk_embeddings WHERE chunk_id = ?`, targets[0].ID).Scan(&rows); err != nil || rows != 2 {
+		t.Fatalf("legacy + new rows = %d err=%v, want 2", rows, err)
 	}
 }
 

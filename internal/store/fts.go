@@ -76,22 +76,69 @@ func ensureSearchIndexes(ctx context.Context, db *sql.DB) error {
 				return fmt.Errorf("store: the %s trigger could not be created: %w", index.table, err)
 			}
 		}
-		var marker string
-		err := db.QueryRowContext(ctx, `SELECT value FROM search_index_meta WHERE name = ?`, index.marker).Scan(&marker)
-		if err == nil {
-			continue
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("store: the %s index state could not be read: %w", index.table, err)
-		}
-		if _, err := db.ExecContext(ctx, `INSERT INTO `+index.table+`(`+index.table+`) VALUES ('rebuild')`); err != nil {
-			return fmt.Errorf("store: the %s index could not be rebuilt: %w", index.table, err)
-		}
-		if _, err := db.ExecContext(ctx, `INSERT INTO search_index_meta (name, value) VALUES (?, 'built')`, index.marker); err != nil {
-			return fmt.Errorf("store: the %s index marker could not be stored: %w", index.table, err)
+		if err := ensureSearchIndexMarker(ctx, db, index); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// ensureSearchIndexMarker rebuilds one index and records its marker in the SAME write transaction. The old
+// code did the rebuild and the marker in two autocommit statements: two processes opening one file both saw
+// "no marker", both rebuilt, and the second INSERT failed on the marker's UNIQUE key even though the index
+// was already valid. BEGIN IMMEDIATE plus the marker re-read inside it serializes the pair; INSERT OR IGNORE
+// is the second line of defence; and a marker failure is tolerated when the index answers an FTS5
+// integrity-check, because a valid index is the actual contract and the marker is only a skip hint.
+func ensureSearchIndexMarker(ctx context.Context, db *sql.DB, index searchIndex) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: the %s index transaction could not begin: %w", index.table, err)
+	}
+	defer tx.Rollback()
+
+	var marker string
+	err = tx.QueryRowContext(ctx, `SELECT value FROM search_index_meta WHERE name = ?`, index.marker).Scan(&marker)
+	switch {
+	case err == nil:
+		return nil // another process (or an earlier start) already rebuilt this index
+	case !errors.Is(err, sql.ErrNoRows):
+		return fmt.Errorf("store: the %s index state could not be read: %w", index.table, err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO `+index.table+`(`+index.table+`) VALUES ('rebuild')`); err != nil {
+		return fmt.Errorf("store: the %s index could not be rebuilt: %w", index.table, err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO search_index_meta (name, value) VALUES (?, 'built')`, index.marker); err != nil {
+		// The rebuild is rolled back with the marker. If the index was already valid before the attempt
+		// (the usual case: only the hint row is missing), a failed hint must not stop the bot from starting.
+		_ = tx.Rollback()
+		var existing int
+		if readErr := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM search_index_meta WHERE name = ?`, index.marker).Scan(&existing); readErr == nil && existing > 0 {
+			return nil // the competing process stored the marker; its rebuild is the valid one
+		}
+		if valid, checkErr := searchIndexIntegrity(ctx, db, index); checkErr == nil && valid {
+			return nil
+		}
+		return fmt.Errorf("store: the %s index marker could not be stored: %w", index.table, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: the %s index transaction could not commit: %w", index.table, err)
+	}
+	return nil
+}
+
+// searchIndexIntegrity runs FTS5's own integrity-check against the content table. It is a write-capable
+// handle only because the virtual-table command is executed as an INSERT; the command itself changes no row.
+func searchIndexIntegrity(ctx context.Context, db *sql.DB, index searchIndex) (bool, error) {
+	if _, err := db.ExecContext(ctx, `INSERT INTO `+index.table+`(`+index.table+`, rank) VALUES('integrity-check', 1)`); err != nil {
+		message := strings.ToLower(err.Error())
+		for _, corruption := range []string{"malformed", "corrupt", "disk image"} {
+			if strings.Contains(message, corruption) {
+				return false, nil
+			}
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // searchTerms — the words of a user query, in order, at most messageSearchMaxTerms of them. Everything that

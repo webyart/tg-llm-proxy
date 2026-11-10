@@ -107,10 +107,11 @@ inspect_counts() {
 
 # The machine-readable block dbinspect -counts prints for one database. The `path=` and journal/open-mode lines
 # are facts about the file location and handle, not about the data, so they are excluded exactly as the
-# PowerShell rehearsal's `^(integrity|schema_version|last_update_id|bot_state_offset_found|table_|events_)`
-# filter does; sorting makes the comparison independent of line order.
+# PowerShell rehearsal's `^(integrity|schema_version|content_hash|last_update_id|bot_state_offset_found|table_|events_)`
+# filter does; sorting makes the comparison independent of line order. content_hash covers the ordered
+# messages/events/rag chunk content (and vectors), so equal counters with different data still fail the drill.
 filtered_counts() {
-    grep -E '^(integrity|schema_version|last_update_id|bot_state_offset_found|table_|events_)' "$1" | sort
+    grep -E '^(integrity|schema_version|content_hash|last_update_id|bot_state_offset_found|table_|events_)' "$1" | sort
 }
 
 expect_line() {

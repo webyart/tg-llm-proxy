@@ -29,9 +29,29 @@ type RAGEmbeddingChunk struct {
 	Content    string
 }
 
-// PutChunkEmbedding stores (or replaces) the vector of one chunk. The vector is written as a float32
-// little-endian BLOB, and dimensions is its length, so a row of another model is recognisable without decoding.
+// PutChunkEmbedding stores (or replaces) the vector of one chunk under its model. The vector is written as
+// a float32 little-endian BLOB, and dimensions is its length. A row belongs to (chunk_id, model): writing a
+// different model adds a second row and leaves the first model's vector readable, while writing the same
+// model replaces only that model's row.
+//
+// The first write of a model fixes its dimension. A later write whose length differs is rejected instead of
+// being stored as a vector that the search would have to discard. Callers that know the configured
+// dimension (a backfill with a fixed model configuration, a test) use PutChunkEmbeddingWithDimension.
 func PutChunkEmbedding(ctx context.Context, db *sql.DB, chatID int64, chunkID int64, model string, vector []float32) error {
+	return putChunkEmbedding(ctx, db, chatID, chunkID, model, 0, vector)
+}
+
+// PutChunkEmbeddingWithDimension is PutChunkEmbedding with the configured dimension of the model. It rejects
+// a vector of another length before writing, and also rejects a configured dimension that contradicts the
+// dimension already registered for the model (or found in its legacy rows).
+func PutChunkEmbeddingWithDimension(ctx context.Context, db *sql.DB, chatID int64, chunkID int64, model string, dimension int, vector []float32) error {
+	if dimension <= 0 {
+		return fmt.Errorf("store: the configured embedding dimension of model %q must be positive, got %d", strings.TrimSpace(model), dimension)
+	}
+	return putChunkEmbedding(ctx, db, chatID, chunkID, model, dimension, vector)
+}
+
+func putChunkEmbedding(ctx context.Context, db *sql.DB, chatID int64, chunkID int64, model string, configured int, vector []float32) error {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return errors.New("store: an embedding needs a model id")
@@ -39,8 +59,18 @@ func PutChunkEmbedding(ctx context.Context, db *sql.DB, chatID int64, chunkID in
 	if len(vector) == 0 {
 		return errors.New("store: an embedding needs at least one dimension")
 	}
+	if configured > 0 && configured != len(vector) {
+		return embeddingDimensionError(model, configured, len(vector))
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: the embedding of chunk %d could not begin: %w", chunkID, err)
+	}
+	defer tx.Rollback()
+
 	var owner int64
-	err := db.QueryRowContext(ctx, `SELECT chat_id FROM rag_chunks WHERE id = ?`, chunkID).Scan(&owner)
+	err = tx.QueryRowContext(ctx, `SELECT chat_id FROM rag_chunks WHERE id = ?`, chunkID).Scan(&owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("store: chunk %d does not exist, its embedding cannot be stored", chunkID)
 	}
@@ -50,17 +80,90 @@ func PutChunkEmbedding(ctx context.Context, db *sql.DB, chatID int64, chunkID in
 	if owner != chatID {
 		return fmt.Errorf("store: chunk %d belongs to chat %d, not %d", chunkID, owner, chatID)
 	}
-	_, err = db.ExecContext(ctx, `
+	if _, err := resolveEmbeddingDimension(ctx, tx, model, configured, len(vector)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO rag_chunk_embeddings (chunk_id, chat_id, model, dimensions, vector, created_at)
 		VALUES (?, ?, ?, ?, ?, datetime('now'))
-		ON CONFLICT(chunk_id) DO UPDATE SET
+		ON CONFLICT(chunk_id, model) DO UPDATE SET
 			chat_id = excluded.chat_id,
-			model = excluded.model,
 			dimensions = excluded.dimensions,
 			vector = excluded.vector,
 			created_at = excluded.created_at`,
-		chunkID, chatID, model, len(vector), encodeVector(vector))
-	return err
+		chunkID, chatID, model, len(vector), encodeVector(vector)); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: the embedding of chunk %d could not commit: %w", chunkID, err)
+	}
+	return nil
+}
+
+// resolveEmbeddingDimension returns the dimension a write of this model must use. The registry is the
+// authority once a model has been seen; legacy rows are consulted for a database upgraded from 016, and only
+// when they agree on one dimension. configured is the caller's optional expectation (zero means unknown).
+func resolveEmbeddingDimension(ctx context.Context, tx *sql.Tx, model string, configured int, vectorLength int) (int, error) {
+	var registered int
+	err := tx.QueryRowContext(ctx, `SELECT dimensions FROM rag_embedding_model_dimensions WHERE model = ?`, model).Scan(&registered)
+	switch {
+	case err == nil:
+		if configured > 0 && configured != registered {
+			return 0, fmt.Errorf("store: model %q is stored with %d dimensions, but the configured dimension is %d", model, registered, configured)
+		}
+		if registered != vectorLength {
+			return 0, embeddingDimensionError(model, registered, vectorLength)
+		}
+		return registered, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return 0, fmt.Errorf("store: the dimension of embedding model %q could not be read: %w", model, err)
+	}
+
+	var minimum, maximum sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT MIN(dimensions), MAX(dimensions) FROM rag_chunk_embeddings WHERE model = ?`, model).
+		Scan(&minimum, &maximum); err != nil {
+		return 0, fmt.Errorf("store: the stored dimensions of embedding model %q could not be read: %w", model, err)
+	}
+	if minimum.Valid {
+		if minimum.Int64 != maximum.Int64 {
+			return 0, fmt.Errorf("store: the stored vectors of model %q disagree on their dimension (%d..%d), refusing to guess", model, minimum.Int64, maximum.Int64)
+		}
+		expected := int(minimum.Int64)
+		if configured > 0 && configured != expected {
+			return 0, fmt.Errorf("store: model %q has %d-dimensional rows, but the configured dimension is %d", model, expected, configured)
+		}
+		if expected != vectorLength {
+			return 0, embeddingDimensionError(model, expected, vectorLength)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO rag_embedding_model_dimensions (model, dimensions) VALUES (?, ?)`, model, expected); err != nil {
+			return 0, fmt.Errorf("store: the dimension of embedding model %q could not be registered: %w", model, err)
+		}
+		return expected, nil
+	}
+
+	expected := configured
+	if expected == 0 {
+		expected = vectorLength
+	}
+	if expected != vectorLength {
+		return 0, embeddingDimensionError(model, expected, vectorLength)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO rag_embedding_model_dimensions (model, dimensions) VALUES (?, ?)`, model, expected); err != nil {
+		return 0, fmt.Errorf("store: the dimension of embedding model %q could not be registered: %w", model, err)
+	}
+	// The write transaction is immediate, but read the row back: the registration is the invariant the next
+	// writer depends on, and a silently ignored conflict here would let two dimensions of one model coexist.
+	if err := tx.QueryRowContext(ctx, `SELECT dimensions FROM rag_embedding_model_dimensions WHERE model = ?`, model).Scan(&registered); err != nil {
+		return 0, fmt.Errorf("store: the dimension of embedding model %q could not be verified: %w", model, err)
+	}
+	if registered != vectorLength {
+		return 0, embeddingDimensionError(model, registered, vectorLength)
+	}
+	return registered, nil
+}
+
+func embeddingDimensionError(model string, expected, got int) error {
+	return fmt.Errorf("store: embedding model %q expects %d dimensions, got %d", model, expected, got)
 }
 
 // ChunkEmbeddings returns the stored vectors of the named chunks for one model. A chunk without a row of this
@@ -108,7 +211,9 @@ func ChunkEmbeddings(ctx context.Context, db *sql.DB, chatID int64, model string
 	return out, nil
 }
 
-// ragEmbeddingSelect is the shared projection of a vector row; callers append the filter they need.
+// ragEmbeddingSelect is the shared projection of a vector row; callers append the filter they need. model is
+// part of the WHERE clause, never just a column of the result: a vector of another model must not be reused
+// or silently counted as this model's vector.
 const ragEmbeddingSelect = `SELECT chunk_id, vector FROM rag_chunk_embeddings WHERE chat_id = ? AND model = ?`
 
 // ChunksMissingEmbedding returns up to limit chunks of the chat that have no vector of this model yet, oldest

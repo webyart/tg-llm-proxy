@@ -27,6 +27,9 @@ const (
 	maxBodyBytes          = 16 << 10
 	maxHeaderBytes        = 16 << 10
 	maxInFlight           = 8
+	maxUploadInFlight     = 2
+	maxActiveStreamsUser  = 1
+	streamLimitRetryAfter = 5 * time.Second
 	shutdownTimeout       = 2 * time.Second
 	contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors https://web.telegram.org"
 	mutationRateLimit     = 30
@@ -138,6 +141,44 @@ func (l *perUserRateLimiter) allowBucket(userID int64, kind rateLimitBucketKind,
 	return true, 0
 }
 
+// perUserStreamLimiter bounds the number of concurrent `/api/messages` streams per user. The global
+// in-flight semaphore alone let ONE allowlisted user hold every slot with eight SSE answers and
+// starve every other user; this counter is what makes the stream budget per principal. It is keyed
+// by user (not by session token), so opening several Mini App sessions does not multiply the cap.
+type perUserStreamLimiter struct {
+	mu     sync.Mutex
+	limit  int
+	active map[int64]int
+}
+
+func newPerUserStreamLimiter(limit int) *perUserStreamLimiter {
+	if limit < 1 {
+		limit = 1
+	}
+	return &perUserStreamLimiter{limit: limit, active: map[int64]int{}}
+}
+
+func (l *perUserStreamLimiter) acquire(userID int64) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.active[userID] >= l.limit {
+		return false
+	}
+	l.active[userID]++
+	return true
+}
+
+func (l *perUserStreamLimiter) release(userID int64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	switch current := l.active[userID]; {
+	case current <= 1:
+		delete(l.active, userID)
+	default:
+		l.active[userID] = current - 1
+	}
+}
+
 var errLifecycleUnavailable = errors.New("lifecycle unavailable")
 
 type TaskLifecycle interface {
@@ -207,6 +248,7 @@ type App struct {
 	// embeddings is the optional hybrid-search client of the document search; nil keeps it lexical.
 	embeddings bot.EmbeddingClient
 	rateLimits *perUserRateLimiter
+	streams    *perUserStreamLimiter
 }
 
 func New(cfg config.Config, db *sql.DB, client model.Client, logger *slog.Logger) *App {
@@ -218,6 +260,7 @@ func New(cfg config.Config, db *sql.DB, client model.Client, logger *slog.Logger
 	app.linkLifecycle = unavailableLinkLifecycle{}
 	app.auth = newAuthenticator(cfg.BotToken, cfg.Allows)
 	app.rateLimits = newPerUserRateLimiter()
+	app.streams = newPerUserStreamLimiter(maxActiveStreamsUser)
 	// The Mini App conversation runs through a dispatcher of its own rather than a second copy of
 	// the ask pipeline. main.go builds its Telegram dispatcher separately and does not pass its
 	// Locks/Limit here, so the two clients keep independent per-minute budgets and per-chat locks;
@@ -227,7 +270,8 @@ func New(cfg config.Config, db *sql.DB, client model.Client, logger *slog.Logger
 	if client != nil {
 		app.chat = bot.New(bot.Deps{Cfg: cfg, DB: db, Model: client, Logger: logger, Token: cfg.BotToken})
 	}
-	app.handler = securityHeaders(limitInFlight(recoverPanics(logger, http.HandlerFunc(app.route)), maxInFlight, documentUploadBodyLimit(cfg), transcribeBodyLimit(cfg)))
+	app.handler = securityHeaders(limitInFlightSplit(recoverPanics(logger, http.HandlerFunc(app.route)),
+		maxInFlight, maxUploadInFlight, documentUploadBodyLimit(cfg), transcribeBodyLimit(cfg)))
 	return app
 }
 
@@ -328,15 +372,34 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-// limitInFlight caps concurrent requests and replaces every body with a bounded reader. documentLimit and
-// transcribeLimit are the larger caps of the two multipart routes (POST /api/documents and POST
-// /api/transcribe); every other route keeps maxBodyBytes.
+// limitInFlight keeps the historical single-semaphore behaviour for callers that do not split the
+// upload routes (the middleware unit tests). Production uses limitInFlightSplit.
 func limitInFlight(next http.Handler, capacity int, documentLimit, transcribeLimit int64) http.Handler {
-	inFlight := make(chan struct{}, capacity)
+	return limitInFlightSplit(next, capacity, capacity, documentLimit, transcribeLimit)
+}
+
+// limitInFlightSplit caps concurrent requests in two independent classes and replaces every body
+// with a bounded reader. JSON/SSE traffic uses the general semaphore (capacity); POST
+// /api/documents and POST /api/transcribe use the upload semaphore (uploadCapacity). A slow phone
+// upload therefore cannot hold a slot a stream needs. Every non-upload route keeps maxBodyBytes;
+// documentLimit and transcribeLimit are the larger caps of the two multipart routes.
+func limitInFlightSplit(next http.Handler, capacity int, uploadCapacity int, documentLimit, transcribeLimit int64) http.Handler {
+	if capacity < 1 {
+		capacity = 1
+	}
+	if uploadCapacity < 1 {
+		uploadCapacity = 1
+	}
+	general := make(chan struct{}, capacity)
+	uploads := make(chan struct{}, uploadCapacity)
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		slots := general
+		if isUploadRoute(req) {
+			slots = uploads
+		}
 		select {
-		case inFlight <- struct{}{}:
-			defer func() { <-inFlight }()
+		case slots <- struct{}{}:
+			defer func() { <-slots }()
 		default:
 			writeError(w, http.StatusServiceUnavailable, "overloaded", "The Mini App is busy. Try again shortly.")
 			return
@@ -357,6 +420,19 @@ func limitInFlight(next http.Handler, capacity int, documentLimit, transcribeLim
 		req.Body = http.MaxBytesReader(w, req.Body, limit)
 		next.ServeHTTP(w, req)
 	})
+}
+
+// isUploadRoute reports whether the request belongs to the large-body class. An upload holds its
+// slot while the body is read, which can take minutes, so it must not share the JSON/SSE budget.
+func isUploadRoute(req *http.Request) bool {
+	if req.Method != http.MethodPost {
+		return false
+	}
+	switch req.URL.Path {
+	case "/api/documents", "/api/transcribe":
+		return true
+	}
+	return false
 }
 
 func (a *App) route(w http.ResponseWriter, req *http.Request) {

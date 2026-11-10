@@ -398,12 +398,10 @@ func ClearChat(ctx context.Context, db *sql.DB, chatID int64) (int64, error) {
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM messages WHERE chat_id = ?`, chatID).Scan(&maxID); err != nil {
 		return 0, err
 	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO chats (chat_id, user_id, created_at, last_active_at)
-		VALUES (?, ?, datetime('now'), datetime('now'))
-		ON CONFLICT(chat_id) DO UPDATE SET last_active_at = datetime('now')`, chatID, chatID); err != nil {
-		return 0, err
-	}
+	// The chat must already exist: Append/EnsureChat creates it from the event's user before any message is
+	// stored. Inventing a row here wrote user_id = chat_id, which is negative for every group and made a
+	// per-user query read a group id as an owner. If there is no row, leave the chat untouched — the context
+	// watermark below is still written, so a later message of that chat starts a fresh context.
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE chats SET context_reset_at = datetime('now'), last_active_at = datetime('now') WHERE chat_id = ?`, chatID); err != nil {
 		return 0, err

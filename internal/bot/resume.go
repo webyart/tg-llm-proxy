@@ -16,6 +16,7 @@ package bot
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"bot/internal/store"
@@ -24,6 +25,15 @@ import (
 // covers a month of a small family deployment.
 const ResumeScanLimit = 20
 const ResumeMaxAttempts = 3
+
+// resumeNoticeMessages bounds the per-chat history read of the superseded-question notice. The notice only
+// needs the turns near the end of the chat; an unanswered question older than this window is left to history.
+const resumeNoticeMessages = 50
+
+// resumeNoticeKey remembers the row id of the last question the user was told about in a chat. The skip state
+// cannot hold it: it names the ONE question /skip suppressed, and overwriting it would re-enable recovery of
+// the newest question. A separate marker makes the notice once per question without touching that state.
+const resumeNoticeKeyPrefix = "resume_notice_"
 
 const (
 	ResumeInitialBackoff = time.Minute
@@ -111,9 +121,6 @@ func (d *Dispatcher) resumeInterruptedQuestionsAt(ctx context.Context, now time.
 			attempts = recovery.Attempts + 1
 		}
 		nextRecoveryAt := now.Add(recoveryBackoff(attempts))
-		if setErr := store.SetResumeRecovery(ctx, d.deps.DB, row.ChatID, row.ID, attempts, nextRecoveryAt); setErr != nil {
-			return answered, pending, setErr
-		}
 
 		var ev = Event{
 			TelegramMessageID: *row.TelegramMessageID,
@@ -123,13 +130,55 @@ func (d *Dispatcher) resumeInterruptedQuestionsAt(ctx context.Context, now time.
 			Question:          row.Content,
 			Recovery:          true,
 		}
-		d.deps.Logger.Info("the stored question has no answer; startup is answering it",
-			"chat_id", ev.ChatID, "user_id", ev.UserID, "question_row", row.ID,
-			"telegram_message_id", ev.TelegramMessageID, "stored_at_utc", row.CreatedAt,
-			"recovery_attempt", attempts, "next_recovery_at", nextRecoveryAt)
-		var chainErr = d.chain(func(handlerCtx context.Context, ev Event, cmd Command) error {
+		// The attempt is persisted from inside the tail of the chain, not before it. A rate-limit refusal
+		// (and a busy chat lock, and the duplicate branch of the store stage) returns before that tail: no
+		// model call, no assistant row, and therefore no attempt to count. The old code wrote the state
+		// first, so three starts under a rate limit burned all three attempts and /skip hid the question
+		// without anyone asking the model. Persisting here still happens BEFORE cmd.Handler — before the
+		// model call — so a process killed mid-generation keeps its attempt, as it did in v1.57.1.
+		var attemptStarted bool
+		var stateErr error
+		var tracking ackTracking
+		var chainErr = d.chainTracking(func(handlerCtx context.Context, ev Event, cmd Command) error {
+			if setErr := store.SetResumeRecovery(handlerCtx, d.deps.DB, row.ChatID, row.ID, attempts, nextRecoveryAt); setErr != nil {
+				stateErr = setErr
+				return setErr
+			}
+			attemptStarted = true
+			d.deps.Logger.Info("the stored question has no answer; startup is answering it",
+				"chat_id", ev.ChatID, "user_id", ev.UserID, "question_row", row.ID,
+				"telegram_message_id", ev.TelegramMessageID, "stored_at_utc", row.CreatedAt,
+				"recovery_attempt", attempts, "next_recovery_at", nextRecoveryAt)
 			return cmd.Handler(handlerCtx, ev, ev.Question)
-		})(ctx, ev, ask)
+		}, &tracking)(ctx, ev, ask)
+		if stateErr != nil {
+			return answered, pending, stateErr
+		}
+		if !attemptStarted {
+			// The duplicate branch of the store stage can answer nil without the handler when a manual
+			// redelivery stored the answer between the scan and this replay. That is the one way a question
+			// can be finished without a model call from here; count it as answered, not as pending.
+			if tracking.entered && chainErr == nil {
+				var newestID, newestRole, checkErr = store.LastVisibleMessage(ctx, d.deps.DB, row.ChatID)
+				if checkErr == nil && newestRole == store.RoleAssistant && newestID > row.ID {
+					if clearErr := store.ClearResumeRecovery(ctx, d.deps.DB, row.ChatID, row.ID); clearErr != nil {
+						return answered, pending, clearErr
+					}
+					answered++
+					i++
+					continue
+				}
+			}
+			// Otherwise the chain answered without reaching the handler: the limiter refused this user, the
+			// allowlist did, or the chat lock was still busy. None of those is a failed attempt, so the
+			// counter and the backoff stay untouched and the question remains eligible.
+			d.deps.Logger.Info("startup recovery did not reach the model; the question keeps its attempts",
+				"chat_id", row.ChatID, "question_row", row.ID, "attempts", attempts,
+				"error", Sanitize(chainErr, d.deps.Token))
+			pending++
+			i++
+			continue
+		}
 		if chainErr != nil {
 			// The answer is stored before Telegram delivery. A send failure with that row present is the deliberate
 			var newestID, newestRole, checkErr = store.LastVisibleMessage(ctx, d.deps.DB, ev.ChatID)
@@ -195,7 +244,96 @@ func (d *Dispatcher) resumeInterruptedQuestionsAt(ctx context.Context, now time.
 		pending++
 		i++
 	}
+	// The replay above only ever looks at the newest visible row. It therefore cannot see a question that a
+	// newer message has already superseded — exactly the row the user never got an answer for and was never
+	// told about. The notice pass runs after the replay so an answer written by it is visible here.
+	if noticeErr := d.notifySupersededQuestions(ctx); noticeErr != nil {
+		return answered, pending, noticeErr
+	}
 	return answered, pending, nil
+}
+
+// notifySupersededQuestions reports older user turns that never received an assistant row before the next
+// user turn. The newest visible row is skipped on purpose: an unanswered newest question is the replay's job
+// (or its failure notice), and reporting it here would double-message the chat. The bot_state marker makes
+// each question produce at most one notice across restarts.
+func (d *Dispatcher) notifySupersededQuestions(ctx context.Context) error {
+	var chats, err = store.ListChats(ctx, d.deps.DB, 0, ResumeScanLimit)
+	if err != nil {
+		return err
+	}
+	for _, chat := range chats {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var messages, readErr = store.RecentByChat(ctx, d.deps.DB, chat.ChatID, resumeNoticeMessages)
+		if readErr != nil {
+			return readErr
+		}
+		var question, found = supersededUnansweredQuestion(messages)
+		if !found {
+			continue
+		}
+		var key = resumeNoticeKey(chat.ChatID)
+		var questionID = strconv.FormatInt(question.ID, 10)
+		var notified, seen, stateErr = store.GetState(ctx, d.deps.DB, key)
+		if stateErr != nil {
+			return stateErr
+		}
+		if seen && notified == questionID {
+			continue
+		}
+		// Mark first: a delivery failure must not turn every following start into a second notice.
+		if stateErr := store.SetState(ctx, d.deps.DB, key, questionID); stateErr != nil {
+			return stateErr
+		}
+		var text = fmt.Sprintf("Вопрос от %s остался без ответа — задайте его ещё раз или /skip",
+			recoveryNoticeTime(question.CreatedAt))
+		if sendErr := d.reply(ctx, chat.ChatID, text); sendErr != nil {
+			d.deps.Logger.Error("the unanswered-question notice was not delivered",
+				"chat_id", chat.ChatID, "question_row", question.ID,
+				"error", Sanitize(sendErr, d.deps.Token))
+			continue
+		}
+		d.deps.Logger.Info("an older question without an answer was reported to the user",
+			"chat_id", chat.ChatID, "question_row", question.ID, "stored_at_utc", question.CreatedAt)
+	}
+	return nil
+}
+
+// supersededUnansweredQuestion — messages are chronological, as store.RecentByChat returns them (it reverses
+// the SQL newest-first order). A user turn is answered when the NEXT newer visible row is an assistant row;
+// when that row is another user turn, the question was superseded before it could be answered. The newest row
+// itself is never reported here: it is the replay's row (or its failure notice).
+func supersededUnansweredQuestion(messages []store.Message) (store.Message, bool) {
+	var question store.Message
+	var found bool
+	for i := 0; i+1 < len(messages); i++ {
+		// Only real Telegram messages are questions a person can be asked to repeat. A menu callback or a
+		// Mini App turn writes a user row with no telegram_message_id, and «Вопрос от HH:MM» would be noise.
+		if messages[i].Role != store.RoleUser || messages[i].TelegramMessageID == nil {
+			continue
+		}
+		if messages[i+1].Role == store.RoleAssistant {
+			continue
+		}
+		question, found = messages[i], true
+	}
+	return question, found
+}
+
+func resumeNoticeKey(chatID int64) string {
+	return resumeNoticeKeyPrefix + strconv.FormatInt(chatID, 10)
+}
+
+// recoveryNoticeTime renders the stored UTC SQLite timestamp as the HH:MM the user saw in the chat. A value
+// that does not parse is shown verbatim instead of becoming an empty «Вопрос от  остался…».
+func recoveryNoticeTime(createdAt string) string {
+	var created, err = time.Parse(time.DateTime, createdAt)
+	if err != nil {
+		return createdAt
+	}
+	return created.Format("15:04")
 }
 
 func recoveryBackoff(attempt int) time.Duration {

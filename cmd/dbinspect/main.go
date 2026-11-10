@@ -142,6 +142,10 @@ func countsReport(w io.Writer, ctx context.Context, db *sql.DB, path, journal st
 	if schemaErr != nil {
 		return &exitError{1, schemaErr.Error()}
 	}
+	var contentHash, contentErr = store.ContentFingerprint(ctx, db)
+	if contentErr != nil {
+		return &exitError{1, contentErr.Error()}
+	}
 
 	fmt.Fprintf(w, "path=%s\n", path)
 	// taken through the immutable open reports journal_mode of the handle ("delete" even for a WAL file,
@@ -151,6 +155,7 @@ func countsReport(w io.Writer, ctx context.Context, db *sql.DB, path, journal st
 	fmt.Fprintf(w, "journal_mode=%s\n", countKey(journal))
 	fmt.Fprintf(w, "integrity=%s\n", countKey(verdict))
 	fmt.Fprintf(w, "schema_version=%d\n", schemaVersion)
+	fmt.Fprintf(w, "content_hash=%s\n", contentHash)
 	fmt.Fprintf(w, "last_update_id=%d\n", offset)
 	// found=false means the bot_state row does not exist yet — a fresh database, where the poller starts from
 	fmt.Fprintf(w, "bot_state_offset_found=%t\n", found)

@@ -211,6 +211,48 @@ func TestClearChatHidesContextKeepsHistory(t *testing.T) {
 	}
 }
 
+// TestClearChatNeverInventsAUserFromTheChatID: /reset used to INSERT a missing chat with user_id = chat_id,
+// which is negative for a group and turned a group id into an owner in every per-user read. The caller/event
+// owns the user; without a chat row ClearChat leaves the chats table untouched.
+func TestClearChatNeverInventsAUserFromTheChatID(t *testing.T) {
+	db := memDB(t)
+	ctx := context.Background()
+
+	// A group that has no row yet (for example a /reset delivered before any message was stored).
+	if _, err := ClearChat(ctx, db, -100); err != nil {
+		t.Fatalf("ClearChat on an unknown chat: %v", err)
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chats WHERE chat_id = -100`).Scan(&count); err != nil {
+		t.Fatalf("count chats: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("ClearChat created %d chat row(s) for -100; it must leave an unknown chat untouched", count)
+	}
+
+	// A group that exists keeps the user the event supplied — never the negative chat id.
+	if err := EnsureChat(ctx, db, -100, 7, "Группа"); err != nil {
+		t.Fatalf("EnsureChat: %v", err)
+	}
+	if _, err := Append(ctx, db, Message{ChatID: -100, UserID: 7, Role: RoleUser, Content: "вопрос"}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if _, err := ClearChat(ctx, db, -100); err != nil {
+		t.Fatalf("ClearChat on a group: %v", err)
+	}
+	var userID int64
+	if err := db.QueryRowContext(ctx, `SELECT user_id FROM chats WHERE chat_id = -100`).Scan(&userID); err != nil {
+		t.Fatalf("read the group owner: %v", err)
+	}
+	if userID != 7 {
+		t.Fatalf("group user_id=%d, want the event's user 7 (chat_id=%d would be a negative owner)", userID, -100)
+	}
+	var reset string
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(context_reset_at, '') FROM chats WHERE chat_id = -100`).Scan(&reset); err != nil || reset == "" {
+		t.Fatalf("ClearChat did not mark the existing chat's context: reset=%q err=%v", reset, err)
+	}
+}
+
 func TestEventsAndStatsErrors(t *testing.T) {
 	var db = memDB(t)
 	var ctx = context.Background()

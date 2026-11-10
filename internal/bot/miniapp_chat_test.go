@@ -90,8 +90,13 @@ func TestMiniAppAnswerStreamsDeltasAndStoresHistoryInOrder(t *testing.T) {
 	if rows[0].Content != "привет" {
 		t.Errorf("stored question = %q, want the trimmed text", rows[0].Content)
 	}
-	if rows[1].Content != done.Delta || done.Delta != "Привет, мир" {
-		t.Errorf("done text = %q, stored assistant = %q, streamed = %q", done.Delta, rows[1].Content, streamed.Content())
+	// The stored row keeps the model content, exactly like Telegram's assistant row; the done event
+	// carries the finalizer output: content plus the latency footer.
+	if rows[1].Content != "Привет, мир" {
+		t.Errorf("stored assistant = %q, want the raw model content", rows[1].Content)
+	}
+	if !strings.HasPrefix(done.Delta, "Привет, мир") || !strings.Contains(done.Delta, "⏱") {
+		t.Errorf("done text = %q, want the answer plus the latency footer", done.Delta)
 	}
 	if rows[1].Model != "fake-model" {
 		t.Errorf("stored assistant model = %q", rows[1].Model)
@@ -116,12 +121,12 @@ func TestMiniAppAnswerNonStreamingFallbackEmitsWholeAnswer(t *testing.T) {
 		t.Fatalf("model calls = %d, want 1", m.callCount())
 	}
 	deltas := log.deltas()
-	if len(deltas) != 1 || deltas[0] != "ответ модели" {
-		t.Fatalf("fallback deltas = %q, want one full answer", deltas)
+	if len(deltas) != 1 || !strings.HasPrefix(deltas[0], "ответ модели") || !strings.Contains(deltas[0], "⏱") {
+		t.Fatalf("fallback deltas = %q, want one full answer with the latency footer", deltas)
 	}
 	done, ok := log.done()
-	if !ok || done.Delta != "ответ модели" {
-		t.Fatalf("done = %+v ok=%v", done, ok)
+	if !ok || !strings.HasPrefix(done.Delta, "ответ модели") || !strings.Contains(done.Delta, "⏱") {
+		t.Fatalf("done = %+v ok=%v, want the answer plus the latency footer", done, ok)
 	}
 	if r.count() != 0 {
 		t.Fatalf("fallback sent Telegram messages: %q", r.texts())
@@ -140,8 +145,8 @@ func TestMiniAppAnswerStreamingDisabledUsesCompleteEvenIfModelCanStream(t *testi
 	if m.streamed() != 0 {
 		t.Fatalf("stream calls = %d, want 0 when STREAMING_ENABLED=false", m.streamed())
 	}
-	if got := strings.Join(log.deltas(), ""); got != "раз два" {
-		t.Fatalf("fallback deltas = %q", got)
+	if got := strings.Join(log.deltas(), ""); !strings.HasPrefix(got, "раз два") || !strings.Contains(got, "⏱") {
+		t.Fatalf("fallback deltas = %q, want the answer plus the latency footer", got)
 	}
 }
 

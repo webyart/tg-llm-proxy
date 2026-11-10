@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -113,6 +115,119 @@ func TestMessageSearchIndexIsRebuiltOnceForAnOlderDatabase(t *testing.T) {
 	var marker int
 	if err := reopened.QueryRowContext(ctx, `SELECT COUNT(*) FROM search_index_meta WHERE name = ?`, "messages_fts").Scan(&marker); err != nil || marker != 1 {
 		t.Fatalf("the rebuild marker is missing: count=%d err=%v", marker, err)
+	}
+}
+
+// TestSearchIndexMarkerFailureIsNotFatalWhenTheIndexIsValid: the marker is a skip hint, not the index. A
+// trigger that refuses the hint must not stop a start when FTS5's own integrity-check says the index is valid.
+func TestSearchIndexMarkerFailureIsNotFatalWhenTheIndexIsValid(t *testing.T) {
+	var ctx = context.Background()
+	var db, err = OpenMemory(ctx, "fts-marker-blocked")
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	defer db.Close()
+	if _, err := Append(ctx, db, Message{ChatID: 63, UserID: 11, Role: RoleUser, Content: "маркер не записывается"}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM search_index_meta WHERE name = 'messages_fts'`); err != nil {
+		t.Fatalf("remove the marker: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TRIGGER block_messages_fts_marker BEFORE INSERT ON search_index_meta
+		WHEN NEW.name = 'messages_fts' BEGIN SELECT RAISE(ABORT, 'marker blocked by the test'); END`); err != nil {
+		t.Fatalf("install the blocking trigger: %v", err)
+	}
+	if err := ensureSearchIndexes(ctx, db); err != nil {
+		t.Fatalf("a valid index must survive a failed marker write: %v", err)
+	}
+	if matches, err := SearchMessages(ctx, db, 63, "маркер", 5); err != nil || len(matches) != 1 {
+		t.Fatalf("the index stopped answering after the marker failure: %+v err=%v", matches, err)
+	}
+}
+
+// TestConcurrentSearchIndexEnsureBothSucceed exercises the two-process case at the FTS layer: two handles
+// that both see an unmarked index must rebuild it once, not race into a UNIQUE marker error.
+func TestConcurrentSearchIndexEnsureBothSucceed(t *testing.T) {
+	var ctx = context.Background()
+	var path = filepath.Join(t.TempDir(), "fts-concurrent.db")
+	var seed, err = Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := Append(ctx, seed, Message{ChatID: 64, UserID: 11, Role: RoleUser, Content: "concurrent rebuild"}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	// Simulate the state of a database opened by a release before the marker/triggers existed.
+	for _, statement := range []string{
+		`DELETE FROM search_index_meta`,
+		`DROP TRIGGER IF EXISTS messages_fts_insert`,
+		`DROP TRIGGER IF EXISTS messages_fts_delete`,
+		`DROP TRIGGER IF EXISTS messages_fts_update`,
+		`DROP TRIGGER IF EXISTS rag_chunks_fts_insert`,
+		`DROP TRIGGER IF EXISTS rag_chunks_fts_delete`,
+		`DROP TRIGGER IF EXISTS rag_chunks_fts_update`,
+		`INSERT INTO messages_fts(messages_fts) VALUES ('delete-all')`,
+	} {
+		if _, err := seed.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("prepare the unmarked index (%s): %v", statement, err)
+		}
+	}
+	var dsn, dsnErr = BuildDSN(path)
+	if dsnErr != nil {
+		t.Fatalf("BuildDSN: %v", dsnErr)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatalf("close the seed: %v", err)
+	}
+	open := func() (*sql.DB, error) {
+		db, err := sql.Open(sqliteDriver, dsn)
+		if err != nil {
+			return nil, err
+		}
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
+		if err := db.PingContext(ctx); err != nil {
+			db.Close()
+			return nil, err
+		}
+		return db, nil
+	}
+	first, err := open()
+	if err != nil {
+		t.Fatalf("open the first handle: %v", err)
+	}
+	defer first.Close()
+	second, err := open()
+	if err != nil {
+		t.Fatalf("open the second handle: %v", err)
+	}
+	defer second.Close()
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, db := range []*sql.DB{first, second} {
+		wg.Add(1)
+		go func(db *sql.DB) {
+			defer wg.Done()
+			<-start
+			errs <- ensureSearchIndexes(ctx, db)
+		}(db)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("a concurrent ensureSearchIndexes failed: %v", err)
+		}
+	}
+	var marker int
+	if err := first.QueryRowContext(ctx, `SELECT COUNT(*) FROM search_index_meta WHERE name = 'messages_fts'`).Scan(&marker); err != nil || marker != 1 {
+		t.Fatalf("the rebuild marker count=%d err=%v, want exactly one", marker, err)
+	}
+	if matches, err := SearchMessages(ctx, first, 64, "concurrent", 5); err != nil || len(matches) != 1 {
+		t.Fatalf("the concurrent rebuild did not index the row: %+v err=%v", matches, err)
 	}
 }
 

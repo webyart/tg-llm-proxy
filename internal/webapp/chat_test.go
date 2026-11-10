@@ -481,8 +481,10 @@ func TestChatMessagesRunThroughTheRealDispatcher(t *testing.T) {
 			doneText, _ = event.data["text"].(string)
 		}
 	}
-	if deltaText.String() != "Привет" || doneText != "Привет" {
-		t.Fatalf("deltas=%q done=%q, want Привет/Привет (%s)", deltaText.String(), doneText, body)
+	// Deltas are the raw streamed text; done carries the shared finalizer output, so it keeps the
+	// answer and adds the latency footer.
+	if deltaText.String() != "Привет" || !strings.HasPrefix(doneText, "Привет") || !strings.Contains(doneText, "⏱") {
+		t.Fatalf("deltas=%q done=%q, want raw deltas and a finalized answer (%s)", deltaText.String(), doneText, body)
 	}
 	client.mu.Lock()
 	streams := client.streams

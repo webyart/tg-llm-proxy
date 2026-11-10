@@ -140,6 +140,7 @@
       errorInvalidQuery: "Введите один непустой запрос длиной до 4000 символов.", reminderNotMutable: "Напоминание отсутствует или его нельзя изменить в текущем состоянии.",
       errorRead: "Не удалось прочитать данные.", errorOverloaded: "Mini App перегружен. Повторите попытку позже.",
       errorRateLimited: "Слишком много запросов. Повторите попытку позже.",
+      errorStreamLimit: "В этом чате уже формируется ответ. Дождитесь его завершения и повторите.",
       errorInvalidTTSSpeed: "Выберите скорость 0,75×, 1×, 1,25× или 1,5×.",
       errorNotFound: "Страница или API не найдены.",
       errorInternal: "Mini App не удалось обработать запрос. Повторите попытку или откройте её заново из Telegram.",
@@ -309,6 +310,7 @@
       errorInvalidQuery: "Enter one nonempty query of at most 4000 characters.", reminderNotMutable: "The reminder is missing or cannot be changed in its current state.",
       errorRead: "The data could not be read.", errorOverloaded: "The Mini App is busy. Try again shortly.",
       errorRateLimited: "Too many requests. Try again later.",
+      errorStreamLimit: "An answer is already streaming in this chat. Wait for it to finish and retry.",
       errorInvalidTTSSpeed: "Choose a speed of 0.75×, 1×, 1.25×, or 1.5×.",
       errorNotFound: "Page or API endpoint not found.",
       errorInternal: "The Mini App could not handle this request. Retry or reopen it from Telegram.",
@@ -348,7 +350,7 @@
     invalid_miniapp_fallback: "errorInvalidMiniAppFallback",
     invalid_json: "errorInvalidJSON", content_type: "errorContentType", body_too_large: "errorBodyLarge",
     method_not_allowed: "errorMethod", invalid_pagination: "errorPagination", invalid_query: "errorInvalidQuery", read_failed: "errorRead",
-    overloaded: "errorOverloaded", rate_limited: "errorRateLimited", invalid_tts_speed: "errorInvalidTTSSpeed",
+    overloaded: "errorOverloaded", rate_limited: "errorRateLimited", stream_limit: "errorStreamLimit", invalid_tts_speed: "errorInvalidTTSSpeed",
     export_failed: "historyExportFailed", export_too_large: "historyExportTooLarge", history_empty: "historyExportEmpty",
     not_found: "errorNotFound", invalid_body: "errorInvalidJSON", upload_timeout: "documentUploadTimeout", static_error: "errorRead", reminder_not_mutable: "reminderNotMutable",
     task_not_active: "taskNotActive", task_not_resumable: "taskNotResumable", task_mutation_failed: "taskMutationFailed",
@@ -750,7 +752,9 @@
   }
 
   function responseError(code, status) {
-    const key = status === 429 ? "errorRateLimited" : errorKeys[code] || "requestFailed";
+    // A known code is more precise than the generic 429 text: stream_limit says another answer is
+    // already running in this chat, while rate_limited still falls back to the shared message.
+    const key = errorKeys[code] || (status === 429 ? "errorRateLimited" : "requestFailed");
     return t(key, { status });
   }
 

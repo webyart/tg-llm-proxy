@@ -732,6 +732,9 @@ func TestFrontendRateLimitedErrorsAreLocalized(t *testing.T) {
 		`errorRateLimited: "Слишком много запросов. Повторите попытку позже."`,
 		`errorRateLimited: "Too many requests. Try again later."`,
 		`status === 429 ? "errorRateLimited"`,
+		`stream_limit: "errorStreamLimit"`,
+		`errorStreamLimit: "В этом чате уже формируется ответ. Дождитесь его завершения и повторите."`,
+		`errorStreamLimit: "An answer is already streaming in this chat. Wait for it to finish and retry."`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("app.js misses localized 429 regression %q", want)

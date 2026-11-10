@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -94,6 +95,104 @@ func TestMigrationFailureRollsBackStatementsAndVersion(t *testing.T) {
 	var sentinel int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'migration_sentinel'`).Scan(&sentinel); err != nil || sentinel != 0 {
 		t.Fatalf("failed migration left its table behind, present=%d err=%v", sentinel, err)
+	}
+}
+
+// TestMigration011ToleratesAnExistingAttributionColumn reproduces a database whose messages already have
+// user_id but whose 011 row is missing (an interrupted older release, or an operator's repair). The guarded
+// runner must skip only the ALTER and still create the index instead of failing with "duplicate column".
+func TestMigration011ToleratesAnExistingAttributionColumn(t *testing.T) {
+	ctx := context.Background()
+	db, err := OpenMemory(ctx, "migration-011-guard")
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	defer db.Close()
+	if err := EnsureChat(ctx, db, 70, 7, ""); err != nil {
+		t.Fatalf("EnsureChat: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO messages (chat_id, user_id, role, content) VALUES (70, 7, 'user', 'kept')`); err != nil {
+		t.Fatalf("seed a message: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version = 11`); err != nil {
+		t.Fatalf("forget version 11: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `DROP INDEX IF EXISTS idx_messages_user_role_created_at`); err != nil {
+		t.Fatalf("drop the 011 index: %v", err)
+	}
+	if err := ApplySchema(ctx, db); err != nil {
+		t.Fatalf("ApplySchema over an existing user_id column: %v", err)
+	}
+	version, err := SchemaVersion(ctx, db)
+	if err != nil || version != len(MigrationSQL) {
+		t.Fatalf("SchemaVersion=%d err=%v, want %d", version, err, len(MigrationSQL))
+	}
+	var kept int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE chat_id = 70 AND user_id = 7`).Scan(&kept); err != nil || kept != 1 {
+		t.Fatalf("the guarded migration changed the existing row: count=%d err=%v", kept, err)
+	}
+	var index int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_messages_user_role_created_at'`).Scan(&index); err != nil || index != 1 {
+		t.Fatalf("the index statement of 011 did not run: count=%d err=%v", index, err)
+	}
+}
+
+// TestConcurrentOpenAppliesPendingMigrationsOnOneFile is the race of two processes (the bot and ragembed/
+// dbprune) opening the same file while migrations 011..018 are still pending. Both Opens must succeed; the
+// historical non-idempotent ALTER of 011 is the statement that used to fail with "duplicate column".
+func TestConcurrentOpenAppliesPendingMigrationsOnOneFile(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "concurrent-open.db")
+	all := MigrationSQL
+	MigrationSQL = append([]string(nil), all[:10]...)
+	seed, err := Open(ctx, path)
+	if err != nil {
+		MigrationSQL = all
+		t.Fatalf("seed Open at version 10: %v", err)
+	}
+	if err := seed.Close(); err != nil {
+		MigrationSQL = all
+		t.Fatalf("close the seed: %v", err)
+	}
+	MigrationSQL = all
+	t.Cleanup(func() { MigrationSQL = all })
+
+	const workers = 4
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for index := 0; index < workers; index++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			db, err := Open(ctx, path)
+			if err == nil {
+				err = db.Close()
+			}
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("a concurrent Open failed: %v", err)
+		}
+	}
+	final, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("final Open: %v", err)
+	}
+	defer final.Close()
+	version, err := SchemaVersion(ctx, final)
+	if err != nil || version != len(MigrationSQL) {
+		t.Fatalf("final SchemaVersion=%d err=%v, want %d", version, err, len(MigrationSQL))
+	}
+	var rows int
+	if err := final.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&rows); err != nil || rows != len(MigrationSQL) {
+		t.Fatalf("schema_migrations rows=%d err=%v, want %d", rows, err, len(MigrationSQL))
 	}
 }
 

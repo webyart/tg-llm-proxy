@@ -165,12 +165,16 @@ func Pragma(ctx context.Context, db *sql.DB, name string) (string, error) {
 // ApplySchema bootstraps schema_migrations, then applies each unapplied embedded migration in its own
 // transaction. The initial schema remains idempotent so a pre-versioning database is adopted at version 1
 // without changing its rows; later starts skip that version instead of replaying its statements.
+//
+// Two processes may open the same file at the same time (the bot and dbprune/ragembed). The applied check
+// before the loop is only a fast path: every pending migration is re-checked inside BEGIN IMMEDIATE, so a
+// migration another process has just committed is skipped instead of replayed. The state is also re-guarded
+// inside that transaction, because a newer release could have migrated the file after the read-only check.
 func ApplySchema(ctx context.Context, db *sql.DB) error {
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
-		version INTEGER PRIMARY KEY,
-		applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-	)`); err != nil {
-		return fmt.Errorf("schema_migrations bootstrap failed: %w", err)
+	// BEGIN IMMEDIATE serializes the bootstrap too: two concurrent CREATE TABLE IF NOT EXISTS statements
+	// already race on sqlite_master, and the loser would otherwise fail to start.
+	if err := bootstrapSchemaMigrations(ctx, db); err != nil {
+		return err
 	}
 	// A database written by a newer release is refused before a single migration is applied: the
 	// embedded history stops at the version this binary was built with, and running the old code
@@ -178,38 +182,159 @@ func ApplySchema(ctx context.Context, db *sql.DB) error {
 	if err := GuardSchemaVersion(ctx, db); err != nil {
 		return err
 	}
+	applied, err := appliedSchemaVersions(ctx, db)
+	if err != nil {
+		return err
+	}
 	for index, migration := range MigrationSQL {
 		version := index + 1
-		var applied int
-		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version).Scan(&applied); err != nil {
-			return fmt.Errorf("schema version %d could not be checked: %w", version, err)
-		}
-		if applied != 0 {
+		if applied[version] {
 			continue
 		}
 		statements, err := Statements(migration)
 		if err != nil {
 			return err
 		}
-		tx, err := db.BeginTx(ctx, nil)
-		if err != nil {
-			return fmt.Errorf("migration %d could not begin: %w", version, err)
-		}
-		for i, statement := range statements {
-			if _, err := tx.ExecContext(ctx, statement); err != nil {
-				_ = tx.Rollback()
-				return fmt.Errorf("statement %d of migration %d failed (%w); text: %s", i+1, version, err, firstLine(statement))
-			}
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)`, version); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("migration %d could not be recorded: %w", version, err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("migration %d could not commit: %w", version, err)
+		if err := applyMigration(ctx, db, version, statements); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// bootstrapSchemaMigrations creates the version table under the write lock. The table is created inside
+// a transaction that is committed before any migration runs; the migration transactions then only have to
+// serialize their own work.
+func bootstrapSchemaMigrations(ctx context.Context, db *sql.DB) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("schema_migrations bootstrap could not begin: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+		version INTEGER PRIMARY KEY,
+		applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+	)`); err != nil {
+		return fmt.Errorf("schema_migrations bootstrap failed: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("schema_migrations bootstrap could not commit: %w", err)
+	}
+	return nil
+}
+
+func appliedSchemaVersions(ctx context.Context, db *sql.DB) (map[int]bool, error) {
+	rows, err := db.QueryContext(ctx, `SELECT version FROM schema_migrations`)
+	if err != nil {
+		return nil, fmt.Errorf("the applied schema versions could not be read: %w", err)
+	}
+	defer rows.Close()
+	applied := make(map[int]bool, len(MigrationSQL))
+	for rows.Next() {
+		var version int
+		if err := rows.Scan(&version); err != nil {
+			return nil, fmt.Errorf("an applied schema version could not be read: %w", err)
+		}
+		applied[version] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("the applied schema versions could not be read: %w", err)
+	}
+	return applied, nil
+}
+
+// applyMigration runs one migration under BEGIN IMMEDIATE. The version check and the future-schema guard
+// are repeated inside the transaction: the read-only fast path of ApplySchema is not authoritative once
+// another process can write. A concurrent process that committed this version already is skipped, which is
+// what makes a non-idempotent statement of a historical migration safe to meet twice.
+func applyMigration(ctx context.Context, db *sql.DB, version int, statements []string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("migration %d could not begin: %w", version, err)
+	}
+	defer tx.Rollback()
+
+	supported := len(MigrationSQL)
+	var current int
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&current); err != nil {
+		return fmt.Errorf("the schema version could not be re-read for migration %d: %w", version, err)
+	}
+	if current > supported {
+		return fmt.Errorf("%w: the database is at version %d, this binary supports %d", ErrSchemaDowngrade, current, supported)
+	}
+	var applied int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version).Scan(&applied); err != nil {
+		return fmt.Errorf("schema version %d could not be re-checked: %w", version, err)
+	}
+	if applied != 0 {
+		// Another process won the race; commit nothing and leave its rows untouched.
+		return nil
+	}
+
+	for i, statement := range statements {
+		skip, err := migrationStatementAlreadyApplied(ctx, tx, version, statement)
+		if err != nil {
+			return fmt.Errorf("statement %d of migration %d could not be checked (%w); text: %s", i+1, version, err, firstLine(statement))
+		}
+		if skip {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("statement %d of migration %d failed (%w); text: %s", i+1, version, err, firstLine(statement))
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)`, version); err != nil {
+		return fmt.Errorf("migration %d could not be recorded: %w", version, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migration %d could not commit: %w", version, err)
+	}
+	return nil
+}
+
+// migrationStatementAlreadyApplied is the small per-migration guard mechanism. 011 was written before the
+// write-transaction re-check existed and its ALTER TABLE ADD COLUMN is not idempotent; a database where an
+// operator (or an interrupted older release) already added the column must still reach the index statement.
+// The historical file is deliberately not rewritten: the guard is a property of execution, and the check is
+// pragma_table_info rather than a parsing guess.
+func migrationStatementAlreadyApplied(ctx context.Context, tx *sql.Tx, version int, statement string) (bool, error) {
+	guard, ok := migrationStatementGuards[version]
+	if !ok {
+		return false, nil
+	}
+	return guard(ctx, tx, statement)
+}
+
+type migrationStatementGuard func(context.Context, *sql.Tx, string) (bool, error)
+
+var migrationStatementGuards = map[int]migrationStatementGuard{
+	// 011_message_user_attribution.sql: ALTER TABLE messages ADD COLUMN user_id …
+	11: addColumnIfMissingGuard("messages", "user_id"),
+}
+
+// addColumnIfMissingGuard skips exactly one `ALTER TABLE <table> ADD COLUMN <column> …` statement when
+// pragma_table_info says the column is already there. Other statements of the migration (the index of 011)
+// still run. The comparison is deliberately narrow: only the three identifiers are matched, and the column
+// name is checked as a whole token so `user_id_old` cannot satisfy it.
+func addColumnIfMissingGuard(table, column string) migrationStatementGuard {
+	prefix := strings.ToUpper("ALTER TABLE " + table + " ADD COLUMN " + column)
+	return func(ctx context.Context, tx *sql.Tx, statement string) (bool, error) {
+		normalized := strings.ToUpper(strings.Join(strings.Fields(statement), " "))
+		if !strings.HasPrefix(normalized, prefix) {
+			return false, nil
+		}
+		if len(normalized) > len(prefix) {
+			next := normalized[len(prefix)]
+			if next != ' ' && next != '\t' && next != '(' {
+				return false, nil
+			}
+		}
+		var present int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&present); err != nil {
+			return false, err
+		}
+		return present > 0, nil
+	}
 }
 
 // Statements — the split of a migration text into single statements. It is lexical, on purpose:

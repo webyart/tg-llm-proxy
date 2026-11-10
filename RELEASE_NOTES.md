@@ -2,7 +2,19 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.57.1
+## Новейший выпуск: v1.58.0
+
+# tg-llm-proxy v1.58.0
+
+## Data reliability, Mini App admission and recovery hygiene
+
+- Migrations: the schema version is re-read inside `BEGIN IMMEDIATE` before every pending migration, the legacy 011 `ALTER TABLE` is guarded by `pragma_table_info`, and concurrent `Open` calls (bot + dbprune/ragembed) no longer fail on a duplicate column or a half-applied version. The FTS rebuild and its marker now commit in one transaction with `INSERT OR IGNORE`; a marker failure on a valid index no longer blocks startup.
+- Embeddings (schema **18**): `rag_chunk_embeddings` is rebuilt with `PRIMARY KEY (chunk_id, model)` in a data-preserving migration, the model and its dimension are registered on write, a wrong-length vector is rejected with `expects N dimensions, got M`, a model change keeps the old rows instead of overwriting them, and search filters by the current model (falling back to lexical when it is absent). The migration was rehearsed on a copy of the live database: 148 messages, 1165 events, 68 chunks and 68 embeddings intact.
+- Backup verification: `VerifyBackup` now checks `PRAGMA foreign_key_check`, the FTS integrity of both indexes, required tables/triggers/indexes; `dbinspect -counts` emits a SHA-256 `content_hash`, and the restore drill compares it in addition to the 35 counters.
+- Mini App: one active stream per user (second → `429 stream_limit`, localized), uploads/transcribe have their own 2-slot semaphore, and `AnswerForMiniApp` uses the same bounded per-chat queue and execution slot as Telegram. A shared finalizer now appends the `finish_reason` warning, latency, sources and document-truncation marker in BOTH clients; the stored row stays raw content.
+- Bot: recovery attempts are counted only when the handler actually runs (a limiter refusal no longer burns attempts and abandons the question), a superseded unanswered question gets one «остался без ответа» notice per question, album offsets follow the same stored-question ack rule, dispatcher approval/document-confirmation state moved into the dispatcher (no package-level leak), `/links add` reserves the shared daily network quota, and the turn/user maps are bounded.
+
+## Предыдущий выпуск: v1.57.1
 
 # tg-llm-proxy v1.57.1
 

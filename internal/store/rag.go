@@ -582,7 +582,10 @@ func SearchRAGChunksDetailed(ctx context.Context, db *sql.DB, chatID int64, quer
 // where lexicalNorm is the raw BM25-lite score divided by the best raw score of the query. A chunk without a
 // stored vector of this model contributes cosine 0; a chunk no lexical term reached can still be scored when
 // its cosine puts it among the closest chunks of the chat — that is the paraphrase the lexical search cannot
-// see. When the chat has no vector for this model at all, the lexical result is returned untouched.
+// see. Vectors of another model are never substituted: the query filters on the current model, so after a
+// model change the previous model's rows remain readable but the search falls back to the lexical ranking
+// (the documented warning is this paragraph and the model filter in ragVectorScanQuery) instead of mixing
+// scores of two vector spaces.
 func SearchRAGChunksWithOptions(ctx context.Context, db *sql.DB, chatID int64, query string, opts SearchOptions) (RAGSearchResult, error) {
 	result := RAGSearchResult{Chunks: []RAGChunk{}}
 	limit, maxRunes := opts.Limit, opts.MaxRunes
@@ -795,7 +798,10 @@ func ragCosine(a, b []float32) float64 {
 }
 
 // ragVectorScanQuery reads the newest vectors of one chat and model. chunk_id DESC makes the cap deterministic:
-// a corpus larger than ragVectorScanLimit still ranks its newest vectors instead of an arbitrary slice.
+// a corpus larger than ragVectorScanLimit still ranks its newest vectors instead of an arbitrary slice. model
+// is part of the WHERE clause, so switching RAG_EMBEDDINGS_MODEL never scores an old model's vector: the old
+// rows stay in the table for the old model, and this search falls back to its lexical ranking (the documented
+// behaviour of SearchRAGChunksWithOptions when the chat has no vector of the current model).
 const ragVectorScanQuery = `SELECT chunk_id, vector FROM rag_chunk_embeddings
 	WHERE chat_id = ? AND model = ?
 	ORDER BY chunk_id DESC

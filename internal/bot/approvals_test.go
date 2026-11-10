@@ -123,7 +123,7 @@ func TestMiniAppApprovedNetworkActionExecutesAndResumesTheSameAnswer(t *testing.
 	}
 	tail := drainMiniAppEvents(events)
 	final, ok := miniAppDone(tail)
-	if !ok || final.Delta != "Ответ: Результат поиска" || final.MessageID <= 0 {
+	if !ok || !strings.HasPrefix(final.Delta, "Ответ: Результат поиска") || !strings.Contains(final.Delta, "⏱") || final.MessageID <= 0 {
 		t.Fatalf("done event=%+v events=%+v", final, tail)
 	}
 	if providerCalls.Load() != 1 || len(m.requests) != 2 {
@@ -175,7 +175,7 @@ func TestMiniAppDeniedNetworkActionStoresRefusalWithoutExecuting(t *testing.T) {
 		t.Fatalf("AnswerForMiniApp: %v", err)
 	}
 	final, ok := miniAppDone(drainMiniAppEvents(events))
-	if !ok || final.Delta != miniAppApprovalRefusal {
+	if !ok || !strings.HasPrefix(final.Delta, miniAppApprovalRefusal) || !strings.Contains(final.Delta, "⏱") {
 		t.Fatalf("denied answer done=%+v ok=%v", final, ok)
 	}
 	if providerCalls.Load() != 0 || len(m.requests) != 1 {

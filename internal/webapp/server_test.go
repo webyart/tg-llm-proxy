@@ -450,6 +450,52 @@ func TestPermissionsPolicyAllowsSameOriginMicrophoneOnly(t *testing.T) {
 	}
 }
 
+// TestStrictTransportSecurityOnlyOnHTTPS pins the transport rule: HSTS is emitted only when the
+// browser is effectively on HTTPS (direct TLS or the proxy's X-Forwarded-Proto), and never on a
+// plain-HTTP request. COOP/CORP are independent of the transport and always exact.
+func TestStrictTransportSecurityOnlyOnHTTPS(t *testing.T) {
+	handler := securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	const hsts = "max-age=31536000; includeSubDomains"
+	cases := []struct {
+		name      string
+		target    string
+		forwarded string
+		wantHSTS  bool
+	}{
+		{name: "plain HTTP", target: "http://example.test/"},
+		{name: "forwarded HTTP", target: "http://example.test/", forwarded: "http"},
+		{name: "forwarded HTTPS", target: "http://example.test/", forwarded: "https", wantHSTS: true},
+		{name: "forwarded HTTPS list", target: "http://example.test/", forwarded: "https, http", wantHSTS: true},
+		{name: "TLS", target: "https://example.test/", wantHSTS: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.target, nil)
+			if tc.forwarded != "" {
+				req.Header.Set("X-Forwarded-Proto", tc.forwarded)
+			}
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, req)
+			headers := recorder.Result().Header
+			if got := headers.Values("Strict-Transport-Security"); tc.wantHSTS {
+				if len(got) != 1 || got[0] != hsts {
+					t.Errorf("HSTS=%q want exactly [%q]", got, hsts)
+				}
+			} else if len(got) != 0 {
+				t.Errorf("HSTS=%q was sent on plain HTTP", got)
+			}
+			if got := headers.Get("Cross-Origin-Opener-Policy"); got != "same-origin" {
+				t.Errorf("COOP=%q want=same-origin", got)
+			}
+			if got := headers.Get("Cross-Origin-Resource-Policy"); got != "same-origin" {
+				t.Errorf("CORP=%q want=same-origin", got)
+			}
+		})
+	}
+}
+
 func TestStaticCSPAndNoExternalScriptsOrSecrets(t *testing.T) {
 	_, server := newTestApp(t)
 	for _, path := range []string{"/", "/app.js", "/style.css"} {

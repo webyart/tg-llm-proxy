@@ -494,7 +494,7 @@ func TestFrontendBusyControlsAreDisabledAndRestored(t *testing.T) {
 	css := frontendAsset(t, "static/style.css")
 	for _, want := range []string{
 		`<div id="loading" class="loading" role="status" data-i18n="loading" hidden>Загрузка…</div>`,
-		`<div id="content" aria-live="polite" aria-busy="false"></div>`,
+		`<div id="content" aria-busy="false"></div>`,
 	} {
 		if !strings.Contains(index, want) {
 			t.Errorf("index misses busy regression %q", want)
@@ -532,6 +532,61 @@ func TestFrontendBusyControlsAreDisabledAndRestored(t *testing.T) {
 	for _, rejected := range []string{`ui.refresh.disabled = false`, `ui.more.disabled = false`} {
 		if strings.Contains(script, rejected) {
 			t.Errorf("busy state bypasses disabled-state restoration with %q", rejected)
+		}
+	}
+}
+
+func TestFrontendUsesSingleChatLiveRegion(t *testing.T) {
+	index := frontendAsset(t, "static/index.html")
+	script := frontendAsset(t, "static/app.js")
+	if strings.Contains(index, "aria-live") {
+		t.Error("index.html marks a container as a live region; the chat log must stay the only one")
+	}
+	if got := strings.Count(script, `setAttribute("aria-live"`); got != 1 {
+		t.Errorf("app.js declares %d live regions, want exactly 1 for the chat log", got)
+	}
+	for _, want := range []string{
+		`log.setAttribute("role", "log")`,
+		`log.setAttribute("aria-live", "polite")`,
+		`log.setAttribute("aria-label", t("chatTitle"))`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js chat log misses %q", want)
+		}
+	}
+	if strings.Contains(script, `ui.content.setAttribute("aria-live"`) {
+		t.Error("app.js re-adds aria-live to #content")
+	}
+}
+
+func TestFrontendTouchTargetsAreAtLeast44Pixels(t *testing.T) {
+	css := frontendAsset(t, "static/style.css")
+	cssBlock := func(selector string) string {
+		t.Helper()
+		match := regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(selector) + `\s*\{([^}]*)\}`).FindStringSubmatch(css)
+		if len(match) != 2 {
+			t.Fatalf("CSS block %q is missing", selector)
+		}
+		return match[1]
+	}
+	for _, selector := range []string{"nav button", ".chat-feedback button"} {
+		body := cssBlock(selector)
+		for _, want := range []string{"min-width: 44px;", "min-height: 44px;"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s misses the 44 px touch target %q", selector, want)
+			}
+		}
+	}
+	if body := cssBlock("#tabs.menu-panel button"); !strings.Contains(body, "min-height: 44px;") {
+		t.Error("#tabs.menu-panel button is shorter than 44 px")
+	}
+	for _, rejected := range []string{
+		"nav button { min-height: 42px", "nav button { min-height: 40px",
+		"#tabs.menu-panel button { min-height: 42px",
+		".chat-feedback button {\n  min-width: 38px", ".chat-feedback button {\n  min-height: 34px",
+	} {
+		if strings.Contains(css, rejected) {
+			t.Errorf("style.css keeps a sub-44 px touch target %q", rejected)
 		}
 	}
 }

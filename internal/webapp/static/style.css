@@ -255,9 +255,12 @@ nav {
   box-shadow: 0 5px 18px #26344d0a;
   backdrop-filter: blur(16px);
 }
+/* Touch targets: WCAG 2.5.5 asks for at least 44x44 CSS pixels. The five-column grid already gives
+   every tab ~47 px of width at a 320 px viewport; the explicit min-width keeps that guarantee when
+   the grid or the fallback layout shrinks, and min-height replaces the old 40/42 px rows. */
 nav button {
-  min-width: 0;
-  min-height: 40px;
+  min-width: 44px;
+  min-height: 44px;
   padding: 5px 3px;
   border-color: transparent;
   border-radius: 11px;
@@ -589,9 +592,10 @@ textarea { min-height: 78px; resize: vertical; line-height: 1.45; }
 @keyframes voice-pulse { 50% { opacity: .25; } }
 .chat-counter { margin: 0 2px; }
 .chat-feedback { display: flex; align-items: center; gap: 5px; margin-top: 6px; }
+/* Feedback is a thumb target too: 44x44 keeps it tappable without growing the message bubble much. */
 .chat-feedback button {
-  min-width: 38px;
-  min-height: 34px;
+  min-width: 44px;
+  min-height: 44px;
   padding: 2px 9px;
   border-radius: 999px;
   font-size: 1rem;
@@ -664,7 +668,7 @@ textarea { min-height: 78px; resize: vertical; line-height: 1.45; }
   .tab-label-full { display: block; }
   .tab-label-short { display: none; }
   nav { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 5px; padding: 5px; }
-  nav button { min-height: 42px; font-size: .8rem; padding: 6px 8px; }
+  nav button { min-height: 44px; font-size: .8rem; padding: 6px 8px; }
   .language-label { display: inline; }
   header p { display: block; }
   h1 { font-size: 1.1rem; }
@@ -808,7 +812,7 @@ textarea { min-height: 78px; resize: vertical; line-height: 1.45; }
   box-shadow: 0 18px 44px #0000004d;
 }
 #tabs.menu-panel[hidden] { display: none; }
-#tabs.menu-panel button { min-height: 42px; font-size: .82rem; }
+#tabs.menu-panel button { min-height: 44px; font-size: .82rem; }
 #tab-settings { grid-column: auto; }
 @media (min-width: 900px) {
   #tabs.menu-panel { grid-template-columns: repeat(3, minmax(0, 1fr)); width: min(480px, calc(100% - 20px)); }

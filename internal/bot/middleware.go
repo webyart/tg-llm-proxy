@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"bot/internal/i18n"
 	"bot/internal/ratelimit"
 	"bot/internal/store"
 )
@@ -16,6 +17,16 @@ const msgPanic = "Бот не смог обработать это сообще�
 const recoveredPanicMaxBytes = 1024
 
 const msgTooOftenFormat = "Слишком часто: не больше %d запросов в минуту. Подожди %s и попробуй ещё раз."
+
+// panicNotice and tooOftenNotice are the language-aware forms of msgPanic and msgTooOftenFormat. The
+// constants keep their historical Russian wording for callers and tests without a chat language.
+func panicNotice(lang string) string {
+	return i18n.T(lang, "middleware.panic")
+}
+
+func tooOftenNotice(lang string, limit int64, wait time.Duration) string {
+	return i18n.T(lang, "middleware.too_often", limit, wait)
+}
 
 // message is written BEFORE the model call, so the second delivery of the same update after a restart (or a
 // redelivery by Telegram) hits the constraint. Only the paths with UsesModel get a row — /help and /ping are not
@@ -91,10 +102,11 @@ func (d *Dispatcher) allowed(next HandlerFunc) HandlerFunc {
 			return next(ctx, ev, cmd)
 		}
 		d.logEvent(ctx, ev.UserID, store.EventDenied, cmd.Name)
+		lang := d.chatLanguage(ctx, ev.ChatID)
 		if d.deps.Cfg.DenyByDefault {
-			return d.reply(ctx, ev.ChatID, refuseClosed(ev.UserID))
+			return d.reply(ctx, ev.ChatID, refuseClosed(ev.UserID, lang))
 		}
-		return d.reply(ctx, ev.ChatID, refuseNotListed(ev.UserID))
+		return d.reply(ctx, ev.ChatID, refuseNotListed(ev.UserID, lang))
 	}
 }
 
@@ -111,7 +123,7 @@ func (d *Dispatcher) limited(next HandlerFunc) HandlerFunc {
 			wait = ratelimit.Window
 		}
 		d.logEvent(ctx, ev.UserID, store.EventLimit, cmd.Name)
-		return d.reply(ctx, ev.ChatID, fmt.Sprintf(msgTooOftenFormat, d.deps.Cfg.RateLimitPerMinute, wait))
+		return d.reply(ctx, ev.ChatID, tooOftenNotice(d.chatLanguage(ctx, ev.ChatID), d.deps.Cfg.RateLimitPerMinute, wait))
 	}
 }
 
@@ -141,7 +153,7 @@ func (d *Dispatcher) recovered(next HandlerFunc) HandlerFunc {
 			d.deps.Logger.Error("recovered a panic", "chat_id", ev.ChatID, "command", cmd.Name,
 				"panic", panicText)
 			d.logEvent(ctx, ev.UserID, store.EventCommand, "panic:"+cmd.Name)
-			if sendErr := d.reply(ctx, ev.ChatID, msgPanic); sendErr != nil {
+			if sendErr := d.reply(ctx, ev.ChatID, panicNotice(d.chatLanguage(ctx, ev.ChatID))); sendErr != nil {
 				d.deps.Logger.Error("the panic notice was not delivered", "chat_id", ev.ChatID,
 					"error", Sanitize(sendErr, d.deps.Token))
 			}

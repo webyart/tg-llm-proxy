@@ -94,7 +94,9 @@
           <button id="refresh" class="secondary refresh-button" type="button" data-i18n="refresh">Обновить</button>
         </div>
         <div id="loading" class="loading" role="status" data-i18n="loading" hidden>Загрузка…</div>
-        <div id="content" aria-live="polite" aria-busy="false"></div>
+        <!-- Chat announces itself through a single role="log" live region (app.js). This container stays
+             non-live so streamed answers and status changes are not announced twice. -->
+        <div id="content" aria-busy="false"></div>
         <button id="more" class="load-more" type="button" data-i18n="loadOlder" hidden>Показать ранее</button>
       </section>
     </div>

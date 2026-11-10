@@ -669,7 +669,12 @@ test("static frontend regressions enforce local assets, responsive rules, reduce
     assert.ok(script.includes(endpoint), endpoint);
   }
   assert.match(html, /role="tablist"/);
-  assert.match(html, /aria-live="polite"/);
+  assert.doesNotMatch(html, /aria-live=/);
+  assert.equal((script.match(/setAttribute\("aria-live"/g) || []).length, 1);
+  assert.match(script, /log\.setAttribute\("role", "log"\)/);
+  assert.match(css, /\.chat-feedback button \{[^}]*min-width: 44px;[^}]*min-height: 44px;/);
+  assert.match(css, /nav button \{[^}]*min-width: 44px;[^}]*min-height: 44px;/);
+  assert.match(css, /#tabs\.menu-panel button \{ min-height: 44px;/);
   assert.match(html, /src="\/app\.js"/);
   assert.match(html, /href="\/style\.css"/);
   assert.doesNotMatch(html, /(?:src|href)="https?:\/\//);

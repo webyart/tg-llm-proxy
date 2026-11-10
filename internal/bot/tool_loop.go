@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-telegram/bot/models"
 
+	"bot/internal/i18n"
 	"bot/internal/model"
 	"bot/internal/store"
 )
@@ -502,9 +503,10 @@ func (d *Dispatcher) promptNetworkApproval(ctx context.Context, state *toolLoopC
 	if err != nil {
 		return model.Response{}, err
 	}
-	text := fmt.Sprintf("Модель запросила новое сетевое действие.\n%s: %s\n\nРазрешить один раз — только с этими аргументами. Разрешить для задачи — только этот инструмент%s и только в текущем продолжении запроса, без сохранения после перезапуска. Кнопки действуют 5 минут.", call.Name, networkApprovalTarget(call), networkScopeExplanation(call))
+	lang := d.chatLanguage(ctx, metadata.event.ChatID)
+	text := i18n.T(lang, "network.approval.request", call.Name, networkApprovalTarget(call), networkScopeExplanation(call, lang))
 	markup := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		menuRow(menuButton("Разрешить один раз", "menu:network:confirm:"+token), menuButton("Разрешить для задачи", "menu:network:scope:"+token), menuButton("Отмена", "menu:network:cancel:"+token)),
+		menuRow(menuButton(i18n.T(lang, "network.approval.once"), "menu:network:confirm:"+token), menuButton(i18n.T(lang, "network.approval.scope"), "menu:network:scope:"+token), menuButton(i18n.T(lang, "network.approval.cancel"), "menu:network:cancel:"+token)),
 	}}
 	messageID, err := d.sendNetworkApprovalMenu(ctx, metadata.event, text, markup)
 	if err != nil {
@@ -544,60 +546,61 @@ func (d *Dispatcher) removeNetworkApprovalMenu(ctx context.Context, chatID int64
 }
 
 func (d *Dispatcher) networkApprovalReply(ctx context.Context, ev Event, text string) error {
-	return d.renderMenu(ctx, ev, text, simpleBackMarkup("menu:root"))
+	return d.renderMenu(ctx, ev, text, simpleBackMarkupFor(d.chatLanguage(ctx, ev.ChatID), "menu:root"))
 }
 
 func (d *Dispatcher) networkApprovalControl(ctx context.Context, ev Event, action string) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
 	operation, token, ok := strings.Cut(strings.TrimPrefix(action, "menu:network:"), ":")
 	if !ok || operation != "confirm" && operation != "scope" && operation != "cancel" || !validMenuToken(token) {
-		return d.networkApprovalReply(ctx, ev, "Это подтверждение сетевого действия истекло или уже использовано.")
+		return d.networkApprovalReply(ctx, ev, i18n.T(lang, "network.approval.expired"))
 	}
 	pending, status := consumeNetworkConfirmation(d, token, ev)
 	switch status {
 	case networkConfirmationStale:
 		d.removeNetworkApprovalMenu(ctx, ev.ChatID, ev.TelegramMessageID)
 		if pending.continuation != nil && pending.continuation.session != nil {
-			pending.continuation.session.broken(ctx, d, "Срок подтверждения сетевого действия истёк.")
+			pending.continuation.session.broken(ctx, d, i18n.T(lang, "network.approval.broken_expired"))
 		}
-		return d.networkApprovalReply(ctx, ev, "Это подтверждение сетевого действия истекло или уже использовано.")
+		return d.networkApprovalReply(ctx, ev, i18n.T(lang, "network.approval.expired"))
 	case networkConfirmationWrongUser:
-		return d.networkApprovalReply(ctx, ev, "Это подтверждение принадлежит другому пользователю.")
+		return d.networkApprovalReply(ctx, ev, i18n.T(lang, "network.approval.wrong_user"))
 	case networkConfirmationWrongMessage:
-		return d.networkApprovalReply(ctx, ev, "Это подтверждение недействительно для этого чата или сообщения.")
+		return d.networkApprovalReply(ctx, ev, i18n.T(lang, "network.approval.wrong_message"))
 	}
 	d.removeNetworkApprovalMenu(ctx, ev.ChatID, ev.TelegramMessageID)
 	if pending.continuation != nil && pending.continuation.metadata.taskID > 0 {
 		continuation := pending.continuation
 		if pending.ToolName == "" || pending.Arguments == "" || continuation.approvedCall < 0 || continuation.approvedCall >= len(continuation.response.ToolCalls) || !continuation.approvedCalls[continuation.approvedCall] {
-			return d.networkApprovalReply(ctx, ev, "Подтверждение не совпадает с сетевым действием. Задача не продолжена.")
+			return d.networkApprovalReply(ctx, ev, i18n.T(lang, "network.approval.task_mismatch"))
 		}
 		approved := continuation.response.ToolCalls[continuation.approvedCall]
 		if approved.Name != pending.ToolName || approved.Arguments != pending.Arguments {
-			return d.networkApprovalReply(ctx, ev, "Подтверждение не совпадает с сетевым действием. Задача не продолжена.")
+			return d.networkApprovalReply(ctx, ev, i18n.T(lang, "network.approval.task_mismatch"))
 		}
 		return d.taskNetworkApprovalControl(ctx, ev, operation, token, pending)
 	}
 	if operation == "cancel" {
 		if pending.continuation != nil && pending.continuation.session != nil {
-			pending.continuation.session.broken(ctx, d, "Сетевое действие отменено пользователем.")
+			pending.continuation.session.broken(ctx, d, i18n.T(lang, "network.approval.broken_cancelled"))
 		}
-		return d.networkApprovalReply(ctx, ev, "Сетевое действие отменено. Запрос не выполнен.")
+		return d.networkApprovalReply(ctx, ev, i18n.T(lang, "network.approval.cancelled"))
 	}
 	if pending.continuation == nil || pending.ToolName == "" || pending.Arguments == "" {
-		return d.networkApprovalReply(ctx, ev, "Это подтверждение сетевого действия истекло или уже использовано.")
+		return d.networkApprovalReply(ctx, ev, i18n.T(lang, "network.approval.expired"))
 	}
 	continuation := pending.continuation
 	if continuation.approvedCall < 0 || continuation.approvedCall >= len(continuation.response.ToolCalls) || !continuation.approvedCalls[continuation.approvedCall] {
-		return d.networkApprovalReply(ctx, ev, "Подтверждение не совпадает с сетевым действием. Запрос не выполнен.")
+		return d.networkApprovalReply(ctx, ev, i18n.T(lang, "network.approval.mismatch"))
 	}
 	approved := continuation.response.ToolCalls[continuation.approvedCall]
 	if approved.Name != pending.ToolName || approved.Arguments != pending.Arguments {
-		return d.networkApprovalReply(ctx, ev, "Подтверждение не совпадает с сетевым действием. Запрос не выполнен.")
+		return d.networkApprovalReply(ctx, ev, i18n.T(lang, "network.approval.mismatch"))
 	}
 	if operation == "scope" && !d.grantNetworkScope(continuation, approved) {
-		return d.networkApprovalReply(ctx, ev, "Не удалось ограничить разрешение текущим запросом. Сетевое действие не выполнено.")
+		return d.networkApprovalReply(ctx, ev, i18n.T(lang, "network.approval.scope_failed"))
 	}
-	if err := d.networkApprovalReply(ctx, ev, "Подтверждение принято. Выполняю разрешённое сетевое действие."); err != nil {
+	if err := d.networkApprovalReply(ctx, ev, i18n.T(lang, "network.approval.accepted")); err != nil {
 		return err
 	}
 	if continuation.session != nil {

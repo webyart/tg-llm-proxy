@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"time"
 
+	"bot/internal/i18n"
 	"bot/internal/store"
 )
 
@@ -287,7 +288,7 @@ func (d *Dispatcher) notifySupersededQuestions(ctx context.Context) error {
 		if stateErr := store.SetState(ctx, d.deps.DB, key, questionID); stateErr != nil {
 			return stateErr
 		}
-		var text = fmt.Sprintf("Вопрос от %s остался без ответа — задайте его ещё раз или /skip",
+		var text = i18n.T(d.chatLanguage(ctx, chat.ChatID), "recovery.superseded",
 			recoveryNoticeTime(question.CreatedAt))
 		if sendErr := d.reply(ctx, chat.ChatID, text); sendErr != nil {
 			d.deps.Logger.Error("the unanswered-question notice was not delivered",

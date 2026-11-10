@@ -34,8 +34,9 @@
 
 `internal/i18n/catalog.go`:
 
-- два каталога, `ruMessages` и `enMessages`, с одинаковым набором стабильных ID; сейчас по **442
-  ключа** в каждом (254 добавлено этой задачей);
+- два каталога, `ruMessages` и `enMessages`, с одинаковым набором стабильных ID; сейчас по **462
+  ключа** в каждом (20 добавлено этой задачей: `dispatch.*`, `middleware.*`, `network.approval.*`,
+  `recovery.superseded`);
 - `i18n.T(lang, key, args...)` — `printf`-шаблон, подстановки только через явные аргументы, без
   конкатенации переведённых фрагментов;
 - fallback: запрошенный язык → `ru` → сам ключ (чтобы пропуск был виден, а не превращался в пустую строку);
@@ -85,8 +86,18 @@
   «ответ ниже»;
 - описания и экранные имена persona-пресетов; хранимые ID (`assistant`, `coder`, `writer`,
   `translator`) и callback-данные не менялись;
-- `refuseClosed`/`refuseNotListed` — через variadic-язык; командная поверхность передаёт язык чата,
-  старые вызовы без языка остаются на RU.
+- `refuseClosed`/`refuseNotListed` — через variadic-язык; командная поверхность, dispatch и middleware
+  передают язык чата, старые вызовы без языка остаются на RU;
+- уведомления диспетчера: перегрузка очереди, занятый чат и несохранённый вопрос — `dispatch.*`
+  (RU-константы `msgOverloaded`, `msgChatBusy`, `msgQuestionNotStored` оставлены для Mini App и
+  тестов и совпадают с RU-каталогом);
+- middleware: общая ошибка обработки и rate-limit — `middleware.*` (`msgPanic`, `msgTooOftenFormat`
+  оставлены как RU-fallback);
+- `/ask`-подтверждение сетевого действия (не task): промпт `network.approval.request`, кнопки
+  «Разрешить один раз / для задачи / Отмена», истёкшее, чужое и несовпавшее подтверждение, отмена,
+  принятие и причина обрыва стрима — `network.approval.*`; имена инструментов, callback-данные и
+  tool-JSON не менялись;
+- startup recovery: notice о более старом вопросе без ответа — `recovery.superseded`.
 
 ## 5. Что осталось вне перевода (осознанно)
 
@@ -104,26 +115,28 @@
 - `personaPresets[].description` — RU-fallback для `/api/settings` webapp; Telegram берёт перевод из
   каталога, ID пресетов и их промпты не менялись.
 
-### 5.2. Отложено из-за параллельной задачи
+### 5.2. Языконезависимые технические строки
 
-`dispatch.go` и `middleware.go` в этой задаче не редактировались (файлы заняты задачей про приватность
-метрик). Поэтому остаются русскими:
-
-- `msgOverloaded`, `msgChatBusy`, `msgQuestionNotStored`;
-- тексты middleware (общая ошибка обработки и rate-limit);
-- вызовы `refuseClosed`/`refuseNotListed` из этих двух файлов: они не передают язык и получают
-  исторический RU-вариант. Командная поверхность (`/start` и др.) уже передаёт язык.
+- RU-константы `msgOverloaded`, `msgChatBusy`, `msgQuestionNotStored`, `msgPanic`,
+  `msgTooOftenFormat`, `modelWorkBudgetErrorText`, `modelDailyLimitErrorText` остаются русским
+  источником для Mini App (у него собственный интерфейс) и для тестов, проверяющих RU дословно.
+  Telegram-диспетчер выводит `dispatch.*` и `middleware.*`, а лимиты модели — через
+  `ask.rate_limited`/`ask.daily_limited` (`modelLimitNoticeFor`); `TestLegacyRussianNoticesMatchCatalog`
+  не даёт константам и RU-каталогу разойтись.
+- `attachment.go`: `attachmentPrompt`, `storedAttachmentQuestion`, `documentModelPrompt`,
+  `voiceModelPrompt` и маркеры (`[Фото]`, `[Документ: …]`) — это сохраняемый вопрос и промпт модели, а
+  не сообщение интерфейса. Пользовательские ошибки вложений уже идут через `ask.attachment_*`
+  (`attachmentUserErrorFor`); `attachmentUserError` — неиспользуемый RU-fallback.
+- `rag.go`: единственная русская строка — RAG system prompt (контекст модели); ошибки документов
+  выводятся через `ask.attachment_*`.
+- Имена инструментов (`read_url`, `web_search`, `calculator`), callback-данные (`menu:network:*`),
+  tool-JSON (`{"error":...}`) и audit-события не переводятся.
 
 ### 5.3. Ограничения, не являющиеся строками интерфейса
 
 - `ParseReminder` принимает только русскую грамматику (`через …`, `каждый день …`). EN-подсказка
   `help.remind_example` показывает `in 1 minute`, но такой ввод пока не разбирается — это ограничение
   парсера, а не непереведённая строка.
-- `/ask`-подтверждение сетевого действия в `tool_loop.go` остаётся русским: файл вне списка этой
-  задачи; task-подтверждения (`task_scheduler.go`) переведены.
-- Legacy RU-константы (`linksUsage`, `ReminderUsage`, `TaskUsage`, `msgTTS*`, `StreamPlaceholder`,
-  `menuExpiredText`, `documentTruncationNotice`) сохранены для Mini App/тестов и не выводятся
-  командной поверхностью Telegram.
 
 ## 6. Проверка
 
@@ -132,7 +145,10 @@
   `TestDocsRendersInChatLanguage`, `TestLinksRendersInChatLanguage`, `TestRemindRendersInChatLanguage`,
   `TestTaskRendersInChatLanguage`, `TestTTSRendersInChatLanguage`, `TestAdminRendersInChatLanguage`,
   `TestMenuButtonsFollowChatLanguage`, `TestPersonaPresetIDsAndCallbacksAreStable`,
-  `TestStreamPlaceholderFollowsChatLanguage`, `TestRefusalTextsFollowLanguage`;
+  `TestStreamPlaceholderFollowsChatLanguage`, `TestRefusalTextsFollowLanguage`,
+  `TestDispatchNoticesFollowChatLanguage`, `TestAccessRefusalsFollowChatLanguage`,
+  `TestNetworkApprovalPromptFollowsChatLanguage`, `TestRecoveryNoticeFollowChatLanguage`,
+  `TestLegacyRussianNoticesMatchCatalog`;
 - `gofmt -l .`; `go build ./...`; Docker `--target test` и
   `docker run --rm tg-llm-proxy-test:latest go test -count=1 ./internal/bot ./internal/i18n`
   (см. отчёт задачи).

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"bot/internal/config"
+	"bot/internal/i18n"
 	"bot/internal/metrics"
 	"bot/internal/model"
 	"bot/internal/ratelimit"
@@ -137,6 +138,22 @@ const (
 	// redelivers it after a restart, and the user is told why this attempt produced no answer.
 	msgQuestionNotStored = "Не удалось сохранить вопрос, попробуйте ещё раз"
 )
+
+// The msg* constants above stay the Russian source for callers that have no chat language (the Mini App
+// answers the same conditions with msgOverloaded/msgChatBusy) and for tests that assert them verbatim.
+// The Telegram dispatcher renders the language-aware forms below from the catalog; both are the same
+// words in RU, so a test comparing against a constant still passes for a Russian chat.
+func overloadedNotice(lang string) string {
+	return i18n.T(lang, "dispatch.overloaded")
+}
+
+func chatBusyNotice(lang string) string {
+	return i18n.T(lang, "dispatch.chat_busy")
+}
+
+func questionNotStoredNotice(lang string) string {
+	return i18n.T(lang, "dispatch.question_not_stored")
+}
 
 // errExecutionSlotBusy — the chat lock was acquired but no global handler slot freed in time. It is a
 // saturation of the whole bot, not of one chat, and it is named separately so the two cases can be
@@ -458,10 +475,11 @@ func (d *Dispatcher) dispatchDenied(ctx context.Context, ev Event, cmd Command) 
 	var err error
 	if d.deniedReplies.Allow(ratelimit.CoalesceKey{UserID: ev.UserID, ChatID: ev.ChatID}) {
 		d.logEvent(ctx, ev.UserID, store.EventDenied, cmd.Name)
+		lang := d.chatLanguage(ctx, ev.ChatID)
 		if d.deps.Cfg.DenyByDefault {
-			err = d.reply(ctx, ev.ChatID, refuseClosed(ev.UserID))
+			err = d.reply(ctx, ev.ChatID, refuseClosed(ev.UserID, lang))
 		} else {
-			err = d.reply(ctx, ev.ChatID, refuseNotListed(ev.UserID))
+			err = d.reply(ctx, ev.ChatID, refuseNotListed(ev.UserID, lang))
 		}
 	}
 	d.persistOffset(ctx, ev.UpdateID)
@@ -543,7 +561,7 @@ func (d *Dispatcher) dispatchChatBusy(ctx context.Context, ev Event) error {
 	if d.chatBusyReplies.Allow(ratelimit.CoalesceKey{ChatID: ev.ChatID}) {
 		d.deps.Logger.Warn("the chat is still answering the previous update",
 			"chat_id", ev.ChatID, "update_id", ev.UpdateID, "waited", d.chatQueueTimeout)
-		err = d.reply(ctx, ev.ChatID, msgChatBusy)
+		err = d.reply(ctx, ev.ChatID, chatBusyNotice(d.chatLanguage(ctx, ev.ChatID)))
 	}
 	return err
 }
@@ -552,7 +570,7 @@ func (d *Dispatcher) dispatchOverloaded(ctx context.Context, ev Event) error {
 	var err error
 	if d.overloadReplies.Allow(ratelimit.CoalesceKey{ChatID: ev.ChatID}) {
 		d.deps.Logger.Warn("the update queue is full", "chat_id", ev.ChatID, "update_id", ev.UpdateID)
-		err = d.reply(ctx, ev.ChatID, msgOverloaded)
+		err = d.reply(ctx, ev.ChatID, overloadedNotice(d.chatLanguage(ctx, ev.ChatID)))
 	}
 	d.persistOffset(ctx, ev.UpdateID)
 	return err
@@ -604,7 +622,7 @@ func (d *Dispatcher) dispatchEvent(ctx context.Context, ev Event, acknowledge bo
 // question could not be written. A send failure is logged, not returned: the storage error is the one the
 // caller and the log need to see.
 func (d *Dispatcher) notifyQuestionNotStored(ctx context.Context, ev Event) {
-	if sendErr := d.reply(ctx, ev.ChatID, msgQuestionNotStored); sendErr != nil {
+	if sendErr := d.reply(ctx, ev.ChatID, questionNotStoredNotice(d.chatLanguage(ctx, ev.ChatID))); sendErr != nil {
 		d.deps.Logger.Error("the storage failure notice was not delivered", "chat_id", ev.ChatID,
 			"error", Sanitize(sendErr, d.deps.Token))
 	}

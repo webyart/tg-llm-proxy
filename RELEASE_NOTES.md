@@ -2,7 +2,17 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.61.0
+## Новейший выпуск: v1.61.1
+
+# tg-llm-proxy v1.61.1
+
+## Security headers, accessibility and the last RU strings
+
+- Mini App responses now carry `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Resource-Policy: same-origin` always, and `Strict-Transport-Security: max-age=31536000; includeSubDomains` only when the request is TLS or the proxy forwards `X-Forwarded-Proto: https` (never on plain HTTP). Covered by plain-HTTP/forwarded-HTTP/forwarded-HTTPS/TLS tests.
+- Accessibility: tabs and chat feedback buttons are at least 44×44 px, and `#content` lost its extra `aria-live` so the chat log is the single live region (no double announcements). Layout on 320 px is intact.
+- i18n: the last user-facing RU strings moved to the catalog — dispatch overloaded/busy/question-not-stored notices, middleware panic/too-often and access refusals, the `/ask` network-approval prompt with its buttons and control replies, and the recovery notice. Catalog is 462 keys per language with parity; RU remains the default and Mini App/prompts/logs stay language-neutral.
+
+## Предыдущий выпуск: v1.61.0
 
 # tg-llm-proxy v1.61.0
 

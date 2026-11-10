@@ -368,8 +368,33 @@ func securityHeaders(next http.Handler) http.Handler {
 		// denied, and the microphone is limited to this origin.
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(self), geolocation=()")
 		w.Header().Set("Cache-Control", "no-store")
+		// HSTS is only sent when the browser itself is on HTTPS: public TLS terminates at the reverse
+		// proxy in front of the Mini App, which passes the original scheme in X-Forwarded-Proto. A
+		// plain-HTTP request must never receive HSTS, or a direct origin hit could pin a host that has
+		// no certificate for a year.
+		if requestIsHTTPS(req) {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		// COOP/CORP are safe for the Telegram WebView: the Mini App never calls window.open, never
+		// keeps window.opener and loads no cross-origin subresources (the page CSP is self-only).
+		// Telegram hosts the page in a normal top-level WebView or an iframe and talks to it without
+		// an opener handle, so same-origin isolation cannot break launch, voice, or the event stream;
+		// it only stops another origin that opened this page from retaining a reference to it.
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 		next.ServeHTTP(w, req)
 	})
+}
+
+// requestIsHTTPS reports whether the browser reached the app over HTTPS. TLS is checked directly for
+// a plain listener; behind the reverse proxy the first X-Forwarded-Proto value is used (a comma-list
+// is allowed when several proxies append to the header).
+func requestIsHTTPS(req *http.Request) bool {
+	if req.TLS != nil {
+		return true
+	}
+	proto, _, _ := strings.Cut(req.Header.Get("X-Forwarded-Proto"), ",")
+	return strings.EqualFold(strings.TrimSpace(proto), "https")
 }
 
 // limitInFlight keeps the historical single-semaphore behaviour for callers that do not split the

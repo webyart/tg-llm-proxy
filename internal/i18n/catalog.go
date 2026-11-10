@@ -577,6 +577,34 @@ var ruMessages = map[string]string{
 	"persona.custom_button":                 "Своя роль",
 	"persona.reset_button":                  "Сбросить",
 
+	// Dispatcher and middleware notices. The RU values are also the historical msg* constants of
+	// dispatch.go/middleware.go, kept verbatim so the Mini App and the RU tests keep their wording.
+	"dispatch.overloaded":          "Бот перегружен: очередь заполнена. Попробуй ещё раз через несколько секунд.",
+	"dispatch.chat_busy":           "Предыдущий ответ в этом чате ещё не готов. Повтори запрос чуть позже.",
+	"dispatch.question_not_stored": "Не удалось сохранить вопрос, попробуйте ещё раз",
+	"middleware.panic":             "Бот не смог обработать это сообщение. Попробуй ещё раз.",
+	"middleware.too_often":         "Слишком часто: не больше %d запросов в минуту. Подожди %s и попробуй ещё раз.",
+
+	// Network action approval on the /ask (non-task) path. Tool names, callback data and JSON stay
+	// unchanged; only the prompt, its buttons and the control replies are translated.
+	"network.approval.request":          "Модель запросила новое сетевое действие.\n%s: %s\n\nРазрешить один раз — только с этими аргументами. Разрешить для задачи — только этот инструмент%s и только в текущем продолжении запроса, без сохранения после перезапуска. Кнопки действуют 5 минут.",
+	"network.approval.once":             "Разрешить один раз",
+	"network.approval.scope":            "Разрешить для задачи",
+	"network.approval.cancel":           "Отмена",
+	"network.approval.expired":          "Это подтверждение сетевого действия истекло или уже использовано.",
+	"network.approval.wrong_user":       "Это подтверждение принадлежит другому пользователю.",
+	"network.approval.wrong_message":    "Это подтверждение недействительно для этого чата или сообщения.",
+	"network.approval.task_mismatch":    "Подтверждение не совпадает с сетевым действием. Задача не продолжена.",
+	"network.approval.mismatch":         "Подтверждение не совпадает с сетевым действием. Запрос не выполнен.",
+	"network.approval.cancelled":        "Сетевое действие отменено. Запрос не выполнен.",
+	"network.approval.scope_failed":     "Не удалось ограничить разрешение текущим запросом. Сетевое действие не выполнено.",
+	"network.approval.accepted":         "Подтверждение принято. Выполняю разрешённое сетевое действие.",
+	"network.approval.broken_expired":   "Срок подтверждения сетевого действия истёк.",
+	"network.approval.broken_cancelled": "Сетевое действие отменено пользователем.",
+
+	// Startup recovery notice about an older question that a newer message superseded.
+	"recovery.superseded": "Вопрос от %s остался без ответа — задайте его ещё раз или /skip",
+
 	// Access refusals.
 	"refuse.closed":     "Бот закрыт: TELEGRAM_ALLOWED_USERS пуст. Твой user_id — %d, впиши его в %s и перезапусти бот.",
 	"refuse.not_listed": "Тебя нет в TELEGRAM_ALLOWED_USERS. Твой user_id — %d, добавь его в %s.",
@@ -1078,6 +1106,33 @@ var enMessages = map[string]string{
 	"persona.preset.translator.description": "translation preserving meaning and format",
 	"persona.custom_button":                 "Custom role",
 	"persona.reset_button":                  "Reset",
+
+	// Dispatcher and middleware notices.
+	"dispatch.overloaded":          "The bot is overloaded: the queue is full. Try again in a few seconds.",
+	"dispatch.chat_busy":           "The previous answer in this chat is not ready yet. Repeat the request a little later.",
+	"dispatch.question_not_stored": "Could not save the question, try again",
+	"middleware.panic":             "The bot could not process this message. Try again.",
+	"middleware.too_often":         "Too often: no more than %d requests per minute. Wait %s and try again.",
+
+	// Network action approval on the /ask (non-task) path. Tool names, callback data and JSON stay
+	// unchanged; only the prompt, its buttons and the control replies are translated.
+	"network.approval.request":          "The model requested a new network action.\n%s: %s\n\nAllow once — only with these arguments. Allow for the task — only this tool%s and only in the current request continuation, without being saved after a restart. The buttons are valid for 5 minutes.",
+	"network.approval.once":             "Allow once",
+	"network.approval.scope":            "Allow for the task",
+	"network.approval.cancel":           "Cancel",
+	"network.approval.expired":          "This network action confirmation has expired or was already used.",
+	"network.approval.wrong_user":       "This confirmation belongs to another user.",
+	"network.approval.wrong_message":    "This confirmation is not valid for this chat or message.",
+	"network.approval.task_mismatch":    "The confirmation does not match the network action. The task was not continued.",
+	"network.approval.mismatch":         "The confirmation does not match the network action. The request was not executed.",
+	"network.approval.cancelled":        "The network action was cancelled. The request was not executed.",
+	"network.approval.scope_failed":     "Could not limit the permission to the current request. The network action was not executed.",
+	"network.approval.accepted":         "Confirmation accepted. Executing the allowed network action.",
+	"network.approval.broken_expired":   "The network action confirmation has expired.",
+	"network.approval.broken_cancelled": "The network action was cancelled by the user.",
+
+	// Startup recovery notice about an older question that a newer message superseded.
+	"recovery.superseded": "The question from %s was left unanswered — ask it again or use /skip",
 
 	// Access refusals.
 	"refuse.closed":     "The bot is closed: TELEGRAM_ALLOWED_USERS is empty. Your user_id is %d, add it to %s and restart the bot.",

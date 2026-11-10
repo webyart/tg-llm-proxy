@@ -279,20 +279,21 @@ func (b *botRun) stop() {
 }
 
 // waitFor — poll until the fake says the thing happened. The fakes answer from their own goroutines, so
-func waitFor(t *testing.T, what string, cond func() bool) {
+// the test cannot read a channel; testutil.Eventually does the polling and names the call site on failure.
+// The optional detail funcs land in the failure message (a run's log tail, for instance).
+func waitFor(t *testing.T, what string, cond func() bool, detail ...func() string) {
 	t.Helper()
-	var deadline = time.Now().Add(waitTimeout)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("%s did not happen within %s", what, waitTimeout)
+	var message = func() string { return what + " did not happen" }
+	detail = append([]func() string{message}, detail...)
+	testutil.Eventually(t, waitTimeout, cond, detail...)
 }
 
-// window rather than a poll.
-func quiet() { time.Sleep(quietWindow) }
+// window rather than a poll: the negative assertion is «nothing arrives during the whole window».
+func quiet() {
+	// deliberate: silence is the assertion — the fakes are watched for quietWindow before «nothing came» is
+	// concluded, and polling cannot prove the absence of an event that was never sent.
+	time.Sleep(quietWindow)
+}
 
 func textOf(tgAPI *testutil.Telegram) string { return tgAPI.Joined() }
 

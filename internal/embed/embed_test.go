@@ -164,6 +164,7 @@ func TestEmbedAPIKeyIsRedacted(t *testing.T) {
 
 func TestEmbedTimeout(t *testing.T) {
 	s := &embeddingServer{handler: func(w http.ResponseWriter, _ *http.Request, _ embeddingRequest) {
+		// deliberate: the slow endpoint is the subject — it must outlive the client's 40 ms timeout.
 		time.Sleep(250 * time.Millisecond)
 		writeVectors(t, w, [][]float32{{1}})
 	}}

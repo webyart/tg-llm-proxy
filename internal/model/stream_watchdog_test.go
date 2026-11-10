@@ -33,6 +33,7 @@ func (b *lateBody) Read(p []byte) (int, error) {
 	}
 	// One long pause after the first few events: the watchdog's Idle budget expires inside it.
 	if index == 3 {
+		// deliberate: the stall IS the subject — this pause must outlive the 20 ms idle budget below.
 		time.Sleep(80 * time.Millisecond)
 	}
 	return copy(p, lateSSELine), nil

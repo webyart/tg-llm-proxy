@@ -122,7 +122,7 @@ func TestStartupAsksToResendAttachmentInsteadOfCallingModel(t *testing.T) {
 	ev := testEvent(164, 11, 1204, "описание")
 	ev.Attachment = &Attachment{Kind: AttachmentPhoto, FileID: "photo-id"}
 
-	interruptDispatch(t, d, ev)
+	interruptDispatch(t, d, m, ev)
 
 	callsBeforeRestart := m.callCount()
 	restarted := newTestDispatcher(t, cfg, m, r, nil)

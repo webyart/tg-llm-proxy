@@ -6,6 +6,8 @@ scripts/
 .env
 .env.*
 !.env.example
+# Local Docker secret files must never enter the build context (the builder stage runs COPY . .).
+secrets/
 .cache/
 zzscratch/
 bin/

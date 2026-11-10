@@ -12,6 +12,7 @@ import (
 
 	"bot/internal/model"
 	"bot/internal/store"
+	"bot/internal/testutil"
 )
 
 func ptr(v int64) *int64 { return &v }
@@ -130,7 +131,8 @@ func TestRedeliveredUnansweredQuestionIsAnswered(t *testing.T) {
 	var stopCtx, cancel = context.WithCancel(context.Background())
 	var firstDone = make(chan error, 1)
 	go func() { firstDone <- d.Dispatch(stopCtx, ev) }()
-	time.Sleep(200 * time.Millisecond)
+	testutil.Eventually(t, 2*time.Second, func() bool { return m.callCount() == 1 },
+		func() string { return "the interrupted delivery never reached the model" })
 	cancel()
 	_ = <-firstDone // the interrupted Dispatch is allowed to report the cancellation
 
@@ -205,7 +207,8 @@ func TestRedeliveredAnsweredQuestionStaysSilentWhenTheChatMovedOn(t *testing.T) 
 	var stopCtx, cancel = context.WithCancel(context.Background())
 	var secondDone = make(chan error, 1)
 	go func() { secondDone <- d.Dispatch(stopCtx, second) }()
-	time.Sleep(200 * time.Millisecond)
+	testutil.Eventually(t, 2*time.Second, func() bool { return m.callCount() == 2 },
+		func() string { return "the interrupted second question never reached the model" })
 	cancel()
 	_ = <-secondDone
 
@@ -444,7 +447,9 @@ func TestAnswersOfOneChatKeepTheirOrder(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(40 * time.Millisecond) // the second update arrives while the first is with the model
+	// the second update arrives while the first is with the model
+	testutil.Eventually(t, 2*time.Second, func() bool { return m.callCount() == 1 },
+		func() string { return "the first question never reached the model" })
 	var err = d.Dispatch(context.Background(), testEvent(100, 11, 801, "второй"))
 	if err != nil {
 		t.Errorf("second dispatch: %v", err)

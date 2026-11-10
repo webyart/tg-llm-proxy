@@ -10,6 +10,7 @@ import (
 
 	"bot/internal/model"
 	"bot/internal/store"
+	"bot/internal/testutil"
 
 	tgmodels "github.com/go-telegram/bot/models"
 )
@@ -119,10 +120,8 @@ func TestSecondMessageWaitsForTheChatInsteadOfBeingDropped(t *testing.T) {
 	go func() { firstDone <- d.Dispatch(context.Background(), testEvent(702, 13, 1000, "/ask первый")) }()
 
 	// Let the first update take the chat lock before the second one asks for it.
-	deadline := time.Now().Add(2 * time.Second)
-	for fake.callCount() == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	testutil.Eventually(t, 2*time.Second, func() bool { return fake.callCount() != 0 },
+		func() string { return "the first update never reached the model" })
 	if err := d.Dispatch(context.Background(), testEvent(702, 13, 1001, "/ask второй")); err != nil {
 		t.Fatalf("second update: %v", err)
 	}
@@ -150,10 +149,8 @@ func TestBusyChatIsNotAcknowledged(t *testing.T) {
 
 	var firstDone = make(chan error, 1)
 	go func() { firstDone <- d.Dispatch(context.Background(), testEvent(703, 14, 2000, "/ask первый")) }()
-	var deadline = time.Now().Add(2 * time.Second)
-	for fake.callCount() == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	testutil.Eventually(t, 2*time.Second, func() bool { return fake.callCount() != 0 },
+		func() string { return "the first update never reached the model" })
 
 	var second = testEvent(703, 14, 2001, "/ask второй")
 	if err := d.Dispatch(context.Background(), second); err != nil {
@@ -185,10 +182,8 @@ func TestChatBusyIsCoalesced(t *testing.T) {
 
 	var firstDone = make(chan error, 1)
 	go func() { firstDone <- d.Dispatch(context.Background(), testEvent(704, 15, 3000, "/ask первый")) }()
-	var deadline = time.Now().Add(2 * time.Second)
-	for fake.callCount() == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	testutil.Eventually(t, 2*time.Second, func() bool { return fake.callCount() != 0 },
+		func() string { return "the first update never reached the model" })
 	for i := 0; i < 3; i++ {
 		_ = d.Dispatch(context.Background(), testEvent(704, 15, int64(3001+i), "/ask ещё"))
 	}
@@ -217,10 +212,8 @@ func TestChatQueueTimeoutIsLogged(t *testing.T) {
 
 	var firstDone = make(chan error, 1)
 	go func() { firstDone <- d.Dispatch(context.Background(), testEvent(705, 16, 4000, "/ask первый")) }()
-	var deadline = time.Now().Add(2 * time.Second)
-	for fake.callCount() == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	testutil.Eventually(t, 2*time.Second, func() bool { return fake.callCount() != 0 },
+		func() string { return "the first update never reached the model" })
 	_ = d.Dispatch(context.Background(), testEvent(705, 16, 4001, "/ask второй"))
 	<-firstDone
 

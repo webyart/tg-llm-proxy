@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"bot/internal/model"
 	"bot/internal/store"
+	"bot/internal/testutil"
 )
 
 type typingReplier struct {
@@ -47,14 +49,8 @@ func (r *typingReplier) typingCount() int {
 
 func waitForTypingCalls(t *testing.T, r *typingReplier, want int) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if r.typingCount() >= want {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatalf("typing calls=%d, want at least %d", r.typingCount(), want)
+	testutil.Eventually(t, time.Second, func() bool { return r.typingCount() >= want },
+		func() string { return fmt.Sprintf("typing calls=%d, want at least %d", r.typingCount(), want) })
 }
 
 func TestTypingHeartbeatStartStopAndCancellation(t *testing.T) {
@@ -66,10 +62,10 @@ func TestTypingHeartbeatStartStopAndCancellation(t *testing.T) {
 		stop()
 		stop()
 		calls := r.typingCount()
-		time.Sleep(25 * time.Millisecond)
-		if got := r.typingCount(); got != calls {
-			t.Fatalf("typing continued after stop: before=%d after=%d", calls, got)
-		}
+		testutil.Consistently(t, 25*time.Millisecond, func() bool { return r.typingCount() != calls },
+			func() string {
+				return fmt.Sprintf("typing continued after stop: before=%d after=%d", calls, r.typingCount())
+			})
 	})
 
 	t.Run("parent cancellation stops heartbeat", func(t *testing.T) {
@@ -81,10 +77,10 @@ func TestTypingHeartbeatStartStopAndCancellation(t *testing.T) {
 		cancel()
 		stop()
 		calls := r.typingCount()
-		time.Sleep(25 * time.Millisecond)
-		if got := r.typingCount(); got != calls {
-			t.Fatalf("typing continued after parent cancellation: before=%d after=%d", calls, got)
-		}
+		testutil.Consistently(t, 25*time.Millisecond, func() bool { return r.typingCount() != calls },
+			func() string {
+				return fmt.Sprintf("typing continued after parent cancellation: before=%d after=%d", calls, r.typingCount())
+			})
 	})
 
 	t.Run("Telegram error stops retries", func(t *testing.T) {
@@ -92,10 +88,9 @@ func TestTypingHeartbeatStartStopAndCancellation(t *testing.T) {
 		d := newTestDispatcher(t, testConfig(t, nil), nil, r, testStore(t))
 		stop := d.startTypingHeartbeatWithInterval(context.Background(), 100, time.Millisecond)
 		stop()
-		time.Sleep(10 * time.Millisecond)
-		if got := r.typingCount(); got != 1 {
-			t.Fatalf("failed typing action was retried %d times", got)
-		}
+		// The first typing action is synchronous; no later one may follow the failed send.
+		testutil.Consistently(t, 10*time.Millisecond, func() bool { return r.typingCount() != 1 },
+			func() string { return fmt.Sprintf("failed typing action was retried %d times", r.typingCount()) })
 	})
 }
 
@@ -116,10 +111,10 @@ func TestOrdinaryAskTypingPrecedesModelAndStopsAfterFinalAnswer(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("fast ordinary request produced %d typing actions, want one", calls)
 	}
-	time.Sleep(10 * time.Millisecond)
-	if got := r.typingCount(); got != calls {
-		t.Fatalf("typing continued after final answer: before=%d after=%d", calls, got)
-	}
+	testutil.Consistently(t, 10*time.Millisecond, func() bool { return r.typingCount() != calls },
+		func() string {
+			return fmt.Sprintf("typing continued after final answer: before=%d after=%d", calls, r.typingCount())
+		})
 	texts := r.texts()
 	if len(texts) != 1 || !strings.Contains(texts[0], "готовый ответ") || !strings.Contains(texts[0], "⏱") {
 		t.Fatalf("ordinary final response = %q", texts)

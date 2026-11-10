@@ -327,6 +327,8 @@ func serveTestStream(t *testing.T, events []string, continuous bool) (string, fu
 				write("[DONE]")
 				return
 			}
+			// deliberate: a live SSE endpoint paces its events instead of sending them in one burst; the
+			// continuous mode of this fake exists to make the reader meet events one at a time.
 			time.Sleep(time.Millisecond)
 		}
 	}))

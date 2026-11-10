@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"bot/internal/store"
+	"bot/internal/testutil"
 )
 
 type blockedReminderReplier struct {
@@ -82,11 +83,11 @@ func TestReminderSchedulerSlowDeliveriesRunConcurrently(t *testing.T) {
 
 func requireReminderSchedulerBlocked(t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	stable := 0
+	var stable int
 	var stack string
-	buffer := make([]byte, 1<<20)
-	for time.Now().Before(deadline) {
+	var buffer = make([]byte, 1<<20)
+	// The scheduler must be parked in its select, not inside a pass: five consecutive samples must agree.
+	testutil.Eventually(t, 2*time.Second, func() bool {
 		n := runtime.Stack(buffer, true)
 		stack = string(buffer[:n])
 		passRunning := strings.Contains(stack, "bot/internal/bot.(*Dispatcher).processDueReminders(")
@@ -98,17 +99,13 @@ func requireReminderSchedulerBlocked(t *testing.T) {
 			header, _, _ := strings.Cut(goroutine, "\n")
 			blocked = !passRunning && strings.Contains(header, "[select")
 		}
-		if blocked {
-			stable++
-			if stable == 5 {
-				return
-			}
-		} else {
+		if !blocked {
 			stable = 0
+			return false
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("reminder scheduler did not stay blocked after its pass:\n%s", stack)
+		stable++
+		return stable >= 5
+	}, func() string { return "reminder scheduler did not stay blocked after its pass:\n" + stack })
 }
 
 func TestReminderSchedulerBlocksAfterPassUntilNextTick(t *testing.T) {
@@ -196,6 +193,9 @@ func TestReminderSchedulerRunsPendingPassImmediately(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// deliberate: the scheduler's poll window is the subject — a whole ReminderPollInterval must pass while
+	// the first pass is blocked, so a tick really happens and the second reminder can only be served by the
+	// pending-pass path, not by the tick that created it.
 	time.Sleep(ReminderPollInterval + 200*time.Millisecond)
 	release()
 	select {

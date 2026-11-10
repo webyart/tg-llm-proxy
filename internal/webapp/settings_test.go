@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 
 	"bot/internal/bot"
 	"bot/internal/store"
+	"bot/internal/testutil"
 )
 
 func settingsRequest(t *testing.T, serverURL string, method string, path string, bearer string, body string, contentType string) (int, []byte) {
@@ -535,13 +537,17 @@ func TestSettingsConcurrentModelRefreshIsSingleFlight(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("provider refresh did not start")
 	}
-	time.Sleep(25 * time.Millisecond)
-	client.mu.Lock()
-	calls := client.modelsCalls
-	client.mu.Unlock()
-	if calls != 1 {
-		t.Fatalf("concurrent refresh made %d provider calls before release", calls)
-	}
+	// Watch the flight instead of sampling it once: no caller may start a second provider call while the
+	// first one is still open.
+	testutil.Consistently(t, 25*time.Millisecond, func() bool {
+		client.mu.Lock()
+		defer client.mu.Unlock()
+		return client.modelsCalls != 1
+	}, func() string {
+		client.mu.Lock()
+		defer client.mu.Unlock()
+		return fmt.Sprintf("single-flight refresh made %d provider calls before release", client.modelsCalls)
+	})
 	close(release)
 	for index := 0; index < callers; index++ {
 		select {
@@ -554,7 +560,7 @@ func TestSettingsConcurrentModelRefreshIsSingleFlight(t *testing.T) {
 		}
 	}
 	client.mu.Lock()
-	calls = client.modelsCalls
+	calls := client.modelsCalls
 	client.mu.Unlock()
 	if calls != 1 {
 		t.Fatalf("single-flight refresh made %d provider calls", calls)

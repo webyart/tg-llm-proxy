@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"bot/internal/testutil"
 )
 
 type fakeDB struct {
@@ -78,16 +80,15 @@ func startReadyServer(t *testing.T, configure func(*Server)) (*Server, string, *
 	})
 
 	var base = fmt.Sprintf("http://127.0.0.1:%d", port)
-	for attempt := 0; attempt < 40; attempt++ {
+	testutil.Eventually(t, 3*time.Second, func() bool {
 		response, err := client.Get(base + Path)
-		if err == nil {
-			response.Body.Close()
-			return server, base, client
+		if err != nil {
+			return false
 		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	t.Fatal("the health listener never answered")
-	return nil, "", nil
+		response.Body.Close()
+		return true
+	}, func() string { return "the health listener never answered" })
+	return server, base, client
 }
 
 type readyReport struct {

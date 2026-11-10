@@ -3,9 +3,12 @@ package ratelimit
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
+
+	"bot/internal/testutil"
 )
 
 func TestCoalescerWindowsAndKeyBound(t *testing.T) {
@@ -62,13 +65,8 @@ func TestWithChatBoundedRejectsExcessAndRunsAcceptedFIFO(t *testing.T) {
 			defer wg.Done()
 			run(id, false)
 		}(id)
-		deadline := time.Now().Add(time.Second)
-		for locks.Waiting(42) != id-1 {
-			if time.Now().After(deadline) {
-				t.Fatalf("waiter %d was not queued within 1s", id)
-			}
-			time.Sleep(time.Millisecond)
-		}
+		testutil.Eventually(t, time.Second, func() bool { return locks.Waiting(42) == id-1 },
+			func() string { return fmt.Sprintf("waiter %d was not queued", id) })
 	}
 	if err := locks.WithChatBounded(context.Background(), 42, 2, func() error {
 		t.Fatal("an over-capacity waiter must not run")

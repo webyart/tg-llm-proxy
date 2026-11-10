@@ -9,6 +9,7 @@ import (
 
 	"bot/internal/model"
 	"bot/internal/store"
+	"bot/internal/testutil"
 )
 
 // miniAppEventLog collects the events of one answer. Delta events (and the delta carried by done)
@@ -329,11 +330,16 @@ func TestMiniAppAnswerSurvivesAClientDisconnect(t *testing.T) {
 	var d = newTestDispatcher(t, cfg, m, &fakeReplier{}, db)
 
 	var ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	var answered = make(chan error, 1)
 	go func() {
-		time.Sleep(30 * time.Millisecond)
-		cancel() // the client closed the window mid-generation
+		answered <- d.AnswerForMiniApp(ctx, 11, 11, "вопрос", func(MiniAppStreamEvent) error { return nil })
 	}()
-	var err = d.AnswerForMiniApp(ctx, 11, 11, "вопрос", func(MiniAppStreamEvent) error { return nil })
+	// The client closes the window mid-generation: wait until the model call is in flight, then cancel.
+	testutil.Eventually(t, 2*time.Second, func() bool { return m.callCount() == 1 },
+		func() string { return "the mini app answer never reached the model" })
+	cancel() // the client closed the window mid-generation
+	var err = <-answered
 	if err != nil {
 		t.Fatalf("AnswerForMiniApp after disconnect: %v", err)
 	}

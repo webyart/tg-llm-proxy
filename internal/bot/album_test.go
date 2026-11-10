@@ -10,6 +10,7 @@ import (
 
 	"bot/internal/model"
 	"bot/internal/store"
+	"bot/internal/testutil"
 )
 
 type albumAttachmentDownloader struct {
@@ -133,6 +134,8 @@ func TestPhotoAlbumUsesOneModelCallAndPersistsEveryOffset(t *testing.T) {
 	if err := dispatch(t, d, events[1]); err != nil {
 		t.Fatalf("duplicate Dispatch: %v", err)
 	}
+	// deliberate: the debounce window is the thing under test — 150 ms is well inside albumDebounce, so the
+	// album must still be collecting and must not have reached the model yet.
 	time.Sleep(150 * time.Millisecond)
 	if m.callCount() != 0 {
 		t.Fatalf("album reached model before debounce: %d calls", m.callCount())
@@ -141,20 +144,16 @@ func TestPhotoAlbumUsesOneModelCallAndPersistsEveryOffset(t *testing.T) {
 		t.Fatalf("Dispatch: %v", err)
 	}
 
-	deadline := time.Now().Add(3 * time.Second)
-	for {
+	testutil.Eventually(t, 3*time.Second, func() bool {
 		offset, found, err := store.LastUpdateID(context.Background(), db)
 		if err != nil {
 			t.Fatalf("LastUpdateID: %v", err)
 		}
-		if m.callCount() == 1 && r.count() == 1 && found && offset == events[2].UpdateID {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("album was not completed: calls=%d replies=%d offset=%d found=%v", m.callCount(), r.count(), offset, found)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return m.callCount() == 1 && r.count() == 1 && found && offset == events[2].UpdateID
+	}, func() string {
+		offset, found, _ := store.LastUpdateID(context.Background(), db)
+		return fmt.Sprintf("album was not completed: calls=%d replies=%d offset=%d found=%v", m.callCount(), r.count(), offset, found)
+	})
 	last := m.lastRequest().Messages[len(m.lastRequest().Messages)-1]
 	if last.Content != "Подпись ко всему альбому" || len(last.ImageURLs) != 3 || last.ImageURL != last.ImageURLs[0] {
 		t.Fatalf("album model message = %+v", last)
@@ -166,8 +165,8 @@ func TestPhotoAlbumUsesOneModelCallAndPersistsEveryOffset(t *testing.T) {
 	if err := dispatch(t, d, events[2]); err != nil {
 		t.Fatalf("completed album redelivery: %v", err)
 	}
-	time.Sleep(albumDebounce + 100*time.Millisecond)
-	if m.callCount() != 1 || r.count() != 1 {
-		t.Fatalf("completed album redelivery produced calls=%d replies=%d", m.callCount(), r.count())
-	}
+	testutil.Consistently(t, albumDebounce+100*time.Millisecond, func() bool { return m.callCount() != 1 || r.count() != 1 },
+		func() string {
+			return fmt.Sprintf("completed album redelivery produced calls=%d replies=%d", m.callCount(), r.count())
+		})
 }

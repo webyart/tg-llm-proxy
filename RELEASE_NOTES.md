@@ -2,7 +2,17 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.59.0
+## Новейший выпуск: v1.60.0
+
+# tg-llm-proxy v1.60.0
+
+## Secrets, an optional Whisper and sleep-free tests
+
+- Docker secrets: the bot token and the STRATA key are mounted as files and passed through `TELEGRAM_BOT_TOKEN_FILE` / `STRATA_API_KEY_FILE`; `docker compose config` and `docker inspect` no longer contain the values. `scripts/setup_docker_secrets.ps1` (and a bash twin) create them idempotently from `.env` with restrictive ACLs, and `secrets/` is git- and docker-ignored. Plain ENV remains a fallback for non-compose runs; rotation is a container recreate plus a BotFather token roll.
+- Whisper is no longer a hard dependency: the bot starts and answers text even when the transcriber is down, voice returns the existing localized `transcription_unavailable`/`transcription_failed` message, and the `WhisperDown` alert stays. The voice-unavailable path gained a test that proves the chat model is not called.
+- Tests: 43 of 50 `time.Sleep` calls were replaced by `testutil.Eventually`/`Consistently` (bounded polling, failure details, no production seams); the 7 remaining sleeps are deliberate timing windows and are marked as such. The shuffled suite runs 16/16 packages green and is slightly faster; integration 35 PASS; JS 48/48.
+
+## Предыдущий выпуск: v1.59.0
 
 # tg-llm-proxy v1.59.0
 

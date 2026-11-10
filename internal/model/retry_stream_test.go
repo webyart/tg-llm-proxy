@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"bot/internal/testutil"
 )
 
 func TestDecodeKeepsFinishReason(t *testing.T) {
@@ -159,10 +161,8 @@ func TestCompleteReturnsErrNoRoomInsteadOfBurningTheBudget(t *testing.T) {
 		defer close(firstDone)
 		_, _ = client.Complete(context.Background(), Request{Model: "m"})
 	}()
-	deadline := time.Now().Add(2 * time.Second)
-	for len(client.sem) == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	testutil.Eventually(t, 2*time.Second, func() bool { return len(client.sem) != 0 },
+		func() string { return "the first call never took the only slot" })
 
 	var start = time.Now()
 	_, noRoom := client.Complete(context.Background(), Request{Model: "m"})

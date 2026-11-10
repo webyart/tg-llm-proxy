@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 
 	"bot/internal/model"
 	"bot/internal/store"
+	"bot/internal/testutil"
 )
 
 type fakeSynthesizer struct {
@@ -417,11 +419,11 @@ func TestTTSSpeedValidationPersistenceAndChatIsolation(t *testing.T) {
 
 func assertTTSHeartbeatStopped(t *testing.T, r *typingReplier) {
 	t.Helper()
-	calls := r.typingCount()
-	time.Sleep(25 * time.Millisecond)
-	if got := r.typingCount(); got != calls {
-		t.Fatalf("typing continued after TTS completion: before=%d after=%d", calls, got)
-	}
+	var calls = r.typingCount()
+	testutil.Consistently(t, 25*time.Millisecond, func() bool { return r.typingCount() != calls },
+		func() string {
+			return fmt.Sprintf("typing continued after TTS completion: before=%d after=%d", calls, r.typingCount())
+		})
 }
 
 type delayedSynthesizer struct {

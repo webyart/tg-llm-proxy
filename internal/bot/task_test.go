@@ -14,6 +14,7 @@ import (
 
 	"bot/internal/model"
 	"bot/internal/store"
+	"bot/internal/testutil"
 )
 
 const (
@@ -260,13 +261,8 @@ func TestDispatcherCreateTaskLocksChatAndPreservesSingleton(t *testing.T) {
 		created, err := d.CreateTask(ctx, 100, 11, "  compare two ideas  ")
 		createdCh <- createResult{task: created, err: err}
 	}()
-	deadline := time.Now().Add(time.Second)
-	for d.deps.Locks.Waiting(100) != 1 {
-		if time.Now().After(deadline) {
-			t.Fatal("CreateTask did not wait for the chat lock")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	testutil.Eventually(t, time.Second, func() bool { return d.deps.Locks.Waiting(100) == 1 },
+		func() string { return "CreateTask did not wait for the chat lock" })
 	if m.callCount() != 0 {
 		t.Fatal("CreateTask called the planner before acquiring the chat lock")
 	}

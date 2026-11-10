@@ -65,7 +65,15 @@ STRATA_API_KEY=
 
 `TELEGRAM_ALLOWED_USERS` принимает список id через запятую. Пустое значение закрывает бота для всех, кроме `/start` и `/whoami`. `.env` игнорируется Git и не должен попадать в логи или коммиты.
 
-3. Проверьте окружение и модель:
+3. Создайте локальные Docker secrets из заполненного `.env`:
+
+```powershell
+.\scripts\setup_docker_secrets.ps1
+```
+
+На macOS/Linux — `./scripts/setup_docker_secrets.sh`. Скрипт идемпотентен: существующие непустые файлы не перезаписываются. `docker compose` требует оба файла, поэтому шаг обязателен для контейнерного запуска (подробнее — «Развёртывание»).
+
+4. Проверьте окружение и модель:
 
 ```powershell
 . .\scripts\Setup.ps1
@@ -74,7 +82,7 @@ STRATA_API_KEY=
 .\scripts\verify.ps1 -WithVolumeRestore
 ```
 
-4. Запустите контейнер:
+5. Запустите контейнер:
 
 ```powershell
 .\scripts\docker-up.ps1
@@ -95,6 +103,44 @@ docker compose logs -f bot
 
 `run.ps1 -UseSystemProxy` нужен только для специфической Windows-конфигурации с системным WinINET proxy.
 
+## Развёртывание
+
+### Docker secrets
+
+Compose подаёт два секрета файлами, а не значениями ENV:
+
+| Secret | Файл на хосте | ENV в контейнере |
+|---|---|---|
+| `telegram_bot_token` | `secrets/telegram_bot_token` | `TELEGRAM_BOT_TOKEN_FILE=/run/secrets/telegram_bot_token` |
+| `strata_api_key` | `secrets/strata_api_key` | `STRATA_API_KEY_FILE=/run/secrets/strata_api_key` |
+
+Создание из уже заполненного `.env` (значения не печатаются):
+
+```powershell
+.\scripts\setup_docker_secrets.ps1
+```
+
+```bash
+./scripts/setup_docker_secrets.sh
+```
+
+Скрипт идемпотентен: непустой существующий файл он оставляет как есть, отсутствующий создаёт из `TELEGRAM_BOT_TOKEN`/`STRATA_API_KEY` строки `.env`. Новые файлы получают права только для владельца: на Windows ACL — текущий пользователь, `SYSTEM` и `Administrators`; на macOS/Linux — `chmod 600`. `secrets/` целиком в `.gitignore` и `.dockerignore`, поэтому значения не попадают ни в Git, ни в Docker build context. Оба файла обязательны для запуска `bot` в compose; пустой файл загрузчик отклоняет как ошибку конфигурации.
+
+В `docker-compose.yml` строки `TELEGRAM_BOT_TOKEN` и `STRATA_API_KEY` в `environment:` намеренно пустые: это перекрывает значения, которые `env_file` иначе скопировал бы из `.env`, и загрузчик не видит одновременно ENV и `*_FILE`. Поэтому `docker compose config` показывает имена файлов и пути mount'ов, но не токены. Docker secrets не заменяют `.env`: остальные настройки по-прежнему читаются из него.
+
+Ротация:
+
+1. Выпустите новый Telegram token в BotFather или новый STRATA key.
+2. Замените содержимое `secrets/telegram_bot_token` / `secrets/strata_api_key` (без лишнего перевода строки; скрипт существующие файлы не перезаписывает). Не выводите значение в общий лог.
+3. `docker compose up -d --force-recreate bot` (с теми же `-f`-файлами, что и обычный запуск) — секрет читается один раз на старте, hot reload нет.
+4. Проверьте `docker compose ps`, `GET http://127.0.0.1:8081/readyz` и строку `configuration loaded` с `token_set=true`; затем отзовите старый Telegram token в BotFather.
+
+Fallback без compose: `TELEGRAM_BOT_TOKEN` и `STRATA_API_KEY` в окружении поддерживаются (`run.ps1`, systemd, другой оркестратор). Одновременное значение ENV и `*_FILE` — ошибка конфигурации, precedence не угадывается. Пустой `STRATA_API_KEY` нельзя подать пустым файлом: если локальная STRATA не требует ключа, используйте запуск вне compose либо задайте непустой ключ. `STRATA_FALLBACKS` остаётся JSON-строкой в `.env`; его `api_key` не выносится в отдельный secret, поэтому `.env` нужно защищать так же строго.
+
+### Whisper не обязателен для старта
+
+У сервиса `bot` больше нет `depends_on: whisper`: мёртвый или ещё скачивающий модель Whisper не блокирует long polling и текстовые ответы. Голосовые сообщения и Mini App `POST /api/transcribe` работают, когда Whisper доступен; при недоступном transcriber пользователь получает локализованный ответ RU/EN (`ask.transcription_unavailable` / `ask.transcription_failed`), а не зависший старт. Сервис `whisper`, его healthcheck и алерт `WhisperDown` в edge-gateway сохранены. Чтобы вернуть голос, поднимите `docker compose up -d whisper` и дождитесь `healthy`; сам бот уже работает.
+
 ## Конфигурация
 
 Полный список из 71 ENV-строк и их значения по умолчанию находится в `.env.example`; строки `STREAMING_*`, `WEBHOOK_*`, `MINIAPP_*`, `HEALTH_*` и `RAG_EMBEDDINGS_*` описаны в одноимённых разделах ниже. Пустой `TELEGRAM_ADMIN_USERS` закрывает `/admin` для всех.
@@ -103,7 +149,7 @@ docker compose logs -f bot
 
 | Параметр | По умолчанию | Назначение |
 |---|---|---|
-| `TELEGRAM_BOT_TOKEN` | обязательный | Telegram token, без значения запуск запрещён |
+| `TELEGRAM_BOT_TOKEN` | обязательный | Telegram token, без значения запуск запрещён; в compose — файл `secrets/telegram_bot_token` |
 | `STRATA_BASE_URL` | `http://host.docker.internal:8000` | OpenAI-compatible base URL без обязательного `/v1` |
 | `STRATA_MODEL` | `qwen2.5-7b-instruct` | id модели из `GET /v1/models` |
 | `STRATA_FALLBACK_MODEL` | пусто = fallback выключен | резервная модель после retryable-ошибки основной |
@@ -113,7 +159,7 @@ docker compose logs -f bot
 | `STRATA_FALLBACK_TIMEOUT_SECONDS` | 120 | таймаут одной попытки резерва: модель может загружаться по требованию |
 | `STRATA_TRANSCRIPTION_MODEL` | `Systran/faster-whisper-small` | модель для `/audio/transcriptions` |
 | `TRANSCRIPTION_BASE_URL` | `STRATA_BASE_URL`; в compose — Whisper | отдельный transcription endpoint |
-| `STRATA_API_KEY` | пусто | ключ endpoint, если требуется |
+| `STRATA_API_KEY` | пусто | ключ endpoint, если требуется; в compose — файл `secrets/strata_api_key` |
 | `STRATA_TIMEOUT_SECONDS` | 60 | общий бюджет всех попыток одной модели (не таймаут одной попытки) |
 | `TG_REPLY_DEADLINE_SECONDS` | 90 | общий бюджет ответа; должен быть больше timeout |
 | `RECOVERY_MAX_AGE_HOURS` | 24 | максимальный возраст unanswered-вопроса для автоматического recovery; `0` отключает лимит |
@@ -630,8 +676,9 @@ docker compose up -d
 
 ## Безопасность
 
-- `.env` и `.env.*` исключены из Git и Docker context; шаблон `.env.example` остаётся tracked. Не помещайте реальные секреты в другие файлы.
-- Секреты можно подавать файлом вместо ENV: `TELEGRAM_BOT_TOKEN_FILE`, `STRATA_API_KEY_FILE`, `WEBHOOK_SECRET_TOKEN_FILE` (Docker secrets, systemd credentials, mounted Kubernetes secret). Путь обязан быть абсолютным, файл читается один раз на старте (до 4 КиБ, завершающий перевод строки срезается), а одновременное значение в ENV и в файле отклоняется как ошибка конфигурации — precedence не угадывается.
+- `.env` и `.env.*` исключены из Git и Docker context; шаблон `.env.example` остаётся tracked. Каталог `secrets/` (runtime Docker secrets) исключён из Git и Docker context целиком, в репозитории остаётся только `secrets/.gitkeep`. Не помещайте реальные секреты в другие tracked-файлы.
+- Compose по умолчанию подаёт `TELEGRAM_BOT_TOKEN` и `STRATA_API_KEY` файлами (`TELEGRAM_BOT_TOKEN_FILE`, `STRATA_API_KEY_FILE`) и не передаёт их значения через `environment:`; файлы создаёт `scripts/setup_docker_secrets.ps1`/`.sh` из `.env` с правами только для владельца. Ротация описана в разделе «Развёртывание».
+- Секреты можно подавать файлом и без compose: `TELEGRAM_BOT_TOKEN_FILE`, `STRATA_API_KEY_FILE`, `STRATA_FALLBACK_API_KEY_FILE`, `WEBHOOK_SECRET_TOKEN_FILE` (systemd credentials, mounted Kubernetes secret). Путь обязан быть абсолютным, файл читается один раз на старте (до 4 КиБ, завершающий перевод строки срезается), а одновременное значение в ENV и в файле отклоняется как ошибка конфигурации — precedence не угадывается.
 - `smoke.ps1` проверяет Telegram token, STRATA key и webhook secret без вывода значений.
 - На production Windows ACL проекта должны разрешать запись только владельцу/service account и администраторам. Текущий хост ограничен владельцем, SYSTEM и Administrators; при переносе проекта повторите проверку ACL, особенно для scheduler-скриптов и backup.
 - Runtime контейнер имеет read-only rootfs, no capabilities и `no-new-privileges`; `/data` остаётся записываемым volume.

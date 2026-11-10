@@ -512,7 +512,9 @@ func TestGateReleasesAfterUse(t *testing.T) {
 		var _, err = c.Complete(context.Background(), oneRequest("занята"))
 		hold <- err
 	}()
-	time.Sleep(50 * time.Millisecond) // let the first call occupy the only slot
+	// let the first call occupy the only slot
+	testutil.Eventually(t, 2*time.Second, func() bool { return fake.ChatCalls() == 1 },
+		func() string { return "the first request never reached the fake" })
 
 	var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()

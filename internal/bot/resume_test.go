@@ -12,16 +12,21 @@ import (
 
 	"bot/internal/model"
 	"bot/internal/store"
+	"bot/internal/testutil"
 )
 
-// acknowledged (persistOffset runs after the handler in Dispatch).
-func interruptDispatch(t *testing.T, d *Dispatcher, ev Event) {
+// interruptDispatch starts Dispatch, waits until it is inside the model call, and cancels it there: the
+// question is stored, the answer is not, and the offset is not acknowledged (persistOffset runs after the
+// handler in Dispatch).
+func interruptDispatch(t *testing.T, d *Dispatcher, m *fakeModel, ev Event) {
 	t.Helper()
 	var stopCtx, cancel = context.WithCancel(context.Background())
 	defer cancel()
+	var before = m.callCount()
 	var done = make(chan error, 1)
 	go func() { done <- d.Dispatch(stopCtx, ev) }()
-	time.Sleep(200 * time.Millisecond)
+	testutil.Eventually(t, 2*time.Second, func() bool { return m.callCount() > before },
+		func() string { return "the interrupted delivery never reached the model" })
 	cancel()
 	<-done // an interrupted Dispatch is allowed to report the cancellation: the process is leaving
 }
@@ -35,7 +40,7 @@ func TestStartupAnswersTheQuestionCutMidGeneration(t *testing.T) {
 	var d = newTestDispatcher(t, cfg, m, r, db)
 	var ev = testEvent(150, 11, 960, "/ask вопрос, оборванный сигналом")
 
-	interruptDispatch(t, d, ev)
+	interruptDispatch(t, d, m, ev)
 
 	var stats, err = store.Stats(context.Background(), db, 150)
 	if err != nil {
@@ -125,7 +130,7 @@ func TestStartupAnswersOnlyTheNewestQuestionOfAChat(t *testing.T) {
 	if err := dispatch(t, d, testEvent(152, 11, 970, "/ask первый вопрос, уже отвечен")); err != nil {
 		t.Fatalf("the first Dispatch must not fail: %v", err)
 	}
-	interruptDispatch(t, d, testEvent(152, 11, 971, "/ask второй вопрос, оборванный"))
+	interruptDispatch(t, d, m, testEvent(152, 11, 971, "/ask второй вопрос, оборванный"))
 
 	var answered, pending, err = d.ResumeInterruptedQuestions(context.Background())
 	if err != nil {
@@ -156,7 +161,7 @@ func TestStartupReplayAndRedeliveryAnswerOnce(t *testing.T) {
 	var d = newTestDispatcher(t, cfg, m, r, db)
 	var ev = testEvent(153, 11, 980, "/ask вопрос, за которым пришли дважды")
 
-	interruptDispatch(t, d, ev)
+	interruptDispatch(t, d, m, ev)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -166,7 +171,9 @@ func TestStartupReplayAndRedeliveryAnswerOnce(t *testing.T) {
 			t.Errorf("the replay of must not fail: %v", err)
 		}
 	}()
-	time.Sleep(50 * time.Millisecond) // the replay takes the lock of first; the redelivery queues behind it
+	// the replay takes the lock of first; the redelivery queues behind it
+	testutil.Eventually(t, 2*time.Second, func() bool { return m.callCount() == 2 },
+		func() string { return "the startup replay never reached the model" })
 	go func() {
 		defer wg.Done()
 		if err := d.Dispatch(context.Background(), ev); err != nil {
@@ -200,7 +207,7 @@ func TestStartupCountsAQuestionTheModelCouldNotAnswer(t *testing.T) {
 	var d = newTestDispatcher(t, cfg, m, r, db)
 	var ev = testEvent(154, 11, 985, "/ask вопрос, на который бюджет модели не кончился")
 
-	interruptDispatch(t, d, ev)
+	interruptDispatch(t, d, m, ev)
 
 	var spent = &fakeModel{err: context.DeadlineExceeded}
 	var restarted = newTestDispatcher(t, cfg, spent, r, db)
@@ -248,7 +255,7 @@ func TestStartupDoesNotReplayAnAnswerWhoseDeliveryFailed(t *testing.T) {
 	var interruptedModel = &fakeModel{response: model.Response{Content: "прерванный ответ"}, delay: 2 * time.Second}
 	var db = testStore(t)
 	var interrupted = newTestDispatcher(t, cfg, interruptedModel, &fakeReplier{}, db)
-	interruptDispatch(t, interrupted, testEvent(155, 11, 990, "/ask вопрос"))
+	interruptDispatch(t, interrupted, interruptedModel, testEvent(155, 11, 990, "/ask вопрос"))
 
 	var deliveryFailure = &fakeReplier{err: context.DeadlineExceeded}
 	var restarted = newTestDispatcher(t, cfg, &fakeModel{response: model.Response{Content: "ответ сохранён"}}, deliveryFailure, db)

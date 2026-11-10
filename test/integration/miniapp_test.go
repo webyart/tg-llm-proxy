@@ -307,13 +307,8 @@ func TestMiniAppSettingsMutationPreservesGroupTokenAttribution(t *testing.T) {
 		}})
 	}
 	pushGroupQuestion(800, userID, "@FakeBot first user question")
-	var deadline = time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && !(tgAPI.Calls("sendMessage") == 1 && strata.ChatCalls() == 1) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if !(tgAPI.Calls("sendMessage") == 1 && strata.ChatCalls() == 1) {
-		t.Fatalf("first group answer did not happen: logs=%s", run.logs.String())
-	}
+	waitFor(t, "the first group answer", func() bool { return tgAPI.Calls("sendMessage") == 1 && strata.ChatCalls() == 1 },
+		func() string { return "logs: " + run.logs.String() })
 
 	// The Mini App is a private-chat companion since v1.40: a group ticket must be refused instead of issued,
 	// and a private session must attribute its mutation to that private chat only.

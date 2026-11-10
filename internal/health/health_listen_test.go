@@ -2,11 +2,14 @@ package health
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"testing"
 	"time"
+
+	"bot/internal/testutil"
 )
 
 // TestNewOnBindsTheRequestedHost — a container passes 0.0.0.0 so the published port and Prometheus can reach the
@@ -19,23 +22,27 @@ func TestNewOnBindsTheRequestedHost(t *testing.T) {
 			defer cancel()
 			var served = make(chan error, 1)
 			go func() { served <- server.Run(ctx) }()
-			var deadline = time.Now().Add(3 * time.Second)
-			for server.listener == nil && time.Now().Before(deadline) {
-				time.Sleep(5 * time.Millisecond)
-			}
-			if server.listener == nil {
-				t.Fatalf("the listener did not bind for host %q", host)
-			}
 			var client = &http.Client{Timeout: 3 * time.Second}
-			var response, err = client.Get("http://127.0.0.1:" + strconv.FormatInt(server.Port(), 10) + Path)
-			if err != nil {
-				t.Fatalf("GET %s: %v", Path, err)
+			var probe = func() (int, string, error) {
+				var response, err = client.Get("http://127.0.0.1:" + strconv.FormatInt(server.Port(), 10) + Path)
+				if err != nil {
+					return 0, "", err
+				}
+				defer response.Body.Close()
+				var body, _ = io.ReadAll(response.Body)
+				return response.StatusCode, string(body), nil
 			}
-			defer response.Body.Close()
-			body, _ := io.ReadAll(response.Body)
-			if response.StatusCode != http.StatusOK || string(body) != "ok" {
-				t.Fatalf("GET %s = %d %q", Path, response.StatusCode, body)
-			}
+			// The listener is bound asynchronously; poll for the answer instead of guessing how long it takes.
+			testutil.Eventually(t, 3*time.Second, func() bool {
+				if server.listener == nil {
+					return false
+				}
+				var status, body, err = probe()
+				return err == nil && status == http.StatusOK && body == "ok"
+			}, func() string {
+				var status, body, err = probe()
+				return fmt.Sprintf("GET %s for host %q = %d %q, err=%v", Path, host, status, body, err)
+			})
 			cancel()
 			select {
 			case <-served:

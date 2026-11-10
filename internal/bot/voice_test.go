@@ -70,6 +70,47 @@ func TestVoiceFailureDoesNotCallChatModel(t *testing.T) {
 	}
 }
 
+// TestVoiceWithoutTranscriberIsUserFacingAndLocalized — a model client that has no Transcriber (Whisper
+// not configured for this client) must answer the user in the chat language instead of failing silently
+// or reaching the chat model. This is the startup-independent half of "Whisper is optional": the bot
+// itself starts, and voice is the only degraded capability.
+func TestVoiceWithoutTranscriberIsUserFacingAndLocalized(t *testing.T) {
+	var cases = []struct {
+		name   string
+		lang   string
+		expect string
+	}{
+		{name: "default russian", lang: "", expect: "Транскрипция голосовых сообщений не настроена"},
+		{name: "english", lang: "en", expect: "Voice transcription is not configured"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var overrides = map[string]string{"TELEGRAM_ALLOWED_USERS": "11"}
+			if tc.lang != "" {
+				overrides["DEFAULT_LANGUAGE"] = tc.lang
+			}
+			var cfg = testConfig(t, overrides)
+			// fakeModel deliberately implements only Complete/Models: the type assertion to
+			// model.Transcriber fails exactly like a client without a transcription endpoint.
+			var m = &fakeModel{response: model.Response{Content: "не должно быть"}}
+			var r = &fakeReplier{}
+			var d = newTestDispatcher(t, cfg, m, r, nil)
+			d.deps.Attachments = &fakeAttachmentDownloader{data: []byte("OggS-audio"), mime: "audio/ogg"}
+			var ev = testEvent(183, 11, 1403, "")
+			ev.Attachment = &Attachment{Kind: AttachmentVoice, FileID: "voice-id", Duration: 3}
+			if err := dispatch(t, d, ev); err != nil {
+				t.Fatalf("Dispatch: %v", err)
+			}
+			if m.callCount() != 0 {
+				t.Fatalf("the chat model was called %d times for unavailable transcription", m.callCount())
+			}
+			if !strings.Contains(r.joined(), tc.expect) {
+				t.Fatalf("reply = %q, want %q", r.joined(), tc.expect)
+			}
+		})
+	}
+}
+
 func TestPendingVoiceRecoveryRequiresFile(t *testing.T) {
 	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
 	m := &fakeModel{response: model.Response{Content: "не должно быть"}}

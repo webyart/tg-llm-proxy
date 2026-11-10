@@ -17,6 +17,7 @@ import (
 
 	"bot/internal/model"
 	"bot/internal/store"
+	"bot/internal/testutil"
 )
 
 type blockingAdmissionModel struct {
@@ -69,14 +70,7 @@ func (m *blockingAdmissionModel) asked() []string {
 
 func waitAdmission(t *testing.T, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if condition() {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("bounded admission condition was not reached within 5s")
+	testutil.Eventually(t, 5*time.Second, condition, func() string { return "bounded admission condition was not reached" })
 }
 
 func waitAdmissionGroup(t *testing.T, group *sync.WaitGroup) {

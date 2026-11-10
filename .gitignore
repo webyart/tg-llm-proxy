@@ -35,3 +35,8 @@ coverage.html
 
 # scratch — local verification output (env-setting scripts, run logs), never committed
 zzscratch/
+
+# Docker secrets — local runtime files created by scripts/setup_docker_secrets.*; only the placeholder is tracked.
+# Never commit real values: `docker compose` reads secrets/telegram_bot_token and secrets/strata_api_key directly.
+secrets/*
+!secrets/.gitkeep

@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"bot/internal/testutil"
 )
 
 // fakeClock — a clock the test moves by hand.
@@ -150,6 +152,8 @@ func TestWithChatKeepsOneChatSerialized(t *testing.T) {
 						break
 					}
 				}
+				// deliberate: this sleep IS the lock-hold window — the test measures that one chat's
+				// critical sections never overlap and keep their arrival order.
 				time.Sleep(wait)
 				mu.Lock()
 				order = append(order, label)
@@ -164,7 +168,9 @@ func TestWithChatKeepsOneChatSerialized(t *testing.T) {
 	}
 
 	run("long", 120*time.Millisecond)
-	time.Sleep(20 * time.Millisecond) // the second request queues behind the first
+	// the second request queues behind the first
+	testutil.Eventually(t, time.Second, func() bool { return locks.Held(100) },
+		func() string { return "the long holder never took the chat lock" })
 	run("short", 10*time.Millisecond)
 	wg.Wait()
 
@@ -228,9 +234,8 @@ func TestWithChatCancelDoesNotLockTheChatForever(t *testing.T) {
 		})
 	}()
 
-	for !locks.Held(55) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	testutil.Eventually(t, time.Second, func() bool { return locks.Held(55) },
+		func() string { return "the chat lock was never taken" })
 	var ctx, cancel = context.WithCancel(context.Background())
 	cancel()
 	var err = locks.WithChat(ctx, 55, func() error {

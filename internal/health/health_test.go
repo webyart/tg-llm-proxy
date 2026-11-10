@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"bot/internal/testutil"
 )
 
 func freePort(t *testing.T) int64 {
@@ -21,6 +23,21 @@ func freePort(t *testing.T) int64 {
 	return int64(listener.Addr().(*net.TCPAddr).Port)
 }
 
+// waitListening blocks until something accepts a TCP connection on the port: the tests below need the
+// listener to be bound, and how long that takes is the machine's business, not the test's.
+func waitListening(t *testing.T, port int64) {
+	t.Helper()
+	var address = fmt.Sprintf("127.0.0.1:%d", port)
+	testutil.Eventually(t, 3*time.Second, func() bool {
+		var conn, err = net.DialTimeout("tcp", address, 50*time.Millisecond)
+		if err != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
+	}, func() string { return "nothing accepted a connection on " + address })
+}
+
 func TestHealthzAnswers200(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -29,17 +46,16 @@ func TestHealthzAnswers200(t *testing.T) {
 
 	client := &http.Client{Timeout: 2 * time.Second}
 	var last error
-	for attempt := 0; attempt < 40; attempt++ {
+	testutil.Eventually(t, 2*time.Second, func() bool {
 		response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d%s", server.port, Path))
 		if err != nil {
 			last = err
-			time.Sleep(25 * time.Millisecond)
-			continue
+			return false
 		}
 		body, readErr := io.ReadAll(response.Body)
 		response.Body.Close()
 		if readErr != nil {
-			t.Fatal(readErr)
+			t.Fatalf("read %s: %v", Path, readErr)
 		}
 		if response.StatusCode != http.StatusOK {
 			t.Fatalf("GET %s answered %d, HEALTHCHECK needs 200", Path, response.StatusCode)
@@ -47,9 +63,8 @@ func TestHealthzAnswers200(t *testing.T) {
 		if string(body) != "ok" {
 			t.Fatalf("the body is %q, security: the probe answer carries no configuration", body)
 		}
-		return
-	}
-	t.Fatalf("GET %s never answered : %v", Path, last)
+		return true
+	}, func() string { return fmt.Sprintf("GET %s never answered: %v", Path, last) })
 }
 
 func TestOtherPathIs404(t *testing.T) {
@@ -59,19 +74,17 @@ func TestOtherPathIs404(t *testing.T) {
 	go func() { _ = server.Run(ctx) }()
 
 	client := &http.Client{Timeout: 2 * time.Second}
-	for attempt := 0; attempt < 40; attempt++ {
+	testutil.Eventually(t, 2*time.Second, func() bool {
 		response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/healthzz", server.port))
 		if err != nil {
-			time.Sleep(25 * time.Millisecond)
-			continue
+			return false
 		}
 		response.Body.Close()
 		if response.StatusCode != http.StatusNotFound {
 			t.Fatalf("an unknown path answered %d,: only %s is exposed", response.StatusCode, Path)
 		}
-		return
-	}
-	t.Fatalf("the listener never answered")
+		return true
+	}, func() string { return "the listener never answered" })
 }
 
 func TestCancelStopsInsideTwoSeconds(t *testing.T) {
@@ -79,8 +92,8 @@ func TestCancelStopsInsideTwoSeconds(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- server.Run(ctx) }()
-	// Give the listener a moment to bind, then stop it the way a signal stops the program.
-	time.Sleep(50 * time.Millisecond)
+	// Wait until the listener is bound, then stop it the way a signal stops the program.
+	waitListening(t, server.port)
 	cancel()
 
 	select {
@@ -150,18 +163,16 @@ func TestListenThenRunServes(t *testing.T) {
 
 	var client = &http.Client{Timeout: 2 * time.Second}
 	var last error
-	for attempt := 0; attempt < 40; attempt++ {
+	testutil.Eventually(t, 2*time.Second, func() bool {
 		response, getErr := client.Get(fmt.Sprintf("http://127.0.0.1:%d%s", server.Port(), Path))
 		if getErr != nil {
 			last = getErr
-			time.Sleep(25 * time.Millisecond)
-			continue
+			return false
 		}
 		response.Body.Close()
 		if response.StatusCode != http.StatusOK {
 			t.Fatalf("GET %s answered %d after an explicit Listen ", Path, response.StatusCode)
 		}
-		return
-	}
-	t.Fatalf("GET %s never answered after Listen+Run: %v", Path, last)
+		return true
+	}, func() string { return fmt.Sprintf("GET %s never answered after Listen+Run: %v", Path, last) })
 }

@@ -13,9 +13,10 @@ services:
       args:
         BUILD_COMMIT: ${BUILD_COMMIT:-dev}
     image: tg-llm-proxy-bot:latest
-    depends_on:
-      whisper:
-        condition: service_healthy
+    # Whisper is OPTIONAL for the text bot: it has no depends_on, so a dead or still-downloading transcriber
+    # cannot block polling. Voice is degraded, not fatal — the voice handler answers with a localized
+    # RU/EN error and the text path keeps working (see README, «Whisper не обязателен для старта»).
+    # The whisper service, its healthcheck and the edge-gateway WhisperDown alert stay as they are.
     # §8.1: the §7 table comes from .env, compose pins the container path of the database.
     env_file:
       - path: .env
@@ -27,6 +28,15 @@ services:
         required: false
     environment:
       DB_PATH: /data/bot.db
+      # Docker secrets: the values arrive through files mounted at /run/secrets/<name> and are read by
+      # internal/config's *_FILE loader. The empty TELEGRAM_BOT_TOKEN/STRATA_API_KEY rows are DELIBERATE:
+      # they override the plain values that env_file would otherwise copy from .env, because the loader
+      # refuses to see both ENV and its _FILE spelling. No secret value is present in this file's environment.
+      # `docker compose config` therefore shows the paths, never the tokens.
+      TELEGRAM_BOT_TOKEN: ""
+      TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
+      STRATA_API_KEY: ""
+      STRATA_API_KEY_FILE: /run/secrets/strata_api_key
       # §7/§8.1: inside the container 127.0.0.1 is the container's OWN loopback, so the .env value that is
       # right for scripts/run.ps1 on Windows (http://127.0.0.1:8080/v1) would make the bot call its own
       # /healthz port and every /ask would fail. The host is reachable under host.docker.internal
@@ -61,6 +71,13 @@ services:
       - "127.0.0.1:${HEALTH_PORT:-8080}:${HEALTH_PORT:-8080}"
       - "127.0.0.1:${WEBHOOK_HOST_PORT:-8082}:${WEBHOOK_PORT:-8082}"
       - "127.0.0.1:${MINIAPP_HOST_PORT:-8084}:${MINIAPP_PORT:-8084}"
+    # Local Docker secrets, created from .env by scripts/setup_docker_secrets.ps1 (or the .sh twin).
+    # The two files are gitignored and dockerignored; only their paths reach the container.
+    secrets:
+      - source: telegram_bot_token
+        target: /run/secrets/telegram_bot_token
+      - source: strata_api_key
+        target: /run/secrets/strata_api_key
     volumes:
       - bot-data:/data
     read_only: true
@@ -144,6 +161,12 @@ services:
     # mounted into the race run (§8.1, same 9p/WAL reason as /data above).
     environment:
       GOMAXPROCS: "4"
+
+secrets:
+  telegram_bot_token:
+    file: ./secrets/telegram_bot_token
+  strata_api_key:
+    file: ./secrets/strata_api_key
 
 networks:
   default:

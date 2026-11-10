@@ -8,6 +8,7 @@ import (
 
 	"bot/internal/model"
 	"bot/internal/store"
+	"bot/internal/testutil"
 )
 
 // TestPhotoAlbumStorageFailureIsNotAcknowledged — v1.57.1 made a failed append visible for a single message:
@@ -39,10 +40,8 @@ func TestPhotoAlbumStorageFailureIsNotAcknowledged(t *testing.T) {
 		t.Fatalf("Dispatch: %v", err)
 	}
 
-	deadline := time.Now().Add(3 * time.Second)
-	for r.count() == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	testutil.Eventually(t, 3*time.Second, func() bool { return r.count() != 0 },
+		func() string { return "the user was never told the album question was not stored" })
 	if r.count() != 1 || !strings.Contains(r.joined(), msgQuestionNotStored) {
 		t.Fatalf("the user was not told the album question was not stored: %q", r.joined())
 	}

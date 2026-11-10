@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"bot/internal/store"
+	"bot/internal/testutil"
 )
 
 type taskPassResult struct {
@@ -61,48 +63,42 @@ func holdSchedulerChatLock(t *testing.T, d *Dispatcher, chatID int64) (release f
 
 func waitForClaimedTask(t *testing.T, d *Dispatcher, chatID int64) store.Task {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	var claimed store.Task
+	testutil.Eventually(t, 2*time.Second, func() bool {
 		task, found, err := store.CurrentTask(context.Background(), d.deps.DB, chatID)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if found && task.Status == store.TaskStatusRunning && task.ClaimToken != "" {
-			return task
+			claimed = task
+			return true
 		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatal("task was not claimed")
-	return store.Task{}
+		return false
+	}, func() string { return "task was not claimed" })
+	return claimed
 }
 
 func waitForTaskModelCalls(t *testing.T, model *taskScriptModel, want int) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if model.callCount() == want {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatalf("model calls=%d, want %d", model.callCount(), want)
+	testutil.Eventually(t, 2*time.Second, func() bool { return model.callCount() == want },
+		func() string { return fmt.Sprintf("model calls=%d, want %d", model.callCount(), want) })
 }
 
 func waitForTaskReadyStep(t *testing.T, d *Dispatcher, chatID int64, step int) store.Task {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	var ready store.Task
+	testutil.Eventually(t, 2*time.Second, func() bool {
 		task, found, err := store.CurrentTask(context.Background(), d.deps.DB, chatID)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if found && task.NextStep == step && task.Status == store.TaskStatusReady {
-			return task
+			ready = task
+			return true
 		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatalf("task did not reach ready step %d", step)
-	return store.Task{}
+		return false
+	}, func() string { return fmt.Sprintf("task did not reach ready step %d", step) })
+	return ready
 }
 
 func TestTaskSchedulerBlockedChatAllowsOtherChatProgress(t *testing.T) {
@@ -250,11 +246,11 @@ func TestTaskClaimRevalidationRejectsChangedState(t *testing.T) {
 
 func requireTaskSchedulerBlocked(t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	stable := 0
+	var stable int
 	var stack string
-	buffer := make([]byte, 1<<20)
-	for time.Now().Before(deadline) {
+	var buffer = make([]byte, 1<<20)
+	// The scheduler must be parked in its select, not inside a pass: five consecutive samples must agree.
+	testutil.Eventually(t, 2*time.Second, func() bool {
 		n := runtime.Stack(buffer, true)
 		stack = string(buffer[:n])
 		passRunning := strings.Contains(stack, "bot/internal/bot.(*Dispatcher).processDueTasks(")
@@ -266,17 +262,13 @@ func requireTaskSchedulerBlocked(t *testing.T) {
 			header, _, _ := strings.Cut(goroutine, "\n")
 			blocked = !passRunning && strings.Contains(header, "[select")
 		}
-		if blocked {
-			stable++
-			if stable == 5 {
-				return
-			}
-		} else {
+		if !blocked {
 			stable = 0
+			return false
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("task scheduler did not stay blocked after its pass:\n%s", stack)
+		stable++
+		return stable >= 5
+	}, func() string { return "task scheduler did not stay blocked after its pass:\n" + stack })
 }
 
 func TestTaskSchedulerBlocksAfterPassUntilWake(t *testing.T) {
@@ -300,13 +292,8 @@ func TestTaskSchedulerBlocksAfterPassUntilWake(t *testing.T) {
 	requireTaskSchedulerBlocked(t)
 	createSchedulerTask(t, d, 100, time.Now().UTC())
 	d.wakeTasks()
-	deadline := time.Now().Add(2 * time.Second)
-	for m.callCount() < 1 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if m.callCount() < 1 {
-		t.Fatal("task scheduler did not run after its wake")
-	}
+	testutil.Eventually(t, 2*time.Second, func() bool { return m.callCount() >= 1 },
+		func() string { return "task scheduler did not run after its wake" })
 }
 
 func TestTaskSchedulerRunsPendingPassImmediately(t *testing.T) {
@@ -335,25 +322,14 @@ func TestTaskSchedulerRunsPendingPassImmediately(t *testing.T) {
 	_ = waitForClaimedTask(t, d, 100)
 	createSchedulerTask(t, d, 200, now)
 	d.wakeTasks()
-	wakeDeadline := time.Now().Add(2 * time.Second)
-	for len(d.taskWake) != 0 && time.Now().Before(wakeDeadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if len(d.taskWake) != 0 {
-		t.Fatal("task wake was not consumed while the first pass was blocked")
-	}
+	testutil.Eventually(t, 2*time.Second, func() bool { return len(d.taskWake) == 0 },
+		func() string { return "task wake was not consumed while the first pass was blocked" })
 	release()
-	pendingDeadline := time.Now().Add(500 * time.Millisecond)
-	pendingStarted := false
-	for !pendingStarted && time.Now().Before(pendingDeadline) {
+	testutil.Eventually(t, 500*time.Millisecond, func() bool {
 		task, found, err := store.CurrentTask(context.Background(), d.deps.DB, 200)
 		if err != nil {
 			t.Fatal(err)
 		}
-		pendingStarted = found && task.Attempts > 0
-		time.Sleep(time.Millisecond)
-	}
-	if !pendingStarted {
-		t.Fatal("pending task pass waited for another tick")
-	}
+		return found && task.Attempts > 0
+	}, func() string { return "pending task pass waited for another tick" })
 }

@@ -195,7 +195,7 @@ func (s *historyExportSerializer) add(row store.Message) error {
 		if _, err := fmt.Fprintf(&s.output, "## %s · %s\n\n", row.Role, row.CreatedAt); err != nil {
 			return err
 		}
-		if err := s.writeString(row.Content); err != nil {
+		if err := s.writeString(SanitizeToolMarkup(row.Content)); err != nil {
 			return err
 		}
 		return s.writeString("\n\n")
@@ -208,7 +208,7 @@ func (s *historyExportSerializer) add(row store.Message) error {
 			return err
 		}
 	}
-	encoded, err := json.MarshalIndent(exportMessage{Role: row.Role, Content: row.Content, CreatedAt: row.CreatedAt, Model: row.Model, TokensIn: row.TokensIn, TokensOut: row.TokensOut}, "    ", "  ")
+	encoded, err := json.MarshalIndent(exportMessage{Role: row.Role, Content: SanitizeToolMarkup(row.Content), CreatedAt: row.CreatedAt, Model: row.Model, TokensIn: row.TokensIn, TokensOut: row.TokensOut}, "    ", "  ")
 	if err != nil {
 		return err
 	}
@@ -326,7 +326,7 @@ func (d *Dispatcher) searchHistory(ctx context.Context, ev Event, arg string) er
 		lines[0] += i18n.T(lang, "search.truncated_suffix")
 	}
 	for _, row := range matches {
-		lines = append(lines, i18n.T(lang, "search.line", row.ID, row.Role, row.CreatedAt, brief(row.Content, 160)))
+		lines = append(lines, i18n.T(lang, "search.line", row.ID, row.Role, row.CreatedAt, brief(SanitizeToolMarkup(row.Content), 160)))
 	}
 	return d.reply(ctx, ev.ChatID, strings.Join(lines, "\n"))
 }

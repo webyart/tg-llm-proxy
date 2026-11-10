@@ -1073,7 +1073,7 @@ func (d *Dispatcher) history(ctx context.Context, ev Event, arg string) error {
 	var i = 0
 	for i < len(rows) {
 		var row = rows[i]
-		lines = append(lines, i18n.T(lang, "history.line", i+1, row.Role, brief(row.Content, 120)))
+		lines = append(lines, i18n.T(lang, "history.line", i+1, row.Role, brief(SanitizeToolMarkup(row.Content), 120)))
 		i++
 	}
 	return d.menuReply(ctx, ev, strings.Join(lines, "\n"), historyMenuMarkupFor(lang))

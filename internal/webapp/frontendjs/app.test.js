@@ -672,9 +672,49 @@ test("static frontend regressions enforce local assets, responsive rules, reduce
   assert.doesNotMatch(html, /aria-live=/);
   assert.equal((script.match(/setAttribute\("aria-live"/g) || []).length, 1);
   assert.match(script, /log\.setAttribute\("role", "log"\)/);
-  assert.match(css, /\.chat-feedback button \{[^}]*min-width: 44px;[^}]*min-height: 44px;/);
-  assert.match(css, /nav button \{[^}]*min-width: 44px;[^}]*min-height: 44px;/);
-  assert.match(css, /#tabs\.menu-panel button \{ min-height: 44px;/);
+  const uncommentedCSS = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const cssBodies = (selector) => {
+    const bodies = [];
+    const rule = /^[ \t]*([^{}\n][^{}]*?)[ \t]*\{([^}]*)\}/gm;
+    for (const match of uncommentedCSS.matchAll(rule)) {
+      const selectors = match[1].split(",").map((value) => value.trim());
+      if (selectors.some((value) => value.startsWith("@"))) continue;
+      if (selectors.includes(selector)) bodies.push(match[2]);
+    }
+    return bodies;
+  };
+  const assertHeight = (selector) => {
+    const bodies = cssBodies(selector);
+    assert.ok(bodies.length > 0, `${selector} has no CSS rule`);
+    const heights = [...bodies.join("\n").matchAll(/min-height:\s*(\d+)px/g)].map((match) => Number(match[1]));
+    assert.ok(heights.length > 0, `${selector} declares no min-height`);
+    assert.ok(heights.every((value) => value >= 44), `${selector} declares a sub-44 px height`);
+  };
+  for (const selector of [
+    "button", "button.secondary", ".menu-toggle", ".logout-button", ".refresh-button",
+    "#more.load-more", ".language-select", ".account-controls .language-select",
+    "input", "select", "textarea", "#tabs.menu-panel button",
+    '.document-upload-row input[type="file"]', ".document-upload-row button",
+    ".settings-toggle", ".chat-actions button", ".chat-send", ".chat-mic", ".chat-voice button",
+    ".item > a",
+  ]) {
+    assertHeight(selector);
+  }
+  for (const selector of [
+    "button", ".menu-toggle", ".settings-toggle", ".chat-send", ".chat-mic", ".chat-voice button",
+    "#tabs.menu-panel button", ".document-upload-row button", ".account-controls .language-select",
+    ".settings-row > button", ".task-actions > button", ".form-actions > button", ".item > a",
+  ]) {
+    const bodies = cssBodies(selector);
+    assert.ok(bodies.length > 0, `${selector} has no CSS rule`);
+    const widths = [...bodies.join("\n").matchAll(/min-width:\s*(\d+)px/g)].map((match) => Number(match[1]));
+    assert.ok(widths.length > 0, `${selector} declares no min-width`);
+    assert.ok(widths.every((value) => value >= 44), `${selector} declares a sub-44 px width`);
+  }
+  // Explicit exemption: inline prose links (a) are covered by the WCAG 2.5.5 inline exception.
+  assert.match(css, /WCAG 2\.5\.5 exempts targets in a sentence/);
+  assert.match(css, /\.item > a \{[^}]*min-width: 44px;[^}]*min-height: 44px;/);
+  assert.match(css, /#tabs\.menu-panel button \{[^}]*min-width: 44px;[^}]*min-height: 44px;/);
   assert.match(html, /src="\/app\.js"/);
   assert.match(html, /href="\/style\.css"/);
   assert.doesNotMatch(html, /(?:src|href)="https?:\/\//);

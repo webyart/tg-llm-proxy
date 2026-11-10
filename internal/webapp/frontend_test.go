@@ -2,6 +2,7 @@ package webapp
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -559,16 +560,65 @@ func TestFrontendUsesSingleChatLiveRegion(t *testing.T) {
 	}
 }
 
+// frontendCSSRule is one declaration block of a selector list, including blocks nested in media queries.
+type frontendCSSRule struct {
+	selectors []string
+	body      string
+}
+
+func frontendCSSRules(css string) []frontendCSSRule {
+	// Comments can sit between a selector and its block, so remove them before looking for rules.
+	css = regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(css, "")
+	// Layout is broken over several lines for long selector lists, so: any line that starts a selector,
+	// followed by "{" and a body without nested braces. At-rules are skipped and their inner rules are
+	// still collected because the pattern is line-anchored.
+	rule := regexp.MustCompile(`(?m)^[ \t]*([^{}\n][^{}]*?)[ \t]*\{([^}]*)\}`)
+	var rules []frontendCSSRule
+	for _, match := range rule.FindAllStringSubmatch(css, -1) {
+		selectorText := strings.TrimSpace(match[1])
+		if selectorText == "" || strings.HasPrefix(selectorText, "@") {
+			continue
+		}
+		var selectors []string
+		for _, selector := range strings.Split(selectorText, ",") {
+			if selector = strings.TrimSpace(selector); selector != "" {
+				selectors = append(selectors, selector)
+			}
+		}
+		rules = append(rules, frontendCSSRule{selectors: selectors, body: match[2]})
+	}
+	return rules
+}
+
+func frontendCSSBodies(rules []frontendCSSRule, selector string) []string {
+	var bodies []string
+	for _, rule := range rules {
+		for _, candidate := range rule.selectors {
+			if candidate == selector {
+				bodies = append(bodies, rule.body)
+				break
+			}
+		}
+	}
+	return bodies
+}
+
 func TestFrontendTouchTargetsAreAtLeast44Pixels(t *testing.T) {
 	css := frontendAsset(t, "static/style.css")
+	rules := frontendCSSRules(css)
+	if len(rules) < 100 {
+		t.Fatalf("only %d CSS rules parsed; the parser or style.css is broken", len(rules))
+	}
+	bodiesFor := func(selector string) []string { return frontendCSSBodies(rules, selector) }
 	cssBlock := func(selector string) string {
 		t.Helper()
-		match := regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(selector) + `\s*\{([^}]*)\}`).FindStringSubmatch(css)
-		if len(match) != 2 {
+		bodies := bodiesFor(selector)
+		if len(bodies) == 0 {
 			t.Fatalf("CSS block %q is missing", selector)
 		}
-		return match[1]
+		return bodies[0]
 	}
+	// The two controls already covered by the previous regression keep their exact 44x44 contract.
 	for _, selector := range []string{"nav button", ".chat-feedback button"} {
 		body := cssBlock(selector)
 		for _, want := range []string{"min-width: 44px;", "min-height: 44px;"} {
@@ -580,10 +630,99 @@ func TestFrontendTouchTargetsAreAtLeast44Pixels(t *testing.T) {
 	if body := cssBlock("#tabs.menu-panel button"); !strings.Contains(body, "min-height: 44px;") {
 		t.Error("#tabs.menu-panel button is shorter than 44 px")
 	}
+
+	// Every interactive selector below has to declare its own 44 px height. Selectors that inherit the
+	// generic button height are covered by the "button" entry itself. Values below 44 are rejected even
+	// when a later media query declares a larger one, so an old mobile override cannot hide here.
+	heightTargets := []string{
+		"button", "button.secondary", ".menu-toggle", ".logout-button", ".refresh-button",
+		"#more.load-more", ".language-select", ".account-controls .language-select",
+		"input", "select", "textarea", "#tabs.menu-panel button",
+		".document-upload-row input[type=\"file\"]", ".document-upload-row button",
+		".settings-toggle", ".chat-actions button", ".chat-send", ".chat-mic", ".chat-voice button",
+		".item > a",
+	}
+	minSize := regexp.MustCompile(`min-(width|height):\s*(\d+)px`)
+	for _, selector := range heightTargets {
+		bodies := bodiesFor(selector)
+		if len(bodies) == 0 {
+			t.Errorf("interactive control %q has no CSS block", selector)
+			continue
+		}
+		heightDeclared := false
+		for _, body := range bodies {
+			for _, match := range minSize.FindAllStringSubmatch(body, -1) {
+				size, err := strconv.Atoi(match[2])
+				if err != nil {
+					t.Errorf("%s has an unreadable min-%s %q", selector, match[1], match[2])
+					continue
+				}
+				if size < 44 {
+					t.Errorf("%s declares min-%s: %dpx, below the 44 px touch target", selector, match[1], size)
+				}
+				if match[1] == "height" && size >= 44 {
+					heightDeclared = true
+				}
+			}
+		}
+		if !heightDeclared {
+			t.Errorf("%s does not declare min-height: 44px", selector)
+		}
+	}
+	// Icon-like or otherwise narrow controls must also be at least 44 px wide. Text buttons get that width
+	// from the generic button rule or from their label; full-width controls grow with their container.
+	widthTargets := []string{
+		"button", ".menu-toggle", ".settings-toggle", ".chat-send", ".chat-mic", ".chat-voice button",
+		"#tabs.menu-panel button", ".document-upload-row button", ".account-controls .language-select",
+		".settings-row > button", ".task-actions > button", ".form-actions > button", ".item > a",
+	}
+	for _, selector := range widthTargets {
+		bodies := bodiesFor(selector)
+		if len(bodies) == 0 {
+			t.Errorf("interactive control %q has no CSS block for its width", selector)
+			continue
+		}
+		widthDeclared := false
+		for _, body := range bodies {
+			for _, match := range minSize.FindAllStringSubmatch(body, -1) {
+				if match[1] != "width" {
+					continue
+				}
+				size, err := strconv.Atoi(match[2])
+				if err != nil {
+					t.Errorf("%s has an unreadable min-width %q", selector, match[2])
+					continue
+				}
+				if size < 44 {
+					t.Errorf("%s declares min-width: %dpx, below the 44 px touch target", selector, size)
+				}
+				if size >= 44 {
+					widthDeclared = true
+				}
+			}
+		}
+		if !widthDeclared {
+			t.Errorf("%s does not declare a min-width of at least 44 px", selector)
+		}
+	}
+	// Explicit exemptions from WCAG 2.5.5, with the reason. Inline prose links are the only exemption:
+	// they sit in a sentence, and the normal line-height provides the spacing the exception requires.
+	exemptions := map[string]string{
+		"a": "inline prose links (WCAG 2.5.5 inline exception); .markdown a keeps text flow with line-height 1.55",
+	}
+	for selector, reason := range exemptions {
+		if strings.TrimSpace(reason) == "" {
+			t.Errorf("exemption %q has no justification", selector)
+		}
+	}
 	for _, rejected := range []string{
 		"nav button { min-height: 42px", "nav button { min-height: 40px",
 		"#tabs.menu-panel button { min-height: 42px",
 		".chat-feedback button {\n  min-width: 38px", ".chat-feedback button {\n  min-height: 34px",
+		".menu-toggle {\n  display: inline-grid;\n  place-items: center;\n  flex: 0 0 42px",
+		".logout-button { min-height: 34px", ".refresh-button { flex: 0 0 auto; min-height: 34px",
+		"#more.load-more { min-height: 38px", ".chat-actions button { flex: 0 1 auto; min-height: 34px",
+		".chat-actions button { min-height: 36px", ".language-select, #language {\n  flex: 0 0 auto;\n  width: auto;\n  min-height: 34px",
 	} {
 		if strings.Contains(css, rejected) {
 			t.Errorf("style.css keeps a sub-44 px touch target %q", rejected)

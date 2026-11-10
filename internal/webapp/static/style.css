@@ -79,10 +79,11 @@ button {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-width: 0;
+  /* WCAG 2.5.5: every button is a 44x44 target. An icon stays its drawn size; the box around it grows. */
+  min-width: 44px;
   max-width: 100%;
-  min-height: 40px;
-  padding: 8px 13px;
+  min-height: 44px;
+  padding: 9px 13px;
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   color: var(--accent-contrast);
@@ -100,6 +101,7 @@ button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 16p
 button:active:not(:disabled) { transform: translateY(0); }
 button:disabled { opacity: .52; cursor: wait; box-shadow: none; }
 button.secondary {
+  min-height: 44px;
   color: var(--link);
   background: transparent;
   border-color: var(--border);
@@ -187,7 +189,7 @@ header p { display: none; margin: 2px 0 0; font-size: .78rem; color: var(--muted
   transform: translateY(-70%) rotate(45deg);
   pointer-events: none;
 }
-.logout-button { min-height: 34px; padding: 5px 11px; border-radius: 999px; font-size: .78rem; }
+.logout-button { min-height: 44px; padding: 8px 13px; border-radius: 999px; font-size: .78rem; }
 
 /* Main column: the app never scrolls as a page; only #content does. */
 main {
@@ -224,7 +226,7 @@ main > * { width: 100%; max-width: 1040px; margin-inline: auto; }
 .section-heading { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 7px; margin-bottom: 7px; }
 .section-heading .eyebrow { display: none; }
 .section-heading-copy { min-width: 0; }
-.refresh-button { flex: 0 0 auto; min-height: 34px; padding: 5px 11px; font-size: .78rem; border-radius: 999px; }
+.refresh-button { flex: 0 0 auto; min-height: 44px; padding: 8px 13px; font-size: .78rem; border-radius: 999px; }
 #content {
   flex: 1 1 auto;
   min-height: 0;
@@ -235,7 +237,7 @@ main > * { width: 100%; max-width: 1040px; margin-inline: auto; }
 }
 #content.is-chat { display: flex; flex-direction: column; overflow: hidden; }
 #more { flex: 0 0 auto; width: 100%; margin-top: 10px; }
-#more.load-more { min-height: 38px; }
+#more.load-more { min-height: 44px; }
 
 /* Tabs: five short labels × two rows on phones (all nine visible, no page overflow). */
 nav {
@@ -318,6 +320,16 @@ nav button:focus-visible { outline-offset: 1px; }
 }
 .item:hover { border-color: #5b5bd638; box-shadow: 0 5px 16px #26344d09; }
 .item:first-child { margin-top: 9px; }
+/* A saved URL is a control of its own, so it gets a full-height box without becoming a button.
+   Prose links inside .markdown stay inline: WCAG 2.5.5 exempts targets in a sentence, and the
+   surrounding line-height gives them enough spacing. */
+.item > a {
+  display: inline-block;
+  max-width: 100%;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 10px 4px;
+}
 .meta { margin: 4px 0; color: var(--muted); font-size: .78rem; overflow-wrap: anywhere; word-break: break-word; }
 .content { line-height: 1.55; overflow-wrap: anywhere; word-break: break-word; }
 .content:not(.markdown) { white-space: pre-wrap; }
@@ -368,6 +380,10 @@ nav button:focus-visible { outline-offset: 1px; }
 .settings-section p { margin: 4px 0 9px; }
 .settings-row, .task-actions, .form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; min-width: 0; max-width: 100%; margin-top: 9px; }
 .settings-row > *, .task-actions > *, .form-actions > * { min-width: 0; max-width: 100%; }
+/* The generic min-width: 0 above protects flex layout from long text; interactive children keep the
+   WCAG 2.5.5 width even when their label is a single glyph. */
+.settings-row > button, .task-actions > button, .form-actions > button,
+.settings-row > select, .task-actions > select, .form-actions > select { min-width: 44px; }
 .task-actions button, .form-actions button { flex: 0 1 auto; }
 .task-clear { padding: 11px; margin: 11px 0 3px; border: 1px solid #c3354a3d; border-radius: var(--radius-md); background: #c3354a08; }
 .task-clear > button { width: 100%; color: #fff; background: var(--danger); }
@@ -381,7 +397,7 @@ input, select, textarea {
   width: 100%;
   min-width: 0;
   max-width: 100%;
-  min-height: 40px;
+  min-height: 44px;
   padding: 9px 11px;
   border: 1px solid #7b899655;
   border-radius: var(--radius-sm);
@@ -409,8 +425,8 @@ option { color: var(--text); background: var(--surface); overflow-wrap: anywhere
 .language-select, #language {
   flex: 0 0 auto;
   width: auto;
-  min-height: 34px;
-  padding: 5px 27px 5px 11px;
+  min-height: 44px;
+  padding: 8px 27px 8px 13px;
   border-radius: 999px;
   border-color: var(--border);
   background-color: color-mix(in srgb, var(--surface) 55%, var(--field-bg));
@@ -446,7 +462,7 @@ textarea { min-height: 78px; resize: vertical; line-height: 1.45; }
 .document-upload h3 { font-size: .95rem; margin: 0 0 6px; overflow-wrap: anywhere; }
 .document-upload-row { display: flex; flex-wrap: wrap; align-items: stretch; gap: 7px; }
 .document-upload-row input[type="file"] { flex: 1 1 180px; min-height: 44px; padding: 9px 11px; }
-.document-upload-row button { flex: 0 1 auto; min-height: 44px; }
+.document-upload-row button { flex: 0 1 auto; min-width: 44px; min-height: 44px; }
 .document-file-name { margin-top: 7px; color: var(--muted); font-size: .78rem; overflow-wrap: anywhere; }
 .document-file-name:empty { display: none; }
 .document-search-row, .history-search-row, .history-export, .link-search-row { display: flex; flex-wrap: wrap; align-items: stretch; gap: 7px; }
@@ -524,7 +540,7 @@ textarea { min-height: 78px; resize: vertical; line-height: 1.45; }
 .chat-pending::before { content: ""; width: 11px; height: 11px; flex: 0 0 11px; border: 2px solid #5b5bd633; border-top-color: var(--accent); border-radius: 50%; animation: spin 700ms linear infinite; }
 .chat-error { margin: 0; padding: 6px 10px; border-radius: var(--radius-sm); color: var(--danger); background: #c3354a0d; font-size: .8rem; font-weight: 650; overflow-wrap: anywhere; }
 .chat-actions { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 7px; min-width: 0; max-width: 100%; margin-top: 6px; }
-.chat-actions button { flex: 0 1 auto; min-height: 34px; padding: 5px 10px; font-size: .76rem; }
+.chat-actions button { flex: 0 1 auto; min-height: 44px; padding: 8px 13px; font-size: .78rem; }
 .chat-form {
   flex: 0 0 auto;
   display: grid;
@@ -684,7 +700,7 @@ textarea { min-height: 78px; resize: vertical; line-height: 1.45; }
   .chat-title { margin-bottom: 3px; }
   .chat-intro { margin-bottom: 8px; color: var(--muted); font-size: .78rem; }
   .stats { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
-  .chat-actions button { min-height: 36px; }
+  .chat-actions button { min-height: 44px; }
   .chat-log { gap: 9px; padding: 4px 4px 9px; }
   .chat-message { padding: 10px 12px; }
   #error, #notice { top: max(74px, calc(env(safe-area-inset-top) + 66px)); }
@@ -760,7 +776,7 @@ textarea { min-height: 78px; resize: vertical; line-height: 1.45; }
 .account-controls .language-select {
   appearance: none;
   -webkit-appearance: none;
-  min-height: 38px;
+  min-height: 44px;
   min-width: 92px;
   cursor: pointer;
 }
@@ -770,9 +786,11 @@ textarea { min-height: 78px; resize: vertical; line-height: 1.45; }
 .menu-toggle {
   display: inline-grid;
   place-items: center;
-  flex: 0 0 42px;
-  width: 42px;
-  height: 42px;
+  flex: 0 0 44px;
+  min-width: 44px;
+  min-height: 44px;
+  width: 44px;
+  height: 44px;
   margin-left: auto;
   padding: 0;
   border: 1px solid var(--border);
@@ -812,7 +830,7 @@ textarea { min-height: 78px; resize: vertical; line-height: 1.45; }
   box-shadow: 0 18px 44px #0000004d;
 }
 #tabs.menu-panel[hidden] { display: none; }
-#tabs.menu-panel button { min-height: 44px; font-size: .82rem; }
+#tabs.menu-panel button { min-width: 44px; min-height: 44px; font-size: .82rem; }
 #tab-settings { grid-column: auto; }
 @media (min-width: 900px) {
   #tabs.menu-panel { grid-template-columns: repeat(3, minmax(0, 1fr)); width: min(480px, calc(100% - 20px)); }

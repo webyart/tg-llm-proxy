@@ -2,7 +2,16 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.61.1
+## Новейший выпуск: v1.61.2
+
+# tg-llm-proxy v1.61.2
+
+## English reminder grammar and 44 px secondary controls
+
+- `/remind` now parses English as well as Russian in any chat: `in N minute(s)/hour(s)/day(s)` and `every day HH:MM` / `daily at HH:MM` / `every day at HH:MM`, case-insensitive, with the existing timezone and text-extraction rules. Rejections are explicit (`in 0 minutes`, `in 2 weeks`, `every day 25:00`, `daily 09:00`); the RU grammar and its tests are unchanged.
+- Every interactive Mini App control now has a 44×44 px touch target: header menu toggle, generic/secondary buttons, logout/refresh, pagination, language select, inputs/selects/textarea, chat Reset/Skip, menu-panel tabs, document upload, standalone item links and settings/task action rows. Inline links inside prose remain exempt (WCAG 2.5.5 inline exception) and are documented in the regression test. Layout was checked statically at 320/360 px; no horizontal overflow path.
+
+## Предыдущий выпуск: v1.61.1
 
 # tg-llm-proxy v1.61.1
 

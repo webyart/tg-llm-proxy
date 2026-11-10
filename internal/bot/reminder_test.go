@@ -44,6 +44,119 @@ func TestParseReminderDurationsAndValidation(t *testing.T) {
 	}
 }
 
+func TestParseReminderEnglishDurations(t *testing.T) {
+	now := time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
+	for _, test := range []struct {
+		input string
+		delay time.Duration
+		text  string
+	}{
+		{"in 1 minute test", time.Minute, "test"},
+		{"in 2 minutes test", 2 * time.Minute, "test"},
+		{"in 1 hour test", time.Hour, "test"},
+		{"in 3 hours test", 3 * time.Hour, "test"},
+		{"in 1 day test", 24 * time.Hour, "test"},
+		{"in 5 days test", 5 * 24 * time.Hour, "test"},
+		{"  in 5 days test  ", 5 * 24 * time.Hour, "test"},
+		{"IN 2 MINUTES test", 2 * time.Minute, "test"},
+		{"In 2 Minutes test", 2 * time.Minute, "test"},
+		{"in   2    minutes    buy   milk", 2 * time.Minute, "buy   milk"},
+	} {
+		reminder, err := ParseReminder(test.input, now, time.UTC)
+		if err != nil || reminder.Cadence != store.ReminderCadenceOnce || !reminder.NextRunAt.Equal(now.Add(test.delay)) || reminder.Text != test.text {
+			t.Errorf("ParseReminder(%q)=%+v err=%v", test.input, reminder, err)
+		}
+	}
+}
+
+func TestParseReminderEnglishDailyForms(t *testing.T) {
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 3, 6, 12, 0, 0, 0, location)
+	for _, test := range []struct {
+		input string
+		clock string
+		want  time.Time
+		text  string
+	}{
+		{"every day 09:00 stretch", "09:00", time.Date(2026, 3, 7, 9, 0, 0, 0, location), "stretch"},
+		{"daily at 09:00 stretch", "09:00", time.Date(2026, 3, 7, 9, 0, 0, 0, location), "stretch"},
+		{"every day at 09:00 stretch", "09:00", time.Date(2026, 3, 7, 9, 0, 0, 0, location), "stretch"},
+		{"EVERY DAY AT 09:00 stretch", "09:00", time.Date(2026, 3, 7, 9, 0, 0, 0, location), "stretch"},
+		{"Daily At 09:00 stretch", "09:00", time.Date(2026, 3, 7, 9, 0, 0, 0, location), "stretch"},
+		{"every  day   at   09:00   stretch", "09:00", time.Date(2026, 3, 7, 9, 0, 0, 0, location), "stretch"},
+		{"every day 23:59 late", "23:59", time.Date(2026, 3, 6, 23, 59, 0, 0, location), "late"},
+		{"every day 00:00 midnight", "00:00", time.Date(2026, 3, 7, 0, 0, 0, 0, location), "midnight"},
+		{"Daily At 00:00 midnight", "00:00", time.Date(2026, 3, 7, 0, 0, 0, 0, location), "midnight"},
+		{"каждый день 09:00 зарядка", "09:00", time.Date(2026, 3, 7, 9, 0, 0, 0, location), "зарядка"},
+		{"КАЖДЫЙ ДЕНЬ 09:00 зарядка", "09:00", time.Date(2026, 3, 7, 9, 0, 0, 0, location), "зарядка"},
+	} {
+		reminder, err := ParseReminder(test.input, now, location)
+		if err != nil || reminder.Cadence != store.ReminderCadenceDaily || reminder.DailyTime != test.clock || !reminder.NextRunAt.Equal(test.want) || reminder.Text != test.text {
+			t.Errorf("ParseReminder(%q)=%+v err=%v", test.input, reminder, err)
+		}
+	}
+}
+
+func TestParseReminderEnglishRejections(t *testing.T) {
+	now := time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
+	for _, test := range []struct {
+		input string
+		want  error
+	}{
+		{"in 0 minutes test", ErrReminderSyntax},
+		{"in 0 minute test", ErrReminderSyntax},
+		{"in -1 hours test", ErrReminderSyntax},
+		{"in 2 weeks test", ErrReminderSyntax},
+		{"in 2 week test", ErrReminderSyntax},
+		{"in 1 minute", ErrReminderSyntax},
+		{"in 1 minute ", ErrReminderSyntax},
+		{"in 1.5 hours test", ErrReminderSyntax},
+		{"in two hours test", ErrReminderSyntax},
+		{"every day at 09:00", ErrReminderSyntax},
+		{"daily 09:00 test", ErrReminderSyntax},
+		{"every 09:00 test", ErrReminderSyntax},
+		{"every day 25:00 test", store.ErrReminderTime},
+		{"every day 24:00 test", store.ErrReminderTime},
+		{"every day 09:60 test", store.ErrReminderTime},
+		{"every day 9:00 test", store.ErrReminderTime},
+		{"daily at 25:00 test", store.ErrReminderTime},
+		{"every day at 25:00 test", store.ErrReminderTime},
+		{"every day 09:00 " + strings.Repeat("a", 501), store.ErrReminderText},
+		{"in 1 minute " + strings.Repeat("a", 501), store.ErrReminderText},
+		{"in 1 minute a\x00b", store.ErrReminderText},
+	} {
+		reminder, err := ParseReminder(test.input, now, time.UTC)
+		if !errors.Is(err, test.want) {
+			t.Errorf("ParseReminder(%q) err=%v, want %v", test.input, err, test.want)
+		}
+		if reminder != (store.Reminder{}) {
+			t.Errorf("ParseReminder(%q) returned a partial reminder: %+v", test.input, reminder)
+		}
+	}
+}
+
+func TestParseReminderRussianGrammarUnchanged(t *testing.T) {
+	now := time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
+	for _, test := range []struct {
+		input string
+		delay time.Duration
+	}{
+		{"через 1 минуту test", time.Minute},
+		{"через 2 часа test", 2 * time.Hour},
+		{"через 3 дня test", 72 * time.Hour},
+		{"  через   2   часа   test  ", 2 * time.Hour},
+		{"ЧЕРЕЗ 2 ЧАСА test", 2 * time.Hour},
+	} {
+		reminder, err := ParseReminder(test.input, now, time.UTC)
+		if err != nil || reminder.Cadence != store.ReminderCadenceOnce || !reminder.NextRunAt.Equal(now.Add(test.delay)) || reminder.Text != "test" {
+			t.Errorf("ParseReminder(%q)=%+v err=%v", test.input, reminder, err)
+		}
+	}
+}
+
 func TestDailyReminderUsesWallClockAcrossDST(t *testing.T) {
 	location, err := time.LoadLocation("America/New_York")
 	if err != nil {
@@ -155,6 +268,52 @@ func TestReminderCommandsMenuIsolationAndLimit(t *testing.T) {
 	}
 	if !strings.Contains(r.joined(), "20 активных") {
 		t.Fatalf("limit reply=%q", r.joined())
+	}
+}
+
+func TestRemindCommandAcceptsBothLanguagesInOneChat(t *testing.T) {
+	r := &menuEditReplier{}
+	m := &fakeModel{}
+	db := testStore(t)
+	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "REMINDER_TIMEZONE": "UTC"}), m, r, db)
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	d.now = func() time.Time { return now }
+	for _, command := range []string{
+		"/remind in 2 hours buy milk",
+		"/remind через 1 день купить хлеб",
+	} {
+		if err := dispatch(t, d, testEvent(100, 11, 600, command)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := store.ListReminders(context.Background(), db, 100, store.ReminderListLimit)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("created=%+v err=%v", rows, err)
+	}
+	byText := map[string]store.Reminder{}
+	for _, row := range rows {
+		byText[row.Text] = row
+	}
+	english, ok := byText["buy milk"]
+	if !ok || !english.NextRunAt.Equal(now.Add(2*time.Hour)) {
+		t.Fatalf("english reminder=%+v", rows)
+	}
+	russian, ok := byText["купить хлеб"]
+	if !ok || !russian.NextRunAt.Equal(now.Add(24*time.Hour)) {
+		t.Fatalf("russian reminder=%+v", rows)
+	}
+	if err := dispatch(t, d, testEvent(100, 11, 601, "/remind in 2 weeks nope")); err != nil {
+		t.Fatal(err)
+	}
+	after, err := store.ListReminders(context.Background(), db, 100, store.ReminderListLimit)
+	if err != nil || len(after) != len(rows) {
+		t.Fatalf("invalid english input wrote a reminder: %+v err=%v", after, err)
+	}
+	if !strings.Contains(r.joined(), "Использование") {
+		t.Fatalf("english syntax error did not use the RU usage path: %q", r.joined())
+	}
+	if m.callCount() != 0 {
+		t.Fatal("reminder commands called the model")
 	}
 }
 

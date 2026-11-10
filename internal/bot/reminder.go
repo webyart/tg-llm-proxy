@@ -44,35 +44,77 @@ func reminderRemainder(input string, words int) (string, bool) {
 	return rest, rest != ""
 }
 
+// reminderUnit maps a duration word from either supported language to its length. Russian keeps
+// its full declension set; English accepts singular and plural forms only.
+func reminderUnit(value string) (time.Duration, bool) {
+	switch strings.ToLower(value) {
+	case "секунду", "секунды", "секунд":
+		return time.Second, true
+	case "минуту", "минуты", "минут", "minute", "minutes":
+		return time.Minute, true
+	case "час", "часа", "часов", "hour", "hours":
+		return time.Hour, true
+	case "день", "дня", "дней", "day", "days":
+		return 24 * time.Hour, true
+	}
+	return 0, false
+}
+
+// reminderPrefixWords returns how many leading words describe the schedule, so the reminder text
+// is extracted by the same "everything after the time expression, trimmed" rule in both languages.
+// "every day at HH:MM" is the only supported form whose time expression is four words long.
+func reminderPrefixWords(fields []string) int {
+	if len(fields) > 2 && strings.EqualFold(fields[0], "every") && strings.EqualFold(fields[1], "day") && strings.EqualFold(fields[2], "at") {
+		return 4
+	}
+	return 3
+}
+
+// reminderDailyClock reports the HH:MM clock of a daily phrase in either language. Validation is
+// deliberately left to NextDailyReminder/parseReminderClock so both languages share one clock path.
+func reminderDailyClock(fields []string) (string, bool) {
+	if len(fields) < 3 {
+		return "", false
+	}
+	switch {
+	case strings.EqualFold(fields[0], "каждый") && strings.EqualFold(fields[1], "день"):
+		return fields[2], true
+	case strings.EqualFold(fields[0], "every") && strings.EqualFold(fields[1], "day"):
+		if strings.EqualFold(fields[2], "at") {
+			if len(fields) < 4 {
+				return "", false
+			}
+			return fields[3], true
+		}
+		return fields[2], true
+	case strings.EqualFold(fields[0], "daily") && strings.EqualFold(fields[1], "at"):
+		return fields[2], true
+	}
+	return "", false
+}
+
+// ParseReminder accepts the Russian and English grammars regardless of the chat language.
 func ParseReminder(input string, now time.Time, location *time.Location) (store.Reminder, error) {
 	if location == nil {
 		location = time.UTC
 	}
 	fields := strings.Fields(input)
-	if len(fields) < 4 {
+	words := reminderPrefixWords(fields)
+	if len(fields) <= words {
 		return store.Reminder{}, ErrReminderSyntax
 	}
-	text, ok := reminderRemainder(input, 3)
+	text, ok := reminderRemainder(input, words)
 	if !ok || len([]rune(text)) > store.ReminderMaxTextRunes || strings.ContainsRune(text, '\x00') {
 		return store.Reminder{}, store.ErrReminderText
 	}
 
-	if strings.EqualFold(fields[0], "через") {
+	if strings.EqualFold(fields[0], "через") || strings.EqualFold(fields[0], "in") {
 		amount, err := strconv.ParseInt(fields[1], 10, 64)
 		if err != nil || amount <= 0 {
 			return store.Reminder{}, ErrReminderSyntax
 		}
-		var unit time.Duration
-		switch strings.ToLower(fields[2]) {
-		case "секунду", "секунды", "секунд":
-			unit = time.Second
-		case "минуту", "минуты", "минут":
-			unit = time.Minute
-		case "час", "часа", "часов":
-			unit = time.Hour
-		case "день", "дня", "дней":
-			unit = 24 * time.Hour
-		default:
+		unit, ok := reminderUnit(fields[2])
+		if !ok {
 			return store.Reminder{}, ErrReminderSyntax
 		}
 		if amount > int64(MaxReminderDelay/unit) {
@@ -81,12 +123,12 @@ func ParseReminder(input string, now time.Time, location *time.Location) (store.
 		return store.Reminder{Text: text, Cadence: store.ReminderCadenceOnce, NextRunAt: now.Add(time.Duration(amount) * unit).UTC()}, nil
 	}
 
-	if strings.EqualFold(fields[0], "каждый") && strings.EqualFold(fields[1], "день") {
-		next, err := NextDailyReminder(now, fields[2], location)
+	if clock, ok := reminderDailyClock(fields); ok {
+		next, err := NextDailyReminder(now, clock, location)
 		if err != nil {
 			return store.Reminder{}, err
 		}
-		return store.Reminder{Text: text, Cadence: store.ReminderCadenceDaily, DailyTime: fields[2], NextRunAt: next}, nil
+		return store.Reminder{Text: text, Cadence: store.ReminderCadenceDaily, DailyTime: clock, NextRunAt: next}, nil
 	}
 	return store.Reminder{}, ErrReminderSyntax
 }

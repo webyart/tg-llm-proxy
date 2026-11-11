@@ -155,6 +155,17 @@ func startupSummary(logger *slog.Logger, cfg config.Config) {
 				"url", cfg.MiniAppPublicURL, "example_suffix", "/miniapp")
 		}
 	}
+	// A research step may spend its per-call budget on every tool round. The step deadline is the hard ceiling,
+	// so a configuration that cannot cover the worst case silently cuts a fully slow step. This is a warning,
+	// not a startup error: most calls are much faster than the timeout, and raising the step budget also
+	// lengthens the task lease.
+	if calls := int64(bot.TaskModelCallsPerStep); cfg.ToolsEnabled && cfg.TaskStepDeadlineSeconds < calls*cfg.TaskModelTimeoutSeconds {
+		logger.Warn("TASK_STEP_DEADLINE_SECONDS cannot cover every model call of a fully slow research step",
+			"task_step_deadline_seconds", cfg.TaskStepDeadlineSeconds,
+			"task_model_timeout_seconds", cfg.TaskModelTimeoutSeconds,
+			"model_calls_per_step", calls,
+			"recommended_task_step_deadline_seconds", calls*cfg.TaskModelTimeoutSeconds)
+	}
 }
 
 func main() {

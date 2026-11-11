@@ -28,6 +28,21 @@ func newStoreTask(chatID int64, now time.Time) Task {
 		DueAt: now, ExpiresAt: now.Add(time.Hour), CreatedAt: now}
 }
 
+// taskResultContents decodes the stored step contents regardless of the storage generation: older rows keep
+// the bare string array, current rows store an object with the usage of the call.
+func taskResultContents(t *testing.T, task Task) []string {
+	t.Helper()
+	results, err := ParseTaskResults(task.ResultsJSON)
+	if err != nil {
+		t.Fatalf("ParseTaskResults(%q): %v", task.ResultsJSON, err)
+	}
+	contents := make([]string, len(results))
+	for index := range results {
+		contents[index] = results[index].Content
+	}
+	return contents
+}
+
 func TestTaskMigration9PreservesDataAndIndexes(t *testing.T) {
 	ctx := context.Background()
 	db, restore := openMemoryAtVersion(t, 8)
@@ -399,7 +414,7 @@ func TestTaskRestartDoesNotDuplicateCompletedStepOrAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	finalClaim, found, err := ClaimNextTask(ctx, db, now, time.Minute)
-	if err != nil || !found || finalClaim.NextStep != 1 || finalClaim.ResultsJSON != `["persisted result"]` {
+	if err != nil || !found || finalClaim.NextStep != 1 || strings.Join(taskResultContents(t, finalClaim), "|") != "persisted result" {
 		t.Fatalf("recovered final=%+v found=%v err=%v", finalClaim, found, err)
 	}
 	if ok, err := CompleteTask(ctx, db, finalClaim, Message{ChatID: 100, Role: RoleAssistant, Content: "once"}, now); err != nil || !ok {
@@ -473,7 +488,7 @@ func TestResumeTaskPreservesProgressAndClearsTransientState(t *testing.T) {
 			}
 			if resumed.ID != created.ID || resumed.ChatID != created.ChatID || resumed.UserID != created.UserID ||
 				resumed.Goal != created.Goal || resumed.Model != created.Model || resumed.PlanJSON != created.PlanJSON ||
-				resumed.ResultsJSON != `["first result"]` || resumed.NextStep != 1 || resumed.Status != TaskStatusReady || resumed.Attempts != 0 {
+				strings.Join(taskResultContents(t, resumed), "|") != "first result" || resumed.NextStep != 1 || resumed.Status != TaskStatusReady || resumed.Attempts != 0 {
 				t.Fatalf("resumed task did not preserve progress: %+v", resumed)
 			}
 			if !resumed.DueAt.Equal(now) || !resumed.ExpiresAt.Equal(now.Add(time.Hour)) || !resumed.UpdatedAt.Equal(now) || !resumed.CreatedAt.Equal(created.CreatedAt) {
@@ -490,7 +505,7 @@ func TestResumeTaskPreservesProgressAndClearsTransientState(t *testing.T) {
 				t.Fatalf("stale claim completed a step ok=%v err=%v", ok, err)
 			}
 			secondClaim, found, err := ClaimNextTask(ctx, db, now, time.Minute)
-			if err != nil || !found || secondClaim.NextStep != 1 || secondClaim.ResultsJSON != `["first result"]` || secondClaim.Attempts != 1 {
+			if err != nil || !found || secondClaim.NextStep != 1 || strings.Join(taskResultContents(t, secondClaim), "|") != "first result" || secondClaim.Attempts != 1 {
 				t.Fatalf("second claim=%+v found=%v err=%v", secondClaim, found, err)
 			}
 			if ok, err := CompleteTaskStep(ctx, db, secondClaim, "second result", now); err != nil || !ok {
@@ -504,7 +519,7 @@ func TestResumeTaskPreservesProgressAndClearsTransientState(t *testing.T) {
 				t.Fatalf("CompleteTask ok=%v err=%v", ok, err)
 			}
 			current, found, err := CurrentTask(ctx, db, 100)
-			if err != nil || !found || current.ResultsJSON != `["first result","second result"]` || current.NextStep != 2 {
+			if err != nil || !found || strings.Join(taskResultContents(t, current), "|") != "first result|second result" || current.NextStep != 2 {
 				t.Fatalf("completed task=%+v found=%v err=%v", current, found, err)
 			}
 			rows, err := HistoryOfChat(ctx, db, 100, 10)

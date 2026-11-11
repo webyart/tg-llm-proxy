@@ -96,6 +96,9 @@ type toolLoopMetadata struct {
 	ragSources        []string
 	documentTruncated bool
 	taskID            int64
+	// taskStep is the 1-based number of the task step this tool loop belongs to. It is only a diagnostic label
+	// for the task model failure log; 0 means "not a task step" (a chat answer or the synthesis).
+	taskStep int
 }
 
 type toolLoopMetadataContextKey struct{}
@@ -856,7 +859,7 @@ func (d *Dispatcher) runToolLoop(ctx context.Context, state *toolLoopContinuatio
 			var err error
 			resp, err = d.callModel(ctx, state.userID, state.request, state.streamer, state.session)
 			if err != nil {
-				d.logTaskModelFailure(state, err)
+				d.logTaskModelFailure(ctx, state.metadata.taskID, state.metadata.taskStep, state.request.Timeout, taskPhaseTool, err)
 				return resp, err
 			}
 			if len(resp.ToolCalls) == 0 {
@@ -994,6 +997,9 @@ func (d *Dispatcher) runToolLoop(ctx context.Context, state *toolLoopContinuatio
 	}
 	state.request.Tools = nil
 	var response, err = d.callModel(ctx, state.userID, state.request, state.streamer, state.session)
+	if err != nil {
+		d.logTaskModelFailure(ctx, state.metadata.taskID, state.metadata.taskStep, state.request.Timeout, taskPhaseFinal, err)
+	}
 	if err == nil && strings.TrimSpace(stripTextualToolCalls(response.Content)) == "" {
 		// The tool rounds are exhausted. A model that keeps writing tool markup instead of a final answer gets one
 		// corrective call with the tools removed; otherwise the task/chat would see an empty answer.
@@ -1004,27 +1010,43 @@ func (d *Dispatcher) runToolLoop(ctx context.Context, state *toolLoopContinuatio
 		var retryRequest = state.request
 		retryRequest.Messages = append([]model.Message{{Role: model.RoleSystem, Content: finalAnswerWithoutToolsInstruction}}, state.request.Messages...)
 		response, err = d.callModel(ctx, state.userID, retryRequest, state.streamer, state.session)
+		if err != nil {
+			d.logTaskModelFailure(ctx, state.metadata.taskID, state.metadata.taskStep, retryRequest.Timeout, taskPhaseFinal, err)
+		}
 	}
 	if err == nil {
 		response.Content = strings.TrimSpace(stripTextualToolCalls(response.Content))
-	}
-	if err != nil {
-		d.logTaskModelFailure(state, err)
 	}
 	return response, err
 }
 
 const finalAnswerWithoutToolsInstruction = "Tools are no longer available for this answer. Return the final answer for the user as plain text. Do not write <tool_call>, <function=...> or <parameter=...> markup."
 
-// logTaskModelFailure records the actual per-request budget when a task call fails: without it the operator sees
-// only the generic STRATA budget notice and cannot tell which budget the step really used.
-func (d *Dispatcher) logTaskModelFailure(state *toolLoopContinuation, err error) {
-	if state == nil || state.metadata.taskID == 0 || d.deps.Logger == nil {
+// logTaskModelFailure records the actual budgets when a task model call fails: without it the operator sees
+// only the generic STRATA budget notice and cannot tell which budget the call really used. The line carries no
+// prompt or answer content, only numbers, the phase and the sanitized error.
+func (d *Dispatcher) logTaskModelFailure(ctx context.Context, taskID int64, step int, requestTimeout time.Duration, phase string, err error) {
+	if taskID == 0 || d.deps.Logger == nil {
 		return
 	}
+	// ctx_deadline_seconds is the time left on the caller's deadline at the moment of the failure; -1 means the
+	// context had no deadline at all.
+	ctxSeconds := int64(-1)
+	if deadline, ok := ctx.Deadline(); ok {
+		left := time.Until(deadline)
+		if left < 0 {
+			left = 0
+		}
+		ctxSeconds = int64((left + time.Second - 1) / time.Second)
+	}
 	d.deps.Logger.Warn("task model call failed",
-		"task_id", state.metadata.taskID,
-		"request_timeout_seconds", int(state.request.Timeout/time.Second),
+		"task_id", taskID,
+		"phase", phase,
+		"step", step,
+		"request_timeout_seconds", int64(requestTimeout/time.Second),
+		"ctx_deadline_seconds", ctxSeconds,
+		"step_deadline_seconds", int64(d.taskStepDeadline()/time.Second),
+		"strata_timeout_seconds", d.deps.Cfg.TimeoutSeconds,
 		"error", Sanitize(err, d.deps.Token))
 }
 

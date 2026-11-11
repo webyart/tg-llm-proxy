@@ -1,6 +1,54 @@
 (() => {
   "use strict";
 
+  // ---- Mini App color theme -------------------------------------------------
+  // The theme is a pure UI preference: it lives in localStorage ("dsh-theme") and never reaches the
+  // API. Five muted palettes are declared in style.css; an unknown stored value falls back to
+  // graphite, and prefers-color-scheme only chooses the very first default (graphite vs sand).
+  // This block is the earliest code app.js can run (the script is deferred), so the attribute is set
+  // before the app shell is rendered; the CSS light/dark media query covers the pre-script paint.
+  const themeStorageKey = "dsh-theme";
+  const themeNames = ["graphite", "sand", "ocean", "forest", "lavender"];
+
+  function storedTheme() {
+    try {
+      const value = localStorage.getItem(themeStorageKey);
+      return typeof value === "string" ? value : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function initialTheme() {
+    const stored = storedTheme();
+    if (stored) return themeNames.includes(stored) ? stored : "graphite";
+    try {
+      if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) return "sand";
+    } catch (_) { /* matchMedia is optional outside a browser */ }
+    return "graphite";
+  }
+
+  let currentTheme = initialTheme();
+
+  function applyTheme(name, persist) {
+    const theme = themeNames.includes(name) ? name : "graphite";
+    currentTheme = theme;
+    document.documentElement.setAttribute("data-theme", theme);
+    if (persist) {
+      try { localStorage.setItem(themeStorageKey, theme); } catch (_) { /* storage is optional */ }
+    }
+    return theme;
+  }
+
+  function setTheme(name) {
+    const theme = applyTheme(name, true);
+    const select = document.getElementById("theme");
+    if (select) select.value = theme;
+    return theme;
+  }
+
+  applyTheme(currentTheme, false);
+
   const translations = {
     ru: {
       documentTitle: "Бот — компаньон", headerTitle: "Бот — компаньон", headerSubtitle: "Данные чата и его настройки",
@@ -203,6 +251,9 @@
       sourceChat: "настройка этого чата", sourceGlobal: "общая настройка", current: "Текущее",
       globalDefault: "Глобальное значение", customText: "пользовательский текст", modelTitle: "Модель",
     accountTitle: "Язык и сессия", accountHint: "Язык интерфейса и закрытие текущей сессии Mini App.",
+      themeTitle: "Тема оформления", themeHint: "Пять приглушённых схем: графит, песочная, океан, лес и лаванда. Выбор применяется сразу и сохраняется в этом браузере.",
+      themeAria: "Тема оформления", themeGraphite: "Графит (мягкая тёмная)", themeSand: "Песочная (тёплая светлая)",
+      themeOcean: "Океан (серо-синяя)", themeForest: "Лес (приглушённая зелёная)", themeLavender: "Лаванда (пыльная светлая)",
       availableModels: "Доступные модели провайдера", noModels: "Провайдер не сообщил ни одной модели",
       useModel: "Применить модель", resetDefault: "Сбросить к общей",
       modelsTruncated: "Показаны первые 50 моделей. Обновите, чтобы снова проверить endpoint.",
@@ -424,6 +475,9 @@
       sourceChat: "this chat override", sourceGlobal: "global default", current: "Current",
       globalDefault: "Global default", customText: "custom text", modelTitle: "Model",
     accountTitle: "Language and session", accountHint: "Interface language and closing the current Mini App session.",
+      themeTitle: "Color theme", themeHint: "Five muted schemes: graphite, sand, ocean, forest and lavender. The choice applies immediately and stays in this browser.",
+      themeAria: "Color theme", themeGraphite: "Graphite (soft dark)", themeSand: "Sand (warm light)",
+      themeOcean: "Ocean (cool blue-gray)", themeForest: "Forest (muted green)", themeLavender: "Lavender (dusty light)",
       availableModels: "Available provider models", noModels: "No models reported by the provider",
       useModel: "Use model", resetDefault: "Reset to default",
       modelsTruncated: "Only the first 50 provider models are shown; refresh to check the endpoint again.",
@@ -2542,6 +2596,32 @@
       ui.content.appendChild(limits);
       void refreshAdminLimits(body);
     }
+
+    // Theme is a local UI preference (localStorage "dsh-theme"), not a server setting: the selector
+    // repaints <html data-theme> immediately and survives a reload on this device.
+    const theme = settingsSection(t("themeTitle"), t("themeHint"));
+    const themeRow = element("div", "settings-row");
+    const themeChoice = element("select", "theme-select");
+    themeChoice.id = "theme";
+    themeChoice.setAttribute("aria-label", t("themeAria"));
+    const themeLabels = [
+      ["graphite", t("themeGraphite")],
+      ["sand", t("themeSand")],
+      ["ocean", t("themeOcean")],
+      ["forest", t("themeForest")],
+      ["lavender", t("themeLavender")],
+    ];
+    for (const [value, label] of themeLabels) {
+      const option = element("option", "", label);
+      option.value = value;
+      option.selected = value === currentTheme;
+      themeChoice.appendChild(option);
+    }
+    themeChoice.value = currentTheme;
+    themeChoice.addEventListener("change", () => { setTheme(themeChoice.value); });
+    themeRow.appendChild(themeChoice);
+    theme.appendChild(themeRow);
+    ui.content.appendChild(theme);
 
     // Language and the session control live here, not in the header: the header keeps only the brand so the tab
     // bar stays high on a phone screen.

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -64,6 +65,74 @@ type Task struct {
 
 func ActiveTaskStatus(status string) bool {
 	return status == TaskStatusReady || status == TaskStatusRunning || status == TaskStatusAwaitingApproval
+}
+
+// TaskStepResult is one stored step outcome: the model answer plus the usage of the call that produced it.
+// It lives inside the existing results_json column as a JSON object. Rows written by an older release store a
+// bare string per step; ParseTaskResults still accepts those and reports an empty usage for them, so no
+// migration is needed and a resumed old task keeps working.
+type TaskStepResult struct {
+	Content string `json:"content"`
+	// TokensIn/TokensOut are nil when the provider did not report usage. A nil token count is shown as 0 and
+	// costs nothing, exactly like the NULL columns of messages.
+	TokensIn   *int64 `json:"tokens_in,omitempty"`
+	TokensOut  *int64 `json:"tokens_out,omitempty"`
+	Model      string `json:"model,omitempty"`
+	DurationMs int64  `json:"duration_ms,omitempty"`
+}
+
+// validateTaskStepContent is the one rule both the store and its callers rely on: a step result is non-empty,
+// has no NUL and fits the column contract.
+func validateTaskStepContent(content string) error {
+	content = strings.TrimSpace(content)
+	if content == "" || strings.ContainsRune(content, '\x00') || len([]rune(content)) > TaskMaxStepResultRunes {
+		return ErrTaskStepResult
+	}
+	return nil
+}
+
+// ParseTaskResults decodes results_json. An element may be the legacy bare string or the current object; a
+// mixed array (an old step resumed by this release) is valid. Content of every element is validated so a
+// corrupted row fails with ErrTaskStepResult instead of reaching the model.
+func ParseTaskResults(raw string) ([]TaskStepResult, error) {
+	var elements []json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &elements); err != nil {
+		return nil, fmt.Errorf("%w: stored results are not a JSON array", ErrTaskStepResult)
+	}
+	results := make([]TaskStepResult, 0, len(elements))
+	for index, element := range elements {
+		var legacy string
+		if err := json.Unmarshal(element, &legacy); err == nil {
+			results = append(results, TaskStepResult{Content: legacy})
+			continue
+		}
+		var result TaskStepResult
+		decoder := json.NewDecoder(bytes.NewReader(element))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&result); err != nil || !decoderHasEnd(decoder) {
+			return nil, fmt.Errorf("%w: stored result %d is not a string or a step result object", ErrTaskStepResult, index+1)
+		}
+		results = append(results, result)
+	}
+	for index := range results {
+		result := &results[index]
+		result.Content = strings.TrimSpace(result.Content)
+		if err := validateTaskStepContent(result.Content); err != nil {
+			return nil, fmt.Errorf("%w: stored result %d has an invalid content", ErrTaskStepResult, index+1)
+		}
+		if (result.TokensIn != nil && *result.TokensIn < 0) || (result.TokensOut != nil && *result.TokensOut < 0) ||
+			result.DurationMs < 0 {
+			return nil, fmt.Errorf("%w: stored result %d has a negative usage counter", ErrTaskStepResult, index+1)
+		}
+	}
+	return results, nil
+}
+
+// decoderHasEnd reports whether the decoder consumed exactly one JSON value: a trailing second value would
+// otherwise be silently ignored by Decode.
+func decoderHasEnd(decoder *json.Decoder) bool {
+	var extra json.RawMessage
+	return decoder.Decode(&extra) != nil
 }
 
 func validateTaskForCreate(task Task) error {
@@ -313,18 +382,28 @@ func ConsumeTaskApproval(ctx context.Context, db *sql.DB, taskID int64, chatID i
 }
 
 func CompleteTaskStep(ctx context.Context, db *sql.DB, task Task, resultText string, now time.Time) (bool, error) {
-	resultText = strings.TrimSpace(resultText)
-	if resultText == "" || len([]rune(resultText)) > TaskMaxStepResultRunes || strings.ContainsRune(resultText, '\x00') {
+	return CompleteTaskStepWithUsage(ctx, db, task, TaskStepResult{Content: resultText}, now)
+}
+
+// CompleteTaskStepWithUsage stores one step result together with the usage of the model call that produced it.
+// The content rules are exactly the old ones; the usage is optional, so an old caller or a provider without a
+// usage report writes zero tokens.
+func CompleteTaskStepWithUsage(ctx context.Context, db *sql.DB, task Task, step TaskStepResult, now time.Time) (bool, error) {
+	step.Content = strings.TrimSpace(step.Content)
+	if err := validateTaskStepContent(step.Content); err != nil {
+		return false, err
+	}
+	if (step.TokensIn != nil && *step.TokensIn < 0) || (step.TokensOut != nil && *step.TokensOut < 0) || step.DurationMs < 0 {
 		return false, ErrTaskStepResult
 	}
 	if task.NextStep < 0 || task.NextStep >= TaskMaxSteps || task.ClaimToken == "" {
 		return false, fmt.Errorf("%w: step completion needs a claimed step", ErrTaskInvalid)
 	}
-	var results []string
-	if err := json.Unmarshal([]byte(task.ResultsJSON), &results); err != nil || len(results) != task.NextStep || len(results) >= TaskMaxSteps {
+	results, err := ParseTaskResults(task.ResultsJSON)
+	if err != nil || len(results) != task.NextStep || len(results) >= TaskMaxSteps {
 		return false, fmt.Errorf("%w: results do not match next step", ErrTaskInvalid)
 	}
-	results = append(results, resultText)
+	results = append(results, step)
 	encoded, err := json.Marshal(results)
 	if err != nil {
 		return false, err
@@ -349,8 +428,7 @@ func CompleteTask(ctx context.Context, db *sql.DB, task Task, answer Message, no
 	if answer.ChatID != task.ChatID || answer.Role != RoleAssistant || strings.TrimSpace(answer.Content) == "" {
 		return false, fmt.Errorf("%w: final answer has the wrong chat, role, or empty content", ErrTaskInvalid)
 	}
-	var results []string
-	if err := json.Unmarshal([]byte(task.ResultsJSON), &results); err != nil || len(results) != task.NextStep {
+	if results, parseErr := ParseTaskResults(task.ResultsJSON); parseErr != nil || len(results) != task.NextStep {
 		return false, fmt.Errorf("%w: final completion results do not match the completed steps", ErrTaskInvalid)
 	}
 	tx, err := db.BeginTx(ctx, nil)

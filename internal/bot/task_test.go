@@ -60,6 +60,20 @@ func taskTextModel(contents ...string) *taskScriptModel {
 	return m
 }
 
+// taskResultContents decodes the stored step contents regardless of the storage generation: older rows keep
+// the bare string array, current rows store an object with the usage of the call.
+func taskResultContents(task store.Task) []string {
+	results, err := store.ParseTaskResults(task.ResultsJSON)
+	if err != nil {
+		return nil
+	}
+	contents := make([]string, len(results))
+	for index := range results {
+		contents[index] = results[index].Content
+	}
+	return contents
+}
+
 func processTasks(t *testing.T, d *Dispatcher, passes int) {
 	t.Helper()
 	for index := 0; index < passes; index++ {
@@ -480,7 +494,7 @@ func TestTaskModelLimitExhaustionDoesNotCompleteStep(t *testing.T) {
 			if err != nil || !found {
 				t.Fatalf("CurrentTask found=%v err=%v", found, err)
 			}
-			if current.Status != store.TaskStatusFailed || current.NextStep != 1 || current.ResultsJSON != `["first result"]` {
+			if current.Status != store.TaskStatusFailed || current.NextStep != 1 || strings.Join(taskResultContents(current), "|") != "first result" {
 				t.Fatalf("limit exhaustion changed step results: %+v", current)
 			}
 			if m.callCount() != 2 {
@@ -770,12 +784,12 @@ func TestTaskResumeCommandPreservesProgressAndRejectsWrongChatAndStatus(t *testi
 		t.Fatal(err)
 	}
 	resumed, found, err := store.CurrentTask(ctx, db, 100)
-	if err != nil || !found || resumed.ID != created.ID || resumed.Status != store.TaskStatusReady || resumed.NextStep != 1 || resumed.ResultsJSON != `["first result"]` || resumed.Attempts != 0 {
+	if err != nil || !found || resumed.ID != created.ID || resumed.Status != store.TaskStatusReady || resumed.NextStep != 1 || strings.Join(taskResultContents(resumed), "|") != "first result" || resumed.Attempts != 0 {
 		t.Fatalf("resumed=%+v found=%v err=%v", resumed, found, err)
 	}
 	processTasks(t, d, 2)
 	current, found, err = store.CurrentTask(ctx, db, 100)
-	if err != nil || !found || current.Status != store.TaskStatusCompleted || current.NextStep != 2 || current.ResultsJSON != `["first result","second result"]` {
+	if err != nil || !found || current.Status != store.TaskStatusCompleted || current.NextStep != 2 || strings.Join(taskResultContents(current), "|") != "first result|second result" {
 		t.Fatalf("completed resumed task=%+v found=%v err=%v", current, found, err)
 	}
 	if m.callCount() != 2 || !strings.Contains(m.requests[0].Messages[len(m.requests[0].Messages)-1].Content, "Current step 2/2") {

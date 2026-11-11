@@ -1235,3 +1235,264 @@ test("admin provider section switches language without another admin request", a
   language.dispatchEvent({ type: "change" });
   assert.ok(providerSection(harness).textContent.includes("Провайдеры и модели"));
 });
+
+// ---- v1.68: provider card contrast and five muted themes -------------------
+
+function styleRules(css) {
+  const cleaned = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const rules = [];
+  const rule = /^[ \t]*([^{}\n][^{}]*?)[ \t]*\{([^}]*)\}/gm;
+  for (const match of cleaned.matchAll(rule)) {
+    const selectors = match[1].split(",").map((value) => value.trim());
+    if (selectors.some((value) => value.startsWith("@"))) continue;
+    rules.push({ selectors, body: match[2] });
+  }
+  return rules;
+}
+
+function styleBodies(rules, selector) {
+  return rules.filter((rule) => rule.selectors.includes(selector)).map((rule) => rule.body);
+}
+
+function styleBody(rules, selector) {
+  const bodies = styleBodies(rules, selector);
+  assert.ok(bodies.length > 0, `${selector} has no CSS rule`);
+  return bodies.join("\n");
+}
+
+function descendants(node) {
+  const all = [];
+  for (const child of node.childNodes) all.push(child, ...descendants(child));
+  return all;
+}
+
+test("admin provider cards use theme tokens and keep every default model fully visible", async () => {
+  const harness = await createHarness();
+  harness.setHandler(adminSettingsHandler([], {
+    handle(request) {
+      if (request.path === "/api/admin/providers") {
+        return jsonResponse({
+          items: [adminProviderFixture({
+            name: "deepseek",
+            base_url: "api.deepseek.com",
+            models: ["deepseek-flash", "kimi-k3.1-pro"],
+            default_model: "kimi-k3.1-pro",
+            configured_models: ["deepseek-flash", "kimi-k3.1-pro"],
+          })],
+        });
+      }
+      return null;
+    },
+  }));
+  await openTab(harness, "settings");
+  const section = providerSection(harness);
+  const card = section.querySelector(".provider-card");
+  assert.ok(card, "the provider card is missing");
+  assert.ok(card.classList.contains("provider-card"));
+
+  const title = card.querySelector("h4");
+  assert.equal(title.textContent, "deepseek");
+  const meta = card.querySelectorAll("p").map((node) => node.textContent).join("\n");
+  assert.match(meta, /host: api\.deepseek\.com/);
+  assert.match(meta, /Источник: env \(MODEL_PROVIDERS\)/);
+  assert.match(meta, /env-список: deepseek-flash, kimi-k3\.1-pro/);
+  assert.match(meta, /2 \/ 20/);
+
+  // Labels are the visible text next to the controls, so they carry the muted color contract.
+  const labels = card.querySelectorAll("label");
+  assert.deepEqual(labels.map((label) => label.className), ["provider-enabled", "provider-field", "provider-field"]);
+  assert.ok(labels[0].textContent.includes("Провайдер включён"));
+  assert.ok(labels[1].textContent.includes("Модели (по одной в строке)"));
+  assert.ok(labels[2].textContent.includes("Модель по умолчанию"));
+  assert.equal(labels[0].querySelector("span").textContent, "Провайдер включён");
+
+  // The select keeps the full model string: no ellipsis is rendered by the DOM and the value is exact.
+  const select = card.querySelector("select");
+  assert.deepEqual(select.querySelectorAll("option").map((option) => option.value), ["deepseek-flash", "kimi-k3.1-pro"]);
+  assert.deepEqual(select.querySelectorAll("option").map((option) => option.textContent), ["deepseek-flash", "kimi-k3.1-pro"]);
+  assert.equal(select.value, "kimi-k3.1-pro");
+  assert.equal(select.value.includes("…"), false);
+  assert.equal(select.value.length, "kimi-k3.1-pro".length);
+
+  const toggle = card.querySelector('input[type="checkbox"]');
+  assert.equal(toggle.checked, true);
+  assert.equal(toggle.getAttribute("aria-label"), "deepseek: Провайдер включён");
+  assert.ok(labels[0].classList.contains("provider-enabled"));
+
+  // CSP-safe: no inline style and no inline handler anywhere inside the card.
+  for (const node of [card, ...descendants(card)]) {
+    assert.equal(node.getAttribute("style"), null, "the provider card uses an inline style");
+    for (const name of node.attributes.keys()) assert.doesNotMatch(name, /^on/);
+  }
+
+  // The harness has no CSS engine, so the static contract proves the tokens are actually wired up.
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const css = fs.readFileSync(path.join(__dirname, "../static/style.css"), "utf8");
+  const rules = styleRules(css);
+  const cardCSS = styleBody(rules, ".provider-card");
+  assert.match(cardCSS, /background:\s*var\(--card\)/);
+  assert.match(cardCSS, /color:\s*var\(--text\)/);
+  assert.match(cardCSS, /border:\s*1px solid var\(--border\)/);
+  assert.match(cardCSS, /min-width:\s*0/);
+  assert.match(cardCSS, /max-width:\s*100%/);
+  assert.match(css, /@media \(max-width: 420px\) \{\s*\.provider-card \.settings-row > button \{ flex: 1 1 100%; \}/);
+  assert.match(styleBody(rules, ".provider-card .meta"), /color:\s*var\(--muted\)/);
+  assert.match(styleBody(rules, ".provider-field"), /color:\s*var\(--muted\)/);
+  assert.match(styleBody(rules, ".provider-enabled"), /color:\s*var\(--text\)/);
+  assert.match(styleBody(rules, ".provider-field span"), /color:\s*var\(--muted\)/);
+  const providerSelect = styleBody(rules, ".provider-field select");
+  assert.match(providerSelect, /min-height:\s*46px/);
+  assert.match(providerSelect, /height:\s*auto/);
+  assert.match(providerSelect, /line-height:\s*1\.4/);
+  assert.match(providerSelect, /color:\s*var\(--text\)/);
+  assert.match(styleBody(rules, ".provider-field textarea"), /min-height:\s*88px/);
+  assert.match(styleBody(rules, "select"), /height:\s*auto/);
+  assert.match(styleBody(rules, "select"), /line-height:\s*1\.4/);
+  assert.match(styleBody(rules, "input:focus-visible"), /outline:\s*3px solid var\(--focus-ring\)/);
+});
+
+test("theme switch applies immediately, persists in localStorage and survives a language change", async () => {
+  const memory = new Map();
+  const localStorage = {
+    getItem(key) { return memory.has(key) ? memory.get(key) : null; },
+    setItem(key, value) { memory.set(key, String(value)); },
+  };
+  const harness = await createHarness({ globals: { localStorage } });
+  assert.equal(harness.document.documentElement.getAttribute("data-theme"), "graphite");
+
+  await openTab(harness, "settings");
+  const select = harness.element("theme");
+  assert.ok(select.classList.contains("theme-select"));
+  assert.deepEqual(select.querySelectorAll("option").map((option) => option.value), ["graphite", "sand", "ocean", "forest", "lavender"]);
+  assert.deepEqual(select.querySelectorAll("option").map((option) => option.textContent), [
+    "Графит (мягкая тёмная)", "Песочная (тёплая светлая)", "Океан (серо-синяя)",
+    "Лес (приглушённая зелёная)", "Лаванда (пыльная светлая)",
+  ]);
+  assert.equal(select.value, "graphite");
+  assert.equal(memory.get("dsh-theme"), undefined);
+
+  harness.resetRequests();
+  select.value = "ocean";
+  select.dispatchEvent({ type: "change" });
+  assert.equal(harness.document.documentElement.getAttribute("data-theme"), "ocean");
+  assert.equal(memory.get("dsh-theme"), "ocean");
+  assert.equal(select.value, "ocean");
+  assert.equal(harness.requests.length, 0, "a theme switch must not call the API");
+
+  select.value = "lavender";
+  select.dispatchEvent({ type: "change" });
+  assert.equal(harness.document.documentElement.getAttribute("data-theme"), "lavender");
+  assert.equal(memory.get("dsh-theme"), "lavender");
+
+  const language = harness.element("language");
+  language.value = "en";
+  language.dispatchEvent({ type: "change" });
+  assert.equal(harness.element("theme").value, "lavender");
+  assert.equal(harness.document.documentElement.getAttribute("data-theme"), "lavender");
+  assert.equal(memory.get("dsh-theme"), "lavender");
+});
+
+test("unknown stored themes fall back to graphite and prefers-color-scheme only seeds the default", async () => {
+  const unknown = await createHarness({
+    globals: {
+      localStorage: { getItem: () => "neon", setItem() {} },
+      matchMedia: () => ({ matches: true }),
+    },
+  });
+  assert.equal(unknown.document.documentElement.getAttribute("data-theme"), "graphite");
+
+  const light = await createHarness({
+    globals: { matchMedia: (query) => ({ matches: /prefers-color-scheme: light/.test(query), media: query }) },
+  });
+  assert.equal(light.document.documentElement.getAttribute("data-theme"), "sand");
+
+  const dark = await createHarness({ globals: { matchMedia: () => ({ matches: false }) } });
+  assert.equal(dark.document.documentElement.getAttribute("data-theme"), "graphite");
+
+  await openTab(dark, "settings");
+  const select = dark.element("theme");
+  select.value = "neon";
+  select.dispatchEvent({ type: "change" });
+  assert.equal(dark.document.documentElement.getAttribute("data-theme"), "graphite");
+  assert.equal(select.value, "graphite", "the selector falls back to the applied theme");
+});
+
+test("all five muted theme token sets are complete and free of pure black or white", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const css = fs.readFileSync(path.join(__dirname, "../static/style.css"), "utf8");
+  const required = [
+    "--bg", "--surface", "--card", "--field-bg", "--text", "--muted", "--border", "--border-strong",
+    "--primary", "--primary-contrast", "--secondary", "--accent", "--accent-strong", "--accent-contrast",
+    "--link", "--success", "--success-strong", "--success-contrast", "--warning", "--warning-strong",
+    "--warning-contrast", "--danger", "--danger-strong", "--danger-contrast", "--hover-bg", "--active-bg",
+    "--focus-ring", "--disabled-bg", "--disabled-text", "--bubble-assistant-bg", "--bubble-user-bg",
+    "--bubble-user-border", "--badge-bg", "--badge-text", "--badge-border", "--code-bg", "--code-text",
+    "--code-border", "--quote-border", "--chart-grid", "--chart-axis", "--chart-in", "--chart-out",
+    "--chart-cost", "--chart-track", "--chart-tool", "--table-head-bg", "--table-row-border", "--modal-bg",
+    "--modal-overlay", "--toast-bg", "--toast-border", "--bg-glow-1", "--bg-glow-2", "--input-border",
+    "--input-hover-border", "--input-focus-border", "--selection-bg", "--shadow",
+  ];
+  const backgrounds = new Set();
+  for (const theme of ["graphite", "sand", "ocean", "forest", "lavender"]) {
+    const match = new RegExp(`html\\[data-theme="${theme}"\\] \\{([^}]*)\\}`).exec(css);
+    assert.ok(match, `${theme} theme block is missing`);
+    for (const variable of required) assert.ok(match[1].includes(`${variable}:`), `${theme} misses ${variable}`);
+    assert.match(match[1], /color-scheme:\s*(?:dark|light)/);
+    assert.doesNotMatch(match[1], /#[0]{3}(?![0-9a-f])|#[f]{3}(?![0-9a-f])/i, `${theme} uses pure black or white`);
+    assert.doesNotMatch(match[1], /\b(?:white|black)\b/, `${theme} uses a white/black keyword`);
+    backgrounds.add((/--bg:\s*(#[0-9a-f]{6})/i.exec(match[1]) || [])[1]);
+  }
+  assert.equal(backgrounds.size, 5, "the five themes must have five page backgrounds");
+  assert.match(css, /:root, html\[data-theme="graphite"\] \{/);
+  assert.match(css, /@media \(prefers-color-scheme: light\) \{\s*:root:not\(\[data-theme\]\) \{/);
+  assert.match(css, /:root:not\(\[data-theme\]\) \{[^}]*--bg: #f3ece1;/);
+  assert.match(css, /\.usage-chart-bar \{ fill: var\(--chart-in\); \}/);
+  assert.match(css, /\.usage-chart-line-out \{ fill: none; stroke: var\(--chart-out\);/);
+  assert.match(css, /\.usage-chart-cost \{ fill: var\(--chart-cost\); \}/);
+  assert.match(css, /\.usage-chart-grid \{ stroke: var\(--chart-grid\);/);
+  assert.match(css, /\.provider-card \{[^}]*var\(--card\)/);
+  assert.doesNotMatch(css, /:root:not\(\[data-theme\]\) \{[^}]*\b(?:white|black)\b/, "the light default uses a white/black keyword");
+});
+
+test("every theme keeps AA contrast for body text, labels, status and controls", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const css = fs.readFileSync(path.join(__dirname, "../static/style.css"), "utf8");
+  const channel = (hex) => {
+    const value = parseInt(hex, 16) / 255;
+    return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  };
+  const luminance = (hex) => 0.2126 * channel(hex.slice(1, 3)) + 0.7152 * channel(hex.slice(3, 5)) + 0.0722 * channel(hex.slice(5, 7));
+  const contrast = (first, second) => {
+    const a = luminance(first);
+    const b = luminance(second);
+    return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+  };
+  const pairs = [
+    ["--text", "--bg"], ["--text", "--card"], ["--text", "--field-bg"],
+    ["--muted", "--bg"], ["--muted", "--card"], ["--muted", "--field-bg"], ["--muted", "--surface"], ["--text", "--surface"],
+    ["--accent-contrast", "--accent"], ["--accent-contrast", "--accent-strong"], ["--accent", "--card"],
+    ["--link", "--card"], ["--success", "--card"], ["--warning", "--card"], ["--danger", "--card"],
+    ["--badge-text", "--card"], ["--code-text", "--code-bg"], ["--chart-axis", "--card"],
+    ["--danger-contrast", "--danger-strong"], ["--success-contrast", "--success-strong"],
+    ["--warning-contrast", "--warning-strong"], ["--disabled-text", "--disabled-bg"],
+    ["--text", "--toast-bg"], ["--text", "--bubble-assistant-bg"], ["--text", "--bubble-user-bg"],
+    ["--muted", "--bubble-assistant-bg"],
+  ];
+  for (const theme of ["graphite", "sand", "ocean", "forest", "lavender"]) {
+    const match = new RegExp(`html\\[data-theme="${theme}"\\] \\{([^}]*)\\}`).exec(css);
+    assert.ok(match, `${theme} theme block is missing`);
+    const tokens = {};
+    for (const declaration of match[1].matchAll(/--([a-z0-9-]+):\s*(#[0-9a-fA-F]{6})\b/g)) tokens[`--${declaration[1]}`] = declaration[2];
+    for (const [foreground, background] of pairs) {
+      assert.ok(tokens[foreground] && tokens[background], `${theme} misses ${foreground} or ${background}`);
+      const ratio = contrast(tokens[foreground], tokens[background]);
+      assert.ok(ratio >= 4.5, `${theme} ${foreground} on ${background} = ${ratio.toFixed(2)}:1, below WCAG AA 4.5:1`);
+    }
+    // A field boundary is non-text UI information: WCAG 1.4.11 asks for 3:1 against the field.
+    const edge = contrast(tokens["--input-border"], tokens["--field-bg"]);
+    assert.ok(edge >= 3, `${theme} --input-border on --field-bg = ${edge.toFixed(2)}:1, below 3:1`);
+  }
+});

@@ -15,12 +15,12 @@ import (
 // let a provider's transient 5xx/429 window pass and short enough that the task keeps its place in the chat.
 const taskStepRetryBackoff = 2 * time.Second
 
-// taskStepRetryable reports whether a failed step call may be retried once immediately. The retry exists for
-// the transient model layer only: a retryable provider error, an empty answer, or a model-layer deadline
-// while the step context still has time. A user cancel, an expired step deadline, approval-pending, a stale
-// lease, a model budget refusal, or a deterministic state error (invalid plan/step result) is never retried —
-// repeating those either cannot succeed or would spend the user's budget twice for the same deterministic
-// refusal.
+// taskStepRetryable reports whether a failed task model call may be retried once immediately. The retry exists
+// for the transient model layer only: a retryable provider error, an empty answer, or a model-layer deadline
+// while the caller's task context still has time. A user cancel, an expired step deadline, approval-pending, a
+// stale lease, a model budget refusal, or a deterministic state error (invalid plan/step result) is never
+// retried — repeating those either cannot succeed or would spend the user's budget twice for the same
+// deterministic refusal.
 func taskStepRetryable(ctx context.Context, cause error) bool {
 	if cause == nil {
 		return false
@@ -67,18 +67,26 @@ func taskStepResponseEmpty(response model.Response) bool {
 	return strings.TrimSpace(stripTextualToolCalls(response.Content)) == "" && len(response.ToolCalls) == 0
 }
 
-// beginTaskStepRetry records the one retry of a step and waits the short backoff. It returns false when the
-// context ends during the wait; the caller then returns the context error and the scheduler leaves the task
-// for a later pass instead of failing it on shutdown.
-func (d *Dispatcher) beginTaskStepRetry(ctx context.Context, task store.Task, cause error) bool {
+// beginTaskModelRetry records the one retry of a task model call (a step or the final synthesis) and waits the
+// short backoff. It returns false when the context ends during the wait; the caller then returns the context
+// error and the scheduler leaves the task for a later pass instead of failing it on shutdown.
+func (d *Dispatcher) beginTaskModelRetry(ctx context.Context, task store.Task, phase string, step int, cause error) bool {
 	reason := taskStepRetryReason(cause)
 	if d.deps.Logger != nil {
-		d.deps.Logger.Warn("task step failed transiently; retrying the same step once",
-			"task_id", task.ID, "step", task.NextStep+1, "reason", reason)
+		if phase == taskPhaseSynthesis {
+			d.deps.Logger.Warn("task synthesis failed transiently; retrying once",
+				"task_id", task.ID, "phase", phase, "reason", reason)
+		} else {
+			d.deps.Logger.Warn("task step failed transiently; retrying the same step once",
+				"task_id", task.ID, "step", step, "phase", phase, "reason", reason)
+		}
 	}
 	d.countTaskStepRetry()
-	d.logChatEvent(ctx, task.ChatID, task.UserID, store.EventTaskStepRetry,
-		"step "+strconv.Itoa(task.NextStep+1)+" reason "+reason)
+	detail := "step " + strconv.Itoa(step) + " reason " + reason
+	if phase == taskPhaseSynthesis {
+		detail = "synthesis reason " + reason
+	}
+	d.logChatEvent(ctx, task.ChatID, task.UserID, store.EventTaskStepRetry, detail)
 	if d.taskStepRetryDelay <= 0 {
 		return true
 	}

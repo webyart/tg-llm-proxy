@@ -495,3 +495,21 @@ func TestLoadFromTaskBudgets(t *testing.T) {
 		t.Fatalf("equal task budgets were accepted: %v", problems)
 	}
 }
+
+func TestLoadFromTaskBudgetsRequireRoomForTheSingleRetry(t *testing.T) {
+	_, problems := LoadFrom(map[string]string{
+		"TELEGRAM_BOT_TOKEN":         "1:secret",
+		"TASK_MODEL_TIMEOUT_SECONDS": "300",
+		"TASK_STEP_DEADLINE_SECONDS": "450",
+	})
+	if !hasProblemNamed(problems, "at least twice TASK_MODEL_TIMEOUT_SECONDS") {
+		t.Fatalf("a step that cannot hold one model call and its retry was accepted: %v", problems)
+	}
+	if _, problems = LoadFrom(map[string]string{
+		"TELEGRAM_BOT_TOKEN":         "1:secret",
+		"TASK_MODEL_TIMEOUT_SECONDS": "300",
+		"TASK_STEP_DEADLINE_SECONDS": "600",
+	}); len(problems) != 0 {
+		t.Fatalf("a step budget of twice the model timeout was rejected: %v", problems)
+	}
+}

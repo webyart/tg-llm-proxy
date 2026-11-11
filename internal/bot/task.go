@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-telegram/bot/models"
 
+	"bot/internal/config"
 	"bot/internal/i18n"
 	"bot/internal/model"
 	"bot/internal/store"
@@ -316,8 +317,10 @@ func (d *Dispatcher) ClearTasks(ctx context.Context, chatID int64) (int64, error
 func (d *Dispatcher) planTask(ctx context.Context, userID int64, selectedModel string, goal string) (TaskPlan, error) {
 	planSeconds := d.deps.Cfg.TaskStepDeadlineSeconds
 	if planSeconds <= 0 {
-		planSeconds = 300
+		planSeconds = config.DefaultTaskStepDeadlineSeconds
 	}
+	// Planning is a task model call: its context carries the task step deadline, and the caller (the command
+	// handler) never applies the chat reply budget to /task.
 	planCtx, cancel := context.WithTimeout(ctx, time.Duration(planSeconds)*time.Second)
 	defer cancel()
 	response, err := d.callModel(planCtx, userID, model.Request{Model: selectedModel, Timeout: d.taskModelTimeout(), Messages: []model.Message{
@@ -526,18 +529,13 @@ func (d *Dispatcher) sendTaskMenu(ctx context.Context, ev Event) error {
 	return d.reply(ctx, ev.ChatID, text)
 }
 
-func taskStepResults(task store.Task, expected int) ([]string, error) {
-	var results []string
-	if err := json.Unmarshal([]byte(task.ResultsJSON), &results); err != nil {
-		return nil, fmt.Errorf("%w: stored results are not a string array", store.ErrTaskInvalid)
+func taskStepResults(task store.Task, expected int) ([]store.TaskStepResult, error) {
+	results, err := store.ParseTaskResults(task.ResultsJSON)
+	if err != nil {
+		return nil, fmt.Errorf("%w: stored results are invalid: %v", store.ErrTaskInvalid, err)
 	}
 	if len(results) != expected {
 		return nil, fmt.Errorf("%w: stored results length %d, want %d", store.ErrTaskInvalid, len(results), expected)
-	}
-	for _, result := range results {
-		if strings.TrimSpace(result) == "" || len([]rune(result)) > taskFinalResultRunes {
-			return nil, fmt.Errorf("%w: stored result is empty or too long", store.ErrTaskInvalid)
-		}
 	}
 	return results, nil
 }

@@ -110,7 +110,7 @@ func TestTaskProgressCreatesAndReusesOneStatusMessage(t *testing.T) {
 		}
 	}
 	first := edits[0].text
-	for _, want := range []string{"Задача #1", "шаг 1/2", "Gather the relevant facts", "прошло", "ETA"} {
+	for _, want := range []string{"Задача #1", "шаг 1/2", "Gather the relevant facts", "идёт", "осталось", "токены"} {
 		if !strings.Contains(first, want) {
 			t.Errorf("first progress edit misses %q: %q", want, first)
 		}

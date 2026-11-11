@@ -132,9 +132,13 @@ const DefaultTimeoutSeconds = int64(60)
 const DefaultDeadlineSeconds = int64(90)
 
 // A task step may include a web search and a long local generation, so it gets its own budgets instead of the
-// chat reply deadline. Four minutes per model call and five minutes per step fit a slow 27B model with tools.
+// chat reply deadline. The step budget must hold one full model call AND its single retry, so it defaults to
+// twice the per-call budget. A fully slow step that spends every tool round at the full per-call timeout needs
+// more: the worst case is five calls (four tool rounds plus the final answer), and the startup summary warns
+// when the step budget cannot cover it. Raising TASK_STEP_DEADLINE_SECONDS is the operator's decision, because
+// it also raises the task lease.
 const DefaultTaskModelTimeoutSeconds = int64(240)
-const DefaultTaskStepDeadlineSeconds = int64(300)
+const DefaultTaskStepDeadlineSeconds = int64(600)
 const DefaultRecoveryMaxAgeHours = int64(24)
 const DefaultContextMessages = int64(20)
 const DefaultMaxContextChars = int64(8000)
@@ -799,6 +803,11 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	problems = Push(problems, badTaskStepDeadline)
 	if taskModelTimeout >= taskStepDeadline {
 		problems = Push(problems, "ENV TASK_MODEL_TIMEOUT_SECONDS must be smaller than TASK_STEP_DEADLINE_SECONDS: one model call has to fit inside the step budget ")
+	}
+	// One step may retry its model call once. If the step budget cannot hold two full per-call budgets, the
+	// retry starts with no room and a slow provider fails the step even though the retry policy is correct.
+	if taskStepDeadline < 2*taskModelTimeout {
+		problems = Push(problems, "ENV TASK_STEP_DEADLINE_SECONDS must be at least twice TASK_MODEL_TIMEOUT_SECONDS: one model call and its single retry have to fit inside the step budget ")
 	}
 
 	recoveryMaxAge, badRecoveryMaxAge := Num(raw, "RECOVERY_MAX_AGE_HOURS", DefaultRecoveryMaxAgeHours, 0, 8760)

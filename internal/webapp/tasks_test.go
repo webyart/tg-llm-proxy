@@ -9,8 +9,112 @@ import (
 	"testing"
 	"time"
 
+	"bot/internal/bot"
+	"bot/internal/model"
 	"bot/internal/store"
+	"bot/internal/testutil"
 )
+
+// slowAPIPlanModel is the 5-second planner of the HTTP regression: POST /api/tasks must return long
+// before this model answers.
+type slowAPIPlanModel struct {
+	delay time.Duration
+}
+
+func (m *slowAPIPlanModel) Complete(ctx context.Context, req model.Request) (model.Response, error) {
+	select {
+	case <-time.After(m.delay):
+	case <-ctx.Done():
+		return model.Response{}, ctx.Err()
+	}
+	return model.Response{Content: `{"steps":[{"description":"prepare the overview"}]}`}, nil
+}
+
+func (m *slowAPIPlanModel) Models(context.Context) ([]string, error) { return nil, nil }
+
+func TestTaskCreationReturnsBeforeTheSlowPlan(t *testing.T) {
+	app, server := newTestApp(t)
+	dispatcher := bot.New(bot.Deps{Cfg: app.cfg, DB: app.db, Model: &slowAPIPlanModel{delay: 5 * time.Second},
+		Logger: app.logger, Token: app.cfg.BotToken})
+	app.SetTaskLifecycle(dispatcher)
+	bearer := launchSession(t, app, server)
+
+	start := time.Now()
+	status, body := settingsRequest(t, server.URL, http.MethodPost, "/api/tasks", bearer,
+		`{"goal":"prepare a project overview"}`, "application/json")
+	elapsed := time.Since(start)
+	if status != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", status, body)
+	}
+	t.Logf("POST /api/tasks returned in %s while the planner model sleeps for 5s", elapsed)
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("POST /api/tasks blocked for %s on the slow planner", elapsed)
+	}
+	var created struct {
+		ID     int64  `json:"id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &created); err != nil || created.ID <= 0 || created.Status != store.TaskStatusPlanning {
+		t.Fatalf("create response=%s err=%v", body, err)
+	}
+
+	// The list already exposes the planning row while the model is still working.
+	status, body, _ = apiRequest(t, server, http.MethodGet, "/api/tasks?limit=1", bearer)
+	if status != http.StatusOK || !strings.Contains(string(body), `"status":"planning"`) ||
+		!strings.Contains(string(body), `"has_plan":false`) {
+		t.Fatalf("planning list status=%d body=%s", status, body)
+	}
+
+	testutil.Eventually(t, 10*time.Second, func() bool {
+		current, found, err := store.CurrentTask(context.Background(), app.db, testChatID)
+		return err == nil && found && current.Status == store.TaskStatusReady && current.PlanJSON != ""
+	}, func() string { return "the background plan did not become ready" })
+}
+
+type fakeReplanLifecycle struct {
+	TaskLifecycle
+	task    store.Task
+	changed bool
+	calls   int
+}
+
+func (f *fakeReplanLifecycle) ReplanTask(context.Context, int64, int64) (store.Task, bool, error) {
+	f.calls++
+	return f.task, f.changed, nil
+}
+
+func TestTaskReplanEndpointIsScopedAndDoesNotBlock(t *testing.T) {
+	app, server := newTestApp(t)
+	bearer := launchSession(t, app, server)
+	lifecycle := &fakeReplanLifecycle{
+		task:    store.Task{ID: 71, ChatID: testChatID, Status: store.TaskStatusPlanning},
+		changed: true,
+	}
+	app.SetTaskLifecycle(lifecycle)
+
+	status, body := settingsRequest(t, server.URL, http.MethodPost, "/api/tasks/71/replan", bearer, "", "")
+	if status != http.StatusOK || !strings.Contains(string(body), `"status":"planning"`) {
+		t.Fatalf("replan status=%d body=%s", status, body)
+	}
+	if lifecycle.calls != 1 {
+		t.Fatalf("lifecycle replan calls=%d, want 1", lifecycle.calls)
+	}
+	if status, _ := settingsRequest(t, server.URL, http.MethodPost, "/api/tasks/71/replan?x=1", bearer, "", ""); status != http.StatusBadRequest {
+		t.Fatalf("replan with query status=%d", status)
+	}
+	if status, _ := settingsRequest(t, server.URL, http.MethodGet, "/api/tasks/71/replan", bearer, "", ""); status != http.StatusMethodNotAllowed {
+		t.Fatalf("GET replan status=%d", status)
+	}
+	if status, _ := settingsRequest(t, server.URL, http.MethodPost, "/api/tasks/not-an-id/replan", bearer, "", ""); status != http.StatusNotFound {
+		t.Fatalf("invalid replan id status=%d", status)
+	}
+
+	lifecycle.changed = false
+	status, body = settingsRequest(t, server.URL, http.MethodPost, "/api/tasks/71/replan", bearer, "", "")
+	if status != http.StatusConflict || !strings.Contains(string(body), `"code":"task_not_replannable"`) {
+		t.Fatalf("non-replannable status=%d body=%s", status, body)
+	}
+}
 
 func createWebappTask(t *testing.T, app *App, chatID int64, now time.Time) store.Task {
 	t.Helper()
@@ -50,6 +154,7 @@ type recordingTaskLifecycle struct {
 	base        TaskLifecycle
 	cancelCalls int
 	resumeCalls int
+	replanCalls int
 	clearCalls  int
 }
 
@@ -65,6 +170,11 @@ func (l *recordingTaskLifecycle) CancelTask(ctx context.Context, chatID int64) (
 func (l *recordingTaskLifecycle) ResumeTask(ctx context.Context, chatID int64, taskID int64) (store.Task, bool, error) {
 	l.resumeCalls++
 	return l.base.ResumeTask(ctx, chatID, taskID)
+}
+
+func (l *recordingTaskLifecycle) ReplanTask(ctx context.Context, chatID int64, taskID int64) (store.Task, bool, error) {
+	l.replanCalls++
+	return l.base.ReplanTask(ctx, chatID, taskID)
 }
 
 func (l *recordingTaskLifecycle) ClearTasks(ctx context.Context, chatID int64) (int64, error) {

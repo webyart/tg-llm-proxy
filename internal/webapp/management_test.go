@@ -34,6 +34,10 @@ func (f *fakeManagementTaskLifecycle) CreateTask(_ context.Context, chatID int64
 	return f.created, nil
 }
 
+func (f *fakeManagementTaskLifecycle) ReplanTask(context.Context, int64, int64) (store.Task, bool, error) {
+	return store.Task{}, false, errLifecycleUnavailable
+}
+
 type fakeManagementLinkLifecycle struct {
 	created  store.SavedLink
 	replaced bool

@@ -185,6 +185,7 @@ type TaskLifecycle interface {
 	CreateTask(ctx context.Context, chatID int64, userID int64, goal string) (store.Task, error)
 	CancelTask(ctx context.Context, chatID int64) (store.Task, bool, error)
 	ResumeTask(ctx context.Context, chatID int64, taskID int64) (store.Task, bool, error)
+	ReplanTask(ctx context.Context, chatID int64, taskID int64) (store.Task, bool, error)
 	ClearTasks(ctx context.Context, chatID int64) (int64, error)
 }
 
@@ -228,6 +229,12 @@ func (l storeTaskLifecycle) CancelTask(ctx context.Context, chatID int64) (store
 
 func (l storeTaskLifecycle) ResumeTask(ctx context.Context, chatID int64, taskID int64) (store.Task, bool, error) {
 	return store.ResumeTask(ctx, l.db, chatID, taskID, time.Now().UTC(), bot.TaskLifetime)
+}
+
+// ReplanTask needs the model planner, which a bare store lifecycle does not have. It is available only
+// when the production dispatcher is installed through SetTaskLifecycle.
+func (l storeTaskLifecycle) ReplanTask(context.Context, int64, int64) (store.Task, bool, error) {
+	return store.Task{}, false, errLifecycleUnavailable
 }
 
 func (l storeTaskLifecycle) ClearTasks(ctx context.Context, chatID int64) (int64, error) {
@@ -754,6 +761,9 @@ func miniAppMutationOperation(req *http.Request) (string, bool) {
 		}
 		if _, ok := resumeTaskID(path); ok {
 			return "tasks.resume", true
+		}
+		if _, ok := replanTaskID(path); ok {
+			return "tasks.replan", true
 		}
 		if _, ok := deleteTaskID(path); ok {
 			return "tasks.delete", true

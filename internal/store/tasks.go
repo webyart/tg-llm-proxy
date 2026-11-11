@@ -12,6 +12,9 @@ import (
 )
 
 const (
+	// TaskStatusPlanning is the state of a task whose row exists but whose plan is still being produced
+	// by the background planner. The scheduler never claims it; only SaveTaskPlan moves it to ready.
+	TaskStatusPlanning         = "planning"
 	TaskStatusReady            = "ready"
 	TaskStatusRunning          = "running"
 	TaskStatusAwaitingApproval = "awaiting_approval"
@@ -36,16 +39,19 @@ var (
 const EventTaskStepRetry = "task_step_retry"
 
 type Task struct {
-	ID                int64
-	ChatID            int64
-	UserID            int64
-	Goal              string
-	Model             string
-	PlanJSON          string
-	ResultsJSON       string
-	NextStep          int
-	Status            string
-	Attempts          int
+	ID          int64
+	ChatID      int64
+	UserID      int64
+	Goal        string
+	Model       string
+	PlanJSON    string
+	ResultsJSON string
+	NextStep    int
+	Status      string
+	Attempts    int
+	// PlanningAttempts counts how many times the background planner was started for this row. Crash
+	// recovery increments it; the counter caps the retries instead of re-enqueueing a broken row forever.
+	PlanningAttempts  int
 	DueAt             time.Time
 	ClaimToken        string
 	LeaseUntil        *time.Time
@@ -63,8 +69,11 @@ type Task struct {
 	FinishedAt      *time.Time
 }
 
+// ActiveTaskStatus reports whether the chat's single active task slot is occupied. A planning row is
+// active: its plan is being produced and the chat must not start a second task beside it.
 func ActiveTaskStatus(status string) bool {
-	return status == TaskStatusReady || status == TaskStatusRunning || status == TaskStatusAwaitingApproval
+	return status == TaskStatusPlanning || status == TaskStatusReady || status == TaskStatusRunning ||
+		status == TaskStatusAwaitingApproval
 }
 
 // TaskStepResult is one stored step outcome: the model answer plus the usage of the call that produced it.
@@ -173,7 +182,7 @@ func CreateTask(ctx context.Context, db *sql.DB, task Task) (Task, error) {
 	result, err := db.ExecContext(ctx, `INSERT INTO tasks
 		(chat_id, user_id, goal, model, plan_json, results_json, next_step, status, attempts, due_at, expires_at, created_at, updated_at)
 		SELECT ?, ?, ?, ?, ?, '[]', 0, 'ready', 0, ?, ?, ?, ?
-		WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE chat_id = ? AND status IN ('ready', 'running', 'awaiting_approval'))`,
+		WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE chat_id = ? AND status IN ('planning', 'ready', 'running', 'awaiting_approval'))`,
 		task.ChatID, task.UserID, task.Goal, task.Model, task.PlanJSON,
 		formatReminderTime(task.DueAt), formatReminderTime(task.ExpiresAt), formatReminderTime(now), formatReminderTime(now), task.ChatID)
 	if err != nil {
@@ -193,8 +202,63 @@ func CreateTask(ctx context.Context, db *sql.DB, task Task) (Task, error) {
 	return task, err
 }
 
+// CreatePlanningTask inserts the row BEFORE the model is called: the plan is empty, the status is
+// 'planning', and planning_attempts starts at one. The caller gets the id immediately and a background
+// worker later fills the plan with SaveTaskPlan. The same per-chat active guard as CreateTask applies, so
+// a chat cannot create a second task while its first plan is still being generated.
+func CreatePlanningTask(ctx context.Context, db *sql.DB, task Task) (Task, error) {
+	task.Goal = strings.TrimSpace(task.Goal)
+	task.Model = strings.TrimSpace(task.Model)
+	goalRunes := []rune(task.Goal)
+	if len(goalRunes) == 0 || len(goalRunes) > TaskMaxGoalRunes || strings.ContainsRune(task.Goal, '\x00') {
+		return Task{}, ErrTaskGoal
+	}
+	if task.ChatID == 0 || task.UserID <= 0 {
+		return Task{}, fmt.Errorf("%w: chat and positive user id are required", ErrTaskInvalid)
+	}
+	if task.Model == "" || len([]rune(task.Model)) > 200 {
+		return Task{}, fmt.Errorf("%w: model is empty or too long", ErrTaskInvalid)
+	}
+	if task.ExpiresAt.IsZero() || task.DueAt.IsZero() {
+		return Task{}, fmt.Errorf("%w: due and expiry timestamps are required", ErrTaskInvalid)
+	}
+	now := time.Now().UTC()
+	if !task.CreatedAt.IsZero() {
+		now = task.CreatedAt.UTC()
+	}
+	task.CreatedAt = now
+	task.UpdatedAt = now
+	task.Status = TaskStatusPlanning
+	task.PlanJSON = ""
+	task.ResultsJSON = "[]"
+	task.NextStep = 0
+	task.PlanningAttempts = 1
+	result, err := db.ExecContext(ctx, `INSERT INTO tasks
+		(chat_id, user_id, goal, model, plan_json, results_json, next_step, status, attempts, planning_attempts,
+		 due_at, expires_at, created_at, updated_at)
+		SELECT ?, ?, ?, ?, '', '[]', 0, 'planning', 0, 1, ?, ?, ?, ?
+		WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE chat_id = ? AND status IN ('planning', 'ready', 'running', 'awaiting_approval'))`,
+		task.ChatID, task.UserID, task.Goal, task.Model,
+		formatReminderTime(task.DueAt), formatReminderTime(task.ExpiresAt), formatReminderTime(now), formatReminderTime(now), task.ChatID)
+	if err != nil {
+		if strings.Contains(err.Error(), "uq_tasks_chat_active") {
+			return Task{}, ErrTaskActive
+		}
+		return Task{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Task{}, err
+	}
+	if affected != 1 {
+		return Task{}, ErrTaskActive
+	}
+	task.ID, err = result.LastInsertId()
+	return task, err
+}
+
 const taskColumns = `id, chat_id, user_id, goal, model, plan_json, results_json, next_step, status, attempts,
-	due_at, COALESCE(claim_token, ''), COALESCE(lease_until, ''), COALESCE(continuation_json, ''),
+	planning_attempts, due_at, COALESCE(claim_token, ''), COALESCE(lease_until, ''), COALESCE(continuation_json, ''),
 	COALESCE(approval_token, ''), COALESCE(approval_message_id, 0), COALESCE(approval_expires_at, ''),
 	expires_at, COALESCE(error, ''), created_at, updated_at, COALESCE(finished_at, ''),
 	COALESCE(status_message_id, 0)`
@@ -207,7 +271,7 @@ func scanTask(scanner taskScanner) (Task, error) {
 	var task Task
 	var dueAt, leaseUntil, approvalExpiresAt, expiresAt, createdAt, updatedAt, finishedAt string
 	if err := scanner.Scan(&task.ID, &task.ChatID, &task.UserID, &task.Goal, &task.Model, &task.PlanJSON, &task.ResultsJSON,
-		&task.NextStep, &task.Status, &task.Attempts, &dueAt, &task.ClaimToken, &leaseUntil, &task.ContinuationJSON,
+		&task.NextStep, &task.Status, &task.Attempts, &task.PlanningAttempts, &dueAt, &task.ClaimToken, &leaseUntil, &task.ContinuationJSON,
 		&task.ApprovalToken, &task.ApprovalMessageID, &approvalExpiresAt, &expiresAt, &task.Error, &createdAt, &updatedAt, &finishedAt,
 		&task.StatusMessageID); err != nil {
 		return Task{}, err
@@ -236,6 +300,121 @@ func scanTask(scanner taskScanner) (Task, error) {
 		*target = &parsed
 	}
 	return task, nil
+}
+
+// SaveTaskPlan stores the plan produced by the background planner and moves the task to the state the
+// scheduler already claims ('ready'). It only matches a row still in 'planning': a cancel, a delete, or a
+// crash-recovery reset that won the race makes the update a no-op instead of resurrecting the task.
+func SaveTaskPlan(ctx context.Context, db *sql.DB, taskID int64, planJSON string, now time.Time) (bool, error) {
+	if taskID <= 0 || planJSON == "" || len(planJSON) > 8192 || !json.Valid([]byte(planJSON)) {
+		return false, fmt.Errorf("%w: a stored plan needs a task and valid plan JSON", ErrTaskInvalid)
+	}
+	result, err := db.ExecContext(ctx, `UPDATE tasks
+		SET plan_json = ?, status = 'ready', due_at = ?, error = NULL, updated_at = ?
+		WHERE id = ? AND status = 'planning'`,
+		planJSON, formatReminderTime(now), formatReminderTime(now), taskID)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
+}
+
+// FailTaskPlanning is the terminal transition of a failed background plan. It is deliberately separate
+// from FailTask: a planning row has no claim token, and its error is already localized by the caller.
+func FailTaskPlanning(ctx context.Context, db *sql.DB, taskID int64, reason string, now time.Time) (bool, error) {
+	if taskID <= 0 {
+		return false, fmt.Errorf("%w: planning failure needs a task", ErrTaskInvalid)
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "task planning failed"
+	}
+	if runes := []rune(reason); len(runes) > 500 {
+		reason = string(runes[:500])
+	}
+	result, err := db.ExecContext(ctx, `UPDATE tasks
+		SET status = 'failed', error = ?, claim_token = NULL, lease_until = NULL, continuation_json = NULL,
+			approval_token = NULL, approval_message_id = NULL, approval_expires_at = NULL,
+			updated_at = ?, finished_at = ?
+		WHERE id = ? AND status = 'planning'`,
+		reason, formatReminderTime(now), formatReminderTime(now), taskID)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
+}
+
+// ListStalePlanningTasks returns planning rows whose last update is at or before olderThan. The scheduler
+// periodically feeds them to crash recovery; an in-process planner is skipped by the dispatcher before the
+// row is reset, so this query alone does not guarantee that the plan is dead.
+func ListStalePlanningTasks(ctx context.Context, db *sql.DB, olderThan time.Time, limit int) ([]Task, error) {
+	if limit <= 0 || limit > 20 {
+		limit = 20
+	}
+	rows, err := db.QueryContext(ctx, `SELECT `+taskColumns+` FROM tasks
+		WHERE status = 'planning' AND updated_at <= ?
+		ORDER BY updated_at, id LIMIT ?`, formatReminderTime(olderThan), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var tasks []Task
+	for rows.Next() {
+		task, scanErr := scanTask(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks, rows.Err()
+}
+
+// ResetTaskPlanning re-arms a planning row found by crash recovery: the attempt counter grows, the stale
+// error state and any claim leftovers are cleared, and the task lifetime is extended from now.
+func ResetTaskPlanning(ctx context.Context, db *sql.DB, taskID int64, now time.Time, lifetime time.Duration) (bool, error) {
+	if taskID <= 0 || lifetime <= 0 {
+		return false, fmt.Errorf("%w: planning reset needs a task and a positive lifetime", ErrTaskInvalid)
+	}
+	result, err := db.ExecContext(ctx, `UPDATE tasks
+		SET status = 'planning', planning_attempts = planning_attempts + 1, due_at = ?, expires_at = ?,
+			claim_token = NULL, lease_until = NULL, continuation_json = NULL, approval_token = NULL,
+			approval_message_id = NULL, approval_expires_at = NULL, error = NULL, finished_at = NULL,
+			updated_at = ?
+		WHERE id = ? AND status = 'planning'`,
+		formatReminderTime(now), formatReminderTime(now.Add(lifetime)), formatReminderTime(now), taskID)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
+}
+
+// ReplanTask re-arms the latest failed task of a chat whose plan was NEVER produced (the failed planning
+// row). A task that failed during execution has a valid plan and must use resume instead, so plan_json
+// must be empty for this transition.
+func ReplanTask(ctx context.Context, db *sql.DB, chatID int64, taskID int64, now time.Time, lifetime time.Duration) (Task, bool, error) {
+	if chatID == 0 || taskID <= 0 || lifetime <= 0 {
+		return Task{}, false, fmt.Errorf("%w: replan needs a chat, task id, and positive lifetime", ErrTaskInvalid)
+	}
+	nowText := formatReminderTime(now)
+	row := db.QueryRowContext(ctx, `UPDATE tasks
+		SET status = 'planning', plan_json = '', planning_attempts = planning_attempts + 1, attempts = 0,
+			due_at = ?, expires_at = ?, claim_token = NULL, lease_until = NULL, continuation_json = NULL,
+			approval_token = NULL, approval_message_id = NULL, approval_expires_at = NULL,
+			error = NULL, finished_at = NULL, updated_at = ?
+		WHERE id = (SELECT id FROM tasks WHERE chat_id = ? AND status = 'failed' ORDER BY id DESC LIMIT 1)
+			AND id = ? AND chat_id = ? AND status = 'failed' AND plan_json = ''
+		RETURNING `+taskColumns, nowText, formatReminderTime(now.Add(lifetime)), nowText, chatID, taskID, chatID)
+	task, err := scanTask(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Task{}, false, nil
+	}
+	if err != nil {
+		return Task{}, false, err
+	}
+	return task, true, nil
 }
 
 func CurrentTask(ctx context.Context, db *sql.DB, chatID int64) (Task, bool, error) {
@@ -493,8 +672,8 @@ func CancelTask(ctx context.Context, db *sql.DB, chatID int64, now time.Time) (T
 		SET status = 'cancelled', claim_token = NULL, lease_until = NULL, continuation_json = NULL,
 			approval_token = NULL, approval_message_id = NULL, approval_expires_at = NULL,
 			updated_at = ?, finished_at = ?
-		WHERE id = (SELECT id FROM tasks WHERE chat_id = ? AND status IN ('ready', 'running', 'awaiting_approval') ORDER BY id DESC LIMIT 1)
-			AND chat_id = ? AND status IN ('ready', 'running', 'awaiting_approval')
+		WHERE id = (SELECT id FROM tasks WHERE chat_id = ? AND status IN ('planning', 'ready', 'running', 'awaiting_approval') ORDER BY id DESC LIMIT 1)
+			AND chat_id = ? AND status IN ('planning', 'ready', 'running', 'awaiting_approval')
 		RETURNING `+taskColumns, formatReminderTime(now), formatReminderTime(now), chatID, chatID)
 	task, err := scanTask(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -516,7 +695,7 @@ func ResumeTask(ctx context.Context, db *sql.DB, chatID int64, taskID int64, now
 			continuation_json = NULL, approval_token = NULL, approval_message_id = NULL,
 			approval_expires_at = NULL, expires_at = ?, error = NULL, finished_at = NULL, updated_at = ?
 		WHERE id = (SELECT id FROM tasks WHERE chat_id = ? ORDER BY id DESC LIMIT 1)
-			AND id = ? AND chat_id = ? AND status IN ('failed', 'cancelled')
+			AND id = ? AND chat_id = ? AND status IN ('failed', 'cancelled') AND plan_json <> ''
 		RETURNING `+taskColumns, nowText, formatReminderTime(now.Add(lifetime)), nowText, chatID, taskID, chatID)
 	task, err := scanTask(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -535,7 +714,7 @@ func ExpireTasks(ctx context.Context, db *sql.DB, now time.Time, limit int) ([]T
 	nowText := formatReminderTime(now)
 	var workExists bool
 	if err := db.QueryRowContext(ctx, `SELECT EXISTS (
-		SELECT 1 FROM tasks WHERE status IN ('ready', 'running', 'awaiting_approval')
+		SELECT 1 FROM tasks WHERE status IN ('planning', 'ready', 'running', 'awaiting_approval')
 			AND (expires_at <= ? OR (status = 'awaiting_approval' AND approval_expires_at <= ?))
 	)`, nowText, nowText).Scan(&workExists); err != nil {
 		return nil, err
@@ -548,7 +727,7 @@ func ExpireTasks(ctx context.Context, db *sql.DB, now time.Time, limit int) ([]T
 			lease_until = NULL, continuation_json = NULL, approval_token = NULL,
 			approval_message_id = NULL, approval_expires_at = NULL, updated_at = ?, finished_at = ?
 		WHERE id IN (
-			SELECT id FROM tasks WHERE status IN ('ready', 'running', 'awaiting_approval')
+			SELECT id FROM tasks WHERE status IN ('planning', 'ready', 'running', 'awaiting_approval')
 				AND (expires_at <= ? OR (status = 'awaiting_approval' AND approval_expires_at <= ?))
 			ORDER BY id LIMIT ?
 		) RETURNING `+taskColumns, nowText, nowText, nowText, nowText, limit)

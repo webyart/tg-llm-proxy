@@ -201,6 +201,14 @@ type Dispatcher struct {
 	activeHandlers      atomic.Int64
 	now                 func() time.Time
 	taskWake            chan struct{}
+	// Background task planning. planningActive deduplicates a job already running in this process,
+	// planningSlots bounds concurrent model calls, and planningCtx ties new jobs to the scheduler lifetime.
+	planningMu     sync.Mutex
+	planningActive map[int64]bool
+	planningSlots  chan struct{}
+	planningCtxMu  sync.RWMutex
+	planningCtx    context.Context
+
 	// The two sets of pending user decisions used to be package-level sync.Maps keyed by the *Dispatcher. A
 	// global keyed by a pointer leaks one entry per dispatcher for the life of the process (every test creates
 	// one), and the state it holds — approvals and their continuations — was invisible in the struct that owns
@@ -263,6 +271,7 @@ func New(deps Deps) *Dispatcher {
 		outboundTools:      make(chan struct{}, globalOutboundToolLimit),
 		now:                time.Now,
 		taskWake:           make(chan struct{}, 1),
+		planningSlots:      make(chan struct{}, taskPlanningConcurrency),
 		taskStepRetryDelay: taskStepRetryBackoff,
 	}
 	d.configureAdmission(int(deps.Cfg.MaxConcurrentRequests))
@@ -427,7 +436,7 @@ func (d *Dispatcher) commandFor(ev Event) (Command, string) {
 func isNewTaskGoal(arg string) bool {
 	action := strings.TrimSpace(arg)
 	switch action {
-	case "", "menu", "menu:cancel", "menu:resume", "menu:clear", "clear", "clear confirm", "menu:new":
+	case "", "menu", "menu:cancel", "menu:resume", "menu:replan", "replan", "menu:clear", "clear", "clear confirm", "menu:new":
 		return false
 	}
 	if strings.EqualFold(action, "cancel") {

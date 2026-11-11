@@ -311,7 +311,7 @@ func TestFrontendOnlyTerminalTasksHaveDeleteAndKeepResume(t *testing.T) {
 		t.Errorf("task delete exact endpoint call count = %d, want 1", got)
 	}
 
-	activeBody := regexp.MustCompile(`(?s)if \(\["ready", "running", "awaiting_approval"\]\.includes\(item\.status\)\) \{(.*?)\} else if`).FindStringSubmatch(script)
+	activeBody := regexp.MustCompile(`(?s)if \(\["planning", "ready", "running", "awaiting_approval"\]\.includes\(item\.status\)\) \{(.*?)\} else if`).FindStringSubmatch(script)
 	if len(activeBody) != 2 {
 		t.Fatal("active task action branch is missing")
 	}
@@ -331,6 +331,38 @@ func TestFrontendOnlyTerminalTasksHaveDeleteAndKeepResume(t *testing.T) {
 	for _, rejected := range []string{`changeTask(`, `api(`, `fetch(`} {
 		if strings.Contains(armBody[1], rejected) {
 			t.Errorf("showing or cancelling task delete confirmation unexpectedly calls %q", rejected)
+		}
+	}
+}
+
+func TestFrontendAsyncTaskPlanningCardPollsAndReplans(t *testing.T) {
+	script := frontendAsset(t, "static/app.js")
+	for _, want := range []string{
+		`task_planning: "готовит план"`, `task_planning: "planning"`,
+		`planningInProgress: "План готовится…"`, `planningInProgress: "Preparing the plan…"`,
+		`replanTask: "Повторить план"`, `replanTask: "Retry plan"`,
+		`settingsButton(t("replanTask"), () => replanTask(item.id))`,
+		"`/api/tasks/${id}/replan`",
+		"function scheduleTaskPoll()", "async function pollTaskPlanning()",
+		"setTimeout(pollTaskPlanning, 2500)", "item.has_plan",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js misses async task planning behaviour %q", want)
+		}
+	}
+	body := regexp.MustCompile(`(?s)async function createTask\([^\n]*\) \{(.*?)\n  \}`).FindStringSubmatch(script)
+	if len(body) != 2 {
+		t.Fatal("async createTask helper is missing")
+	}
+	for _, want := range []string{`await api("/api/tasks"`, `scheduleTaskPoll();`, `renderItems("tasks", view.items);`} {
+		if !strings.Contains(body[1], want) {
+			t.Errorf("async createTask misses %q", want)
+		}
+	}
+	// The whole point of the asynchronous creation: the form must not enter the global busy state.
+	for _, rejected := range []string{"setBusy(true)", "createResource("} {
+		if strings.Contains(body[1], rejected) {
+			t.Errorf("async createTask still blocks the form with %q", rejected)
 		}
 	}
 }

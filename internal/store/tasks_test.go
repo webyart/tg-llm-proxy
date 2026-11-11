@@ -655,3 +655,182 @@ func TestSetTaskStatusMessageValidatesAndPersists(t *testing.T) {
 		t.Fatalf("stored status message id=%d found=%v err=%v", current.StatusMessageID, found, err)
 	}
 }
+
+func TestTaskPlanningLifecycleStoresPlanOnlyWhenReady(t *testing.T) {
+	ctx := context.Background()
+	db := taskTestDB(t)
+	now := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)
+	if err := EnsureChat(ctx, db, 100, 11, ""); err != nil {
+		t.Fatal(err)
+	}
+	created, err := CreatePlanningTask(ctx, db, Task{ChatID: 100, UserID: 11, Goal: "plan this", Model: "m",
+		DueAt: now, ExpiresAt: now.Add(time.Hour), CreatedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Status != TaskStatusPlanning || created.PlanJSON != "" || created.PlanningAttempts != 1 || !ActiveTaskStatus(created.Status) {
+		t.Fatalf("created planning task=%+v", created)
+	}
+	if _, err := CreatePlanningTask(ctx, db, Task{ChatID: 100, UserID: 11, Goal: "second", Model: "m",
+		DueAt: now, ExpiresAt: now.Add(time.Hour), CreatedAt: now}); !errors.Is(err, ErrTaskActive) {
+		t.Fatalf("second planning row err=%v, want ErrTaskActive", err)
+	}
+	if _, found, err := ClaimNextTask(ctx, db, now, time.Minute); err != nil || found {
+		t.Fatalf("planning row was claimed: found=%v err=%v", found, err)
+	}
+	stored, found, err := CurrentTask(ctx, db, 100)
+	if err != nil || !found || stored.Status != TaskStatusPlanning || stored.PlanJSON != "" {
+		t.Fatalf("stored planning task=%+v found=%v err=%v", stored, found, err)
+	}
+	saved, err := SaveTaskPlan(ctx, db, created.ID, testTaskPlan, now.Add(time.Second))
+	if err != nil || !saved {
+		t.Fatalf("SaveTaskPlan saved=%v err=%v", saved, err)
+	}
+	ready, found, err := CurrentTask(ctx, db, 100)
+	if err != nil || !found || ready.Status != TaskStatusReady || ready.PlanJSON != testTaskPlan {
+		t.Fatalf("ready task=%+v found=%v err=%v", ready, found, err)
+	}
+	if saved, err := SaveTaskPlan(ctx, db, created.ID, testTaskPlan, now.Add(2*time.Second)); err != nil || saved {
+		t.Fatalf("second SaveTaskPlan saved=%v err=%v", saved, err)
+	}
+	claimed, found, err := ClaimNextTask(ctx, db, now.Add(2*time.Second), time.Minute)
+	if err != nil || !found || claimed.ID != created.ID {
+		t.Fatalf("claim after plan=%+v found=%v err=%v", claimed, found, err)
+	}
+}
+
+func TestTaskPlanningCancelAndFailureTransitions(t *testing.T) {
+	ctx := context.Background()
+	db := taskTestDB(t)
+	now := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)
+	if err := EnsureChat(ctx, db, 100, 11, ""); err != nil {
+		t.Fatal(err)
+	}
+	cancelledRow, err := CreatePlanningTask(ctx, db, Task{ChatID: 100, UserID: 11, Goal: "cancel planning", Model: "m",
+		DueAt: now, ExpiresAt: now.Add(time.Hour), CreatedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled, ok, err := CancelTask(ctx, db, 100, now)
+	if err != nil || !ok || cancelled.ID != cancelledRow.ID || cancelled.Status != TaskStatusCancelled {
+		t.Fatalf("cancel planning task=%+v ok=%v err=%v", cancelled, ok, err)
+	}
+	if saved, err := SaveTaskPlan(ctx, db, cancelledRow.ID, testTaskPlan, now); err != nil || saved {
+		t.Fatalf("cancelled planning row accepted a plan: saved=%v err=%v", saved, err)
+	}
+	if _, ok, err := ResumeTask(ctx, db, 100, cancelledRow.ID, now, time.Hour); err != nil || ok {
+		t.Fatalf("planless cancelled task resumed: ok=%v err=%v", ok, err)
+	}
+
+	failedRow, err := CreatePlanningTask(ctx, db, Task{ChatID: 100, UserID: 11, Goal: "fail planning", Model: "m",
+		DueAt: now, ExpiresAt: now.Add(time.Hour), CreatedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed, err := FailTaskPlanning(ctx, db, failedRow.ID, "не удалось составить план", now); err != nil || !failed {
+		t.Fatalf("FailTaskPlanning changed=%v err=%v", failed, err)
+	}
+	replanned, changed, err := ReplanTask(ctx, db, 100, failedRow.ID, now.Add(time.Second), time.Hour)
+	if err != nil || !changed || replanned.ID != failedRow.ID || replanned.Status != TaskStatusPlanning ||
+		replanned.PlanJSON != "" || replanned.PlanningAttempts != 2 || replanned.FinishedAt != nil || replanned.Error != "" {
+		t.Fatalf("replanned task=%+v changed=%v err=%v", replanned, changed, err)
+	}
+	if saved, err := SaveTaskPlan(ctx, db, replanned.ID, testTaskPlan, now.Add(2*time.Second)); err != nil || !saved {
+		t.Fatalf("SaveTaskPlan after replan saved=%v err=%v", saved, err)
+	}
+}
+
+func TestTaskReplanRejectsAStoredPlanAndResumeRejectsAPlanlessRow(t *testing.T) {
+	ctx := context.Background()
+	db := taskTestDB(t)
+	now := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)
+	if err := EnsureChat(ctx, db, 100, 11, ""); err != nil {
+		t.Fatal(err)
+	}
+	created, err := CreateTask(ctx, db, newStoreTask(100, now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, found, err := ClaimNextTask(ctx, db, now, time.Minute)
+	if err != nil || !found {
+		t.Fatalf("claim found=%v err=%v", found, err)
+	}
+	if changed, err := FailTask(ctx, db, claimed, "execution failed", now); err != nil || !changed {
+		t.Fatalf("FailTask changed=%v err=%v", changed, err)
+	}
+	if _, changed, err := ReplanTask(ctx, db, 100, created.ID, now, time.Hour); err != nil || changed {
+		t.Fatalf("replan of a task with a plan changed=%v err=%v", changed, err)
+	}
+	if _, ok, err := ResumeTask(ctx, db, 100, created.ID, now, time.Hour); err != nil || !ok {
+		t.Fatalf("a failed execution task with a plan must stay resumable: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestTaskStalePlanningScanAndReset(t *testing.T) {
+	ctx := context.Background()
+	db := taskTestDB(t)
+	now := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)
+	if err := EnsureChat(ctx, db, 100, 11, ""); err != nil {
+		t.Fatal(err)
+	}
+	created, err := CreatePlanningTask(ctx, db, Task{ChatID: 100, UserID: 11, Goal: "stale", Model: "m",
+		DueAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), CreatedAt: now.Add(-time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale, err := ListStalePlanningTasks(ctx, db, now.Add(-2*time.Minute), 10)
+	if err != nil || len(stale) != 1 || stale[0].ID != created.ID {
+		t.Fatalf("stale tasks=%+v err=%v", stale, err)
+	}
+	if reset, err := ResetTaskPlanning(ctx, db, created.ID, now, time.Hour); err != nil || !reset {
+		t.Fatalf("ResetTaskPlanning changed=%v err=%v", reset, err)
+	}
+	reset, found, err := CurrentTask(ctx, db, 100)
+	if err != nil || !found || reset.PlanningAttempts != 2 || reset.Status != TaskStatusPlanning || reset.Error != "" {
+		t.Fatalf("reset planning task=%+v found=%v err=%v", reset, found, err)
+	}
+	if after, err := ListStalePlanningTasks(ctx, db, now.Add(-2*time.Minute), 10); err != nil || len(after) != 0 {
+		t.Fatalf("reset row is still stale: %+v err=%v", after, err)
+	}
+}
+
+func TestMigration025PreservesTasksAndAcceptsPlanning(t *testing.T) {
+	ctx := context.Background()
+	db, restore := openMemoryAtVersion(t, 24)
+	if err := EnsureChat(ctx, db, 100, 11, ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)
+	if _, err := db.ExecContext(ctx, `INSERT INTO tasks
+		(chat_id, user_id, goal, model, plan_json, results_json, next_step, status, attempts, due_at,
+		 expires_at, error, created_at, updated_at, finished_at, status_message_id)
+		VALUES (100, 11, 'old goal', 'old-model', ?, '[]', 0, 'ready', 0, ?, ?, 'old error', ?, ?, NULL, 777)`,
+		testTaskPlan, formatReminderTime(now), formatReminderTime(now.Add(time.Hour)),
+		formatReminderTime(now), formatReminderTime(now)); err != nil {
+		t.Fatal(err)
+	}
+	restore()
+	if err := ApplySchema(ctx, db); err != nil {
+		t.Fatalf("upgrade to 25: %v", err)
+	}
+	var goal, status, plan string
+	var messageID int64
+	var planningAttempts int
+	if err := db.QueryRowContext(ctx, `SELECT goal, status, plan_json, status_message_id, planning_attempts FROM tasks WHERE chat_id = 100`).
+		Scan(&goal, &status, &plan, &messageID, &planningAttempts); err != nil {
+		t.Fatalf("read migrated task: %v", err)
+	}
+	if goal != "old goal" || status != TaskStatusReady || plan != testTaskPlan || messageID != 777 || planningAttempts != 0 {
+		t.Fatalf("migrated row goal=%q status=%q plan=%q message=%d planning=%d", goal, status, plan, messageID, planningAttempts)
+	}
+	if err := EnsureChat(ctx, db, 101, 11, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO tasks
+		(chat_id, user_id, goal, model, plan_json, results_json, next_step, status, attempts, planning_attempts,
+		 due_at, expires_at, created_at, updated_at)
+		VALUES (101, 11, 'planning goal', 'm', '', '[]', 0, 'planning', 0, 1, ?, ?, ?, ?)`,
+		formatReminderTime(now), formatReminderTime(now.Add(time.Hour)), formatReminderTime(now), formatReminderTime(now)); err != nil {
+		t.Fatalf("the migrated schema rejected a planning row: %v", err)
+	}
+}

@@ -56,13 +56,18 @@ func TestCreateTaskStoresPlanWithinBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	if created.ID == 0 {
-		t.Fatal("CreateTask returned no id")
+	if created.ID == 0 || created.Status != store.TaskStatusPlanning {
+		t.Fatalf("CreateTask returned task=%+v, want an immediate planning row", created)
 	}
+	waitTaskPlanningSettled(t, d)
 	if got := fake.callCount(); got != 1 {
 		t.Fatalf("model calls = %d, want 1", got)
 	}
 	if allowed := d.deps.Limit.Count(11); allowed != 1 {
 		t.Fatalf("per-minute counter = %d, want 1: the successful plan must be counted", allowed)
+	}
+	current, found, readErr := store.CurrentTask(context.Background(), d.deps.DB, 902)
+	if readErr != nil || !found || current.Status != store.TaskStatusReady {
+		t.Fatalf("planned task=%+v found=%v err=%v", current, found, readErr)
 	}
 }

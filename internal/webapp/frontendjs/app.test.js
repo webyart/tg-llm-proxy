@@ -584,6 +584,107 @@ test("task creation validates goal and posts only goal to the lifecycle endpoint
   assert.equal(posts(harness)[0].options.body, JSON.stringify({ goal: "Подготовить обзор <безопасно>" }));
   assert.equal(harness.element("notice").textContent, "Задача создана.");
   assert.ok(content.querySelector(".creation-panel"));
+  // The response was planning, so the card appears at once and the form stays usable.
+  assert.match(content.textContent, /План готовится…/);
+  assert.ok(findButton(findArticle(content, "План готовится…"), "Отменить"));
+  assert.ok(content.querySelector('[aria-label="Цель задачи"]'));
+});
+
+test("task planning card polls to a failed plan and replans without blocking the form", async () => {
+  const timers = [];
+  const harness = await createHarness({
+    globals: {
+      setTimeout: (handler, delay) => { timers.push({ handler, delay }); return timers.length; },
+      clearTimeout: () => {},
+    },
+  });
+  let phase = 0;
+  harness.setHandler((request, fallback) => {
+    const path = request.path.split("?")[0];
+    if (path === "/api/tasks" && request.options.method === "POST") return jsonResponse({ id: 51, status: "planning" });
+    if (path === "/api/tasks" && (request.options.method || "GET") === "GET") {
+      if (phase === 0) {
+        return jsonResponse({ items: [{ id: 51, goal: "проверить план", status: "planning", next_step: 0, attempts: 0, has_plan: false, created_at: "2026-01-01" }] });
+      }
+      if (phase === 1) {
+        return jsonResponse({ items: [{
+          id: 51, goal: "проверить план", status: "failed", next_step: 0, attempts: 0, has_plan: false,
+          created_at: "2026-01-01", error: "не удалось составить план",
+        }] });
+      }
+      if (phase === 2) {
+        return jsonResponse({ items: [{ id: 51, goal: "проверить план", status: "planning", next_step: 0, attempts: 0, has_plan: false, created_at: "2026-01-01" }] });
+      }
+      return jsonResponse({ items: [{ id: 51, goal: "проверить план", status: "ready", next_step: 0, attempts: 0, has_plan: true, created_at: "2026-01-01", due_at: "2026-01-02", expires_at: "2026-01-03" }] });
+    }
+    if (path === "/api/tasks/51/replan") return jsonResponse({ ok: true, task_id: 51, status: "planning" });
+    return fallback();
+  });
+  await openTab(harness, "tasks");
+  harness.resetRequests();
+  const content = harness.element("content");
+  const goal = content.querySelector('[aria-label="Цель задачи"]');
+  goal.value = "проверить план";
+  goal.dispatchEvent({ type: "input" });
+  findButton(content, "Создать").click();
+  await harness.flush();
+  assert.ok(findArticle(content, "План готовится…"));
+  const poll = timers.filter((timer) => timer.delay === 2500).pop();
+  assert.ok(poll, "the planning card did not schedule a poll");
+
+  phase = 1;
+  poll.handler();
+  await harness.flush();
+  const failed = findArticle(content, "проверить план");
+  assert.match(failed.textContent, /не удалось составить план/);
+  findButton(failed, "Повторить план").click();
+  await harness.flush();
+  assert.equal(posts(harness).pop().path, "/api/tasks/51/replan");
+  assert.ok(findArticle(content, "План готовится…"));
+
+  phase = 2;
+  timers.filter((timer) => timer.delay === 2500).pop().handler();
+  await harness.flush();
+  phase = 3;
+  timers.filter((timer) => timer.delay === 2500).pop().handler();
+  await harness.flush();
+  const ready = findArticle(content, "проверить план");
+  assert.match(ready.textContent, /готова/);
+  assert.equal(ready.textContent.includes("Повторить план"), false);
+});
+
+test("planning card offers Cancel and posts the empty cancel request", async () => {
+  const harness = await createHarness();
+  let cancelled = false;
+  harness.setHandler((request, fallback) => {
+    const path = request.path.split("?")[0];
+    if (path === "/api/tasks/cancel" && request.options.method === "POST") {
+      cancelled = true;
+      return jsonResponse({ ok: true, task_id: 61, status: "cancelled" });
+    }
+    if (path === "/api/tasks" && (request.options.method || "GET") === "GET") {
+      return jsonResponse({ items: [{
+        id: 61, goal: "planning cancel", status: cancelled ? "cancelled" : "planning",
+        next_step: 0, attempts: 0, has_plan: false, created_at: "2026-01-01",
+      }] });
+    }
+    return fallback();
+  });
+  await openTab(harness, "tasks");
+  harness.resetRequests();
+  const content = harness.element("content");
+  let card = findArticle(content, "planning cancel");
+  findButton(card, "Отменить").click();
+  card = findArticle(content, "planning cancel");
+  findButton(card, "Отменить").click();
+  card = findArticle(content, "planning cancel");
+  findButton(card, "Отменить").click();
+  card = findArticle(content, "planning cancel");
+  findButton(card, "Подтвердить").click();
+  await harness.flush();
+  assert.equal(posts(harness).length, 1);
+  assert.equal(posts(harness)[0].path, "/api/tasks/cancel");
+  assert.equal(posts(harness)[0].options.body, undefined);
 });
 
 test("active task Cancel arms and cancels locally before one empty POST", async () => {

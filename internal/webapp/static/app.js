@@ -305,8 +305,10 @@
       tasks: "Задачи", activeTasks: "Активные задачи", awaitingAnswer: "Ожидает ответа", recoverySuppressed: "Автовосстановление отключено", yes: "Да", no: "Нет",
       emptyHistory: "Сообщений пока нет.", emptyItems: "Здесь пока пусто.", you: "Вы", assistant: "Ассистент",
       bytes: "байт", chunks: "фрагментов", step: "шаг", attempts: "попыток", due: "срок",
-      task_ready: "готова", task_running: "выполняется", task_awaiting_approval: "ждёт разрешения",
+      task_planning: "готовит план", task_ready: "готова", task_running: "выполняется", task_awaiting_approval: "ждёт разрешения",
       task_completed: "завершена", task_cancelled: "отменена", task_failed: "ошибка",
+      planningInProgress: "План готовится…", taskPlanningStarted: "Задача создана, план готовится в фоне.",
+      replanTask: "Повторить план", taskReplanStarted: "Повторяю план…", taskReplanFailed: "Не удалось повторить план.",
       expires: "истекает", taskError: "Причина", cancelTask: "Отменить", resumeTask: "Возобновить",
       confirmAction: "Подтвердить", createAction: "Создать", addAction: "Добавить",
       deleteHistory: "Удалить", clearHistory: "Очистить историю",
@@ -326,9 +328,10 @@
       reminderTextInvalid: "Введите текст от 1 до 500 символов без NUL.",
       reminderDateInvalid: "Выберите дату в будущем, не более чем через 3650 дней.", reminderTimeInvalid: "Выберите время в формате HH:MM.",
       reminderInvalid: "Проверьте текст, периодичность и время напоминания.",
-      createTaskTitle: "Новая задача", createTaskText: "Опишите цель — план и выполнение создаются тем же обработчиком, что и в Telegram.",
+      createTaskTitle: "Новая задача", createTaskText: "Опишите цель — задача создаётся сразу, план появляется в фоне. Форма остаётся доступной.",
       taskGoal: "Цель задачи", taskGoalPlaceholder: "Например: подготовить краткий обзор проекта", taskCreated: "Задача создана.",
       taskGoalInvalid: "Введите цель от 1 до 2000 символов без NUL.",
+      taskNotReplannable: "Повторить план можно только для последней задачи с неудачным планом.",
       deleteDocument: "Удалить", deleteDocumentConfirm: "Подтвердить", clearDocuments: "Очистить документы", clearDocumentsConfirm: "Подтвердить",
       deleteDocumentWarning: "Удалить этот документ и его фрагменты? Это действие нельзя отменить.",
       clearDocumentsWarning: "Удалить все документы этого чата и их фрагменты? Это действие нельзя отменить.",
@@ -542,8 +545,10 @@
       tasks: "Tasks", activeTasks: "Active tasks", awaitingAnswer: "Awaiting answer", recoverySuppressed: "Recovery suppressed", yes: "Yes", no: "No",
       emptyHistory: "No messages yet.", emptyItems: "Nothing here yet.", you: "You", assistant: "Assistant",
       bytes: "bytes", chunks: "chunks", step: "step", attempts: "attempts", due: "due",
-      task_ready: "ready", task_running: "running", task_awaiting_approval: "awaiting approval",
+      task_planning: "planning", task_ready: "ready", task_running: "running", task_awaiting_approval: "awaiting approval",
       task_completed: "completed", task_cancelled: "cancelled", task_failed: "failed",
+      planningInProgress: "Preparing the plan…", taskPlanningStarted: "Task created, the plan is being prepared in the background.",
+      replanTask: "Retry plan", taskReplanStarted: "Preparing the plan again…", taskReplanFailed: "The plan could not be retried.",
       expires: "expires", taskError: "Reason", cancelTask: "Cancel", resumeTask: "Resume",
       confirmAction: "Confirm", createAction: "Create", addAction: "Add",
       deleteHistory: "Delete", clearHistory: "Clear history",
@@ -563,9 +568,10 @@
       reminderTextInvalid: "Enter 1 to 500 characters without NUL.",
       reminderDateInvalid: "Choose a future date no more than 3650 days ahead.", reminderTimeInvalid: "Choose a time in HH:MM format.",
       reminderInvalid: "Check the reminder text, cadence, and time.",
-      createTaskTitle: "New task", createTaskText: "Describe the goal; the same handler as in Telegram creates the plan and runs it.",
+      createTaskTitle: "New task", createTaskText: "Describe the goal; the task is created immediately and the plan appears in the background. The form stays usable.",
       taskGoal: "Task goal", taskGoalPlaceholder: "For example: prepare a concise project overview", taskCreated: "Task created.",
       taskGoalInvalid: "Enter a goal of 1 to 2000 characters without NUL.",
+      taskNotReplannable: "Only the latest task with a failed plan can be replanned.",
       deleteDocument: "Delete", deleteDocumentConfirm: "Confirm", clearDocuments: "Clear documents", clearDocumentsConfirm: "Confirm",
       deleteDocumentWarning: "Delete this document and its chunks? This cannot be undone.",
       clearDocumentsWarning: "Delete every document in this chat and its chunks? This cannot be undone.",
@@ -743,7 +749,7 @@
     export_failed: "historyExportFailed", export_too_large: "historyExportTooLarge", history_empty: "historyExportEmpty",
     not_found: "errorNotFound", invalid_body: "errorInvalidJSON", upload_timeout: "documentUploadTimeout", static_error: "errorRead", reminder_not_mutable: "reminderNotMutable",
     task_not_active: "taskNotActive", task_not_resumable: "taskNotResumable", task_mutation_failed: "taskMutationFailed",
-    task_not_deletable: "taskNotDeletable", document_mutation_failed: "documentMutationFailed",
+    task_not_deletable: "taskNotDeletable", task_not_replannable: "taskNotReplannable", document_mutation_failed: "documentMutationFailed",
     document_empty: "documentUploadEmpty", document_too_large: "documentUploadLimit",
     unsupported_document: "documentUploadType", document_limit: "documentLimitReached",
     document_no_text: "documentUploadNoText", document_encrypted: "documentUploadEncrypted",
@@ -824,6 +830,10 @@
   let historySearch = { query: "", active: false, items: [], truncated: false };
   let linkSearch = { query: "", active: false, items: [] };
   let view = { tab: "status", data: null, items: [] };
+  // Background task planning: a draft survives the 2.5-second task poll (the form must stay usable while
+  // the card updates), and taskPollTimer is the single pending refresh of the tasks tab.
+  let taskDraft = "";
+  let taskPollTimer = 0;
   // Admin chat limits: the fetched chat list survives a re-render of the Settings tab (so changing the
   // selected chat or the language does not refetch), and null means "fetch on the next render". The
   // state exists even for a non-admin session — it simply stays empty and no request is made.
@@ -861,6 +871,43 @@
     documentSearch = { query: "", active: false, items: [], truncated: false };
     historySearch = { query: "", active: false, items: [], truncated: false };
     linkSearch = { query: "", active: false, items: [] };
+  }
+
+  function stopTaskPoll() {
+    if (taskPollTimer) {
+      clearTimeout(taskPollTimer);
+      taskPollTimer = 0;
+    }
+  }
+
+  // The tasks tab refreshes itself only while a row is still planning: every other tab and every idle
+  // task list keep the manual Refresh button only. The form is never put into the global busy state by
+  // this poll, so a slow plan cannot disable it.
+  function scheduleTaskPoll() {
+    stopTaskPoll();
+    if (!session || activeTab !== "tasks" || loading) return;
+    if (!view.items.some((item) => item.status === "planning")) return;
+    taskPollTimer = setTimeout(pollTaskPlanning, 2500);
+  }
+
+  async function pollTaskPlanning() {
+    taskPollTimer = 0;
+    if (!session || activeTab !== "tasks" || loading) return;
+    const active = document.activeElement;
+    const typingGoal = Boolean(active && active.getAttribute && active.getAttribute("aria-label") === t("taskGoal"));
+    try {
+      const data = await api("/api/tasks?limit=10");
+      view.items = Array.isArray(data.items) ? data.items : [];
+      nextBefore = data.next_before_id || null;
+      renderItems("tasks", view.items);
+      if (typingGoal) {
+        const goal = ui.content.querySelector(`[aria-label="${t("taskGoal")}"]`);
+        if (goal) goal.focus();
+      }
+    } catch (_) {
+      // A transient poll failure must not replace the page with an error banner; the next tick retries.
+    }
+    scheduleTaskPoll();
   }
 
   function syncBusyState() {
@@ -1616,10 +1663,16 @@
     goalInput.required = true;
     goalInput.placeholder = t("taskGoalPlaceholder");
     goalInput.setAttribute("aria-label", t("taskGoal"));
+    // The poll re-renders the tab while a plan is being prepared: keep the text the user is typing and
+    // restore focus after the render instead of silently clearing the form.
+    goalInput.value = taskDraft;
     clearFieldValidity(goalInput);
     creation.form.appendChild(formField(t("taskGoal"), goalInput, true));
-    const counter = element("div", "counter", "0 / 2000");
-    goalInput.addEventListener("input", () => { counter.textContent = `${Array.from(goalInput.value).length} / 2000`; });
+    const counter = element("div", "counter", `${Array.from(goalInput.value).length} / 2000`);
+    goalInput.addEventListener("input", () => {
+      taskDraft = goalInput.value;
+      counter.textContent = `${Array.from(goalInput.value).length} / 2000`;
+    });
     creation.form.appendChild(counter);
     const actions = element("div", "form-actions");
     actions.appendChild(submitButton(t("createAction")));
@@ -1853,17 +1906,24 @@
           wrapper.appendChild(actions);
         }
       } else if (tab === "tasks") {
-        const status = maybe(`task_${item.status}`, item.status);
+        const planning = item.status === "planning";
+        const status = planning ? t("planningInProgress") : maybe(`task_${item.status}`, item.status);
         const statusClass = item.status === "completed" ? "badge badge-success" : ["failed", "cancelled"].includes(item.status) ? "badge badge-danger" : "badge";
         wrapper.appendChild(element("span", statusClass, status));
         wrapper.appendChild(element("div", "content", item.goal));
-        wrapper.appendChild(element("div", "meta", `${status} · ${t("step")} ${item.next_step} · ${item.attempts} ${t("attempts")} · ${t("createdAt")}: ${formatRelative(item.created_at)} · ${t("dueAt")}: ${formatRelative(item.due_at)}`));
-        wrapper.appendChild(element("div", "meta", `${t("expiresAt")}: ${formatRelative(item.expires_at)}`));
+        if (planning) {
+          // A planning card is the visible progress of the asynchronous create: do not show a due date
+          // that was only the insert time.
+          wrapper.appendChild(element("div", "meta", `${t("planningInProgress")} · ${t("createdAt")}: ${formatRelative(item.created_at)}`));
+        } else {
+          wrapper.appendChild(element("div", "meta", `${status} · ${t("step")} ${item.next_step} · ${item.attempts} ${t("attempts")} · ${t("createdAt")}: ${formatRelative(item.created_at)} · ${t("dueAt")}: ${formatRelative(item.due_at)}`));
+          wrapper.appendChild(element("div", "meta", `${t("expiresAt")}: ${formatRelative(item.expires_at)}`));
+        }
         if (item.duration_ms > 0) wrapper.appendChild(element("div", "meta", `${t("durationLabel")}: ${formatDuration(item.duration_ms)}`));
         if (item.error) wrapper.appendChild(element("div", "task-error", `${t("taskError")}: ${item.error}`));
         if (item.status === "awaiting_approval") wrapper.appendChild(element("p", "meta", t("networkApprovalTelegram")));
         const actions = element("div", "task-actions");
-        if (["ready", "running", "awaiting_approval"].includes(item.status)) {
+        if (["planning", "ready", "running", "awaiting_approval"].includes(item.status)) {
           if (cancelTaskArmed) {
             wrapper.appendChild(inlineConfirmation(
               t("cancelTaskWarning"), t("confirmAction"),
@@ -1879,7 +1939,10 @@
               () => changeTask(`/api/tasks/${item.id}/delete`), () => setTaskDeleteArmed(null, items),
             ));
           } else {
-            if (index === 0 && ["failed", "cancelled"].includes(item.status)) {
+            if (index === 0 && item.status === "failed" && !item.has_plan) {
+              // The planner never produced a plan: there is nothing to resume, only to replan.
+              actions.appendChild(settingsButton(t("replanTask"), () => replanTask(item.id)));
+            } else if (index === 0 && ["failed", "cancelled"].includes(item.status) && item.has_plan) {
               actions.appendChild(settingsButton(t("resumeTask"), () => changeTask(`/api/tasks/${item.id}/resume`)));
             }
             actions.appendChild(settingsButton(t("deleteTask"), () => setTaskDeleteArmed(item.id, items), true));
@@ -2128,7 +2191,10 @@
     createResource("/api/links", { url: normalized }, "linkCreated", "linkMutationFailed");
   }
 
-  function createTask(value, control) {
+  // Task creation is the one asynchronous mutation of the Mini App: the server creates the planning row
+  // and returns at once, so this handler never sets the global busy state. The new card appears
+  // immediately and the form stays available for the next goal.
+  async function createTask(value, control) {
     if (loading || !session) return;
     const normalized = value.trim();
     const length = Array.from(normalized).length;
@@ -2137,7 +2203,34 @@
       return;
     }
     control.setAttribute("aria-invalid", "false");
-    createResource("/api/tasks", { goal: normalized }, "taskCreated", "taskMutationFailed");
+    showError("");
+    let created = null;
+    try {
+      created = await api("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ goal: normalized }),
+      });
+    } catch (error) {
+      showError(error.message || t("taskMutationFailed"));
+      return;
+    }
+    resetArmedStates();
+    resetSearchState();
+    taskDraft = "";
+    if (created && created.id) {
+      const now = new Date().toISOString();
+      const item = {
+        id: created.id, goal: normalized, status: created.status || "planning", next_step: 0,
+        attempts: 0, has_plan: false, due_at: now, expires_at: now, created_at: now, updated_at: now,
+      };
+      view.items = [item, ...view.items.filter((existing) => existing.id !== item.id)];
+      renderItems("tasks", view.items);
+      scheduleTaskPoll();
+    } else {
+      await load();
+    }
+    showNotice(t("taskCreated"));
   }
 
   function createReminder(textControl, cadenceControl, nextRunControl, dailyTimeControl) {
@@ -2281,6 +2374,32 @@
       await load();
       showNotice(t("taskUpdated"));
     }
+  }
+
+  // The failed-plan retry is asynchronous on the server as well: the endpoint only flips the row back to
+  // planning, so the card becomes a planning card again and the poll takes over.
+  async function replanTask(id) {
+    if (loading || !session) return;
+    showError("");
+    let changed = false;
+    try {
+      const data = await api(`/api/tasks/${id}/replan`, { method: "POST" });
+      const item = view.items.find((candidate) => candidate.id === id);
+      if (item) {
+        item.status = data.status || "planning";
+        item.has_plan = false;
+        item.error = "";
+      }
+      changed = true;
+    } catch (error) {
+      showError(error.message || t("taskReplanFailed"));
+    }
+    if (!changed) return;
+    resetArmedStates();
+    resetSearchState();
+    renderItems("tasks", view.items);
+    scheduleTaskPoll();
+    showNotice(t("taskReplanStarted"));
   }
 
   async function changeReminder(path) {
@@ -4253,6 +4372,7 @@
       showError(error.message || t("dataLoadFailed"));
     } finally {
       setBusy(false);
+      if (activeTab === "tasks") scheduleTaskPoll();
     }
   }
 
@@ -4309,6 +4429,7 @@
     if (!button || loading) return;
     resetArmedStates();
     resetSearchState();
+    stopTaskPoll();
     // A recording is tied to the visible composer: leaving the Chat tab releases the microphone.
     cancelVoiceRecording();
     setMenuOpen(false); // choosing a section closes the dropdown as it opens the page

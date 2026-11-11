@@ -17,6 +17,7 @@ const (
 	taskMetricFailed      = "bot_tasks_failed_total"
 	taskMetricStepRetries = "bot_task_step_retries_total"
 	taskMetricDuration    = "bot_task_duration_seconds"
+	taskMetricPlanning    = "bot_tasks_planning_seconds"
 )
 
 const (
@@ -25,10 +26,15 @@ const (
 	taskMetricFailedHelp      = "Tasks that stopped with an error, by bounded reason."
 	taskMetricStepRetriesHelp = "Task steps retried once after a transient model failure."
 	taskMetricDurationHelp    = "Wall time of a task from creation to a terminal state, in seconds."
+	taskMetricPlanningHelp    = "Wall time of the background STRATA plan of a task, in seconds."
 )
 
 // taskDurationBuckets cover a fast 1-step task through a long 3-step task with network approvals.
 var taskDurationBuckets = []float64{5, 15, 30, 60, 120, 300, 600, 1800, 3600}
+
+// taskPlanningBuckets make the 120-second alert threshold visible as its own bucket: p95 above it is the
+// signal that the planner is too slow for the asynchronous UX.
+var taskPlanningBuckets = []float64{1, 2, 5, 10, 20, 30, 60, 120, 300, 600}
 
 // taskFailureReason classifies a task error into the bounded label set
 // model|empty|invalid|timeout|budget|other. The classification never carries the error text.
@@ -93,6 +99,21 @@ func (d *Dispatcher) countTaskStepRetry() {
 	}
 	if reg := d.metrics.Load(); reg != nil {
 		reg.Counter(taskMetricStepRetries, taskMetricStepRetriesHelp).Add(nil, 1)
+	}
+}
+
+// observeTaskPlanning records one complete planning attempt (success or a stored failure). The startup
+// recovery re-enqueue time is not part of it: the histogram measures the model call, not the crash gap.
+func (d *Dispatcher) observeTaskPlanning(elapsed time.Duration) {
+	if d == nil {
+		return
+	}
+	if reg := d.metrics.Load(); reg != nil {
+		seconds := elapsed.Seconds()
+		if seconds < 0 {
+			seconds = 0
+		}
+		reg.Histogram(taskMetricPlanning, taskMetricPlanningHelp, taskPlanningBuckets).Observe(nil, seconds)
 	}
 }
 

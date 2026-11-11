@@ -91,8 +91,22 @@ func TestTaskProgressCreatesAndReusesOneStatusMessage(t *testing.T) {
 	if created.StatusMessageID != sent[0].messageID {
 		t.Fatalf("stored status_message_id=%d, want the creation message %d", created.StatusMessageID, sent[0].messageID)
 	}
-	if !strings.Contains(sent[0].text, "Задача #1 создана") || !strings.Contains(sent[0].text, "Gather the relevant facts") {
-		t.Fatalf("creation message lost the plan: %q", sent[0].text)
+	if created.Status != store.TaskStatusPlanning || !strings.Contains(sent[0].text, "готовлю план") {
+		t.Fatalf("creation did not answer before the plan: task=%+v message=%q", created, sent[0].text)
+	}
+
+	// The plan is produced in the background: it must arrive as an edit of the SAME creation message.
+	waitTaskPlanningSettled(t, d)
+	planEdits := r.editMessages()
+	if len(planEdits) == 0 {
+		t.Fatal("the finished plan did not edit the creation message")
+	}
+	planEdit := planEdits[len(planEdits)-1]
+	if planEdit.messageID != sent[0].messageID {
+		t.Fatalf("plan edit targeted message %d instead of %d", planEdit.messageID, sent[0].messageID)
+	}
+	if !strings.Contains(planEdit.text, "план готов") || !strings.Contains(planEdit.text, "Gather the relevant facts") {
+		t.Fatalf("plan-ready edit misses the plan: %q", planEdit.text)
 	}
 
 	processTasks(t, d, 3)
@@ -101,18 +115,9 @@ func TestTaskProgressCreatesAndReusesOneStatusMessage(t *testing.T) {
 		t.Fatalf("completed task=%+v found=%v err=%v", current, found, err)
 	}
 	edits := r.editMessages()
-	if len(edits) < 2 {
-		t.Fatalf("status message was edited %d time(s), want a step transition and the final line: %+v", len(edits), edits)
-	}
 	for _, edit := range edits {
 		if edit.messageID != sent[0].messageID {
 			t.Fatalf("an edit targeted message %d instead of the one status message %d: %+v", edit.messageID, sent[0].messageID, edits)
-		}
-	}
-	first := edits[0].text
-	for _, want := range []string{"Задача #1", "шаг 1/2", "Gather the relevant facts", "идёт", "осталось", "токены"} {
-		if !strings.Contains(first, want) {
-			t.Errorf("first progress edit misses %q: %q", want, first)
 		}
 	}
 	final := edits[len(edits)-1].text

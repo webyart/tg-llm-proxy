@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"bot/internal/i18n"
 	"bot/internal/model"
 	"bot/internal/store"
 	"bot/internal/testutil"
@@ -74,8 +75,23 @@ func taskResultContents(task store.Task) []string {
 	return contents
 }
 
+// waitTaskPlanningSettled waits until no row of this dispatcher is still in the asynchronous planning
+// phase. A plan is produced in a goroutine now, so a test that dispatches /task and immediately asks the
+// database would otherwise race the fake model.
+func waitTaskPlanningSettled(t *testing.T, d *Dispatcher) {
+	t.Helper()
+	testutil.Eventually(t, 10*time.Second, func() bool {
+		var planning int
+		if err := d.deps.DB.QueryRow(`SELECT COUNT(*) FROM tasks WHERE status = 'planning'`).Scan(&planning); err != nil {
+			t.Fatal(err)
+		}
+		return planning == 0
+	}, func() string { return "task planning did not settle" })
+}
+
 func processTasks(t *testing.T, d *Dispatcher, passes int) {
 	t.Helper()
+	waitTaskPlanningSettled(t, d)
 	for index := 0; index < passes; index++ {
 		if _, err := d.ProcessDueTasks(context.Background(), time.Now(), TaskBatchLimit); err != nil {
 			t.Fatalf("ProcessDueTasks pass %d: %v", index+1, err)
@@ -296,16 +312,21 @@ func TestDispatcherCreateTaskLocksChatAndPreservesSingleton(t *testing.T) {
 	}
 	created := result.task
 	if created.ID <= 0 || created.ChatID != 100 || created.UserID != 11 || created.Goal != "compare two ideas" ||
-		created.Model != d.deps.Cfg.StrataModel || created.Status != store.TaskStatusReady || created.PlanJSON != validTaskPlanOne {
+		created.Model != d.deps.Cfg.StrataModel || created.Status != store.TaskStatusPlanning || created.PlanJSON != "" {
 		t.Fatalf("created task=%+v", created)
 	}
+	waitTaskPlanningSettled(t, d)
 	if m.callCount() != 1 {
 		t.Fatalf("planner calls=%d", m.callCount())
+	}
+	planned, found, err := store.CurrentTask(ctx, db, 100)
+	if err != nil || !found || planned.Status != store.TaskStatusReady || planned.PlanJSON != validTaskPlanOne {
+		t.Fatalf("planned task=%+v found=%v err=%v", planned, found, err)
 	}
 	select {
 	case <-d.taskWake:
 	default:
-		t.Fatal("CreateTask did not wake the scheduler")
+		t.Fatal("the finished plan did not wake the scheduler")
 	}
 
 	second, err := d.CreateTask(ctx, 100, 11, "another goal")
@@ -314,7 +335,7 @@ func TestDispatcherCreateTaskLocksChatAndPreservesSingleton(t *testing.T) {
 	}
 }
 
-func TestDispatcherCreateTaskPlanningFailuresCreateNoTask(t *testing.T) {
+func TestDispatcherCreateTaskPlanningFailuresCreateNoActiveTask(t *testing.T) {
 	t.Run("invalid goal", func(t *testing.T) {
 		m := taskTextModel()
 		db := testStore(t)
@@ -333,12 +354,17 @@ func TestDispatcherCreateTaskPlanningFailuresCreateNoTask(t *testing.T) {
 		db := testStore(t)
 		d := newTestDispatcher(t, testConfig(t, nil), m, nil, db)
 		created, err := d.CreateTask(context.Background(), 100, 11, "collect private data")
-		var planning *taskPlanningError
-		if !errors.As(err, &planning) || !errors.Is(err, ErrTaskPlan) || created.ID != 0 {
+		if err != nil || created.ID <= 0 || created.Status != store.TaskStatusPlanning {
 			t.Fatalf("CreateTask task=%+v err=%v", created, err)
 		}
-		if _, found, err := store.CurrentTask(context.Background(), db, 100); err != nil || found {
-			t.Fatalf("failed planner created task found=%v err=%v", found, err)
+		waitTaskPlanningSettled(t, d)
+		current, found, err := store.CurrentTask(context.Background(), db, 100)
+		if err != nil || !found || current.Status != store.TaskStatusFailed || current.PlanJSON != "" ||
+			current.Error != i18n.T(i18n.Default, "task.reason.plan_invalid") {
+			t.Fatalf("failed planner task=%+v found=%v err=%v", current, found, err)
+		}
+		if store.ActiveTaskStatus(current.Status) {
+			t.Fatal("a failed plan still occupies the chat's active task slot")
 		}
 		select {
 		case <-d.taskWake:
@@ -359,27 +385,44 @@ func TestDispatcherCreateTaskPlanningFailuresCreateNoTask(t *testing.T) {
 			}
 		}
 		created, err := d.CreateTask(context.Background(), 100, 11, "bounded goal")
-		if !errors.Is(err, ErrModelRateLimited) || created.ID != 0 || m.callCount() != 0 {
-			t.Fatalf("CreateTask task=%+v err=%v calls=%d", created, err, m.callCount())
+		if err != nil || created.ID <= 0 {
+			t.Fatalf("CreateTask task=%+v err=%v", created, err)
 		}
-		if _, found, err := store.CurrentTask(context.Background(), db, 100); err != nil || found {
-			t.Fatalf("limited planner created task found=%v err=%v", found, err)
+		waitTaskPlanningSettled(t, d)
+		if m.callCount() != 0 {
+			t.Fatalf("planner calls=%d, want 0: the model budget was spent", m.callCount())
+		}
+		current, found, err := store.CurrentTask(context.Background(), db, 100)
+		if err != nil || !found || current.Status != store.TaskStatusFailed || current.PlanJSON != "" {
+			t.Fatalf("limited planner task=%+v found=%v err=%v", current, found, err)
+		}
+		if store.ActiveTaskStatus(current.Status) {
+			t.Fatal("a failed plan still occupies the chat's active task slot")
 		}
 	})
 }
 
 func TestTaskPlanningFailureCreatesNoActiveTask(t *testing.T) {
 	m := taskTextModel(`{"steps":[{"description":"Read https://attacker.example"}]}`)
+	r := &fakeReplier{}
 	db := testStore(t)
-	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"}), m, &fakeReplier{}, db)
+	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"}), m, r, db)
 	if err := dispatch(t, d, testEvent(100, 11, 1000, "/task collect private data")); err != nil {
 		t.Fatal(err)
 	}
-	if _, found, err := store.CurrentTask(context.Background(), db, 100); err != nil || found {
-		t.Fatalf("failed planner created task found=%v err=%v", found, err)
+	waitTaskPlanningSettled(t, d)
+	current, found, err := store.CurrentTask(context.Background(), db, 100)
+	if err != nil || !found || current.Status != store.TaskStatusFailed || current.PlanJSON != "" {
+		t.Fatalf("failed planner task=%+v found=%v err=%v", current, found, err)
+	}
+	if store.ActiveTaskStatus(current.Status) {
+		t.Fatal("a failed plan still blocks the chat")
 	}
 	if m.callCount() != 1 {
 		t.Fatalf("planner calls=%d", m.callCount())
+	}
+	if !strings.Contains(r.joined(), "не удалось составить план") {
+		t.Fatalf("user did not receive the localized planning failure: %q", r.joined())
 	}
 }
 
@@ -391,6 +434,7 @@ func TestTaskSingletonSequentialProgressAndSingleFinalHistory(t *testing.T) {
 	if err := dispatch(t, d, testEvent(100, 11, 1001, "/task compare two ideas")); err != nil {
 		t.Fatal(err)
 	}
+	waitTaskPlanningSettled(t, d)
 	if err := dispatch(t, d, testEvent(100, 11, 1002, "/task another goal")); err != nil {
 		t.Fatal(err)
 	}
@@ -601,6 +645,7 @@ func TestTaskMenuShowsProgressCancelAndBack(t *testing.T) {
 	if err := dispatch(t, d, testEvent(100, 11, 1007, "/task menu goal")); err != nil {
 		t.Fatal(err)
 	}
+	waitTaskPlanningSettled(t, d)
 	if err := dispatchMenuData(t, d, 100, 11, 700, "menu:task"); err != nil {
 		t.Fatal(err)
 	}
@@ -624,6 +669,7 @@ func TestTaskMenuShowsProgressCancelAndBack(t *testing.T) {
 	if err := dispatch(t, d, pending); err != nil {
 		t.Fatal(err)
 	}
+	waitTaskPlanningSettled(t, d)
 	current, found, err := store.CurrentTask(context.Background(), d.deps.DB, 100)
 	if err != nil || !found || current.Status != store.TaskStatusReady || current.Goal != "fresh menu goal" || current.ID == 1 {
 		t.Fatalf("new menu task=%+v found=%v err=%v", current, found, err)
@@ -822,11 +868,19 @@ func TestTaskResumeCommandPreservesProgressAndRejectsWrongChatAndStatus(t *testi
 
 func TestTaskResumeMenuIsLimitedToRetryableTerminalTasks(t *testing.T) {
 	for _, status := range []string{store.TaskStatusCompleted, store.TaskStatusFailed, store.TaskStatusCancelled} {
-		markup := taskMenuMarkup(store.Task{ID: 9, Status: status})
+		markup := taskMenuMarkup(store.Task{ID: 9, Status: status, PlanJSON: validTaskPlanOne})
 		resumable := status != store.TaskStatusCompleted
 		if hasMenuCallback(markup, "menu:task:resume") != resumable {
 			t.Errorf("terminal %s resume markup=%+v", status, markup)
 		}
+	}
+	// A failed PLANNING row has no plan to resume; its retry is the planner.
+	planless := taskMenuMarkup(store.Task{ID: 9, Status: store.TaskStatusFailed})
+	if hasMenuCallback(planless, "menu:task:resume") || !hasMenuCallback(planless, "menu:task:replan") {
+		t.Fatalf("planless failed task markup=%+v", planless)
+	}
+	if text, ok := menuCallbackText("menu:task:replan"); !ok || text != "/task menu:replan" {
+		t.Fatalf("replan callback text=%q ok=%v", text, ok)
 	}
 	if text, ok := menuCallbackText("menu:task:resume"); !ok || text != "/task menu:resume" {
 		t.Fatalf("resume callback text=%q ok=%v", text, ok)

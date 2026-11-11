@@ -143,6 +143,9 @@ func (d *Dispatcher) taskModelTimeout() time.Duration {
 }
 
 func (d *Dispatcher) RunTaskScheduler(ctx context.Context) {
+	// Background planning jobs created after this point follow the process lifetime; a plan started
+	// before the scheduler keeps the background context and is bounded by its own task budget.
+	d.setTaskPlanningContext(ctx)
 	ticker := time.NewTicker(TaskPollInterval)
 	defer ticker.Stop()
 	passDone := make(chan struct{})
@@ -208,6 +211,11 @@ func (d *Dispatcher) ProcessDueTasks(ctx context.Context, now time.Time, limit i
 			return 0, err
 		}
 	}
+	// A planning row left by a dead process blocks its chat until it is re-enqueued or failed. The scan
+	// runs with every pass, not only at startup, so a task created moments before a crash is recovered
+	// once it is older than the short threshold. Expiration above runs first: an expired row is failed,
+	// not revived with a new lifetime.
+	d.recoverStaleTaskPlanning(ctx, now)
 	awaiting, err := store.ListAwaitingTasks(ctx, d.deps.DB, TaskBatchLimit)
 	if err != nil {
 		return 0, err

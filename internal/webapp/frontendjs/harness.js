@@ -288,6 +288,7 @@ function defaultResponse(request) {
   if (pathname === "/api/usage") {
     return jsonResponse({ date: "2026-01-01", models: [], tools: { read_url: 0, web_search: 0, calculator: 0, rag: 0 }, limits: { model: { used: 0, limit: 10, remaining: 10 }, network_tools: { used: 0, limit: 10, remaining: 10 } } });
   }
+  if (pathname === "/api/tasks" && request.options.method === "POST") return jsonResponse({ id: 41, status: "planning" });
   if (["/api/links", "/api/tasks"].includes(pathname)) return jsonResponse({ items: [] });
   if (request.options.method && request.options.method !== "GET") return jsonResponse({});
   return jsonResponse({ error: { code: "not_found" } }, 404);

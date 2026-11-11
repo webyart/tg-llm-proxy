@@ -426,7 +426,7 @@ func (a *App) status(w http.ResponseWriter, req *http.Request, current scope) {
 			(SELECT COUNT(*) FROM rag_documents WHERE chat_id = ?),
 			(SELECT COUNT(*) FROM saved_links WHERE chat_id = ?),
 			(SELECT COUNT(*) FROM tasks WHERE chat_id = ?),
-			(SELECT COUNT(*) FROM tasks WHERE chat_id = ? AND status IN ('ready', 'running', 'awaiting_approval')),
+			(SELECT COUNT(*) FROM tasks WHERE chat_id = ? AND status IN ('planning', 'ready', 'running', 'awaiting_approval')),
 			(SELECT MAX(created_at) FROM messages WHERE chat_id = ?)`,
 		current.ChatID, current.ChatID, current.ChatID, current.ChatID, current.ChatID, current.ChatID).
 		Scan(&response.Messages, &response.Documents, &response.Links, &response.Tasks, &response.ActiveTasks, &lastActivity)
@@ -1274,6 +1274,9 @@ type taskItem struct {
 	Status    string `json:"status"`
 	NextStep  int    `json:"next_step"`
 	Attempts  int    `json:"attempts"`
+	// HasPlan is false for a task whose background planner never produced a plan (status planning, or a
+	// failed planning row). The Mini App shows «Повторить план» instead of Resume for that row.
+	HasPlan   bool   `json:"has_plan"`
 	DueAt     string `json:"due_at"`
 	ExpiresAt string `json:"expires_at"`
 	CreatedAt string `json:"created_at"`
@@ -1339,7 +1342,7 @@ func (a *App) tasks(w http.ResponseWriter, req *http.Request, current scope) {
 		return
 	}
 	rows, err := a.db.QueryContext(req.Context(), `
-		SELECT id, goal, status, next_step, attempts, due_at, expires_at, created_at, updated_at, COALESCE(finished_at, ''), COALESCE(error, '') FROM tasks
+		SELECT id, goal, status, next_step, attempts, (plan_json <> ''), due_at, expires_at, created_at, updated_at, COALESCE(finished_at, ''), COALESCE(error, '') FROM tasks
 		WHERE chat_id = ? AND (? = 0 OR id < ?)
 		ORDER BY id DESC LIMIT ?`, current.ChatID, page.Before, page.Before, page.Limit+1)
 	if err != nil {
@@ -1350,7 +1353,7 @@ func (a *App) tasks(w http.ResponseWriter, req *http.Request, current scope) {
 	items := []taskItem{}
 	for rows.Next() {
 		var item taskItem
-		if err := rows.Scan(&item.ID, &item.Goal, &item.Status, &item.NextStep, &item.Attempts,
+		if err := rows.Scan(&item.ID, &item.Goal, &item.Status, &item.NextStep, &item.Attempts, &item.HasPlan,
 			&item.DueAt, &item.ExpiresAt, &item.CreatedAt, &item.UpdatedAt, &item.FinishedAt, &item.Error); err != nil {
 			a.queryFailed(w, "tasks", err)
 			return
@@ -1471,6 +1474,62 @@ func (a *App) resumeTask(w http.ResponseWriter, req *http.Request, current scope
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "task_id": resumed.ID, "status": resumed.Status})
 }
 
+func replanTaskID(path string) (int64, bool) {
+	if !strings.HasPrefix(path, "/api/tasks/") || !strings.HasSuffix(path, "/replan") {
+		return 0, false
+	}
+	raw := strings.TrimSuffix(strings.TrimPrefix(path, "/api/tasks/"), "/replan")
+	if raw == "" || strings.Contains(raw, "/") {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 || strconv.FormatInt(id, 10) != raw {
+		return 0, false
+	}
+	return id, true
+}
+
+// replanTask re-arms a task whose plan generation failed and starts the planner again. It never blocks on
+// the model: the lifecycle returns as soon as the row is 'planning' again.
+func (a *App) replanTask(w http.ResponseWriter, req *http.Request, current scope) {
+	taskID, valid := replanTaskID(req.URL.Path)
+	if !valid {
+		writeError(w, http.StatusNotFound, "not_found", "API endpoint not found.")
+		return
+	}
+	if req.Method != http.MethodPost {
+		methodAllowed(w, http.MethodPost)
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Task controls do not accept query parameters.")
+		return
+	}
+	if status, ok := emptySettingsBody(req); !ok {
+		taskBodyError(w, status)
+		return
+	}
+	replanned, changed, err := a.taskLifecycle.ReplanTask(req.Context(), current.ChatID, taskID)
+	if errors.Is(err, errLifecycleUnavailable) {
+		writeLifecycleUnavailable(w)
+		return
+	}
+	if errors.Is(err, bot.ErrTaskRateLimited) {
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "The per-minute model budget of this user is spent. Retry after a minute.")
+		return
+	}
+	if err != nil {
+		a.taskMutationFailed(w, req, "replan", err)
+		return
+	}
+	if !changed {
+		writeError(w, http.StatusConflict, "task_not_replannable", "Only the latest failed task with a failed plan can be replanned.")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "task_id": replanned.ID, "status": replanned.Status})
+}
+
 func deleteTaskID(path string) (int64, bool) {
 	if !strings.HasPrefix(path, "/api/tasks/") || !strings.HasSuffix(path, "/delete") {
 		return 0, false
@@ -1546,6 +1605,10 @@ func (a *App) taskControl(w http.ResponseWriter, req *http.Request, current scop
 	default:
 		if strings.HasSuffix(req.URL.Path, "/delete") {
 			a.deleteTask(w, req, current)
+			return
+		}
+		if strings.HasSuffix(req.URL.Path, "/replan") {
+			a.replanTask(w, req, current)
 			return
 		}
 		a.resumeTask(w, req, current)

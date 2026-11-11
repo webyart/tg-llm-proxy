@@ -49,6 +49,7 @@ var menuCommandCallbacks = map[string]string{
 	"menu:task":                  "/task menu",
 	"menu:task:cancel":           "/task menu:cancel",
 	"menu:task:resume":           "/task menu:resume",
+	"menu:task:replan":           "/task menu:replan",
 	"menu:task:clear":            "/task menu:clear",
 	"menu:task:new":              "/task menu:new",
 	"menu:tts":                   "/help menu:tts",

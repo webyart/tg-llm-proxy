@@ -242,6 +242,7 @@ func TestTaskMetricsRecordOutcomes(t *testing.T) {
 		`bot_tasks_failed_total{reason="empty"} 1`,
 		"bot_task_step_retries_total 1",
 		"bot_task_duration_seconds_count 2",
+		"bot_tasks_planning_seconds_count 2",
 	} {
 		if !strings.Contains(body, sample+"\n") {
 			t.Errorf("metrics miss %q:\n%s", sample, body)

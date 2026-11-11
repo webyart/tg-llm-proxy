@@ -105,13 +105,6 @@ type taskActiveError struct {
 func (e *taskActiveError) Error() string { return store.ErrTaskActive.Error() }
 func (e *taskActiveError) Unwrap() error { return store.ErrTaskActive }
 
-type taskPlanningError struct {
-	cause error
-}
-
-func (e *taskPlanningError) Error() string { return e.cause.Error() }
-func (e *taskPlanningError) Unwrap() error { return e.cause }
-
 func (d *Dispatcher) CreateTask(ctx context.Context, chatID int64, userID int64, goal string) (store.Task, error) {
 	// This is the entry point of a second client (the Mini App), which does not pass through the command
 	// middleware. Without this check, creating a task from there reached the model while /ask in the same
@@ -123,64 +116,59 @@ func (d *Dispatcher) CreateTask(ctx context.Context, chatID int64, userID int64,
 	var created store.Task
 	err := d.deps.Locks.WithChat(ctx, chatID, func() error {
 		var err error
-		created, _, err = d.createTask(ctx, chatID, userID, "", goal)
+		created, err = d.createTask(ctx, chatID, userID, "", goal)
 		return err
 	})
 	if err != nil {
 		return store.Task{}, err
 	}
-	d.wakeTasks()
+	// The row is already visible as 'planning'; the model call happens in the background and its result
+	// wakes the scheduler, so this call returns without waiting for STRATA.
+	d.startTaskPlanning(created)
 	return created, nil
 }
 
-func (d *Dispatcher) createTask(ctx context.Context, chatID int64, userID int64, chatTitle string, goal string) (store.Task, TaskPlan, error) {
+// createTask inserts the planning row and returns it BEFORE any model call. The caller owns the status
+// message: the Telegram handler stores its id first and only then starts the planner, so the "план готов"
+// edit rewrites the creation message instead of creating a second one.
+func (d *Dispatcher) createTask(ctx context.Context, chatID int64, userID int64, chatTitle string, goal string) (store.Task, error) {
 	goal = strings.TrimSpace(goal)
 	if goal == "" || len([]rune(goal)) > store.TaskMaxGoalRunes || strings.ContainsRune(goal, '\x00') {
-		return store.Task{}, TaskPlan{}, store.ErrTaskGoal
+		return store.Task{}, store.ErrTaskGoal
 	}
 	current, found, err := store.CurrentTask(ctx, d.deps.DB, chatID)
 	if err != nil {
-		return store.Task{}, TaskPlan{}, err
+		return store.Task{}, err
 	}
 	if found && store.ActiveTaskStatus(current.Status) {
-		return store.Task{}, TaskPlan{}, &taskActiveError{taskID: current.ID}
+		return store.Task{}, &taskActiveError{taskID: current.ID}
 	}
 	questionID, role, err := store.LastVisibleMessage(ctx, d.deps.DB, chatID)
 	if err != nil {
-		return store.Task{}, TaskPlan{}, err
+		return store.Task{}, err
 	}
 	if questionID > 0 && role == store.RoleUser {
 		if err := store.SetResumeSkip(ctx, d.deps.DB, chatID, questionID); err != nil {
-			return store.Task{}, TaskPlan{}, err
+			return store.Task{}, err
 		}
 	}
 	selectedModel, err := d.modelName(ctx, chatID)
 	if err != nil {
-		return store.Task{}, TaskPlan{}, err
-	}
-	plan, err := d.planTask(ctx, userID, selectedModel, goal)
-	if err != nil {
-		return store.Task{}, TaskPlan{}, &taskPlanningError{cause: err}
-	}
-	encodedPlan, err := taskPlanJSON(plan)
-	if err != nil {
-		return store.Task{}, TaskPlan{}, &taskPlanningError{cause: err}
+		return store.Task{}, err
 	}
 	if err := store.EnsureChat(ctx, d.deps.DB, chatID, userID, chatTitle); err != nil {
-		return store.Task{}, TaskPlan{}, err
+		return store.Task{}, err
 	}
 	now := d.now().UTC()
-	created, err := store.CreateTask(ctx, d.deps.DB, store.Task{
-		ChatID: chatID, UserID: userID, Goal: goal, Model: selectedModel, PlanJSON: encodedPlan,
+	created, err := store.CreatePlanningTask(ctx, d.deps.DB, store.Task{
+		ChatID: chatID, UserID: userID, Goal: goal, Model: selectedModel,
 		DueAt: now, ExpiresAt: now.Add(TaskLifetime), CreatedAt: now,
 	})
 	if err != nil {
-		return store.Task{}, TaskPlan{}, err
+		return store.Task{}, err
 	}
 	d.countTaskStarted()
-	// The scheduler is woken by the caller AFTER the creation message got its id. Waking here would let the
-	// first step claim before status_message_id is stored and create a second status message.
-	return created, plan, nil
+	return created, nil
 }
 
 func (d *Dispatcher) task(ctx context.Context, ev Event, arg string) error {
@@ -197,6 +185,12 @@ func (d *Dispatcher) task(ctx context.Context, ev Event, arg string) error {
 	}
 	if action == "menu:resume" {
 		return d.resumeTask(ctx, ev, 0, true)
+	}
+	if action == "replan" {
+		return d.replanCurrentTask(ctx, ev, false)
+	}
+	if action == "menu:replan" {
+		return d.replanCurrentTask(ctx, ev, true)
 	}
 	if action == "menu:clear" {
 		return d.promptTaskClear(ctx, ev)
@@ -224,7 +218,7 @@ func (d *Dispatcher) task(ctx context.Context, ev Event, arg string) error {
 		}
 		return d.resumeTask(ctx, ev, taskID, false)
 	}
-	created, plan, err := d.createTask(ctx, ev.ChatID, ev.UserID, ev.ChatTitle, action)
+	created, err := d.createTask(ctx, ev.ChatID, ev.UserID, ev.ChatTitle, action)
 	if errors.Is(err, store.ErrTaskGoal) {
 		return d.reply(ctx, ev.ChatID, i18n.T(lang, "task.goal_invalid", store.TaskMaxGoalRunes))
 	}
@@ -235,47 +229,38 @@ func (d *Dispatcher) task(ctx context.Context, ev Event, arg string) error {
 	if errors.As(err, &active) {
 		return d.reply(ctx, ev.ChatID, i18n.T(lang, "task.active", active.taskID))
 	}
-	var planning *taskPlanningError
-	if errors.As(err, &planning) {
-		reason := brief(Sanitize(planning.cause, d.deps.Token), 300)
-		if notice, limited := modelLimitNoticeFor(lang, planning.cause); limited {
-			reason = notice
-		}
-		return d.reply(ctx, ev.ChatID, i18n.T(lang, "task.plan_failed")+reason)
-	}
 	if errors.Is(err, store.ErrTaskActive) {
 		return d.reply(ctx, ev.ChatID, i18n.T(lang, "task.active_generic"))
 	}
 	if err != nil {
 		return err
 	}
-	// Wake only after the creation reply: the scheduler must see the stored status_message_id, otherwise it
-	// would create a second status message for the first step (see createTask).
-	defer d.wakeTasks()
-	lines := []string{i18n.T(lang, "task.created_header", created.ID, len(plan.Steps))}
-	for index, step := range plan.Steps {
-		lines = append(lines, fmt.Sprintf("%d. %s", index+1, step.Description))
-	}
-	lines = append(lines, i18n.T(lang, "task.created_hint"))
-	text := strings.Join(lines, "\n")
-	// The creation message is the existing task reply: keep its id so the scheduler rewrites THIS message
-	// for every step instead of adding a new line per step. A replier without message ids keeps the old
-	// send-only behaviour.
+	// The row exists and the model call is asynchronous: answer the command immediately. The creation
+	// message is the existing task reply; its id is stored BEFORE the planner starts so the "план готов"
+	// edit rewrites THIS message. A replier without message ids keeps the send-only behaviour.
+	text := i18n.T(lang, "task.planning.started", created.ID)
+	var replyErr error
+	sent := false
 	if messenger, ok := d.taskStatusMessenger(); ok {
 		messageID, sendErr := messenger.SendTaskStatus(ctx, ev.ChatID, text)
 		if sendErr == nil && messageID > 0 {
+			sent = true
 			created.StatusMessageID = messageID
 			if saved, saveErr := store.SetTaskStatusMessage(ctx, d.deps.DB, created.ID, ev.ChatID, messageID, d.now()); saveErr != nil || !saved {
 				d.logTaskStatusFailure("task status message id was not stored", &created, saveErr)
 			}
-			return nil
-		}
-		if sendErr != nil {
-			d.countSendFailure()
-			d.logTaskStatusFailure("task creation status message was not sent", &created, sendErr)
+		} else {
+			if sendErr != nil {
+				d.countSendFailure()
+				d.logTaskStatusFailure("task creation status message was not sent", &created, sendErr)
+			}
 		}
 	}
-	return d.reply(ctx, ev.ChatID, text)
+	if !sent {
+		replyErr = d.reply(ctx, ev.ChatID, text)
+	}
+	d.startTaskPlanning(created)
+	return replyErr
 }
 
 func (d *Dispatcher) promptTaskClear(ctx context.Context, ev Event) error {
@@ -410,6 +395,42 @@ func (d *Dispatcher) resumeTask(ctx context.Context, ev Event, taskID int64, men
 	return d.reply(ctx, ev.ChatID, message)
 }
 
+// replanCurrentTask retries the plan of the latest failed task whose plan was never produced. It is the
+// Telegram counterpart of POST /api/tasks/{id}/replan.
+func (d *Dispatcher) replanCurrentTask(ctx context.Context, ev Event, menu bool) error {
+	lang := d.chatLanguage(ctx, ev.ChatID)
+	current, found, err := store.CurrentTask(ctx, d.deps.DB, ev.ChatID)
+	if err != nil {
+		return err
+	}
+	if !found || current.Status != store.TaskStatusFailed || current.PlanJSON != "" {
+		message := i18n.T(lang, "task.replan.none")
+		if menu {
+			return d.showTaskMenu(ctx, ev, message)
+		}
+		return d.reply(ctx, ev.ChatID, message)
+	}
+	replanned, changed, err := d.ReplanTask(ctx, ev.ChatID, current.ID)
+	if errors.Is(err, ErrTaskRateLimited) {
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "ask.rate_limited"))
+	}
+	if err != nil {
+		return err
+	}
+	if !changed {
+		message := i18n.T(lang, "task.replan.none")
+		if menu {
+			return d.showTaskMenu(ctx, ev, message)
+		}
+		return d.reply(ctx, ev.ChatID, message)
+	}
+	message := i18n.T(lang, "task.replan.started", replanned.ID)
+	if menu {
+		return d.showTaskMenu(ctx, ev, message)
+	}
+	return d.reply(ctx, ev.ChatID, message)
+}
+
 func (d *Dispatcher) ResumeTask(ctx context.Context, chatID int64, taskID int64) (store.Task, bool, error) {
 	current, found, err := store.CurrentTask(ctx, d.deps.DB, chatID)
 	if err != nil {
@@ -451,7 +472,8 @@ func (d *Dispatcher) taskStatusText(ctx context.Context, ev Event) (string, stor
 	}
 	plan, planErr := ParseTaskPlan(task.PlanJSON)
 	statusKey := map[string]string{
-		store.TaskStatusReady: "task.status.ready", store.TaskStatusRunning: "task.status.running",
+		store.TaskStatusPlanning: "task.status.planning",
+		store.TaskStatusReady:    "task.status.ready", store.TaskStatusRunning: "task.status.running",
 		store.TaskStatusAwaitingApproval: "task.status.approval", store.TaskStatusCompleted: "task.status.completed",
 		store.TaskStatusCancelled: "task.status.cancelled", store.TaskStatusFailed: "task.status.failed",
 	}[task.Status]
@@ -480,6 +502,8 @@ func (d *Dispatcher) taskStatusText(ctx context.Context, ev Event) (string, stor
 		for index, step := range plan.Steps {
 			lines = append(lines, fmt.Sprintf("%d. %s", index+1, step.Description))
 		}
+	} else if task.Status == store.TaskStatusPlanning {
+		lines = append(lines, i18n.T(lang, "task.planning.line"))
 	} else if store.ActiveTaskStatus(task.Status) {
 		lines = append(lines, i18n.T(lang, "task.plan_invalid"))
 	}
@@ -508,7 +532,11 @@ func taskMenuMarkupFor(lang string, task store.Task) models.InlineKeyboardMarkup
 	} else {
 		rows = append(rows, menuRow(menuButton(i18n.T(lang, "task.new"), "menu:task:new")))
 	}
-	if task.ID > 0 && (task.Status == store.TaskStatusFailed || task.Status == store.TaskStatusCancelled) {
+	// A failed planning row has no plan to resume: its only retry is the planner. A task that failed
+	// during execution keeps its plan and is resumed as before.
+	if task.ID > 0 && task.Status == store.TaskStatusFailed && task.PlanJSON == "" {
+		rows = append(rows, menuRow(menuButton(i18n.T(lang, "task.replan"), "menu:task:replan")))
+	} else if task.ID > 0 && (task.Status == store.TaskStatusFailed || task.Status == store.TaskStatusCancelled) {
 		rows = append(rows, menuRow(menuButton(i18n.T(lang, "task.resume"), "menu:task:resume")))
 	}
 	if task.ID > 0 {

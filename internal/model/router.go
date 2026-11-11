@@ -145,6 +145,27 @@ type routerStreamer struct {
 	defaultStreamer Streamer
 }
 
+// routerTranscriber keeps the optional Transcriber of the default client behind the router. Without it, adding
+// any MODEL_PROVIDERS silently removed voice transcription from the dispatcher: the concrete router type no
+// longer satisfied model.Transcriber.
+type routerTranscriber struct {
+	*routerClient
+	defaultTranscriber Transcriber
+}
+
+func (r *routerTranscriber) Transcribe(ctx context.Context, req TranscriptionRequest) (string, error) {
+	return r.defaultTranscriber.Transcribe(ctx, req)
+}
+
+type routerStreamTranscriber struct {
+	*routerStreamer
+	defaultTranscriber Transcriber
+}
+
+func (r *routerStreamTranscriber) Transcribe(ctx context.Context, req TranscriptionRequest) (string, error) {
+	return r.defaultTranscriber.Transcribe(ctx, req)
+}
+
 // NewRouter builds the routing client. An empty (or fully unusable) provider list returns the default client
 // untouched, not wrapped in a no-op, so a deployment without MODEL_PROVIDERS keeps byte-identical behaviour.
 func NewRouter(opts RouterOptions) Client {
@@ -192,10 +213,21 @@ func NewRouter(opts RouterOptions) Client {
 		names:    names,
 		logger:   opts.Logger,
 	}
-	if streamer, streams := opts.Default.(Streamer); streams {
+	streamer, streams := opts.Default.(Streamer)
+	transcriber, transcribes := opts.Default.(Transcriber)
+	switch {
+	case streams && transcribes:
+		return &routerStreamTranscriber{
+			routerStreamer:    &routerStreamer{routerClient: base, defaultStreamer: streamer},
+			defaultTranscriber: transcriber,
+		}
+	case streams:
 		return &routerStreamer{routerClient: base, defaultStreamer: streamer}
+	case transcribes:
+		return &routerTranscriber{routerClient: base, defaultTranscriber: transcriber}
+	default:
+		return base
 	}
-	return base
 }
 
 func normalizeProviderModels(models []string) []string {

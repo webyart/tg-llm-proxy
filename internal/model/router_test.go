@@ -263,3 +263,51 @@ func TestRouterReportsUnlistedModelError(t *testing.T) {
 		t.Fatalf("a routing error must not look like a provider response: %v", err)
 	}
 }
+
+type transcribingFake struct {
+	*chainFake
+	text string
+}
+
+func (f *transcribingFake) Transcribe(context.Context, TranscriptionRequest) (string, error) {
+	return f.text, nil
+}
+
+func TestRouterKeepsTheDefaultTranscriber(t *testing.T) {
+	var def = &transcribingFake{chainFake: &chainFake{name: "default"}, text: "привет"}
+	var router = NewRouter(RouterOptions{
+		Default:      def,
+		DefaultModel: "primary",
+		Providers:    []Provider{{Name: "kimi", Models: []string{"kimi-k3"}, Client: &chainFake{name: "kimi"}}},
+	})
+	var transcriber, ok = router.(Transcriber)
+	if !ok {
+		t.Fatal("router lost the Transcriber interface")
+	}
+	var text, err = transcriber.Transcribe(context.Background(), TranscriptionRequest{})
+	if err != nil || text != "привет" {
+		t.Fatalf("Transcribe = %q, %v", text, err)
+	}
+}
+
+func TestRouterKeepsStreamAndTranscribeTogether(t *testing.T) {
+	var def = &streamTranscribingFake{transcribingFake: &transcribingFake{chainFake: &chainFake{name: "default"}, text: "ok"}}
+	var router = NewRouter(RouterOptions{
+		Default:   def,
+		Providers: []Provider{{Name: "kimi", Models: []string{"kimi-k3"}, Client: &chainFake{name: "kimi"}}},
+	})
+	if _, ok := router.(Transcriber); !ok {
+		t.Fatal("router lost Transcriber")
+	}
+	if _, ok := router.(Streamer); !ok {
+		t.Fatal("router lost Streamer")
+	}
+}
+
+type streamTranscribingFake struct {
+	*transcribingFake
+}
+
+func (f *streamTranscribingFake) Stream(ctx context.Context, req Request, handler StreamHandler) (Response, error) {
+	return Response{Content: "stream"}, nil
+}

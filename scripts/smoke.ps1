@@ -3,9 +3,9 @@
 the other side: the fake Telegram (bot.WithServerURL) and the fake STRATA live inside the Go test, so this
 Telegram API» is impossible (httptest lives in the Go process).
 
-By default the tg-llm-proxy-test:latest image is rebuilt from the Dockerfile test target and both the
-integration suite and the optional -Unit suite run in that container. -Host is the explicit host Go fallback;
--SkipBuild reuses the local image. Health probes and the leak scan still run on the host.
+The tg-llm-proxy-test:latest image is rebuilt from the Dockerfile test target and both the integration suite
+and the optional -Unit suite run in that container. There is no host fallback: `webapp.test` must never execute
+on this machine. -SkipBuild reuses the local image. Health probes and the leak scan still run on the host.
 
 Checks:
      WARN when a listener exists but the host probe fails, FAIL on a non-200 answer. -SkipHealth omits the probe.
@@ -14,7 +14,6 @@ Usage:
   pwsh -NoLogo -File scripts\smoke.ps1
   pwsh -NoLogo -File scripts\smoke.ps1 -Unit
   pwsh -NoLogo -File scripts\smoke.ps1 -SkipBuild
-  pwsh -NoLogo -File scripts\smoke.ps1 -Host
   pwsh -NoLogo -File scripts\smoke.ps1 -HealthPort 8080
   pwsh -NoLogo -File scripts\smoke.ps1 -SkipHealth
 
@@ -29,9 +28,7 @@ param(
     [switch]$Unit,
     [switch]$SkipHealth,
     [int]$TimeoutSec = 5,
-    # $Host is a read-only PowerShell automatic variable, so expose -Host through an alias.
-    [Alias('Host')]
-    [switch]$HostTests,
+
     [switch]$SkipBuild
 )
 
@@ -63,20 +60,18 @@ if (-not $HealthPort) { $HealthPort = $env:HEALTH_PORT }
 if (-not $HealthPort) { $HealthPort = ReadEnv 'HEALTH_PORT' }
 if (-not $HealthPort) { $HealthPort = 8080 }   # the default
 
-$testsReady = [bool]$HostTests
+$testsReady = $false
 $testSetupError = ''
-if (-not $HostTests) {
-    if (Get-Command -Name docker -ErrorAction SilentlyContinue) {
-        $testsReady = $true
-    }
-    else {
-        $testSetupError = 'docker is not on PATH — use -Host for the explicit host Go fallback'
-    }
+if (Get-Command -Name docker -ErrorAction SilentlyContinue) {
+    $testsReady = $true
+}
+else {
+    $testSetupError = 'docker is not on PATH — Go tests run only in the test container'
 }
 
 Push-Location $repoRoot
 try {
-    if ($testsReady -and -not $HostTests -and -not $SkipBuild) {
+    if ($testsReady -and -not $SkipBuild) {
         $build = (docker build --target test -t $image . 2>&1 | Out-String)
         if ($LASTEXITCODE -ne 0) {
             $testsReady = $false
@@ -88,13 +83,8 @@ try {
     $integrationExit = 1
     if ($testsReady) {
         $goArgs = @('test', '-count=1', '-shuffle=on', '-tags=integration', './test/...')
-        if ($HostTests) {
-            $integrationOut = (& go @goArgs 2>&1 | Out-String)
-        }
-        else {
-            $dockerArgs = @('run', '--rm', $image, 'go') + $goArgs
-            $integrationOut = (& docker @dockerArgs 2>&1 | Out-String)
-        }
+        $dockerArgs = @('run', '--rm', $image, 'go') + $goArgs
+        $integrationOut = (& docker @dockerArgs 2>&1 | Out-String)
         $integrationExit = $LASTEXITCODE
     }
     else {
@@ -109,13 +99,8 @@ try {
         $unitExit = 1
         if ($testsReady) {
             $goArgs = @('test', '-count=1', '-shuffle=on', './...')
-            if ($HostTests) {
-                $unitOut = (& go @goArgs 2>&1 | Out-String)
-            }
-            else {
-                $dockerArgs = @('run', '--rm', $image, 'go') + $goArgs
-                $unitOut = (& docker @dockerArgs 2>&1 | Out-String)
-            }
+            $dockerArgs = @('run', '--rm', $image, 'go') + $goArgs
+            $unitOut = (& docker @dockerArgs 2>&1 | Out-String)
             $unitExit = $LASTEXITCODE
         }
         else {

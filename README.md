@@ -284,7 +284,8 @@ http/https-ссылки. Обычные специальные символы э
 Поведение на реальной сети проверяется отдельной opt-in проверкой под build tag `livecheck` — она не входит в стандартный pipeline:
 
 ```powershell
-go test -count=1 -shuffle=on -tags=livecheck -run TestLiveURLReaderRealNetwork ./internal/bot
+docker build --target test -t tg-llm-proxy-test:latest .
+docker run --rm tg-llm-proxy-test:latest go test -count=1 -shuffle=on -tags=livecheck -run TestLiveURLReaderRealNetwork ./internal/bot
 ```
 
 Она читает реальный публичный HTTPS-сайт и подтверждает, что metadata-endpoint `169.254.169.254`, `http://` и `localhost`
@@ -615,7 +616,7 @@ Pipeline включает gofmt/vet, PowerShell parser, unit/store, fixture back
 
 ### Unit и integration без Windows test listeners
 
-Начиная с v1.37.2 unit/store и integration Go tests по умолчанию выполняются в Linux test image `tg-llm-proxy-test:latest`. Это единый стандарт для разработчика и CI: вызывайте обёртки без `-Host`, а runner должен предоставлять рабочий Docker. Первый запуск собирает test stage из текущих исходников:
+Начиная с v1.37.2 unit/store и integration Go tests по умолчанию выполняются в Linux test image `tg-llm-proxy-test:latest`. Это единый стандарт для разработчика и CI: вызывайте обёртки; runner должен предоставлять рабочий Docker, host-запуск Go-тестов удалён. Первый запуск собирает test stage из текущих исходников:
 
 ```powershell
 .\scripts\test.ps1                       # unit/store в Docker, включая сборку test image
@@ -624,14 +625,7 @@ Pipeline включает gofmt/vet, PowerShell parser, unit/store, fixture back
 
 `-SkipBuild` у обоих скриптов пропускает сборку и использует существующий `tg-llm-proxy-test:latest`. Применяйте его только для повторного прогона того же кода; после изменения исходников, `go.mod` или Dockerfile сначала пересоберите образ без `-SkipBuild`. Общий `verify.ps1` использует тот же Docker default для unit/store и integration.
 
-На Windows штатный путь не запускает `go test` на хосте. Все `httptest` listeners fake Telegram/fake STRATA находятся внутри контейнера, поэтому host-процессы `*.test.exe` не создают listeners и не вызывают Windows Firewall prompts. `-Host` — явный fallback для сред без Docker:
-
-```powershell
-.\scripts\test.ps1 -Host
-.\scripts\smoke.ps1 -Host -SkipHealth
-```
-
-Host fallback сохраняет прежние `go test` и на Windows может снова вызвать firewall prompt; он не является стандартом для разработки или CI. Прямой host `go test ./...` также не заменяет штатные обёртки.
+На Windows штатный путь **никогда** не запускает `go test` на хосте: ни `test.ps1`, ни `smoke.ps1`, ни `release-check.ps1` не имеют host-fallback. Все Go-тесты, включая `internal/webapp`, выполняются только внутри `tg-llm-proxy-test:latest`. Это принципиально: `webapp.test` на хосте запрещён — он создаёт listeners/`*.test.exe` и может затрагивать Windows Firewall. Прямой `go test ./...` на машине также не заменяет штатные обёртки; единственный путь — Docker test image.
 
 Существующий race path не изменён: `scripts\test-race.ps1` по-прежнему собирает Docker target `test` и запускает `go test -race -shuffle=on` в контейнере; `-Tagged` включает integration, `-SkipBuild` повторно использует race image. В `verify.ps1` для этого по-прежнему предусмотрен `-SkipRaceBuild`.
 
@@ -639,7 +633,7 @@ Host fallback сохраняет прежние `go test` и на Windows мож
 
 GitLab `frontend` job дополнительно выполняет `node --check internal/webapp/static/app.js` и `node --test internal/webapp/frontendjs/*.test.js` в pinned Node 22 image. Это 11 executable DOM/fetch-сценариев фактического `app.js` без npm-зависимостей. При локальном Node 22 команды можно запустить теми же аргументами; на host без Node используется контейнерный вариант.
 
-Release CI — `.gitlab-ci.yml`: Docker unit/integration checks, race и `govulncheck`. Shared GitLab pipeline запускается только для `main` или вручную; `develop` и tags не расходуют shared minutes. Локальный `verify` остаётся обязательным перед push; CI не должен молча переключаться на `-Host`. Для опционального self-hosted CI без production secrets см. `docs/gitlab-runner-wsl.md`; для стандартного pipeline нужен Docker. GitHub Actions не требуется.
+Release CI — `.gitlab-ci.yml`: Docker unit/integration checks, race и `govulncheck`. Shared GitLab pipeline запускается только для `main` или вручную; `develop` и tags не расходуют shared minutes. Локальный `verify` остаётся обязательным перед push; CI не должен запускать Go-тесты на хосте: только Docker test image. Для опционального self-hosted CI без production secrets см. `docs/gitlab-runner-wsl.md`; для стандартного pipeline нужен Docker. GitHub Actions не требуется.
 
 ## SQLite maintenance
 

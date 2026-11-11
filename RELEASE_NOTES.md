@@ -2,7 +2,18 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.74.0
+## Новейший выпуск: v1.74.1
+
+# tg-llm-proxy v1.74.1
+
+## Go tests are container-only (webapp.test is never run on the host)
+
+- Removed the `-Host` fallback from `scripts/test.ps1` and `scripts/smoke.ps1`; both now require Docker and run `go test` only in `tg-llm-proxy-test:latest`.
+- `scripts/release-check.ps1` builds the test image and runs the unit suite in it; no host `go test`.
+- GitHub `verify.yml` windows job no longer runs `test.ps1 -Host` (lint/build/lock stages only); test execution stays in the Linux docker-race job and GitLab.
+- README/PLAN/livecheck instructions updated: every Go test, including `internal/webapp`, is Docker-only.
+
+## Предыдущий выпуск: v1.74.0
 
 # tg-llm-proxy v1.74.0
 

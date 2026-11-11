@@ -21,9 +21,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # windows-latest has no Docker daemon, and the old job called verify.ps1, which runs the Docker-backed
-  # test.ps1 / smoke.ps1 / test-maintenance.ps1 stages — the job could only fail. The host-level stages below
-  # are the ones that genuinely run on a Windows runner; Docker stages live in the Linux jobs.
+  # windows-latest has no Docker daemon, and Go tests (including internal/webapp) are only allowed inside the
+  # test image. This job keeps lint/build/lock checks that genuinely run on Windows; it never runs webapp.test
+  # on the host. Test execution lives in docker-race (Linux) and the GitLab pipeline.
   windows-host:
     runs-on: windows-latest
     steps:
@@ -35,9 +35,6 @@ jobs:
       - name: Lint (gofmt, go vet, PowerShell parsing)
         shell: pwsh
         run: ./scripts/lint.ps1
-      - name: Unit and store tests on the host
-        shell: pwsh
-        run: ./scripts/test.ps1 -Host
       - name: Docker build lock acceptance (no daemon needed)
         shell: pwsh
         run: ./scripts/test-docker-build-lock.ps1

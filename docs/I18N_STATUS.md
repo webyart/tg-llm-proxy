@@ -140,8 +140,8 @@
 
 ## 6. Проверка
 
-- `go test -count=1 ./internal/i18n` — паритет каталогов и fallback;
-- `go test -count=1 ./internal/bot` — существующие тесты плюс новые:
+- `docker run --rm tg-llm-proxy-test:latest go test -count=1 ./internal/i18n` — паритет каталогов и fallback;
+- `docker run --rm tg-llm-proxy-test:latest go test -count=1 ./internal/bot` — существующие тесты плюс новые:
   `TestDocsRendersInChatLanguage`, `TestLinksRendersInChatLanguage`, `TestRemindRendersInChatLanguage`,
   `TestTaskRendersInChatLanguage`, `TestTTSRendersInChatLanguage`, `TestAdminRendersInChatLanguage`,
   `TestMenuButtonsFollowChatLanguage`, `TestPersonaPresetIDsAndCallbacksAreStable`,

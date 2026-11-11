@@ -2,10 +2,11 @@
 <#
 release-check.ps1 — local pre-tag gate for a v* release.
 
-Runs, on the host and before the tag exists, the checks that must be green for the GitLab release job to
-publish anything: gofmt over the tracked tree, go vet (plain and integration-tagged package roots), the full
-unit/store test suite, and a clean `git status`. It then prints the tag to create and the exact commands.
-Nothing is committed, tagged, pushed, or built — this script only refuses to let a human tag a red tree.
+Runs, before the tag exists, the checks that must be green for the GitLab release job to publish anything:
+gofmt over the tracked tree, go vet (plain and integration-tagged package roots), the full unit/store test
+suite (inside the Docker test image, never on the host), and a clean `git status`. It then prints the tag to
+create and the exact commands. Nothing is committed, tagged, pushed, or built — this script only refuses to
+let a human tag a red tree.
 
 `go test ./...` is intentionally expanded to `. ./cmd/... ./internal/...`: `zzscratch/` is gitignored local
 scratch and is not part of the release, and the repository's own scripts/lint.ps1 and scripts/test.ps1 use the
@@ -33,6 +34,7 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 # Same environment as the other wrappers (Git on PATH, GOPROXY, GOCACHE/GOPATH), but keep its banner out of the
 # release-check report.
 $setupOutput = . (Join-Path $PSScriptRoot 'Setup.ps1') 2>&1
+$image = 'tg-llm-proxy-test:latest'
 $packageRoots = @('.', './cmd/...', './internal/...')
 $integrationRoots = @('./test/...')
 $skipPath = '[\\/]\.cache[\\/]|[\\/]bin[\\/]|[\\/]data[\\/]|[\\/]zzscratch[\\/]|[\\/]\.git[\\/]'
@@ -109,19 +111,31 @@ try {
     if ($SkipTests) {
         Write-Output 'go test: SKIP — -SkipTests was given; a real release gate must run it'
     }
+    elseif (-not (Get-Command -Name docker -ErrorAction SilentlyContinue)) {
+        Add-Failure 'docker is not on PATH; Go tests run only in the test container'
+        Write-Output 'go test: FAIL — Docker is required; host webapp.test is forbidden'
+    }
     else {
         $testArgs = @('test') + $packageRoots + @('-count=1', '-shuffle=on', '-timeout', '20m')
         $watch = [System.Diagnostics.Stopwatch]::StartNew()
-        $testOutput = (& go @testArgs 2>&1 | Out-String)
-        $testCode = $LASTEXITCODE
-        $watch.Stop()
-        Write-Output $testOutput.Trim()
-        if ($testCode -ne 0) {
-            Add-Failure "go test $($packageRoots -join ' ') exited $testCode after $([math]::Round($watch.Elapsed.TotalSeconds, 1))s"
+        $build = (& docker build --target test -t $image . 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0) {
+            Add-Failure "docker build --target test exited $LASTEXITCODE"
+            Write-Output (($build -split "`r?`n" | Select-Object -Last 20) -join "`n")
         }
         else {
-            Write-Output "go test: GREEN — $([math]::Round($watch.Elapsed.TotalSeconds, 1))s"
+            $dockerArgs = @('run', '--rm', $image, 'go') + $testArgs
+            $testOutput = (& docker @dockerArgs 2>&1 | Out-String)
+            $testCode = $LASTEXITCODE
+            Write-Output $testOutput.Trim()
+            if ($testCode -ne 0) {
+                Add-Failure "go test $($packageRoots -join ' ') in the test container exited $testCode after $([math]::Round($watch.Elapsed.TotalSeconds, 1))s"
+            }
+            else {
+                Write-Output "go test: GREEN — container run, $([math]::Round($watch.Elapsed.TotalSeconds, 1))s"
+            }
         }
+        $watch.Stop()
     }
 
     # 5. Tag selection. The latest v* tag is the base; the default is the next minor release.

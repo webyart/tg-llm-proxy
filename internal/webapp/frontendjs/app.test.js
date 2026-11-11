@@ -936,6 +936,7 @@ test("non-admin settings has no chat-limits section and makes no admin request",
   await openTab(harness, "settings");
   const content = harness.element("content");
   assert.equal(content.textContent.includes("Лимиты чатов"), false);
+  assert.equal(content.textContent.includes("Провайдеры и модели"), false);
   assert.equal(harness.requests.some((request) => request.path.startsWith("/api/admin/")), false);
 });
 
@@ -1064,4 +1065,137 @@ test("admin chat list failure is localized inside the section", async () => {
   await openTab(harness, "settings");
   const section = limitsSection(harness);
   assert.ok(section.textContent.includes("Раздел доступен только администратору."));
+});
+
+function adminProviderFixture(overrides = {}) {
+  return {
+    name: "kimi",
+    base_url: "api.moonshot.ai",
+    models: ["kimi-k3", "kimi-k2"],
+    default_model: "kimi-k3",
+    enabled: true,
+    source: "env",
+    configured_models: ["kimi-k3", "kimi-k2"],
+    ...overrides,
+  };
+}
+
+function providerSection(harness) {
+  const content = harness.element("content");
+  const section = content.querySelectorAll("section").find((node) => node.classList.contains("provider-settings"));
+  assert.ok(section, "the admin provider section is missing");
+  return section;
+}
+
+test("admin providers render, edit, save and reset the strict payload", async () => {
+  const harness = await createHarness();
+  let saved = null;
+  let resetPath = "";
+  harness.setHandler(adminSettingsHandler([], {
+    handle(request) {
+      if (request.path === "/api/admin/providers") {
+        return jsonResponse({ items: [adminProviderFixture()] });
+      }
+      if (request.path === "/api/admin/providers/kimi" && request.options.method === "PUT") {
+        saved = {
+          body: JSON.parse(request.options.body),
+          contentType: request.options.headers.get("Content-Type"),
+        };
+        return jsonResponse(adminProviderFixture({ source: "db", models: ["new-a", "new-b"], default_model: "new-b", enabled: false }));
+      }
+      if (request.path === "/api/admin/providers/kimi" && request.options.method === "DELETE") {
+        resetPath = request.path;
+        return jsonResponse(adminProviderFixture());
+      }
+      return null;
+    },
+  }));
+  await openTab(harness, "settings");
+  let section = providerSection(harness);
+  assert.ok(section.textContent.includes("Провайдеры и модели"));
+  assert.ok(section.textContent.includes("host: api.moonshot.ai"));
+  assert.ok(section.textContent.includes("env (MODEL_PROVIDERS)"));
+  assert.equal(section.querySelector('input[type="checkbox"]').checked, true);
+  const textarea = section.querySelector("textarea");
+  assert.equal(textarea.value, "kimi-k3\nkimi-k2");
+  const select = section.querySelector("select");
+  assert.deepEqual(select.querySelectorAll("option").map((option) => option.value), ["kimi-k3", "kimi-k2"]);
+  assert.equal(select.value, "kimi-k3");
+
+  textarea.value = "new-a\nnew-b";
+  textarea.dispatchEvent({ type: "input" });
+  assert.deepEqual(select.querySelectorAll("option").map((option) => option.value), ["new-a", "new-b"]);
+  select.value = "new-b";
+  section.querySelector('input[type="checkbox"]').checked = false;
+  findButton(section, "Сохранить").click();
+  await harness.flush();
+  assert.deepEqual(saved.body, { models: ["new-a", "new-b"], default_model: "new-b", enabled: false });
+  assert.equal(saved.contentType, "application/json");
+  assert.ok(harness.element("notice").textContent.includes("Настройки провайдера сохранены."));
+  assert.equal(harness.element("error").hidden, true);
+
+  section = providerSection(harness);
+  assert.ok(harness.requests.filter((request) => request.path === "/api/admin/providers").length >= 2);
+  findButton(section, "Сбросить к env").click();
+  await harness.flush();
+  assert.equal(resetPath, "/api/admin/providers/kimi");
+  assert.ok(harness.element("notice").textContent.includes("Провайдер сброшен к значениям env."));
+  assert.equal(harness.element("error").hidden, true);
+});
+
+test("admin providers validate models locally before any request", async () => {
+  const harness = await createHarness();
+  harness.setHandler(adminSettingsHandler([], {
+    handle(request) {
+      if (request.path === "/api/admin/providers") return jsonResponse({ items: [adminProviderFixture()] });
+      return null;
+    },
+  }));
+  await openTab(harness, "settings");
+  const section = providerSection(harness);
+  harness.resetRequests();
+  const textarea = section.querySelector("textarea");
+  const select = section.querySelector("select");
+
+  textarea.value = Array.from({ length: 21 }, (_, index) => `model-${index}`).join("\n");
+  textarea.dispatchEvent({ type: "input" });
+  assert.equal(textarea.getAttribute("aria-invalid"), "true");
+  findButton(section, "Сохранить").click();
+  await harness.flush();
+  assert.equal(harness.requests.length, 0);
+  assert.ok(harness.element("error").textContent.includes("1 до 20"));
+
+  textarea.value = "same\nsame";
+  textarea.dispatchEvent({ type: "input" });
+  findButton(section, "Сохранить").click();
+  await harness.flush();
+  assert.equal(harness.requests.length, 0);
+
+  textarea.value = "one\ntwo";
+  textarea.dispatchEvent({ type: "input" });
+  assert.equal(textarea.getAttribute("aria-invalid"), "false");
+  assert.equal(select.querySelectorAll("option").length, 2);
+  assert.equal(select.value, "one");
+});
+
+test("admin provider section switches language without another admin request", async () => {
+  const harness = await createHarness();
+  harness.setHandler(adminSettingsHandler([], {
+    handle(request) {
+      if (request.path === "/api/admin/providers") return jsonResponse({ items: [adminProviderFixture()] });
+      return null;
+    },
+  }));
+  await openTab(harness, "settings");
+  const before = harness.requests.filter((request) => request.path === "/api/admin/providers").length;
+  const language = harness.element("language");
+  language.value = "en";
+  language.dispatchEvent({ type: "change" });
+  const section = providerSection(harness);
+  assert.ok(section.textContent.includes("Providers and models"));
+  assert.ok(section.textContent.includes("Reset to env"));
+  assert.equal(harness.requests.filter((request) => request.path === "/api/admin/providers").length, before);
+  language.value = "ru";
+  language.dispatchEvent({ type: "change" });
+  assert.ok(providerSection(harness).textContent.includes("Провайдеры и модели"));
 });

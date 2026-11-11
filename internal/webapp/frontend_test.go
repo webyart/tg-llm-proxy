@@ -1060,3 +1060,35 @@ func TestFrontendAdminChatLimitsSection(t *testing.T) {
 		}
 	}
 }
+
+// TestFrontendAdminProviderSection — the admin-only "Providers and models" editor of schema 22. It is
+// rendered only when /api/settings says is_admin, uses real DOM nodes and the strict PUT/DELETE contract,
+// keeps the 44 px touch targets and never renders anything but the host of a provider endpoint.
+func TestFrontendAdminProviderSection(t *testing.T) {
+	script := frontendAsset(t, "static/app.js")
+	for _, want := range []string{
+		`providerSettingsTitle: "Провайдеры и модели"`, `providerSettingsTitle: "Providers and models"`,
+		`providerSettingsReset: "Сбросить к env"`, `providerSettingsReset: "Reset to env"`,
+		`providerSettingsInvalid: `, `providerSourceEnv: "env (MODEL_PROVIDERS)"`,
+		`await api("/api/admin/providers")`,
+		"await api(`/api/admin/providers/${encodeURIComponent(name)}`, {",
+		`method: "PUT"`, `body: JSON.stringify({ models, default_model: defaultModel, enabled: toggle.checked })`,
+		`{ method: "DELETE" }`,
+		`if (data.is_admin)`,
+		`providerModelsValid(models, defaultModel)`,
+		`models.length < 1 || models.length > 20`,
+		`textarea.value = models.join("\n")`,
+		`new Set(models).size !== models.length`,
+		`providerSettingsSaved`, `providerSettingsResetDone`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js misses the admin provider regression %q", want)
+		}
+	}
+	css := frontendAsset(t, "static/style.css")
+	for _, want := range []string{".provider-card", ".provider-enabled", ".provider-field", "min-height: 44px", "min-height: 88px"} {
+		if !strings.Contains(css, want) {
+			t.Errorf("style.css misses the admin provider control style %q", want)
+		}
+	}
+}

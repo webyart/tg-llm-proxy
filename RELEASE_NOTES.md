@@ -2,7 +2,18 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.65.0
+## Новейший выпуск: v1.66.0
+
+# tg-llm-proxy v1.66.0
+
+## Runtime provider and model editor
+
+- Admin Mini App Settings gains «Провайдеры и модели»: enable/disable a provider, edit its model list (1..20), choose the default model, Save/Reset — without restarting. Base URL, API key and timeout remain env-only and are never shown.
+- `provider_settings` (schema 22) stores overrides; startup applies them to the router before serving, unknown providers are ignored. The router reflects overrides immediately: routing rejects an unlisted model or a disabled provider, and `Models()` / `/api/settings` show the effective list.
+- API: `GET /api/admin/providers`, `PUT/DELETE /api/admin/providers/{name}`, admin-only, strict validation and audited `admin.provider.update|reset`; `strata` is not editable.
+- Tests: store/CRUD/validation/migration 21→22, router overrides/concurrency, API/admin and UI, JS 58/58.
+
+## Предыдущий выпуск: v1.65.0
 
 # tg-llm-proxy v1.65.0
 

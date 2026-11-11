@@ -630,6 +630,14 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 		a.adminChatLimits(w, req, current, chatID)
 		return
 	}
+	if req.URL.Path == adminProvidersPath {
+		a.adminProviders(w, req, current)
+		return
+	}
+	if strings.HasPrefix(req.URL.Path, adminProvidersPath+"/") {
+		a.adminProvider(w, req, current)
+		return
+	}
 	switch req.URL.Path {
 	case "/api/settings":
 		a.settings(w, req, current)
@@ -758,6 +766,12 @@ func miniAppMutationOperation(req *http.Request) (string, bool) {
 			}
 			return "admin.limits.reset", true
 		}
+		if _, ok := adminProviderName(path); ok {
+			if req.Method == http.MethodPut {
+				return "admin.provider.update", true
+			}
+			return "admin.provider.reset", true
+		}
 		operation := ""
 		switch path {
 		case "/api/settings/model":
@@ -786,9 +800,10 @@ func (a *App) logMiniAppMutation(req *http.Request, current scope, operation str
 		return
 	}
 	var result struct {
-		ID      int64  `json:"id"`
-		TaskID  int64  `json:"task_id"`
-		Deleted *int64 `json:"deleted"`
+		ID       int64  `json:"id"`
+		TaskID   int64  `json:"task_id"`
+		Deleted  *int64 `json:"deleted"`
+		Provider string `json:"name"`
 	}
 	_ = json.Unmarshal(body, &result)
 	id := result.ID
@@ -799,6 +814,9 @@ func (a *App) logMiniAppMutation(req *http.Request, current scope, operation str
 	fmt.Fprintf(&detail, "operation=%s chat_id=%d", operation, current.ChatID)
 	if id > 0 {
 		fmt.Fprintf(&detail, " id=%d", id)
+	}
+	if result.Provider != "" {
+		fmt.Fprintf(&detail, " provider=%s", result.Provider)
 	}
 	if result.Deleted != nil {
 		fmt.Fprintf(&detail, " count=%d", *result.Deleted)

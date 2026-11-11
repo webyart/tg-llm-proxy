@@ -102,6 +102,16 @@ func (a *App) providerModels(ctx context.Context) ([]string, error) {
 	return cloneModelList(available), nil
 }
 
+// invalidateModelCache drops the 45-second catalogue cache after a provider override changes the router.
+// Without it the next /api/settings could still advertise the pre-edit list, which is exactly the restart
+// delay this feature exists to remove.
+func (a *App) invalidateModelCache() {
+	a.modelCache.mu.Lock()
+	a.modelCache.valid = false
+	a.modelCache.fetchedAt = time.Time{}
+	a.modelCache.mu.Unlock()
+}
+
 type settingsResponse struct {
 	Warning string `json:"warning,omitempty"`
 	// IsAdmin tells the Mini App whether to render the admin-only "Chat limits" section. It answers from
@@ -289,13 +299,13 @@ func (a *App) settingsModelAllowed(available []string, requested string) bool {
 	if selectedTrimmed == "" {
 		return false
 	}
-	for _, configured := range a.cfg.ModelProviders {
-		if configured.Name != provider {
+	for _, configured := range a.providerCatalog() {
+		if configured.Provider != provider {
 			continue
 		}
 		for _, model := range configured.Models {
 			if strings.TrimSpace(model) == selectedTrimmed {
-				return true
+				return configured.Enabled
 			}
 		}
 		return false

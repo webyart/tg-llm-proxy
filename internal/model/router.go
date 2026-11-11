@@ -17,11 +17,50 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // DefaultProviderName is the reserved prefix of the primary endpoint. It is not a MODEL_PROVIDERS entry, so a
 // configured provider can never shadow the default path.
 const DefaultProviderName = "strata"
+
+// MaxProviderModels is the runtime bound of one provider's effective list. It matches the env loader and the
+// admin API: the Mini App textarea and the /model keyboard are not meant to carry a longer catalogue.
+const MaxProviderModels = 20
+
+// Provider sources reported by ProviderCatalog. "env" means MODEL_PROVIDERS is in force for this provider;
+// "db" means a provider_settings row overrides models/default_model/enabled at runtime.
+const (
+	ProviderSourceEnv = "env"
+	ProviderSourceDB  = "db"
+)
+
+// Errors of the runtime override API. The admin API maps ErrUnknownProvider to 404 and
+// ErrInvalidProviderModels to 400; a routing attempt on a disabled provider uses a plain error.
+var (
+	ErrUnknownProvider       = errors.New("unknown model provider")
+	ErrInvalidProviderModels = errors.New("invalid provider models")
+)
+
+// ProviderCatalogEntry is one provider as the router currently sees it. It never contains a key, a base URL
+// or a prompt: the admin API adds only the host of the env base_url on the webapp side.
+type ProviderCatalogEntry struct {
+	Provider     string
+	Models       []string
+	DefaultModel string
+	Enabled      bool
+	Source       string
+}
+
+// ProviderOverrides is the runtime editor of the provider catalogue. A router built by NewRouter implements
+// it (both the plain and the streaming wrapper); the default client returned when no provider is usable does
+// not, which is exactly the "no providers" path that must stay unchanged. The methods are safe for concurrent
+// use with Complete, Stream, Models and each other.
+type ProviderOverrides interface {
+	SetProviderModels(provider string, models []string, defaultModel string, enabled bool) error
+	ResetProviderModels(provider string) error
+	ProviderCatalog() []ProviderCatalogEntry
+}
 
 // Provider is one configured provider as the router sees it: the name a chat types before the colon, the closed
 // list of models it may serve, its default model and the client that talks to it.
@@ -41,16 +80,57 @@ type RouterOptions struct {
 	Logger       *slog.Logger
 }
 
+// providerRoute keeps the env base and the effective values side by side. The env fields are immutable after
+// NewRouter; the effective fields are replaced (never mutated in place) under routerClient.mu, so a reader may
+// keep a snapshot of the slices and maps after releasing the read lock.
 type providerRoute struct {
-	name         string
-	models       map[string]bool
-	order        []string
+	name     string
+	client   Client
+	streamer Streamer
+
+	envModels       []string
+	envDefaultModel string
+
+	models       []string
+	allowed      map[string]bool
 	defaultModel string
+	enabled      bool
+	source       string
+}
+
+// providerSnapshot is an immutable view of one route, copied by value under the read lock.
+type providerSnapshot struct {
+	name         string
 	client       Client
 	streamer     Streamer
+	models       []string
+	allowed      map[string]bool
+	defaultModel string
+	enabled      bool
+}
+
+func (r *providerRoute) snapshot() providerSnapshot {
+	return providerSnapshot{
+		name: r.name, client: r.client, streamer: r.streamer,
+		models: r.models, allowed: r.allowed, defaultModel: r.defaultModel, enabled: r.enabled,
+	}
+}
+
+// apply replaces the effective fields. The slices are copied and the map is rebuilt, so snapshots taken by a
+// concurrent reader stay valid after the lock is released.
+func (r *providerRoute) apply(models []string, defaultModel string, enabled bool, source string) {
+	r.models = append([]string{}, models...)
+	r.allowed = make(map[string]bool, len(models))
+	for _, model := range models {
+		r.allowed[model] = true
+	}
+	r.defaultModel = defaultModel
+	r.enabled = enabled
+	r.source = source
 }
 
 type routerClient struct {
+	mu       sync.RWMutex
 	def      Client
 	defModel string
 	routes   map[string]*providerRoute
@@ -93,8 +173,11 @@ func NewRouter(opts RouterOptions) Client {
 		if fallbackModel == "" || !allowed[fallbackModel] {
 			fallbackModel = order[0]
 		}
-		var route = &providerRoute{name: name, models: allowed, order: order, defaultModel: fallbackModel, client: provider.Client}
+		var route = &providerRoute{name: name, client: provider.Client}
 		route.streamer, _ = provider.Client.(Streamer)
+		route.envModels = append([]string{}, order...)
+		route.envDefaultModel = fallbackModel
+		route.apply(order, fallbackModel, true, ProviderSourceEnv)
 		routes[name] = route
 		names = append(names, name)
 	}
@@ -137,42 +220,155 @@ func (r *routerClient) providerNames() []string {
 	return r.names
 }
 
+// SetProviderModels replaces the effective list, default and enabled flag of one configured provider. The env
+// base stays untouched, so ResetProviderModels can restore it without re-reading MODEL_PROVIDERS. The call is
+// strict: an empty/oversized list, an empty or duplicate model id, a default outside the list, the reserved
+// name and an unknown provider are errors instead of a silently reduced list.
+func (r *routerClient) SetProviderModels(provider string, models []string, defaultModel string, enabled bool) error {
+	provider = strings.TrimSpace(provider)
+	if provider == DefaultProviderName {
+		return fmt.Errorf("%w: %q is the reserved default endpoint", ErrInvalidProviderModels, provider)
+	}
+	normalized, err := runtimeProviderModels(models)
+	if err != nil {
+		return err
+	}
+	defaultModel = strings.TrimSpace(defaultModel)
+	if defaultModel == "" {
+		defaultModel = normalized[0]
+	}
+	var listed = false
+	for _, model := range normalized {
+		if model == defaultModel {
+			listed = true
+			break
+		}
+	}
+	if !listed {
+		return fmt.Errorf("%w: default model %q is not in the list of provider %q", ErrInvalidProviderModels, defaultModel, provider)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	route, known := r.routes[provider]
+	if !known {
+		return fmt.Errorf("%w: %q (configured: %s)", ErrUnknownProvider, provider, strings.Join(r.providerNames(), ", "))
+	}
+	route.apply(normalized, defaultModel, enabled, ProviderSourceDB)
+	return nil
+}
+
+// ResetProviderModels restores the env list, default and enabled state of one provider. It is idempotent: a
+// provider that was never overridden keeps its env values. An unknown name and the reserved "strata" are
+// errors, so a typo cannot silently reset another provider.
+func (r *routerClient) ResetProviderModels(provider string) error {
+	provider = strings.TrimSpace(provider)
+	if provider == DefaultProviderName {
+		return fmt.Errorf("%w: %q is the reserved default endpoint", ErrInvalidProviderModels, provider)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	route, known := r.routes[provider]
+	if !known {
+		return fmt.Errorf("%w: %q (configured: %s)", ErrUnknownProvider, provider, strings.Join(r.providerNames(), ", "))
+	}
+	route.apply(route.envModels, route.envDefaultModel, true, ProviderSourceEnv)
+	return nil
+}
+
+// ProviderCatalog returns a snapshot of every configured provider in sorted name order. It is a copy: a later
+// override cannot change a slice the caller already holds. A disabled provider stays in the catalogue so the
+// admin UI can enable it again.
+func (r *routerClient) ProviderCatalog() []ProviderCatalogEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out = make([]ProviderCatalogEntry, 0, len(r.names))
+	for _, name := range r.names {
+		var route = r.routes[name]
+		out = append(out, ProviderCatalogEntry{
+			Provider:     route.name,
+			Models:       append([]string{}, route.models...),
+			DefaultModel: route.defaultModel,
+			Enabled:      route.enabled,
+			Source:       route.source,
+		})
+	}
+	return out
+}
+
+// runtimeProviderModels is the strict normalizer of the runtime editor: unlike the env loader it refuses a
+// malformed list instead of dropping entries, because the admin typed it and expects the saved list to be
+// exactly what runs.
+func runtimeProviderModels(models []string) ([]string, error) {
+	if len(models) == 0 {
+		return nil, fmt.Errorf("%w: the model list is empty", ErrInvalidProviderModels)
+	}
+	if len(models) > MaxProviderModels {
+		return nil, fmt.Errorf("%w: %d models listed, at most %d are allowed", ErrInvalidProviderModels, len(models), MaxProviderModels)
+	}
+	var seen = make(map[string]bool, len(models))
+	var out = make([]string, 0, len(models))
+	for _, model := range models {
+		var trimmed = strings.TrimSpace(model)
+		if trimmed == "" {
+			return nil, fmt.Errorf("%w: an empty model id is not allowed", ErrInvalidProviderModels)
+		}
+		if seen[trimmed] {
+			return nil, fmt.Errorf("%w: model %q is listed twice", ErrInvalidProviderModels, trimmed)
+		}
+		seen[trimmed] = true
+		out = append(out, trimmed)
+	}
+	return out, nil
+}
+
 // resolve splits a request model into the client that serves it and the model id to send. provider is empty when
-// the request takes the default path.
-func (r *routerClient) resolve(raw string) (Client, string, string, error) {
+// the request takes the default path. The returned snapshot is immutable: an override that commits after the
+// read lock is released cannot change what this request sends.
+func (r *routerClient) resolve(raw string) (providerSnapshot, string, string, error) {
 	var provider, rest, prefixed = strings.Cut(strings.TrimSpace(raw), ":")
 	if !prefixed {
-		return r.def, strings.TrimSpace(raw), "", nil
+		return providerSnapshot{client: r.def}, strings.TrimSpace(raw), "", nil
 	}
 	if provider == DefaultProviderName {
-		return r.def, strings.TrimSpace(rest), "", nil
+		return providerSnapshot{client: r.def}, strings.TrimSpace(rest), "", nil
 	}
+	r.mu.RLock()
 	var route, known = r.routes[provider]
+	var snapshot providerSnapshot
+	if known {
+		snapshot = route.snapshot()
+	}
+	r.mu.RUnlock()
 	if !known {
-		return nil, "", provider, fmt.Errorf("unknown model provider %q in model id %q: configured providers are %s; use a plain model id or %s:<model> for the default endpoint",
+		return providerSnapshot{}, "", provider, fmt.Errorf("unknown model provider %q in model id %q: configured providers are %s; use a plain model id or %s:<model> for the default endpoint",
 			provider, raw, strings.Join(r.providerNames(), ", "), DefaultProviderName)
 	}
 	var model = strings.TrimSpace(rest)
 	if model == "" {
-		model = route.defaultModel
+		model = snapshot.defaultModel
 	}
-	if !route.models[model] {
-		return nil, "", provider, fmt.Errorf("model %q is not listed by provider %q: available models are %s",
-			model, provider, strings.Join(route.order, ", "))
+	if !snapshot.enabled {
+		return providerSnapshot{}, "", provider, fmt.Errorf("model provider %q is disabled: enable it in Settings, or use a plain model id or %s:<model> for the default endpoint",
+			provider, DefaultProviderName)
 	}
-	return route.client, model, provider, nil
+	if !snapshot.allowed[model] {
+		return providerSnapshot{}, "", provider, fmt.Errorf("model %q is not listed by provider %q: available models are %s",
+			model, provider, strings.Join(snapshot.models, ", "))
+	}
+	return snapshot, model, provider, nil
 }
 
 // Complete routes one request. A retryable failure on an explicitly selected provider is retried once on the
 // default chain: the selection is a preference, not a hard requirement.
 func (r *routerClient) Complete(ctx context.Context, req Request) (Response, error) {
-	var client, modelName, provider, err = r.resolve(req.Model)
+	var route, modelName, provider, err = r.resolve(req.Model)
 	if err != nil {
 		return Response{}, err
 	}
 	var mapped = req
 	mapped.Model = modelName
-	var response, callErr = client.Complete(ctx, mapped)
+	var response, callErr = route.client.Complete(ctx, mapped)
 	if callErr == nil || provider == "" {
 		return response, callErr
 	}
@@ -190,15 +386,16 @@ func (r *routerClient) Complete(ctx context.Context, req Request) (Response, err
 	return fallbackResponse, nil
 }
 
-// Models keeps the default catalogue and appends every configured "name:model" id, grouped by provider name in
-// sorted order and in the configured order inside a provider. Duplicates are dropped once. A failed default
-// listing does not hide the configured providers: their lists are configuration, not provider state.
+// Models keeps the default catalogue and appends every enabled configured "name:model" id, grouped by provider
+// name in sorted order and in the effective order inside a provider. Duplicates are dropped once. A failed
+// default listing does not hide the configured providers: their lists are configuration, not provider state.
 func (r *routerClient) Models(ctx context.Context) ([]string, error) {
 	var defaultModels, defaultErr = r.def.Models(ctx)
 	if defaultErr != nil && r.logger != nil {
 		r.logger.Warn("the default model catalogue is unavailable; listing the configured providers only",
 			"reason", fallbackReason(defaultErr))
 	}
+	var catalog = r.ProviderCatalog()
 	var out []string
 	var seen = map[string]bool{}
 	for _, model := range defaultModels {
@@ -209,10 +406,12 @@ func (r *routerClient) Models(ctx context.Context) ([]string, error) {
 		seen[trimmed] = true
 		out = append(out, trimmed)
 	}
-	for _, name := range r.names {
-		var route = r.routes[name]
-		for _, model := range route.order {
-			var id = name + ":" + model
+	for _, route := range catalog {
+		if !route.Enabled {
+			continue
+		}
+		for _, model := range route.Models {
+			var id = route.Provider + ":" + model
 			if seen[id] {
 				continue
 			}
@@ -224,7 +423,7 @@ func (r *routerClient) Models(ctx context.Context) ([]string, error) {
 }
 
 func (r *routerStreamer) Stream(ctx context.Context, req Request, handler StreamHandler) (Response, error) {
-	var _, modelName, provider, err = r.resolve(req.Model)
+	var route, modelName, provider, err = r.resolve(req.Model)
 	if err != nil {
 		return Response{}, err
 	}
@@ -233,7 +432,6 @@ func (r *routerStreamer) Stream(ctx context.Context, req Request, handler Stream
 	if provider == "" {
 		return r.defaultStreamer.Stream(ctx, mapped, handler)
 	}
-	var route = r.routes[provider]
 	if route.streamer == nil {
 		return Response{}, fmt.Errorf("provider %q cannot stream: model %q is reachable only for non-streamed requests", provider, modelName)
 	}

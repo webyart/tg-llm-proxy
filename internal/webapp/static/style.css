@@ -464,6 +464,34 @@ textarea { min-height: 78px; resize: vertical; line-height: 1.45; }
 .chat-limits-tool span { overflow-wrap: anywhere; }
 .chat-limits-tool input { width: 22px; height: 22px; min-height: 22px; flex: 0 0 auto; accent-color: var(--accent); }
 .chat-limits select { width: 100%; }
+/* Admin-only provider/model editor: one card per provider. The textarea keeps the generic 44 px control
+   height; its 88 px minimum leaves room for the one-per-line list. The checkbox is drawn at 22 px inside a
+   44 px label row, exactly like the chat-limits tool toggles. */
+.provider-settings-body { display: grid; gap: 10px; margin-top: 9px; min-width: 0; }
+.provider-card {
+  min-width: 0;
+  max-width: 100%;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--tg-theme-secondary-bg-color, #f6f7fb);
+}
+.provider-card h4 { margin: 0 0 4px; font-size: .92rem; overflow-wrap: anywhere; }
+.provider-card p { margin: 3px 0 7px; }
+.provider-field { display: grid; gap: 4px; margin-top: 8px; font-size: .82rem; color: var(--muted); min-width: 0; }
+.provider-field textarea { width: 100%; min-height: 88px; }
+.provider-enabled {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  font-size: .9rem;
+  min-width: 0;
+}
+.provider-enabled span { overflow-wrap: anywhere; }
+.provider-enabled input { width: 22px; height: 22px; min-height: 22px; flex: 0 0 auto; accent-color: var(--accent); }
+.provider-card .settings-row { margin-top: 8px; }
+.provider-card .settings-row > button { flex: 1 1 auto; }
 .settings-toggle {
   min-width: 96px;
   min-height: 44px;

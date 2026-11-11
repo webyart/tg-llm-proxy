@@ -16,6 +16,7 @@ import (
 	"bot/internal/store"
 	"bot/internal/webapp"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -187,6 +188,56 @@ func main() {
 	}
 }
 
+// applyProviderSettings loads provider_settings after the store is open and applies every row to the router
+// before any listener serves a request. MODEL_PROVIDERS remains the base: a row overrides only models,
+// default_model and enabled. A row for a provider that is no longer configured (or a leftover "strata" row)
+// is ignored and logged — never fatal, because the environment is the source of the provider itself. Logs
+// carry the provider name and the model count only; base_url, api_key and model ids stay out of them.
+func applyProviderSettings(ctx context.Context, db *sql.DB, client model.Client, logger *slog.Logger) (int, error) {
+	var overrides, supported = client.(model.ProviderOverrides)
+	if !supported {
+		var rows, err = store.ListProviderSettings(ctx, db)
+		if err != nil {
+			return 0, fmt.Errorf("store.ListProviderSettings: %w", err)
+		}
+		if len(rows) > 0 {
+			logger.Warn("provider settings are stored but no named provider is usable; the overrides are ignored",
+				"rows", len(rows))
+		}
+		return 0, nil
+	}
+	var rows, err = store.ListProviderSettings(ctx, db)
+	if err != nil {
+		return 0, fmt.Errorf("store.ListProviderSettings: %w", err)
+	}
+	var known = map[string]bool{}
+	for _, entry := range overrides.ProviderCatalog() {
+		known[entry.Provider] = true
+	}
+	var applied int
+	for _, row := range rows {
+		if row.Provider == model.DefaultProviderName {
+			logger.Warn("provider settings row is ignored: strata is reserved for the default endpoint",
+				"provider", row.Provider)
+			continue
+		}
+		if !known[row.Provider] {
+			logger.Warn("provider settings row is ignored: the provider is not configured",
+				"provider", row.Provider)
+			continue
+		}
+		if err := overrides.SetProviderModels(row.Provider, row.Models, row.DefaultModel, row.Enabled); err != nil {
+			logger.Warn("provider settings row could not be applied",
+				"provider", row.Provider, "error", err)
+			continue
+		}
+		logger.Info("provider model override applied",
+			"provider", row.Provider, "models", len(row.Models), "enabled", row.Enabled)
+		applied++
+	}
+	return applied, nil
+}
+
 // run wires the process and blocks until the context is cancelled or a component that the bot cannot live
 // without stops. Everything it opens is closed on return; the caller owns the exit code.
 func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, logger *slog.Logger) error {
@@ -345,6 +396,17 @@ func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, l
 		logger.Info("model providers are available", "providers", names)
 	} else if len(cfg.ModelProviders) > 0 {
 		logger.Warn("MODEL_PROVIDERS lists no usable provider; every request stays on the default endpoint")
+	}
+
+	// The runtime admin editor stores its overrides in provider_settings. They are applied here, after the
+	// router exists and before the health/Mini App listeners start, so the first request already sees the
+	// effective list and no restart is needed after an admin save.
+	var providerOverrides, applyErr = applyProviderSettings(ctx, db, client, logger)
+	if applyErr != nil {
+		return fmt.Errorf("provider settings: %w", applyErr)
+	}
+	if providerOverrides > 0 {
+		fmt.Fprintln(out, "provider model overrides applied:", providerOverrides)
 	}
 
 	// The hybrid RAG layer is optional and off by default. The metric families are registered either way, so a

@@ -158,7 +158,21 @@
       chatLimitsSaved: "Лимиты чата сохранены.", chatLimitsResetDone: "Лимиты чата сброшены.",
       chatLimitsFailed: "Не удалось сохранить лимиты чата.", chatLimitsLoadFailed: "Не удалось загрузить список чатов.",
       chatLimitsEmpty: "Активных чатов пока нет.", chatLimitsInvalid: "Лимиты — целые числа от 0 до 1000000.",
+      providerSettingsTitle: "Провайдеры и модели", providerSettingsHint: "Администратор меняет список моделей, модель по умолчанию и доступность провайдера без перезапуска. base_url, api_key и таймаут задаются только в MODEL_PROVIDERS; сброс возвращает значения из env.",
+      providerSettingsEmpty: "Именованные провайдеры не настроены.", providerSettingsLoadFailed: "Не удалось загрузить провайдеров.",
+      providerSettingsSave: "Сохранить", providerSettingsReset: "Сбросить к env",
+      providerSettingsSaved: "Настройки провайдера сохранены.", providerSettingsResetDone: "Провайдер сброшен к значениям env.",
+      providerSettingsFailed: "Не удалось сохранить настройки провайдера.",
+      providerSettingsInvalid: "Список моделей: от 1 до 20 непустых уникальных строк; модель по умолчанию должна быть в списке.",
+      providerEnabled: "Провайдер включён", providerModelsLabel: "Модели (по одной в строке)",
+      providerModelsPlaceholder: "model-a\nmodel-b", providerDefaultModel: "Модель по умолчанию",
+      providerSource: "Источник: {source}", providerSourceEnv: "env (MODEL_PROVIDERS)",
+      providerSourceDB: "база (сохранено в Mini App)", providerBaseHost: "host: {host}",
+      providerConfiguredModels: "env-список: {models}", providerModelsCount: "{count} / 20",
       errorAdminRequired: "Раздел доступен только администратору.", errorChatNotFound: "Чат не найден.",
+      errorInvalidProvider: "Провайдер не может быть изменён: strata зарезервирован за основным endpoint.",
+      errorUnknownProvider: "Провайдер не настроен в MODEL_PROVIDERS.",
+      errorProviderValidation: "Проверьте список моделей: 1–20 непустых уникальных строк и default из списка.",
       errorInvalidLimits: "Проверьте лимиты: целые числа от 0 до 1000000.", errorInvalidTools: "Неизвестный инструмент: доступны read_url, web_search, calculator.",
       dataLoadFailed: "Не удалось загрузить данные.", invalidResponse: "Сервер вернул некорректный ответ.",
       networkError: "Нет соединения с сервером. Проверьте сеть и повторите попытку.", requestFailed: "Запрос не выполнен (код {status}).",
@@ -359,7 +373,21 @@
       chatLimitsSaved: "Chat limits saved.", chatLimitsResetDone: "Chat limits reset.",
       chatLimitsFailed: "The chat limits could not be saved.", chatLimitsLoadFailed: "The chat list could not be loaded.",
       chatLimitsEmpty: "There are no active chats yet.", chatLimitsInvalid: "Limits are integers from 0 to 1000000.",
+      providerSettingsTitle: "Providers and models", providerSettingsHint: "An administrator edits the model list, the default model and the provider enabled flag without a restart. base_url, api_key and timeout stay in MODEL_PROVIDERS; Reset restores the env values.",
+      providerSettingsEmpty: "No named providers are configured.", providerSettingsLoadFailed: "The providers could not be loaded.",
+      providerSettingsSave: "Save", providerSettingsReset: "Reset to env",
+      providerSettingsSaved: "Provider settings saved.", providerSettingsResetDone: "Provider reset to the env values.",
+      providerSettingsFailed: "The provider settings could not be saved.",
+      providerSettingsInvalid: "Models must be 1 to 20 non-empty unique lines, and the default model must be in the list.",
+      providerEnabled: "Provider enabled", providerModelsLabel: "Models (one per line)",
+      providerModelsPlaceholder: "model-a\nmodel-b", providerDefaultModel: "Default model",
+      providerSource: "Source: {source}", providerSourceEnv: "env (MODEL_PROVIDERS)",
+      providerSourceDB: "database (saved in the Mini App)", providerBaseHost: "host: {host}",
+      providerConfiguredModels: "env list: {models}", providerModelsCount: "{count} / 20",
       errorAdminRequired: "This section is available to administrators only.", errorChatNotFound: "The chat was not found.",
+      errorInvalidProvider: "This provider cannot be edited: strata is reserved for the default endpoint.",
+      errorUnknownProvider: "The provider is not configured in MODEL_PROVIDERS.",
+      errorProviderValidation: "Check the models: 1 to 20 non-empty unique lines and a default from that list.",
       errorInvalidLimits: "Check the limits: integers from 0 to 1000000.", errorInvalidTools: "Unknown tool: only read_url, web_search and calculator are allowed.",
       dataLoadFailed: "The data could not be loaded.", invalidResponse: "The server returned an invalid response.",
       networkError: "The server could not be reached. Check your connection and try again.", requestFailed: "Request failed ({status}).",
@@ -432,6 +460,8 @@
     url_reader_disabled: "urlReaderDisabled", lifecycle_unavailable: "lifecycleUnavailable", internal_error: "errorInternal",
     admin_required: "errorAdminRequired", chat_not_found: "errorChatNotFound",
     invalid_limits: "errorInvalidLimits", invalid_tools: "errorInvalidTools", invalid_limit: "errorInvalidLimits",
+    invalid_provider: "errorInvalidProvider", unknown_provider: "errorUnknownProvider",
+    provider_validation: "errorProviderValidation",
   };
 
   function initialLanguage() {
@@ -498,6 +528,9 @@
   // selected chat or the language does not refetch), and null means "fetch on the next render". The
   // state exists even for a non-admin session — it simply stays empty and no request is made.
   let adminLimits = { chats: null, selected: null, loading: false, error: "" };
+  // Admin provider/model overrides. The fetched list survives a re-render of Settings (a language switch
+  // does not refetch); null means "fetch on the next render". A non-admin never calls the endpoint.
+  let adminProviders = { items: null, loading: false, error: "" };
   let chat = { messages: [], pending: false, streaming: false, suppressed: false, stage: "", errorText: "", resetArmed: false, identity: null, approval: null, startedAt: 0, streamChars: 0 };
   let chatNodes = { log: null, answer: null, status: null, approvalNote: null };
   let chatLiveTimer = null;
@@ -2151,6 +2184,188 @@
     showNotice(t(successKey));
   }
 
+  // Admin-only "Providers and models" section. The server decides who is an admin (is_admin of
+  // /api/settings) and re-checks every /api/admin/providers request; the section is only a convenience.
+  // A provider is rendered as one card: enabled checkbox, models textarea, default select, Save/Reset. The
+  // textarea is parsed on every input, so the default select always offers exactly the current lines and
+  // the 20-model limit is visible before Save is pressed. No HTML string and no inline handler is used.
+  function providerModelLines(textarea) {
+    return String(textarea.value).split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
+  }
+
+  function providerModelsValid(models, defaultModel) {
+    if (models.length < 1 || models.length > 20) return false;
+    if (new Set(models).size !== models.length) return false;
+    return models.includes(defaultModel);
+  }
+
+  function fillProviderDefaults(select, models, preferred) {
+    const chosen = models.includes(preferred) ? preferred : (models.length ? models[0] : "");
+    select.replaceChildren();
+    for (const model of models) {
+      const option = element("option", "", model);
+      option.value = model;
+      option.selected = model === chosen;
+      select.appendChild(option);
+    }
+    select.value = chosen;
+    return chosen;
+  }
+
+  function providerSourceLabel(source) {
+    return t(source === "db" ? "providerSourceDB" : "providerSourceEnv");
+  }
+
+  function renderAdminProvidersBody(body) {
+    body.replaceChildren();
+    if (adminProviders.loading) {
+      body.appendChild(element("p", "meta", t("loading")));
+      return;
+    }
+    if (adminProviders.error) {
+      body.appendChild(element("p", "meta", adminProviders.error));
+      return;
+    }
+    if (!adminProviders.items || !adminProviders.items.length) {
+      body.appendChild(element("p", "meta", t("providerSettingsEmpty")));
+      return;
+    }
+    for (const provider of adminProviders.items) {
+      const models = Array.isArray(provider.models) ? provider.models.slice() : [];
+      const card = element("article", "provider-card");
+      card.appendChild(element("h4", "", provider.name));
+      const meta = [];
+      if (provider.base_url) meta.push(t("providerBaseHost", { host: provider.base_url }));
+      meta.push(t("providerSource", { source: providerSourceLabel(provider.source) }));
+      card.appendChild(element("p", "meta", meta.join(" · ")));
+      if (Array.isArray(provider.configured_models) && provider.configured_models.length) {
+        card.appendChild(element("p", "meta", t("providerConfiguredModels", { models: provider.configured_models.join(", ") })));
+      }
+
+      const enabledLabel = element("label", "provider-enabled");
+      const toggle = element("input");
+      toggle.type = "checkbox";
+      toggle.checked = Boolean(provider.enabled);
+      toggle.setAttribute("aria-label", `${provider.name}: ${t("providerEnabled")}`);
+      enabledLabel.appendChild(toggle);
+      enabledLabel.appendChild(element("span", "", t("providerEnabled")));
+      card.appendChild(enabledLabel);
+
+      const modelsField = element("label", "provider-field");
+      modelsField.appendChild(element("span", "", t("providerModelsLabel")));
+      const textarea = element("textarea", "provider-models");
+      textarea.value = models.join("\n");
+      textarea.placeholder = t("providerModelsPlaceholder");
+      textarea.setAttribute("aria-label", `${provider.name}: ${t("providerModelsLabel")}`);
+      modelsField.appendChild(textarea);
+      card.appendChild(modelsField);
+      const count = element("p", "meta", t("providerModelsCount", { count: models.length }));
+      card.appendChild(count);
+
+      const defaultField = element("label", "provider-field");
+      defaultField.appendChild(element("span", "", t("providerDefaultModel")));
+      const defaultChoice = element("select");
+      defaultChoice.setAttribute("aria-label", `${provider.name}: ${t("providerDefaultModel")}`);
+      fillProviderDefaults(defaultChoice, models, provider.default_model);
+      defaultField.appendChild(defaultChoice);
+      card.appendChild(defaultField);
+
+      textarea.addEventListener("input", () => {
+        const current = providerModelLines(textarea);
+        const chosen = fillProviderDefaults(defaultChoice, current, defaultChoice.value);
+        const valid = providerModelsValid(current, chosen);
+        count.textContent = t("providerModelsCount", { count: current.length });
+        textarea.setAttribute("aria-invalid", String(!valid));
+        defaultChoice.setAttribute("aria-invalid", String(!valid));
+      });
+
+      const actions = element("div", "settings-row");
+      actions.appendChild(settingsButton(t("providerSettingsSave"),
+        () => saveAdminProvider(provider.name, textarea, defaultChoice, toggle)));
+      actions.appendChild(settingsButton(t("providerSettingsReset"),
+        () => resetAdminProvider(provider.name), true));
+      card.appendChild(actions);
+      body.appendChild(card);
+    }
+  }
+
+  async function refreshAdminProviders(body) {
+    if (adminProviders.items !== null || adminProviders.loading) {
+      renderAdminProvidersBody(body);
+      return;
+    }
+    adminProviders.loading = true;
+    try {
+      const data = await api("/api/admin/providers");
+      adminProviders.items = Array.isArray(data.items) ? data.items : [];
+      adminProviders.error = "";
+    } catch (error) {
+      // items stays null so the next explicit render (a tab switch or Refresh) tries again.
+      adminProviders.items = null;
+      adminProviders.error = error.message || t("providerSettingsLoadFailed");
+    }
+    adminProviders.loading = false;
+    const live = ui.content.querySelector(".provider-settings-body");
+    if (!live) return;
+    if (adminProviders.error) {
+      live.replaceChildren();
+      live.appendChild(element("p", "meta", adminProviders.error));
+      return;
+    }
+    if (activeTab !== "settings") return;
+    renderAdminProvidersBody(live);
+  }
+
+  async function saveAdminProvider(name, textarea, defaultChoice, toggle) {
+    if (loading || !session) return;
+    const models = providerModelLines(textarea);
+    const defaultModel = defaultChoice.value;
+    if (!providerModelsValid(models, defaultModel)) {
+      textarea.setAttribute("aria-invalid", "true");
+      defaultChoice.setAttribute("aria-invalid", "true");
+      showError(t("providerSettingsInvalid"));
+      return;
+    }
+    setBusy(true);
+    showError("");
+    let saved = false;
+    try {
+      await api(`/api/admin/providers/${encodeURIComponent(name)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ models, default_model: defaultModel, enabled: toggle.checked }),
+      });
+      saved = true;
+    } catch (error) {
+      showError(error.message || t("providerSettingsFailed"));
+    } finally {
+      setBusy(false);
+    }
+    if (!saved) return;
+    adminProviders.items = null;
+    await load();
+    showNotice(t("providerSettingsSaved"));
+  }
+
+  async function resetAdminProvider(name) {
+    if (loading || !session) return;
+    setBusy(true);
+    showError("");
+    let reset = false;
+    try {
+      await api(`/api/admin/providers/${encodeURIComponent(name)}`, { method: "DELETE" });
+      reset = true;
+    } catch (error) {
+      showError(error.message || t("providerSettingsFailed"));
+    } finally {
+      setBusy(false);
+    }
+    if (!reset) return;
+    adminProviders.items = null;
+    await load();
+    showNotice(t("providerSettingsResetDone"));
+  }
+
   function renderSettings(data) {
     ui.content.replaceChildren();
     const source = (value) => t(value === "chat" ? "sourceChat" : "sourceGlobal");
@@ -2267,6 +2482,14 @@
     }
 
     if (data.is_admin) {
+      const providers = element("section", "settings-section provider-settings");
+      providers.appendChild(element("h3", "", t("providerSettingsTitle")));
+      providers.appendChild(element("p", "meta", t("providerSettingsHint")));
+      const providerBody = element("div", "provider-settings-body");
+      providers.appendChild(providerBody);
+      ui.content.appendChild(providers);
+      void refreshAdminProviders(providerBody);
+
       const limits = element("section", "settings-section chat-limits");
       limits.appendChild(element("h3", "", t("chatLimitsTitle")));
       limits.appendChild(element("p", "meta", t("chatLimitsHint")));

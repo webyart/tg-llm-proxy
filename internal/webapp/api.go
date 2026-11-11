@@ -1265,7 +1265,13 @@ func (a *App) linkControl(w http.ResponseWriter, req *http.Request, current scop
 	a.deleteLink(w, req, current)
 }
 
-const maxTaskErrorRunes = 300
+const (
+	maxTaskErrorRunes = 300
+	// maxTaskElapsedSeconds bounds the live elapsed time reported by the API. A task lives for an hour and is
+	// extended on resume, so a week is already far beyond any real run; the cap keeps a clock skew or a very
+	// old row from producing an absurd duration in the Mini App.
+	maxTaskElapsedSeconds = 7 * 24 * 60 * 60
+)
 
 type taskItem struct {
 	ID        int64  `json:"id"`
@@ -1283,10 +1289,107 @@ type taskItem struct {
 	UpdatedAt string `json:"updated_at"`
 	// FinishedAt and DurationMs let the Mini App render the human duration of a terminal task without
 	// parsing timestamps twice; the ISO fields stay untouched for machine clients.
-	FinishedAt     string `json:"finished_at,omitempty"`
-	DurationMs     int64  `json:"duration_ms,omitempty"`
-	Error          string `json:"error,omitempty"`
-	ErrorTruncated bool   `json:"error_truncated,omitempty"`
+	FinishedAt string `json:"finished_at,omitempty"`
+	DurationMs int64  `json:"duration_ms,omitempty"`
+	// Usage is the same footer the Telegram status message and the final answer carry: step tokens, their
+	// MODEL_PRICES cost, the live elapsed time and the remaining-step estimate. Results are parsed
+	// server-side, so the Mini App never receives step contents, plans, or other task internals.
+	TokensIn       int64   `json:"tokens_in"`
+	TokensOut      int64   `json:"tokens_out"`
+	CostUSD        float64 `json:"cost_usd"`
+	ElapsedSeconds int64   `json:"elapsed_seconds"`
+	ETASeconds     *int64  `json:"eta_seconds"`
+	StepsCompleted int     `json:"steps_completed"`
+	StepsTotal     int     `json:"steps_total"`
+	Error          string  `json:"error,omitempty"`
+	ErrorTruncated bool    `json:"error_truncated,omitempty"`
+}
+
+// boundedTaskElapsedSeconds reports now-created in whole seconds, never negative and never above the cap.
+func boundedTaskElapsedSeconds(created time.Time, now time.Time) int64 {
+	if created.IsZero() {
+		return 0
+	}
+	elapsed := now.Sub(created)
+	if elapsed <= 0 {
+		return 0
+	}
+	seconds := int64(elapsed / time.Second)
+	if seconds > maxTaskElapsedSeconds {
+		return maxTaskElapsedSeconds
+	}
+	return seconds
+}
+
+// taskUsageTotals sums the stored step usage and prices every step with its own model, falling back to the
+// task model for rows written before the model was stored. A nil token count contributes zero, like a NULL
+// messages column. A synthesis call is not stored as a step today; if it ever is appended to results_json,
+// this sum already includes it. Cost stays in integer micro-dollars, which is exactly the six decimals the
+// API reports and avoids float drift across steps.
+func (a *App) taskUsageTotals(taskModel string, resultsJSON string) (tokensIn int64, tokensOut int64, costUSD float64, results []store.TaskStepResult) {
+	results, err := store.ParseTaskResults(resultsJSON)
+	if err != nil {
+		// A corrupted row must not fail the whole list: it shows zero usage instead of leaking or crashing.
+		return 0, 0, 0, nil
+	}
+	var costMicros int64
+	for _, result := range results {
+		var stepIn, stepOut int64
+		if result.TokensIn != nil {
+			stepIn = *result.TokensIn
+		}
+		if result.TokensOut != nil {
+			stepOut = *result.TokensOut
+		}
+		tokensIn += stepIn
+		tokensOut += stepOut
+		modelName := result.Model
+		if modelName == "" {
+			modelName = taskModel
+		}
+		costMicros += a.cfg.ModelPrices.CostMicros(modelName, stepIn, stepOut)
+	}
+	return tokensIn, tokensOut, float64(costMicros) / 1_000_000, results
+}
+
+// taskPlanStepCount is the planned step count, or zero when the plan is empty (planning) or unreadable.
+func taskPlanStepCount(planJSON string) int {
+	plan, err := bot.ParseTaskPlan(planJSON)
+	if err != nil {
+		return 0
+	}
+	return len(plan.Steps)
+}
+
+// taskRemainingSeconds estimates the remaining time from the measured completed-step durations and the
+// planned steps still ahead. It returns nil before the first measured step, without a plan, and once no
+// steps remain: an estimate invented from nothing would be a lie.
+func taskRemainingSeconds(results []store.TaskStepResult, nextStep int, stepsTotal int) *int64 {
+	if len(results) == 0 || stepsTotal <= 0 {
+		return nil
+	}
+	remaining := stepsTotal - nextStep
+	if remaining <= 0 {
+		return nil
+	}
+	var measuredMs int64
+	var measured int64
+	for _, result := range results {
+		if result.DurationMs > 0 {
+			measuredMs += result.DurationMs
+			measured++
+		}
+	}
+	if measured == 0 || measuredMs <= 0 {
+		return nil
+	}
+	averageMs := measuredMs / measured
+	// Round the estimate up so a positive remaining time never collapses to a misleading «—».
+	seconds := (averageMs*int64(remaining) + 999) / 1000
+	if seconds <= 0 {
+		return nil
+	}
+	return &seconds
 }
 
 func (a *App) createTask(w http.ResponseWriter, req *http.Request, current scope) {
@@ -1342,7 +1445,7 @@ func (a *App) tasks(w http.ResponseWriter, req *http.Request, current scope) {
 		return
 	}
 	rows, err := a.db.QueryContext(req.Context(), `
-		SELECT id, goal, status, next_step, attempts, (plan_json <> ''), due_at, expires_at, created_at, updated_at, COALESCE(finished_at, ''), COALESCE(error, '') FROM tasks
+		SELECT id, goal, status, next_step, attempts, (plan_json <> ''), due_at, expires_at, created_at, updated_at, COALESCE(finished_at, ''), COALESCE(error, ''), model, plan_json, results_json FROM tasks
 		WHERE chat_id = ? AND (? = 0 OR id < ?)
 		ORDER BY id DESC LIMIT ?`, current.ChatID, page.Before, page.Before, page.Limit+1)
 	if err != nil {
@@ -1350,19 +1453,28 @@ func (a *App) tasks(w http.ResponseWriter, req *http.Request, current scope) {
 		return
 	}
 	defer rows.Close()
+	now := time.Now().UTC()
 	items := []taskItem{}
 	for rows.Next() {
 		var item taskItem
+		var taskModel, planJSON, resultsJSON string
 		if err := rows.Scan(&item.ID, &item.Goal, &item.Status, &item.NextStep, &item.Attempts, &item.HasPlan,
-			&item.DueAt, &item.ExpiresAt, &item.CreatedAt, &item.UpdatedAt, &item.FinishedAt, &item.Error); err != nil {
+			&item.DueAt, &item.ExpiresAt, &item.CreatedAt, &item.UpdatedAt, &item.FinishedAt, &item.Error,
+			&taskModel, &planJSON, &resultsJSON); err != nil {
 			a.queryFailed(w, "tasks", err)
 			return
 		}
 		if created, ok := timefmt.Parse(item.CreatedAt); ok {
+			item.ElapsedSeconds = boundedTaskElapsedSeconds(created, now)
 			if finished, ok := timefmt.Parse(item.FinishedAt); ok && finished.After(created) {
 				item.DurationMs = finished.Sub(created).Milliseconds()
 			}
 		}
+		var results []store.TaskStepResult
+		item.TokensIn, item.TokensOut, item.CostUSD, results = a.taskUsageTotals(taskModel, resultsJSON)
+		item.StepsCompleted = len(results)
+		item.StepsTotal = taskPlanStepCount(planJSON)
+		item.ETASeconds = taskRemainingSeconds(results, item.NextStep, item.StepsTotal)
 		item.Goal, item.Truncated = boundedText(item.Goal, maxTaskRunes)
 		if item.Status == store.TaskStatusFailed {
 			for _, secret := range []string{a.cfg.BotToken, a.cfg.StrataKey} {

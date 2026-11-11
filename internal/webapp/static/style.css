@@ -722,6 +722,7 @@ nav button:focus-visible { outline-offset: 1px; }
   padding: 10px 4px;
 }
 .meta { margin: 4px 0; color: var(--muted); font-size: .78rem; overflow-wrap: anywhere; word-break: break-word; }
+.task-footer { margin-top: 2px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .content { line-height: 1.55; overflow-wrap: anywhere; word-break: break-word; }
 .content:not(.markdown) { white-space: pre-wrap; }
 .role { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; font-weight: 700; }

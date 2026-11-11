@@ -2,7 +2,17 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.70.0
+## Новейший выпуск: v1.71.0
+
+# tg-llm-proxy v1.71.0
+
+## Task stats in Mini App cards
+
+- `GET /api/tasks` now includes `tokens_in/out`, `cost_usd` (MODEL_PRICES), `elapsed_seconds`, `eta_seconds`, `steps_completed/total`; results/plan stay server-side.
+- Mini App task cards show the same footer as Telegram: `идёт 6:12 · осталось ~7 мин · токены 12.4k→3.1k · ~$0.04`, terminal totals and a planning line, with human-readable time and no raw ISO; RU/EN, 320px.
+- Tests: 17 packages green, JS 72/72.
+
+## Предыдущий выпуск: v1.70.0
 
 # tg-llm-proxy v1.70.0
 

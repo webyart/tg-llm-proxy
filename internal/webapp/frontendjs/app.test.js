@@ -1676,6 +1676,107 @@ test("task and reminder cards render human times in the chat zone and never raw 
   assert.doesNotMatch(reminders, /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/, "a reminder card still renders raw ISO");
 });
 
+test("task cards render the shared usage footer for live, planning and terminal rows", async () => {
+  // A planning row schedules its 2.5-second poll; keep it inside the fake timer list so the test process
+  // exits instead of polling a fixture forever.
+  const timers = [];
+  const harness = await createHarness({
+    globals: {
+      setTimeout: (handler, delay) => { timers.push({ handler, delay }); return timers.length; },
+      clearTimeout: () => {},
+    },
+  });
+  harness.setHandler((request, fallback) => {
+    const path = request.path.split("?")[0];
+    if (path === "/api/tasks") {
+      return jsonResponse({ items: [
+        {
+          id: 1, goal: "live goal", status: "running", next_step: 1, attempts: 1, has_plan: true,
+          due_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-02T00:00:00Z",
+          created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+          tokens_in: 12400, tokens_out: 3100, cost_usd: 0.04,
+          elapsed_seconds: 372, eta_seconds: 420, steps_completed: 1, steps_total: 3,
+        },
+        {
+          id: 2, goal: "planning goal", status: "planning", next_step: 0, attempts: 0, has_plan: false,
+          created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+          tokens_in: 0, tokens_out: 0, cost_usd: 0, elapsed_seconds: 12, eta_seconds: null,
+          steps_completed: 0, steps_total: 0,
+        },
+        {
+          id: 3, goal: "done goal", status: "completed", next_step: 3, attempts: 1, has_plan: true,
+          due_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-02T00:00:00Z",
+          created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T02:05:00Z",
+          finished_at: "2026-01-01T02:05:00Z", duration_ms: 7500000,
+          tokens_in: 20000, tokens_out: 10000, cost_usd: 0.04,
+          elapsed_seconds: 7500, eta_seconds: null, steps_completed: 3, steps_total: 3,
+        },
+        {
+          id: 4, goal: "no eta goal", status: "running", next_step: 1, attempts: 0, has_plan: true,
+          due_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-02T00:00:00Z",
+          created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+          tokens_in: 10, tokens_out: 5, cost_usd: 0,
+          elapsed_seconds: 65, eta_seconds: null, steps_completed: 1, steps_total: 3,
+        },
+      ] });
+    }
+    return fallback();
+  });
+  await openTab(harness, "tasks");
+  const content = harness.element("content");
+
+  const live = findArticle(content, "live goal").textContent;
+  assert.match(live, /идёт 6:12/, `live footer is missing elapsed time: ${live}`);
+  assert.match(live, /осталось ~7 мин/, `live footer is missing ETA: ${live}`);
+  assert.match(live, /токены 12\.4k→3\.1k/, `live footer is missing compact tokens: ${live}`);
+  assert.match(live, /~\$0\.04/, `live footer is missing cost: ${live}`);
+
+  const planning = findArticle(content, "planning goal").textContent;
+  assert.match(planning, /план готовится/, `planning footer is missing the state: ${planning}`);
+  assert.match(planning, /идёт ~<1 мин/, `planning footer is missing elapsed time: ${planning}`);
+  assert.match(planning, /можно отменить/, `planning footer is missing the cancel hint: ${planning}`);
+
+  const done = findArticle(content, "done goal").textContent;
+  assert.match(done, /всего 2 ч 5 мин/, `terminal footer is missing total duration: ${done}`);
+  assert.match(done, /токены 20k→10k/, `terminal footer is missing tokens: ${done}`);
+  assert.match(done, /стоимость ~\$0\.04/, `terminal footer is missing cost: ${done}`);
+
+  const noEta = findArticle(content, "no eta goal").textContent;
+  assert.match(noEta, /идёт 1:05/, `running footer is missing elapsed time: ${noEta}`);
+  assert.doesNotMatch(noEta, /осталось/, `a missing ETA must be omitted, not invented: ${noEta}`);
+
+  const all = content.textContent;
+  assert.doesNotMatch(all, /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/, `a task card still renders a raw ISO timestamp: ${all}`);
+  assert.doesNotMatch(all, /\d{2}:\d{2}:\d{2}\.\d+/, `a task card still renders nanoseconds: ${all}`);
+});
+
+test("task usage footer is localized in English", async () => {
+  const storage = {
+    getItem(key) { return key === "miniapp-language" ? "en" : null; },
+    setItem() {},
+  };
+  const harness = await createHarness({ globals: { localStorage: storage } });
+  harness.setHandler((request, fallback) => {
+    const path = request.path.split("?")[0];
+    if (path === "/api/tasks") {
+      return jsonResponse({ items: [{
+        id: 5, goal: "english done goal", status: "completed", next_step: 1, attempts: 1, has_plan: true,
+        due_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-02T00:00:00Z",
+        created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T02:05:00Z",
+        finished_at: "2026-01-01T02:05:00Z", duration_ms: 7500000,
+        tokens_in: 20000, tokens_out: 10000, cost_usd: 0.04,
+        elapsed_seconds: 7500, eta_seconds: null, steps_completed: 1, steps_total: 1,
+      }] });
+    }
+    return fallback();
+  });
+  await openTab(harness, "tasks");
+  const done = findArticle(harness.element("content"), "english done goal").textContent;
+  assert.match(done, /total 2 h 5 min/, `English terminal footer is missing total duration: ${done}`);
+  assert.match(done, /tokens 20k→10k/, `English terminal footer is missing tokens: ${done}`);
+  assert.match(done, /cost ~\$0\.04/, `English terminal footer is missing cost: ${done}`);
+});
+
 test("the stored timezone is applied on the next launch before the server answers", async () => {
   const storage = {
     value: "",

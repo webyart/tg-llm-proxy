@@ -255,6 +255,59 @@
     return minutes ? t("durationHoursMinutes", { hours, minutes }) : t("durationHoursOnly", { hours });
   }
 
+  // formatTaskTokens mirrors the Telegram task footer: 950, 12.4k, 1.2M.
+  function formatTaskTokens(value) {
+    const number = Math.max(0, Number(value) || 0);
+    if (number < 1000) return String(Math.round(number));
+    if (number < 1000000) return `${(number / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+    return `${(number / 1000000).toFixed(1).replace(/\.0$/, "")}M`;
+  }
+
+  // formatTaskETA mirrors internal/timefmt.ETA: minutes are rounded up, hours switch to «2 ч 5 мин», and a
+  // positive estimate below a minute says «~<1 мин» instead of a raw second count.
+  function formatTaskETA(seconds) {
+    const value = Number(seconds) || 0;
+    if (value <= 0) return t("taskEtaNone");
+    if (value < 60) return t("durationLessMinute");
+    const totalMinutes = Math.ceil(value / 60);
+    if (totalMinutes < 60) return t("taskEtaMinutes", { minutes: totalMinutes });
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return minutes ? t("taskEtaHoursMinutes", { hours, minutes }) : t("taskEtaHoursOnly", { hours });
+  }
+
+  // formatTaskCost mirrors the Telegram footer: a tiny nonzero estimate stays visible as «<$0.01» and a
+  // priced amount carries the same tilde. Without MODEL_PRICES the API sends zero, shown as «$0.00».
+  function formatTaskCost(value) {
+    const usd = Number(value) || 0;
+    if (usd <= 0) return "$0.00";
+    if (usd < 0.01) return "<$0.01";
+    return `~$${usd.toFixed(2)}`;
+  }
+
+  // taskFooterText is the Mini App twin of the Telegram live/final task footer. Results are already summed
+  // by the API, so this function only formats: it never reads a plan, a step result, or a raw timestamp.
+  function taskFooterText(item) {
+    const tokens = t("taskTokens", {
+      tokens_in: formatTaskTokens(item.tokens_in),
+      tokens_out: formatTaskTokens(item.tokens_out),
+    });
+    if (["completed", "failed", "cancelled"].includes(item.status)) {
+      const totalMs = Number(item.duration_ms) > 0
+        ? Number(item.duration_ms)
+        : Math.max(0, Number(item.elapsed_seconds) || 0) * 1000;
+      return [t("taskFinalTotal", { duration: formatDuration(totalMs) }), tokens, t("taskCost", { cost: formatTaskCost(item.cost_usd) })].join(" · ");
+    }
+    const elapsed = t("taskLiveElapsed", { duration: formatDuration(Math.max(0, Number(item.elapsed_seconds) || 0) * 1000) });
+    if (item.status === "planning") return [t("taskPlanning"), elapsed, t("taskCanCancel")].join(" · ");
+    const parts = [elapsed];
+    if (item.eta_seconds !== null && item.eta_seconds !== undefined && Number(item.eta_seconds) > 0) {
+      parts.push(t("taskLiveRemaining", { eta: formatTaskETA(item.eta_seconds) }));
+    }
+    parts.push(tokens, formatTaskCost(item.cost_usd));
+    return parts.join(" · ");
+  }
+
 
   const translations = {
     ru: {
@@ -476,6 +529,10 @@
       relativeYesterday: "вчера {time}", relativeTomorrow: "завтра {time}",
       relativeInDays: "через {n} {unit}", relativeDaysAgo: "{n} {unit} назад",
       durationLessMinute: "~<1 мин", durationHoursOnly: "{hours} ч", durationHoursMinutes: "{hours} ч {minutes} мин",
+      taskLiveElapsed: "идёт {duration}", taskLiveRemaining: "осталось {eta}",
+      taskTokens: "токены {tokens_in}→{tokens_out}", taskFinalTotal: "всего {duration}", taskCost: "стоимость {cost}",
+      taskPlanning: "план готовится", taskCanCancel: "можно отменить",
+      taskEtaNone: "—", taskEtaMinutes: "~{minutes} мин", taskEtaHoursOnly: "~{hours} ч", taskEtaHoursMinutes: "~{hours} ч {minutes} мин",
       createdAt: "создана", dueAt: "срок", expiresAt: "до", durationLabel: "длительность",
       availableModels: "Доступные модели провайдера", noModels: "Провайдер не сообщил ни одной модели",
       useModel: "Применить модель", resetDefault: "Сбросить к общей",
@@ -716,6 +773,10 @@
       relativeYesterday: "yesterday {time}", relativeTomorrow: "tomorrow {time}",
       relativeInDays: "in {n} days", relativeDaysAgo: "{n} days ago",
       durationLessMinute: "~<1 min", durationHoursOnly: "{hours} h", durationHoursMinutes: "{hours} h {minutes} min",
+      taskLiveElapsed: "elapsed {duration}", taskLiveRemaining: "ETA {eta}",
+      taskTokens: "tokens {tokens_in}→{tokens_out}", taskFinalTotal: "total {duration}", taskCost: "cost {cost}",
+      taskPlanning: "preparing the plan", taskCanCancel: "you can cancel",
+      taskEtaNone: "—", taskEtaMinutes: "~{minutes} min", taskEtaHoursOnly: "~{hours} h", taskEtaHoursMinutes: "~{hours} h {minutes} min",
       createdAt: "created", dueAt: "due", expiresAt: "until", durationLabel: "duration",
       availableModels: "Available provider models", noModels: "No models reported by the provider",
       useModel: "Use model", resetDefault: "Reset to default",
@@ -1913,13 +1974,15 @@
         wrapper.appendChild(element("div", "content", item.goal));
         if (planning) {
           // A planning card is the visible progress of the asynchronous create: do not show a due date
-          // that was only the insert time.
-          wrapper.appendChild(element("div", "meta", `${t("planningInProgress")} · ${t("createdAt")}: ${formatRelative(item.created_at)}`));
+          // that was only the insert time. The usage footer below names the planning state and elapsed time.
+          wrapper.appendChild(element("div", "meta", `${t("createdAt")}: ${formatRelative(item.created_at)}`));
         } else {
           wrapper.appendChild(element("div", "meta", `${status} · ${t("step")} ${item.next_step} · ${item.attempts} ${t("attempts")} · ${t("createdAt")}: ${formatRelative(item.created_at)} · ${t("dueAt")}: ${formatRelative(item.due_at)}`));
           wrapper.appendChild(element("div", "meta", `${t("expiresAt")}: ${formatRelative(item.expires_at)}`));
         }
         if (item.duration_ms > 0) wrapper.appendChild(element("div", "meta", `${t("durationLabel")}: ${formatDuration(item.duration_ms)}`));
+        const taskFooter = taskFooterText(item);
+        if (taskFooter) wrapper.appendChild(element("div", "meta task-footer", taskFooter));
         if (item.error) wrapper.appendChild(element("div", "task-error", `${t("taskError")}: ${item.error}`));
         if (item.status === "awaiting_approval") wrapper.appendChild(element("p", "meta", t("networkApprovalTelegram")));
         const actions = element("div", "task-actions");

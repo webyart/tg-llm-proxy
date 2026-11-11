@@ -367,6 +367,49 @@ func TestFrontendAsyncTaskPlanningCardPollsAndReplans(t *testing.T) {
 	}
 }
 
+func TestFrontendTaskCardsShowTheUsageFooterWithHumanTimes(t *testing.T) {
+	script := frontendAsset(t, "static/app.js")
+	css := frontendAsset(t, "static/style.css")
+	for _, want := range []string{
+		"function formatTaskTokens(value)",
+		"function formatTaskETA(seconds)",
+		"function formatTaskCost(value)",
+		"function taskFooterText(item)",
+		"item.tokens_in", "item.tokens_out", "item.cost_usd",
+		"item.elapsed_seconds", "item.eta_seconds", "item.duration_ms",
+		`t("taskTokens", {`, `t("taskCost", { cost:`,
+		`t("taskLiveElapsed"`, `t("taskLiveRemaining"`, `t("taskFinalTotal"`,
+		`t("taskPlanning"`, `t("taskCanCancel"`,
+		`taskLiveElapsed: "идёт {duration}"`, `taskLiveRemaining: "осталось {eta}"`,
+		`taskTokens: "токены {tokens_in}→{tokens_out}"`, `taskFinalTotal: "всего {duration}"`,
+		`taskCost: "стоимость {cost}"`, `taskPlanning: "план готовится"`, `taskCanCancel: "можно отменить"`,
+		`taskLiveElapsed: "elapsed {duration}"`, `taskFinalTotal: "total {duration}"`,
+		`taskTokens: "tokens {tokens_in}→{tokens_out}"`, `taskCost: "cost {cost}"`,
+		`element("div", "meta task-footer", taskFooter)`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js misses the task usage footer regression %q", want)
+		}
+	}
+	for _, want := range []string{
+		".task-footer {", "color: var(--muted)", "word-break: break-word",
+	} {
+		if !strings.Contains(css, want) {
+			t.Errorf("style.css misses the muted task footer rule %q", want)
+		}
+	}
+	// The footer must never fall back to a raw timestamp or a raw second count on its own.
+	body := regexp.MustCompile(`(?s)function taskFooterText\(item\) \{(.*?)\n  \}`).FindStringSubmatch(script)
+	if len(body) != 2 {
+		t.Fatal("taskFooterText helper is missing")
+	}
+	for _, rejected := range []string{"toISOString()", "item.eta_seconds +", "item.elapsed_seconds +"} {
+		if strings.Contains(body[1], rejected) {
+			t.Errorf("taskFooterText formats a footer field with %q", rejected)
+		}
+	}
+}
+
 func TestFrontendMutationGuardsAndConfirmationResets(t *testing.T) {
 	script := frontendAsset(t, "static/app.js")
 	for _, functionName := range []string{"changeDocument", "changeLink", "changeTask", "changeReminder"} {

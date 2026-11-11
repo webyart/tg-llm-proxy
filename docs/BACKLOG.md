@@ -113,3 +113,37 @@
 - JS-тесты: переключение, сохранение в API, fallback на default при неизвестной теме, отсутствие inline-стилей/внешних шрифтов.
 
 **Приоритет:** средний-высокий (после исправления текущего UI-бага; можно делать одним спринтом).
+
+## Надёжность: шаг задачи падает по таймауту (~300 с)
+
+**Проблема (2026-11-11, задача #16).** Шаг 3 падает с
+`context deadline exceeded: the budget of STRATA_TIMEOUT_SECONDS is spent — the answer is not retried again`
+через ~300 с. В конфиге при этом `STRATA_TIMEOUT_SECONDS=240`, `TASK_MODEL_TIMEOUT_SECONDS=300`,
+`TASK_STEP_DEADLINE_SECONDS=600`, то есть задача должна иметь собственный бюджет шага, но в ошибке фигурирует
+**чатовый** бюджет STRATA. Похоже, дедлайн шага/контекст пробрасывается в модель как `STRATA_TIMEOUT_SECONDS`,
+и один длинный вызов (сбор данных/синтез) убивает весь шаг без повтора.
+
+**Ожидаемое поведение.**
+- Для task-вызовов бюджет определяется только `TASK_MODEL_TIMEOUT_SECONDS` и `TASK_STEP_DEADLINE_SECONDS`;
+  `STRATA_TIMEOUT_SECONDS`/`TG_REPLY_DEADLINE_SECONDS` не должны появляться в ошибке задачи.
+- Step deadline ≥ сумма нескольких tool-round’ов + финальный/синтез-вызов; если модель не уложилась —
+  шаг повторяется один раз (существующий per-step retry должен срабатывать и на `DeadlineExceeded`), а не
+  падает сразу.
+- Длинный research-шаг (5+ tool-round’ов, 10–15 мин) доходит до результата или падает с понятной причиной
+  «шаг превысил N мин», без технического `STRATA_TIMEOUT_SECONDS`.
+- В футере/статусе — человекочитаемые «идёт 5:12 · осталось ~…», а не ISO/сырые секунды.
+
+**Диагностика перед фиксом.**
+- Залогировать в момент ошибки: `req.Timeout`, `ctx.Deadline`, `step_started`, `task_model_timeout`,
+  `strata_timeout`, номер шага и фазу (tool-round / final / synthesis).
+- Проверить, не теряется ли `Request.Timeout` при per-step retry/continuation и не применяется ли
+  chat-дедлайн к `runToolLoop`/`synthesizeTask`.
+
+**Критерий готовности.**
+- Тест: fake-модель отвечает 350 с (или context с укороченным deadline) → шаг ретраится/завершается,
+  ошибка не содержит `STRATA_TIMEOUT_SECONDS`.
+- Тест: 5 tool-round’ов укладываются в step deadline; `TASK_MODEL_TIMEOUT` < `TASK_STEP_DEADLINE` соблюдается.
+- Живая задача с 3 шагами и веб-поиском завершается; в логах есть реальные бюджеты.
+- Метрика `bot_task_step_timeouts_total{phase}` и алерт на рост.
+
+**Приоритет:** критический — задачи с research-шагами сейчас не доживают до конца.

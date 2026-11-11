@@ -2,7 +2,17 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.72.0
+## Новейший выпуск: v1.72.1
+
+# tg-llm-proxy v1.72.1
+
+## Voice transcription restored through the provider router
+
+- Adding `MODEL_PROVIDERS` made the concrete router client lose the optional `model.Transcriber` interface, so Mini App and Telegram voice both reported «transcription is not configured».
+- The router now forwards `Transcribe` from the default client and preserves Streamer + Transcriber together; no-provider deployments are unchanged.
+- Live check: a generated WAV posted to `/api/transcribe` returned `Привет, это Проверка распознавания речи.` (200).
+
+## Предыдущий выпуск: v1.72.0
 
 # tg-llm-proxy v1.72.0
 

@@ -2,7 +2,18 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.74.1
+## Новейший выпуск: v1.75.0
+
+# tg-llm-proxy v1.75.0
+
+## Fair planning, provider budget cache and alerts
+
+- Planning claims the task/chat it was woken for first (`ClaimPlanningTaskByID`), then falls back to a least-recently-served free planning row (round-robin by `updated_at` because the active index allows one per chat). Queue depth and wait histograms added.
+- Provider budget checks cache settings and spend for 30s (single-flight, in-process invalidation via a provider-settings version, spend refreshed after completed token calls); no extra SELECT on every call.
+- Metrics `bot_provider_budget_ratio{provider}` and `bot_provider_budget_exceeded_total{provider}`; alerts `ProviderBudgetWarning` (>0.8) and `ProviderBudgetExceeded` (>=1 or refusals), dashboard v7 with a provider budget panel.
+- Tests: 17 packages (full bot rerun green; one unrelated admission test flaked once, passed alone and on the next full run), JS 76/76; promtool 18 bot rules.
+
+## Предыдущий выпуск: v1.74.1
 
 # tg-llm-proxy v1.74.1
 

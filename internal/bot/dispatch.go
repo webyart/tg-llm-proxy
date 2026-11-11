@@ -201,6 +201,13 @@ type Dispatcher struct {
 	activeHandlers      atomic.Int64
 	now                 func() time.Time
 	taskWake            chan struct{}
+	// providerBudget caches the provider_settings budgets and the grouped spend of the budget gate for
+	// providerBudgetCacheTTL. budgetSource overrides the store reader in tests; nil means the real store.
+	// overrides is the router captured before SetMetrics wraps the client, because the metrics wrapper does
+	// not forward the optional ProviderOverrides interface.
+	providerBudget providerBudgetCache
+	budgetSource   providerBudgetSource
+	overrides      model.ProviderOverrides
 	// Background task planning. planningActive deduplicates a job already running in this process,
 	// planningSlots bounds concurrent model calls, and planningCtx ties new jobs to the scheduler lifetime.
 	// None of them is the correctness bound: the planning lease in the database is (two instances on one
@@ -281,6 +288,11 @@ func New(deps Deps) *Dispatcher {
 		taskStepRetryDelay: taskStepRetryBackoff,
 	}
 	d.configureAdmission(int(deps.Cfg.MaxConcurrentRequests))
+	// Capture the router's runtime editor before SetMetrics replaces deps.Model with the metrics wrapper,
+	// which does not implement ProviderOverrides. Provider attribution must keep seeing model overrides.
+	if overrides, ok := deps.Model.(model.ProviderOverrides); ok {
+		d.overrides = overrides
+	}
 	// Warm both sets so the normal path never takes the Once: a nil set in the struct would still work through
 	// the accessors, but building them here makes the ownership obvious.
 	networkConfirmationsFor(d)
@@ -819,6 +831,10 @@ func (d *Dispatcher) SetMetrics(reg *metrics.Registry) {
 	reg.Counter(taskMetricFailed, taskMetricFailedHelp)
 	reg.Counter(taskMetricStepRetries, taskMetricStepRetriesHelp)
 	reg.Histogram(taskMetricDuration, taskMetricDurationHelp, taskDurationBuckets)
+	// Provider budget families: one series per configured provider, no chat/user/model labels. They are
+	// registered eagerly so a fresh /metrics lists them before the first budget check.
+	reg.Gauge(providerBudgetRatioMetric, providerBudgetRatioHelp)
+	reg.Counter(providerBudgetExceededMetric, providerBudgetExceededHelp)
 	var calls = newBotModelMetrics(reg, d.deps.Cfg)
 	d.deps.Model = wrapModelMetrics(d.deps.Model, reg, calls)
 }

@@ -76,8 +76,9 @@ func (d *Dispatcher) taskPlanningRenew() time.Duration {
 }
 
 // startTaskPlanning wakes a planner worker for one row. It never blocks: the caller is the HTTP or Telegram
-// creation path. The row is only a hint — the worker claims its work from the database — and the in-process
-// active set only avoids spawning a duplicate local worker; correctness rests on the planning lease.
+// creation path. The row is a preference, not a hint: the worker claims this exact row first and only falls
+// back to the shared queue when it is no longer claimable. The in-process active set only avoids spawning a
+// duplicate local worker; correctness rests on the planning lease.
 func (d *Dispatcher) startTaskPlanning(task store.Task) {
 	if d == nil || task.ID <= 0 || task.Status != store.TaskStatusPlanning {
 		return
@@ -134,10 +135,11 @@ func (d *Dispatcher) taskPlanningContext() context.Context {
 	return ctx
 }
 
-// runTaskPlanning is one planner worker. It takes a model-call slot, claims a row from the database and idles
-// when every planning row is leased by another instance. The hint is only the local dedupe key of the row
-// that woke this worker; the claimed row may legitimately be another one, and planning it is the point of a
-// shared queue.
+// runTaskPlanning is one planner worker. It takes a model-call slot and first tries to claim the exact row
+// that woke it: a worker woken for chat A must plan chat A, not some older row of another chat. Only when
+// that row is not claimable (already leased by another instance, cancelled, or already planned) does the
+// worker fall back to ClaimPlanningTaskFair, the least-recently-served row of the shared queue. The hint is
+// still the local dedupe key: planningActive prevents two local workers from starting the same row.
 func (d *Dispatcher) runTaskPlanning(hint store.Task) {
 	ctx := d.taskPlanningContext()
 	if hint.ID > 0 {
@@ -153,11 +155,27 @@ func (d *Dispatcher) runTaskPlanning(hint store.Task) {
 			return
 		}
 	}
-	claimed, found, err := store.ClaimPlanningTask(ctx, d.deps.DB, d.now().UTC(), d.planningOwner, d.taskPlanningLease())
-	if err != nil {
-		d.deps.Logger.Error("the task planning lease was not claimed",
-			"task_id", hint.ID, "error", Sanitize(err, d.deps.Token))
-		return
+	claimedAt := d.now().UTC()
+	var claimed store.Task
+	var found bool
+	var err error
+	if hint.ID > 0 {
+		claimed, found, err = store.ClaimPlanningTaskByID(ctx, d.deps.DB, hint.ID, claimedAt, d.planningOwner, d.taskPlanningLease())
+		if err != nil {
+			d.deps.Logger.Error("the task planning lease was not claimed",
+				"task_id", hint.ID, "error", Sanitize(err, d.deps.Token))
+			return
+		}
+	}
+	if !found {
+		// The preferred row is leased elsewhere or terminal: serve the shared queue instead of idling.
+		claimedAt = d.now().UTC()
+		claimed, found, err = store.ClaimPlanningTaskFair(ctx, d.deps.DB, claimedAt, d.planningOwner, d.taskPlanningLease())
+		if err != nil {
+			d.deps.Logger.Error("the fallback task planning lease was not claimed",
+				"task_id", hint.ID, "error", Sanitize(err, d.deps.Token))
+			return
+		}
 	}
 	if !found {
 		// Every planning row is leased by another instance: this worker has nothing to do.
@@ -166,6 +184,7 @@ func (d *Dispatcher) runTaskPlanning(hint store.Task) {
 	if claimed.ID != hint.ID && d.reserveTaskPlanning(claimed.ID) {
 		defer d.finishTaskPlanning(claimed.ID)
 	}
+	d.observeTaskPlanningWait(claimed, claimedAt)
 	d.planClaimedTask(ctx, claimed)
 }
 

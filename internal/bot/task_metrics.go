@@ -21,18 +21,26 @@ const (
 	taskMetricQueueDepth       = "bot_task_queue_depth"
 	taskMetricDuration         = "bot_task_duration_seconds"
 	taskMetricPlanning         = "bot_tasks_planning_seconds"
+	// taskMetricPlanningQueueDepth is the label-free count of rows still in the planning state. It answers
+	// "how many chats are waiting for a planner" without naming a chat, user or task.
+	taskMetricPlanningQueueDepth = "bot_task_planning_queue_depth"
+	// taskMetricPlanningWait is the time between task creation and the claim of its planning row. It is the
+	// queueing delay before the plan model call, not the model call itself (that is bot_tasks_planning_seconds).
+	taskMetricPlanningWait = "bot_task_planning_wait_seconds"
 )
 
 const (
-	taskMetricStartedHelp          = "Tasks created and persisted in this process."
-	taskMetricCompletedHelp        = "Tasks that reached the completed state."
-	taskMetricFailedHelp           = "Tasks that stopped with an error, by bounded reason."
-	taskMetricStepRetriesHelp      = "Task steps retried once after a transient model failure."
-	taskMetricStepTimeoutsHelp     = "Task model calls that ended with a spent deadline or model budget, by bounded phase."
-	taskMetricPlanningFailuresHelp = "Task plans that failed, by bounded classification reason."
-	taskMetricQueueDepthHelp       = "Tasks waiting in the planning or ready state at the last scheduler pass."
-	taskMetricDurationHelp         = "Wall time of a task from creation to a terminal state, in seconds."
-	taskMetricPlanningHelp         = "Wall time of the background STRATA plan of a task, in seconds."
+	taskMetricStartedHelp            = "Tasks created and persisted in this process."
+	taskMetricCompletedHelp          = "Tasks that reached the completed state."
+	taskMetricFailedHelp             = "Tasks that stopped with an error, by bounded reason."
+	taskMetricStepRetriesHelp        = "Task steps retried once after a transient model failure."
+	taskMetricStepTimeoutsHelp       = "Task model calls that ended with a spent deadline or model budget, by bounded phase."
+	taskMetricPlanningFailuresHelp   = "Task plans that failed, by bounded classification reason."
+	taskMetricQueueDepthHelp         = "Tasks waiting in the planning or ready state at the last scheduler pass."
+	taskMetricDurationHelp           = "Wall time of a task from creation to a terminal state, in seconds."
+	taskMetricPlanningHelp           = "Wall time of the background STRATA plan of a task, in seconds."
+	taskMetricPlanningQueueDepthHelp = "Task rows in the planning state, including rows leased by a planner, at the last scheduler pass."
+	taskMetricPlanningWaitHelp       = "Time from task creation to the claim of its planning row, in seconds."
 )
 
 // taskDurationBuckets cover a fast 1-step task through a long 3-step task with network approvals.
@@ -41,6 +49,11 @@ var taskDurationBuckets = []float64{5, 15, 30, 60, 120, 300, 600, 1800, 3600}
 // taskPlanningBuckets make the 120-second alert threshold visible as its own bucket: p95 above it is the
 // signal that the planner is too slow for the asynchronous UX.
 var taskPlanningBuckets = []float64{1, 2, 5, 10, 20, 30, 60, 120, 300, 600}
+
+// taskPlanningWaitBuckets cover an instant claim through a planner starved for half an hour. The 120-second
+// bucket is the same alert threshold as taskPlanningBuckets: a wait above it means planning is not keeping
+// up with task creation, independently of how long the model call itself takes.
+var taskPlanningWaitBuckets = []float64{1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 1800}
 
 // taskFailureReason classifies a task error into the bounded label set
 // model|empty|invalid|timeout|budget|other. The classification never carries the error text.
@@ -187,6 +200,47 @@ func (d *Dispatcher) observeTaskQueueDepth(ctx context.Context) {
 		depth = 0
 	}
 	reg.Gauge(taskMetricQueueDepth, taskMetricQueueDepthHelp).Set(nil, float64(depth))
+}
+
+// observeTaskPlanningQueueDepth publishes how many rows are still waiting for a planner. It is a separate
+// gauge from bot_task_queue_depth so an operator can tell planning backlog from execution backlog; both are
+// label-free, so the number never names a chat. The count includes rows leased by a planner (a plan in
+// progress is still not ready), and it is published on the same scheduler pass as the execution gauge.
+func (d *Dispatcher) observeTaskPlanningQueueDepth(ctx context.Context) {
+	if d == nil || d.deps.DB == nil {
+		return
+	}
+	reg := d.metrics.Load()
+	if reg == nil {
+		return
+	}
+	var depth int64
+	if err := d.deps.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tasks WHERE status = ?`,
+		store.TaskStatusPlanning).Scan(&depth); err != nil {
+		return
+	}
+	if depth < 0 {
+		depth = 0
+	}
+	reg.Gauge(taskMetricPlanningQueueDepth, taskMetricPlanningQueueDepthHelp).Set(nil, float64(depth))
+}
+
+// observeTaskPlanningWait records how long a task waited between creation and the claim of its planning row.
+// A zero CreatedAt means the row was built by a caller that did not set it; such a row is not measured
+// rather than measured as an absurd age. A claim after crash recovery still measures the original creation:
+// the wait is real, and the metric deliberately includes the downtime.
+func (d *Dispatcher) observeTaskPlanningWait(task store.Task, claimedAt time.Time) {
+	if d == nil || task.CreatedAt.IsZero() || claimedAt.IsZero() {
+		return
+	}
+	if reg := d.metrics.Load(); reg != nil {
+		seconds := claimedAt.Sub(task.CreatedAt).Seconds()
+		if seconds < 0 {
+			seconds = 0
+		}
+		reg.Histogram(taskMetricPlanningWait, taskMetricPlanningWaitHelp, taskPlanningWaitBuckets).Observe(nil, seconds)
+	}
 }
 
 // observeTaskPlanning records one complete planning attempt (success or a stored failure). The startup

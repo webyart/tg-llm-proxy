@@ -15,6 +15,9 @@ package store
 // Validation lives here as well as in the router/API: the store is the last place that can refuse an
 // override written by anything other than the Mini App, so a hand-edited row cannot silently empty a
 // provider, point its default at a model that is not in the list, or store a negative budget.
+//
+// Every committed write also bumps ProviderSettingsVersion, the in-process signal the bot's 30-second
+// provider budget cache uses to invalidate itself immediately after a Mini App save.
 
 import (
 	"context"
@@ -25,6 +28,7 @@ import (
 	"math"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -50,6 +54,23 @@ var (
 // providerNamePattern is the same key rule MODEL_PROVIDERS uses: a chat types this name before the colon,
 // so the comparison is literal and lower-case only.
 var providerNamePattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
+
+// providerSettingsVersion counts successful provider_settings mutations in THIS process. The bot's provider
+// budget gate caches budgets and spend for 30 seconds; reading this counter on every check lets a Mini App save
+// in the same process invalidate the cache immediately without the bot depending on webapp. A mutation made by
+// another instance is still picked up by the 30-second TTL, which is the documented bound.
+var providerSettingsVersion atomic.Uint64
+
+// ProviderSettingsVersion returns the in-process counter of successful provider_settings writes. It never
+// decreases and is cheap enough to read on the model-call hot path.
+func ProviderSettingsVersion() uint64 {
+	return providerSettingsVersion.Load()
+}
+
+// bumpProviderSettingsVersion records one committed write for the caches that derive from the table.
+func bumpProviderSettingsVersion() {
+	providerSettingsVersion.Add(1)
+}
 
 // ProviderSettings is one provider_settings row in its Go form. Models is the parsed, trimmed and
 // deduplicated list; UpdatedAt is the stored timestamp of the last write. DailyBudgetMicros is the daily
@@ -230,6 +251,7 @@ func UpsertProviderSettings(ctx context.Context, db *sql.DB, settings ProviderSe
 	if err != nil {
 		return fmt.Errorf("write provider settings of %q: %w", normalized.Provider, err)
 	}
+	bumpProviderSettingsVersion()
 	return nil
 }
 
@@ -248,6 +270,9 @@ func DeleteProviderSettings(ctx context.Context, db *sql.DB, provider string) (b
 	affected, err := result.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("delete provider settings of %q: rows affected: %w", provider, err)
+	}
+	if affected > 0 {
+		bumpProviderSettingsVersion()
 	}
 	return affected > 0, nil
 }
@@ -348,6 +373,7 @@ func SetProviderBudget(ctx context.Context, db *sql.DB, provider string, micros 
 		return fmt.Errorf("write provider budget of %q: rows affected: %w", provider, err)
 	}
 	if affected > 0 {
+		bumpProviderSettingsVersion()
 		return nil
 	}
 	seed.Provider = provider
@@ -377,5 +403,6 @@ func SetProviderBudget(ctx context.Context, db *sql.DB, provider string, micros 
 	if err != nil {
 		return fmt.Errorf("write provider budget of %q: %w", normalized.Provider, err)
 	}
+	bumpProviderSettingsVersion()
 	return nil
 }

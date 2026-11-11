@@ -109,6 +109,50 @@ func TestProviderBudgetMicrosConversion(t *testing.T) {
 	}
 }
 
+// TestProviderSettingsVersionAdvancesOnCommittedWrites: the in-process counter that invalidates the bot's
+// provider budget cache moves on every successful write and stays put on a refused one.
+func TestProviderSettingsVersionAdvancesOnCommittedWrites(t *testing.T) {
+	ctx := context.Background()
+	db, err := OpenMemory(ctx, "provider-settings-version")
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	defer db.Close()
+
+	var start = ProviderSettingsVersion()
+	if err := SetProviderBudget(ctx, db, "kimi", 1_000_000, ProviderSettings{
+		Provider: "kimi", Models: []string{"kimi-k3"}, DefaultModel: "kimi-k3", Enabled: true,
+	}); err != nil {
+		t.Fatalf("SetProviderBudget: %v", err)
+	}
+	var afterSet = ProviderSettingsVersion()
+	if afterSet <= start {
+		t.Fatalf("version after SetProviderBudget=%d, want > %d", afterSet, start)
+	}
+	if err := UpsertProviderSettings(ctx, db, ProviderSettings{
+		Provider: "kimi", Models: []string{"kimi-k3"}, DefaultModel: "kimi-k3", Enabled: true,
+		DailyBudgetMicros: 2_000_000,
+	}); err != nil {
+		t.Fatalf("UpsertProviderSettings: %v", err)
+	}
+	var afterUpsert = ProviderSettingsVersion()
+	if afterUpsert <= afterSet {
+		t.Fatalf("version after UpsertProviderSettings=%d, want > %d", afterUpsert, afterSet)
+	}
+	if err := SetProviderBudget(ctx, db, "kimi", -1, ProviderSettings{Provider: "kimi"}); !errors.Is(err, ErrInvalidProviderSettings) {
+		t.Fatalf("invalid SetProviderBudget err=%v, want ErrInvalidProviderSettings", err)
+	}
+	if got := ProviderSettingsVersion(); got != afterUpsert {
+		t.Fatalf("version after a refused write=%d, want unchanged %d", got, afterUpsert)
+	}
+	if deleted, err := DeleteProviderSettings(ctx, db, "kimi"); err != nil || !deleted {
+		t.Fatalf("DeleteProviderSettings deleted=%v err=%v", deleted, err)
+	}
+	if got := ProviderSettingsVersion(); got <= afterUpsert {
+		t.Fatalf("version after DeleteProviderSettings=%d, want > %d", got, afterUpsert)
+	}
+}
+
 func TestProviderBudgetStoreGetSetAndReset(t *testing.T) {
 	ctx := context.Background()
 	db, err := OpenMemory(ctx, "provider-budget-crud")

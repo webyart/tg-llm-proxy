@@ -406,6 +406,11 @@ func (d *Dispatcher) callModel(ctx context.Context, userID int64, req model.Requ
 		// provider that was down for a minute could spend a user's whole daily budget on failed calls.
 		d.releaseDailyModelCall(ctx, userID)
 	}
+	// The call reported tokens, so the answer may already be stored and priced. Drop the cached spend: the
+	// next provider budget check must read the new total instead of serving a pre-call snapshot for a TTL.
+	if response.TokensIn != nil || response.TokensOut != nil {
+		d.invalidateProviderBudgetSpend()
+	}
 	return response, callErr
 }
 

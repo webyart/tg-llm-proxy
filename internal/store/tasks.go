@@ -362,28 +362,41 @@ func FailTaskPlanning(ctx context.Context, db *sql.DB, taskID int64, reason stri
 // is the current time in the fixed reminder layout, so the TEXT comparison is chronological.
 const planningLeaseFree = "(planning_owner IS NULL OR planning_lease_until IS NULL OR planning_lease_until <= ?)"
 
-// ClaimPlanningTask atomically takes the lease of the oldest-due planning row that any instance may claim.
-// The UPDATE ... RETURNING is one statement: SQLite serializes the two writers, and the loser re-evaluates
-// the WHERE clause against the committed row, so two instances — or two stores of one process — never both
-// win the same row. owner is an opaque instance id, never a user or a chat id; lease is the TTL that the
-// planner extends with RenewPlanningLease while it works.
+// The row predicates of the three atomic planning claims. Each one contains its own ? for the free-lease
+// check, so the caller passes the current time once per occurrence. The claim helper below always appends
+// those arguments after the three SET arguments, in the same order as the placeholders appear here.
+const (
+	planningClaimOldest = `id = (
+			SELECT id FROM tasks WHERE status = 'planning' AND ` + planningLeaseFree + `
+			ORDER BY due_at, id LIMIT 1
+		) AND status = 'planning' AND ` + planningLeaseFree
+	planningClaimFair = `id = (
+			SELECT id FROM tasks WHERE status = 'planning' AND ` + planningLeaseFree + `
+			ORDER BY updated_at, chat_id, id LIMIT 1
+		) AND status = 'planning' AND ` + planningLeaseFree
+	planningClaimByID = `id = ? AND status = 'planning' AND ` + planningLeaseFree
+)
+
+// claimPlanningTask is the one atomic claim statement: UPDATE ... RETURNING serializes the writers, and the
+// loser re-evaluates the predicate against the committed row, so two instances — or two stores of one process
+// — never both win the same row. predicate is one of the planningClaim* constants; predicateArgs are its
+// placeholders (the task id, and the current time for every planningLeaseFree occurrence).
 //
 // A claim does not touch planning_attempts: the counter is the crash-recovery counter of ResetTaskPlanning
 // (creation already counts the first attempt), so a normal plan is never charged twice.
-func ClaimPlanningTask(ctx context.Context, db *sql.DB, now time.Time, owner string, lease time.Duration) (Task, bool, error) {
+func claimPlanningTask(ctx context.Context, db *sql.DB, now time.Time, owner string, lease time.Duration, predicate string, predicateArgs []any) (Task, bool, error) {
 	owner = strings.TrimSpace(owner)
 	if owner == "" || len([]rune(owner)) > 200 || lease <= 0 {
 		return Task{}, false, fmt.Errorf("%w: a planning claim needs an owner and a positive lease", ErrTaskInvalid)
 	}
 	nowText := formatReminderTime(now)
+	args := make([]any, 0, 3+len(predicateArgs))
+	args = append(args, owner, formatReminderTime(now.Add(lease)), nowText)
+	args = append(args, predicateArgs...)
 	row := db.QueryRowContext(ctx, `UPDATE tasks
 		SET planning_owner = ?, planning_lease_until = ?, updated_at = ?
-		WHERE id = (
-			SELECT id FROM tasks WHERE status = 'planning' AND `+planningLeaseFree+`
-			ORDER BY due_at, id LIMIT 1
-		) AND status = 'planning' AND `+planningLeaseFree+`
-		RETURNING `+taskColumns,
-		owner, formatReminderTime(now.Add(lease)), nowText, nowText, nowText)
+		WHERE `+predicate+`
+		RETURNING `+taskColumns, args...)
 	task, err := scanTask(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Task{}, false, nil
@@ -392,6 +405,42 @@ func ClaimPlanningTask(ctx context.Context, db *sql.DB, now time.Time, owner str
 		return Task{}, false, err
 	}
 	return task, true, nil
+}
+
+// ClaimPlanningTask atomically takes the lease of the oldest-due planning row that any instance may claim.
+// It is the strict-FIFO claim kept for callers and tests that want exactly that order; the planner itself
+// uses ClaimPlanningTaskByID first and ClaimPlanningTaskFair as its fallback, so that a worker serves the
+// chat that woke it and the shared queue rotates between chats.
+func ClaimPlanningTask(ctx context.Context, db *sql.DB, now time.Time, owner string, lease time.Duration) (Task, bool, error) {
+	nowText := formatReminderTime(now)
+	return claimPlanningTask(ctx, db, now, owner, lease, planningClaimOldest, []any{nowText, nowText})
+}
+
+// ClaimPlanningTaskByID atomically takes the lease of one named planning row when it is still in the
+// 'planning' state and its lease is free (or expired). A row that is already leased by another instance, or
+// that has reached a terminal state, is not claimable and the result is found=false — exactly the same lease
+// rules as ClaimPlanningTask, just scoped to the row that woke this worker.
+func ClaimPlanningTaskByID(ctx context.Context, db *sql.DB, taskID int64, now time.Time, owner string, lease time.Duration) (Task, bool, error) {
+	if taskID <= 0 {
+		return Task{}, false, fmt.Errorf("%w: a planning claim by id needs a task", ErrTaskInvalid)
+	}
+	nowText := formatReminderTime(now)
+	return claimPlanningTask(ctx, db, now, owner, lease, planningClaimByID, []any{taskID, nowText})
+}
+
+// ClaimPlanningTaskFair takes the free planning row with the oldest updated_at, ties broken by chat_id and
+// then id. This is the shared-queue fallback of a worker whose own task was not claimable.
+//
+// The rule is per-chat round robin, not FIFO by creation: a claim writes updated_at = now, so the chat that
+// was just served sorts after every chat that has waited longer. Because uq_tasks_chat_active permits at most
+// one active row per chat, the free planning rows are one per waiting chat; ordering them by updated_at is
+// therefore least-recently-served order over chats. An interrupted attempt keeps its claim-time updated_at
+// when it is released or expires, so it also moves behind the chats that have not been tried yet. No schema
+// migration is needed: the selection only sorts the free planning rows (bounded by the number of chats with
+// a live task) and reuses the existing idx_tasks_planning_lease for the filter.
+func ClaimPlanningTaskFair(ctx context.Context, db *sql.DB, now time.Time, owner string, lease time.Duration) (Task, bool, error) {
+	nowText := formatReminderTime(now)
+	return claimPlanningTask(ctx, db, now, owner, lease, planningClaimFair, []any{nowText, nowText})
 }
 
 // RenewPlanningLease extends the lease of a row this instance still owns. A false result means the claim was

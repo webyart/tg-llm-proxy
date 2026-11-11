@@ -193,6 +193,7 @@ func (d *Dispatcher) RunTaskScheduler(ctx context.Context) {
 func (d *Dispatcher) ProcessDueTasks(ctx context.Context, now time.Time, limit int) (int, error) {
 	d.pruneExpiredNonTaskNetworkConfirmations(now)
 	d.observeTaskQueueDepth(ctx)
+	d.observeTaskPlanningQueueDepth(ctx)
 	if limit <= 0 || limit > TaskBatchLimit {
 		limit = TaskBatchLimit
 	}

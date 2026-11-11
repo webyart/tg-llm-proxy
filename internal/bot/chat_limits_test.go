@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -101,6 +102,117 @@ func TestChatDailyModelLimitRefusalIsDeliveredByDispatch(t *testing.T) {
 	rows, err := store.HistoryOfChat(ctx, db, 220, 10)
 	if err != nil || len(rows) != 3 || rows[2].Role != store.RoleUser {
 		t.Fatalf("history rows=%+v err=%v, want a stored question without an answer", rows, err)
+	}
+}
+
+func TestChatDailyCostBudgetRefusesOverLimitAndWarnsOnce(t *testing.T) {
+	cfg := testConfig(t, map[string]string{
+		"TELEGRAM_ALLOWED_USERS": "11",
+		"MODEL_PRICES":           `[{"model":"model-a","input_per_mtok_usd":1,"output_per_mtok_usd":1}]`,
+	})
+	m := &fakeModel{response: model.Response{Content: "ok"}}
+	r := &fakeReplier{}
+	db := testStore(t)
+	d := newTestDispatcher(t, cfg, m, r, db)
+	ctx := context.Background()
+	for _, chatID := range []int64{220, 221} {
+		if err := store.EnsureChat(ctx, db, chatID, 11, ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SetChatLimits(ctx, db, store.ChatLimits{ChatID: chatID, DailyCostLimitMicros: 1000}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed := func(tokensIn, tokensOut int64) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO messages (chat_id, user_id, role, content, tokens_in, tokens_out, model, created_at)
+			VALUES (220, 11, ?, 'answer', ?, ?, 'model-a', datetime('now'))`,
+			store.RoleAssistant, tokensIn, tokensOut); err != nil {
+			t.Fatalf("seed message: %v", err)
+		}
+	}
+	// 800 of a 1000 micro-dollar budget: the call is allowed and crosses the 80% warning once.
+	seed(700, 100)
+	chatCtx := withChatScope(ctx, 220)
+	if _, err := d.callModel(chatCtx, 11, model.Request{}, nil, nil); err != nil {
+		t.Fatalf("under-budget call: %v", err)
+	}
+	if _, err := d.callModel(chatCtx, 11, model.Request{}, nil, nil); err != nil {
+		t.Fatalf("second under-budget call: %v", err)
+	}
+	var warnings int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE chat_id = 220 AND kind = ?`,
+		store.EventChatCostBudgetWarning).Scan(&warnings); err != nil {
+		t.Fatal(err)
+	}
+	if warnings != 1 {
+		t.Fatalf("cost warnings=%d, want exactly one per UTC day", warnings)
+	}
+	if m.callCount() != 2 {
+		t.Fatalf("provider calls=%d, want 2 allowed calls", m.callCount())
+	}
+
+	// 1100 micro-dollars now exceeds the budget. The chat's language decides the refusal sentence, and the
+	// model must never be called for the refused turn.
+	seed(250, 50)
+	if err := store.SetChatLanguage(ctx, db, 220, i18n.EN); err != nil {
+		t.Fatal(err)
+	}
+	_, err := d.callModel(chatCtx, 11, model.Request{}, nil, nil)
+	if err == nil || !errors.Is(err, ErrChatCostDailyLimited) || !strings.Contains(err.Error(), "daily cost budget of this chat is exhausted") {
+		t.Fatalf("over-budget error=%v, want the localized ErrChatCostDailyLimited", err)
+	}
+	if m.callCount() != 2 {
+		t.Fatalf("provider calls=%d, want the refused call to never reach the model", m.callCount())
+	}
+	var detail string
+	if err := db.QueryRowContext(ctx,
+		`SELECT detail FROM events WHERE chat_id = 220 AND kind = ? ORDER BY id DESC LIMIT 1`,
+		store.EventLimit).Scan(&detail); err != nil {
+		t.Fatalf("limit event: %v", err)
+	}
+	if !strings.Contains(detail, "chat_cost_daily") {
+		t.Fatalf("limit event detail=%q", detail)
+	}
+
+	// Another chat shares neither the spend nor the refusal.
+	if _, err := d.callModel(withChatScope(ctx, 221), 11, model.Request{}, nil, nil); err != nil || m.callCount() != 3 {
+		t.Fatalf("independent chat err=%v calls=%d", err, m.callCount())
+	}
+
+	// 0 is unlimited even though the spend already exceeds the old budget.
+	if err := store.SetChatLimits(ctx, db, store.ChatLimits{ChatID: 220}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.callModel(chatCtx, 11, model.Request{}, nil, nil); err != nil || m.callCount() != 4 {
+		t.Fatalf("unlimited call err=%v calls=%d", err, m.callCount())
+	}
+}
+
+func TestChatCostBudgetIsDisabledWithoutPrices(t *testing.T) {
+	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	m := &fakeModel{response: model.Response{Content: "ok"}}
+	db := testStore(t)
+	d := newTestDispatcher(t, cfg, m, &fakeReplier{}, db)
+	ctx := context.Background()
+	if err := store.EnsureChat(ctx, db, 220, 11, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChatLimits(ctx, db, store.ChatLimits{ChatID: 220, DailyCostLimitMicros: 1}); err != nil {
+		t.Fatal(err)
+	}
+	// Tokens are stored, but with no price table there is no cost to compare with the budget.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO messages (chat_id, user_id, role, content, tokens_in, tokens_out, model, created_at)
+		VALUES (220, 11, ?, 'answer', 1000000, 1000000, 'model-a', datetime('now'))`, store.RoleAssistant); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.callModel(withChatScope(ctx, 220), 11, model.Request{}, nil, nil); err != nil {
+		t.Fatalf("a budget without prices must not refuse: %v", err)
+	}
+	if m.callCount() != 1 {
+		t.Fatalf("provider calls=%d, want 1", m.callCount())
 	}
 }
 
@@ -354,6 +466,51 @@ func TestChatLimitsCommandShowSetAndReset(t *testing.T) {
 	}
 	if _, found, _ := store.GetChatLimits(ctx, db, 11); found {
 		t.Fatal("reset left a limits row")
+	}
+}
+
+func TestChatLimitsCostCommandShowsSpendAndBudget(t *testing.T) {
+	cfg := testConfig(t, map[string]string{
+		"TELEGRAM_ALLOWED_USERS": "11",
+		"MODEL_PRICES":           `[{"model":"model-a","input_per_mtok_usd":1,"output_per_mtok_usd":0}]`,
+	})
+	r := &fakeReplier{}
+	db := testStore(t)
+	d := newTestDispatcher(t, cfg, &fakeModel{}, r, db)
+	ctx := context.Background()
+	if err := store.EnsureChat(ctx, db, 11, 11, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO messages (chat_id, user_id, role, content, tokens_in, tokens_out, model, created_at)
+		VALUES (11, 11, ?, 'answer', 1000000, 0, 'model-a', datetime('now'))`, store.RoleAssistant); err != nil {
+		t.Fatal(err)
+	}
+	if err := dispatch(t, d, testEvent(11, 11, 750, "/limits cost 1.25")); err != nil {
+		t.Fatalf("/limits cost: %v", err)
+	}
+	if got := r.texts()[len(r.texts())-1]; !strings.Contains(got, "Лимиты чата сохранены") {
+		t.Fatalf("cost reply=%q", got)
+	}
+	limits, found, err := store.GetChatLimits(ctx, db, 11)
+	if err != nil || !found || limits.DailyCostLimitMicros != 1_250_000 {
+		t.Fatalf("cost budget=%+v found=%v err=%v", limits, found, err)
+	}
+	if err := dispatch(t, d, testEvent(11, 11, 751, "/limits")); err != nil {
+		t.Fatal(err)
+	}
+	text := r.texts()[len(r.texts())-1]
+	if !strings.Contains(text, "Расход за сегодня (UTC): $1.00 (бюджет: $1.25)") {
+		t.Fatalf("/limits report misses the cost line: %q", text)
+	}
+	if err := dispatch(t, d, testEvent(11, 11, 752, "/limits cost 100000.01")); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.texts()[len(r.texts())-1]; !strings.Contains(got, "Укажите сумму от 0 до 100000 USD") {
+		t.Fatalf("invalid cost reply=%q", got)
+	}
+	if limits, _, _ := store.GetChatLimits(ctx, db, 11); limits.DailyCostLimitMicros != 1_250_000 {
+		t.Fatalf("invalid input changed the cost budget=%+v", limits)
 	}
 }
 

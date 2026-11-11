@@ -98,6 +98,54 @@ func TestMigrationFailureRollsBackStatementsAndVersion(t *testing.T) {
 	}
 }
 
+// TestMigration023AddsCostBudgetToAnExistingSchema22 upgrades a database that already has chat_limits rows:
+// the new column must arrive with its unlimited default and leave the three existing limits untouched.
+func TestMigration023AddsCostBudgetToAnExistingSchema22(t *testing.T) {
+	ctx := context.Background()
+	all := MigrationSQL
+	MigrationSQL = append([]string(nil), all[:22]...)
+	db, err := OpenMemory(ctx, "migration-023-"+t.Name())
+	if err != nil {
+		MigrationSQL = all
+		t.Fatalf("OpenMemory at 22: %v", err)
+	}
+	defer db.Close()
+	MigrationSQL = all
+	t.Cleanup(func() { MigrationSQL = all })
+
+	version, err := SchemaVersion(ctx, db)
+	if err != nil || version != 22 {
+		t.Fatalf("SchemaVersion=%d err=%v, want 22", version, err)
+	}
+	if err := EnsureChat(ctx, db, 70, 7, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO chat_limits (chat_id, daily_model_limit, daily_network_limit, per_minute_limit, disabled_tools)
+		VALUES (70, 9, 4, 2, 'web_search')`); err != nil {
+		t.Fatalf("seed schema-22 limits: %v", err)
+	}
+	if err := ApplySchema(ctx, db); err != nil {
+		t.Fatalf("upgrade to 23: %v", err)
+	}
+	version, err = SchemaVersion(ctx, db)
+	if err != nil || version != len(all) {
+		t.Fatalf("SchemaVersion=%d err=%v, want %d", version, err, len(all))
+	}
+	var cost int64
+	if err := db.QueryRowContext(ctx, `SELECT daily_cost_limit_micros FROM chat_limits WHERE chat_id = 70`).Scan(&cost); err != nil {
+		t.Fatalf("read new column: %v", err)
+	}
+	if cost != 0 {
+		t.Fatalf("new column default=%d, want 0 (unlimited)", cost)
+	}
+	limits, found, err := GetChatLimits(ctx, db, 70)
+	if err != nil || !found || limits.DailyModelLimit != 9 || limits.DailyNetworkLimit != 4 ||
+		limits.PerMinuteLimit != 2 || limits.DailyCostLimitMicros != 0 {
+		t.Fatalf("old limits were not preserved: %+v found=%v err=%v", limits, found, err)
+	}
+}
+
 // TestMigration011ToleratesAnExistingAttributionColumn reproduces a database whose messages already have
 // user_id but whose 011 row is missing (an interrupted older release, or an operator's repair). The guarded
 // runner must skip only the ALTER and still create the index instead of failing with "duplicate column".

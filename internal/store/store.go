@@ -314,6 +314,8 @@ var migrationStatementGuards = map[int]migrationStatementGuard{
 	20: addColumnIfMissingGuard("events", "chat_id"),
 	// 021_task_status.sql: ALTER TABLE tasks ADD COLUMN status_message_id (nullable, no other statement).
 	21: addColumnIfMissingGuard("tasks", "status_message_id"),
+	// 023_chat_cost.sql: ALTER TABLE chat_limits ADD COLUMN daily_cost_limit_micros (one statement).
+	23: addColumnIfMissingGuard("chat_limits", "daily_cost_limit_micros"),
 }
 
 // addColumnIfMissingGuard skips exactly one `ALTER TABLE <table> ADD COLUMN <column> …` statement when

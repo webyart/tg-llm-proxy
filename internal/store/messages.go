@@ -33,6 +33,10 @@ const (
 	EventUsage      = "usage"
 	EventModelCall  = "model_call"
 	EventLimit      = "limit"
+	// EventChatCostBudgetWarning is written at most once per UTC day and chat when today's spend crosses
+	// 80% of an active daily cost budget. It is a separate kind, not a limit detail, because it is a
+	// warning for the administrator rather than a refusal and must be countable without parsing text.
+	EventChatCostBudgetWarning = "chat_cost_budget_warning"
 	// STRATA_TIMEOUT_SECONDS, or the whole answer under TG_REPLY_DEADLINE_SECONDS. Which of the two expired,
 	// the detail of the row says by name; measured 2026-10-31 with 15/30 it is the model budget that goes first.
 	EventTimeout = "timeout"

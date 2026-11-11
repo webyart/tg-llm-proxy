@@ -128,12 +128,15 @@ func TestFrontendUsageRangeChartsAreAccessibleAndLocalized(t *testing.T) {
 		`usageRangeSwitch()`,
 		`usageCallsChart(series, range)`,
 		`usageTokensChart(series, range)`,
+		`usageCostChart(series, range)`,
+		`function formatUSD(value, digits = 2)`,
 		`usageToolsChart(rangeTools)`,
 		`usageModelRows(rangeModels, Array.isArray(totals.models) ? totals.models : [], t("noRangeUsage"))`,
 		`usageRangeHour: "Час"`, `usageRangeDay: "День"`, `usageRangeWeek: "Неделя"`, `usageRangeMonth: "Месяц"`,
 		`usageRangeHour: "Hour"`, `usageRangeDay: "Day"`, `usageRangeWeek: "Week"`, `usageRangeMonth: "Month"`,
 		`usageRangeTitle: "Период"`, `usageRangeTitle: "Range"`,
-		`usageCallsChartAria:`, `usageTokensChartAria:`, `usageToolsChartAria:`,
+		`usageCallsChartAria:`, `usageTokensChartAria:`, `usageCostChartAria:`, `usageToolsChartAria:`,
+		`usageCostChart: "Стоимость"`, `usageCostChart: "Cost"`,
 		`usageToolReadURL: "Чтение URL"`, `usageToolWebSearch: "Web search"`,
 		`usageRangeModels: "Модели за период"`, `usageRangeModels: "Models in range"`,
 		`usageRangeTools: "Инструменты за период"`, `usageRangeTools: "Tools in range"`,
@@ -146,6 +149,7 @@ func TestFrontendUsageRangeChartsAreAccessibleAndLocalized(t *testing.T) {
 	for _, key := range []string{
 		"usageRangeTitle", "usageRangeLabel", "usageRangeHint", "usageCallsChart", "usageCallsChartHint",
 		"usageCallsChartAria", "usageTokensChart", "usageTokensChartHint", "usageTokensChartAria",
+		"usageCostChart", "usageCostChartHint", "usageCostChartAria",
 		"usageToolsChart", "usageToolsChartAria", "usageRangeModels", "usageRangeTools", "usageTodayModels",
 		"usageRangeTruncated", "noRangeUsage",
 	} {
@@ -155,7 +159,7 @@ func TestFrontendUsageRangeChartsAreAccessibleAndLocalized(t *testing.T) {
 	}
 	for _, want := range []string{
 		".usage-range-switch {", ".usage-chart {", "width: 100%", "max-width: 100%",
-		".usage-chart-line-in", ".usage-chart-line-out", ".usage-chart-bar",
+		".usage-chart-line-in", ".usage-chart-line-out", ".usage-chart-bar", ".usage-chart-cost",
 		".usage-chart-legend", "@media (max-width: 360px)",
 	} {
 		if !strings.Contains(css, want) {
@@ -1037,7 +1041,8 @@ func TestFrontendAdminChatLimitsSection(t *testing.T) {
 		"await api(`/api/admin/chats/${chatID}/limits`, options)",
 		`chatLimitsTitle: "Лимиты чатов"`, `chatLimitsTitle: "Chat limits"`,
 		`chatLimitsHint: `, `chatLimitsTypeGroup: "группа"`, `chatLimitsTypeGroup: "group"`,
-		`chatLimitsModel: `, `chatLimitsNetwork: `, `chatLimitsMinute: `, `chatLimitsTools: `,
+		`chatLimitsModel: `, `chatLimitsNetwork: `, `chatLimitsMinute: `, `chatLimitsCost: `, `chatLimitsTools: `,
+		`daily_cost_limit_usd`, `chatLimitCostUSD(`, `chatLimitsCostToday`, `chatLimitsCostWarning`,
 		`chatLimitsSave: "Сохранить"`, `chatLimitsReset: "Сбросить"`,
 		`input.type = "number"`, `input.max = "1000000"`, `input.step = "1"`,
 		`box.type = "checkbox"`, `box.checked = disabled.includes(name)`,

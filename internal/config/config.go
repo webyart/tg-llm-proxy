@@ -93,6 +93,7 @@ var Env = []string{
 	"HEALTH_PROBE_PORT",
 	"METRICS_LISTEN_HOST",
 	"LOG_LEVEL",
+	"MODEL_PRICES",
 }
 
 // ALLOWED_USER_IDS is not one any more (a test checks both, because `Env` is the table the startup summary and
@@ -229,7 +230,10 @@ type Config struct {
 	// ModelProviders is the optional named-provider list from MODEL_PROVIDERS. A chat selects one of its models
 	// with a "name:model" id; the primary STRATA endpoint stays the default and the name "strata" is reserved
 	// for it. An empty list keeps every request on the existing default path.
-	ModelProviders       []ProviderConfig
+	ModelProviders []ProviderConfig
+	// ModelPrices is the validated MODEL_PRICES table. An empty table means every cost is zero and the
+	// per-chat daily cost budget is disabled instead of refusing calls against a spend it cannot compute.
+	ModelPrices          PriceTable
 	TranscriptionModel   string
 	TranscriptionBase    string
 	TranscriptionURL     string
@@ -739,6 +743,19 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 			problems = append(problems, providerProblems...)
 		} else {
 			cfg.ModelProviders = providers
+		}
+	}
+
+	// The price table is optional and silent: no row means no cost is computed and the per-chat budget stays
+	// off. It is parsed after MODEL_PROVIDERS because a provider-prefixed price must name a configured
+	// provider.
+	cfg.ModelPrices = nil
+	if rawPrices := strings.TrimSpace(raw["MODEL_PRICES"]); rawPrices != "" {
+		var prices, priceProblems = parseModelPrices(rawPrices, cfg.ModelProviders)
+		if len(priceProblems) > 0 {
+			problems = append(problems, priceProblems...)
+		} else {
+			cfg.ModelPrices = prices
 		}
 	}
 

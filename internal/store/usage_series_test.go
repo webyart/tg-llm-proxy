@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"bot/internal/config"
 )
 
 func TestUserUsageSeriesHourBucketsAggregateUTC(t *testing.T) {
@@ -96,6 +98,57 @@ func TestUserUsageSeriesHourBucketsAggregateUTC(t *testing.T) {
 	}
 	if series.Tools["read_url"] != 1 || series.Tools["calculator"] != 1 {
 		t.Errorf("range tools=%v, want read_url=1 calculator=1", series.Tools)
+	}
+}
+
+func TestUsageSeriesAndDailyApplyModelPrices(t *testing.T) {
+	ctx := context.Background()
+	db, err := OpenMemory(ctx, "usage_series_cost_"+t.Name())
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	defer db.Close()
+	now := time.Date(2026, 3, 2, 18, 30, 0, 0, time.UTC)
+	appendAssistantAt(t, ctx, db, 100, 11, "model-a", 1000, 500, "2026-03-02 18:05:00")
+	appendAssistantAt(t, ctx, db, 100, 11, "model-b", 2000, 1000, "2026-03-02 18:45:00")
+	prices := config.PriceTable{
+		{Model: "model-a", InputPerMTokUSD: 1, OutputPerMTokUSD: 2},
+		{Model: "model-b", InputPerMTokUSD: 0.5, OutputPerMTokUSD: 0.5},
+	}
+
+	series, err := UserUsageSeries(ctx, db, 11, now, UsageRangeHour)
+	if err != nil {
+		t.Fatalf("UserUsageSeries: %v", err)
+	}
+	series.ApplyPrices(prices)
+	last := series.Buckets[len(series.Buckets)-1]
+	// model-a: 1000*1 + 500*2 = 2000 micros; model-b: 2000*0.5 + 1000*0.5 = 1500 micros.
+	if last.CostUSD != 0.0035 {
+		t.Fatalf("bucket cost=%v, want 0.0035", last.CostUSD)
+	}
+	if series.CostUSD != 0.0035 {
+		t.Fatalf("range cost=%v, want 0.0035", series.CostUSD)
+	}
+	costs := map[string]float64{}
+	for _, model := range series.Models {
+		costs[model.Model] = model.CostUSD
+	}
+	if costs["model-a"] != 0.002 || costs["model-b"] != 0.0015 {
+		t.Fatalf("model costs=%v, want model-a 0.002 model-b 0.0015", costs)
+	}
+
+	daily, err := UserDailyUsage(ctx, db, 11, now)
+	if err != nil {
+		t.Fatalf("UserDailyUsage: %v", err)
+	}
+	daily.ApplyPrices(prices)
+	if daily.CostUSD != 0.0035 {
+		t.Fatalf("daily cost=%v, want 0.0035", daily.CostUSD)
+	}
+	for _, model := range daily.Models {
+		if model.Model == "model-a" && model.CostUSD != 0.002 {
+			t.Errorf("daily model-a cost=%v", model.CostUSD)
+		}
 	}
 }
 

@@ -143,21 +143,27 @@
       usageTokensChart: "Токены", usageTokensChartHint: "Входящие и исходящие токены по интервалам, UTC.",
       usageTokensChartAria: "График токенов: {tokens_in} входящих и {tokens_out} исходящих; интервалов: {buckets}.",
       usageTokensIn: "Входящие", usageTokensOut: "Исходящие",
+      usageCost: "Стоимость", usageCostChart: "Стоимость", usageCostChartHint: "Расход по интервалам, USD, UTC.",
+      usageCostChartAria: "График стоимости: {cost} за {buckets} интервалов.",
       usageToolsChart: "Вызовы инструментов", usageToolsChartAria: "Использование инструментов: {total} вызовов.",
       usageRangeModels: "Модели за период", usageRangeTools: "Инструменты за период",
       usageTodayModels: "Модели за сегодня", noRangeUsage: "За выбранный период обращений не было.",
       usageToolReadURL: "Чтение URL", usageToolWebSearch: "Веб-поиск", usageToolCalculator: "Калькулятор", usageToolRAG: "RAG",
       settingsSaved: "Настройки чата сохранены.", settingsSaveFailed: "Не удалось сохранить настройку.",
-      chatLimitsTitle: "Лимиты чатов", chatLimitsHint: "Администратор задаёт дневной лимит модели, дневной лимит сетевых инструментов, лимит сообщений в минуту и отключённые инструменты для любого активного чата или группы. 0 — без ограничения.",
+      chatLimitsTitle: "Лимиты чатов", chatLimitsHint: "Администратор задаёт дневной лимит модели, дневной лимит сетевых инструментов, лимит сообщений в минуту, дневной бюджет USD и отключённые инструменты для любого активного чата или группы. 0 — без ограничения.",
       chatLimitsChat: "Чат", chatLimitsTypePrivate: "личный", chatLimitsTypeGroup: "группа",
       chatLimitsToday: "Сегодня (UTC): модель {model}, сеть {network}, read_url {read_url}, web_search {web_search}, calculator {calculator}",
+      chatLimitsCostToday: "Расход за сегодня (UTC): {cost} из {limit}",
+      chatLimitsCostWarning: "Израсходовано не менее 80% дневного бюджета этого чата.",
       chatLimitsModel: "Вызовов модели в сутки", chatLimitsNetwork: "Сетевых вызовов в сутки", chatLimitsMinute: "Сообщений в минуту",
+      chatLimitsCost: "Бюджет USD в сутки",
       chatLimitsTools: "Отключённые инструменты", chatLimitsToolReadURL: "Чтение страниц (read_url)",
       chatLimitsToolWebSearch: "Веб-поиск (web_search)", chatLimitsToolCalculator: "Калькулятор (calculator)",
       chatLimitsSave: "Сохранить", chatLimitsReset: "Сбросить",
       chatLimitsSaved: "Лимиты чата сохранены.", chatLimitsResetDone: "Лимиты чата сброшены.",
       chatLimitsFailed: "Не удалось сохранить лимиты чата.", chatLimitsLoadFailed: "Не удалось загрузить список чатов.",
       chatLimitsEmpty: "Активных чатов пока нет.", chatLimitsInvalid: "Лимиты — целые числа от 0 до 1000000.",
+      chatLimitsCostInvalid: "Бюджет — число от 0 до 100000 USD (0 — без ограничения).",
       providerSettingsTitle: "Провайдеры и модели", providerSettingsHint: "Администратор меняет список моделей, модель по умолчанию и доступность провайдера без перезапуска. base_url, api_key и таймаут задаются только в MODEL_PROVIDERS; сброс возвращает значения из env.",
       providerSettingsEmpty: "Именованные провайдеры не настроены.", providerSettingsLoadFailed: "Не удалось загрузить провайдеров.",
       providerSettingsSave: "Сохранить", providerSettingsReset: "Сбросить к env",
@@ -358,21 +364,27 @@
       usageTokensChart: "Tokens", usageTokensChartHint: "Input and output tokens per bucket, UTC.",
       usageTokensChartAria: "Tokens chart: {tokens_in} input and {tokens_out} output tokens across {buckets} buckets.",
       usageTokensIn: "Input", usageTokensOut: "Output",
+      usageCost: "Cost", usageCostChart: "Cost", usageCostChartHint: "Spend per bucket, USD, UTC.",
+      usageCostChartAria: "Cost chart: {cost} across {buckets} buckets.",
       usageToolsChart: "Tool calls", usageToolsChartAria: "Tool usage: {total} calls.",
       usageRangeModels: "Models in range", usageRangeTools: "Tools in range",
       usageTodayModels: "Models today", noRangeUsage: "No calls in the selected range.",
       usageToolReadURL: "URL reading", usageToolWebSearch: "Web search", usageToolCalculator: "Calculator", usageToolRAG: "RAG",
       settingsSaved: "Settings saved for this chat.", settingsSaveFailed: "The setting could not be saved.",
-      chatLimitsTitle: "Chat limits", chatLimitsHint: "An administrator sets a daily model limit, a daily network-tool limit, a per-minute message limit and disabled tools for any active chat or group. 0 means unlimited.",
+      chatLimitsTitle: "Chat limits", chatLimitsHint: "An administrator sets a daily model limit, a daily network-tool limit, a per-minute message limit, a daily USD cost budget and disabled tools for any active chat or group. 0 means unlimited.",
       chatLimitsChat: "Chat", chatLimitsTypePrivate: "private", chatLimitsTypeGroup: "group",
       chatLimitsToday: "Today (UTC): model {model}, network {network}, read_url {read_url}, web_search {web_search}, calculator {calculator}",
+      chatLimitsCostToday: "Today's spend (UTC): {cost} of {limit}",
+      chatLimitsCostWarning: "At least 80% of this chat's daily cost budget is spent.",
       chatLimitsModel: "Model calls per day", chatLimitsNetwork: "Network calls per day", chatLimitsMinute: "Messages per minute",
+      chatLimitsCost: "USD budget per day",
       chatLimitsTools: "Disabled tools", chatLimitsToolReadURL: "Page reader (read_url)",
       chatLimitsToolWebSearch: "Web search (web_search)", chatLimitsToolCalculator: "Calculator (calculator)",
       chatLimitsSave: "Save", chatLimitsReset: "Reset",
       chatLimitsSaved: "Chat limits saved.", chatLimitsResetDone: "Chat limits reset.",
       chatLimitsFailed: "The chat limits could not be saved.", chatLimitsLoadFailed: "The chat list could not be loaded.",
       chatLimitsEmpty: "There are no active chats yet.", chatLimitsInvalid: "Limits are integers from 0 to 1000000.",
+      chatLimitsCostInvalid: "The budget must be a number from 0 to 100000 USD (0 means unlimited).",
       providerSettingsTitle: "Providers and models", providerSettingsHint: "An administrator edits the model list, the default model and the provider enabled flag without a restart. base_url, api_key and timeout stay in MODEL_PROVIDERS; Reset restores the env values.",
       providerSettingsEmpty: "No named providers are configured.", providerSettingsLoadFailed: "The providers could not be loaded.",
       providerSettingsSave: "Save", providerSettingsReset: "Reset to env",
@@ -2019,6 +2031,16 @@
     return value;
   }
 
+  // The cost budget is a dollar amount, not a call counter: up to 100000 USD with up to six decimals (the
+  // API stores micro-dollars). The value is rounded here so the strict PUT body carries no float dust.
+  function chatLimitCostUSD(input) {
+    const raw = String(input.value).trim();
+    if (!/^[0-9]+(?:\.[0-9]{1,6})?$/.test(raw)) return null;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value < 0 || value > 100000) return null;
+    return Math.round(value * 1000000) / 1000000;
+  }
+
   async function refreshAdminLimits(body) {
     if (adminLimits.chats !== null || adminLimits.loading) {
       renderAdminLimitsBody(body);
@@ -2090,7 +2112,7 @@
       read_url: today.read_url, web_search: today.web_search, calculator: today.calculator,
     })));
 
-    const limits = selected.limits || { daily_model_limit: 0, daily_network_limit: 0, per_minute_limit: 0, disabled_tools: [] };
+    const limits = selected.limits || { daily_model_limit: 0, daily_network_limit: 0, per_minute_limit: 0, daily_cost_limit_usd: 0, disabled_tools: [] };
     const inputs = {};
     const grid = element("div", "chat-limits-grid");
     for (const [key, label] of [
@@ -2111,7 +2133,29 @@
       grid.appendChild(field);
       inputs[key] = input;
     }
+    // Daily cost budget: a decimal USD amount, converted by the server into micro-dollars.
+    const costField = element("label", "chat-limits-field");
+    costField.appendChild(element("span", "", t("chatLimitsCost")));
+    const costInput = element("input");
+    costInput.type = "number";
+    costInput.min = "0";
+    costInput.max = "100000";
+    costInput.step = "0.01";
+    costInput.setAttribute("inputmode", "decimal");
+    costInput.value = String(Number(limits.daily_cost_limit_usd) || 0);
+    costField.appendChild(costInput);
+    grid.appendChild(costField);
+    inputs.daily_cost_limit_usd = costInput;
     body.appendChild(grid);
+
+    const costLimit = Number(limits.daily_cost_limit_usd) || 0;
+    body.appendChild(element("p", "meta", t("chatLimitsCostToday", {
+      cost: formatUSD(today.cost_usd),
+      limit: costLimit > 0 ? formatUSD(costLimit) : t("unlimited"),
+    })));
+    if (today.warning === "chat_cost_budget_warning") {
+      body.appendChild(element("p", "meta chat-limits-warning", t("chatLimitsCostWarning")));
+    }
 
     const disabled = Array.isArray(limits.disabled_tools) ? limits.disabled_tools : [];
     const toolsBox = element("fieldset", "chat-limits-tools");
@@ -2142,9 +2186,9 @@
   async function saveAdminChatLimits(chatID, inputs, toggles) {
     const payload = {};
     for (const [key, input] of Object.entries(inputs)) {
-      const value = chatLimitNumber(input);
+      const value = key === "daily_cost_limit_usd" ? chatLimitCostUSD(input) : chatLimitNumber(input);
       if (value === null) {
-        showError(t("chatLimitsInvalid"));
+        showError(t(key === "daily_cost_limit_usd" ? "chatLimitsCostInvalid" : "chatLimitsInvalid"));
         return;
       }
       payload[key] = value;
@@ -2585,6 +2629,12 @@
     return String(number);
   }
 
+  // USD is rendered with exactly two decimals in the UI; the API carries six so a tiny price still rounds
+  // to a visible cent only when it really is one. Number(value) || 0 keeps a pre-cost payload at $0.00.
+  function formatUSD(value, digits = 2) {
+    return `$${(Number(value) || 0).toFixed(digits)}`;
+  }
+
   function usageBucketLabel(start, range) {
     const date = new Date(start);
     if (Number.isNaN(date.getTime())) return "";
@@ -2677,6 +2727,37 @@
     return usageChart(t("usageTokensChartAria", { tokens_in: totalIn, tokens_out: totalOut, buckets: series.length }), `0 0 ${width} ${height}`, parts);
   }
 
+  function usageCostChart(series, range) {
+    const width = 320;
+    const height = 138;
+    const left = 42;
+    const right = 8;
+    const top = 10;
+    const bottom = 26;
+    const plotWidth = width - left - right;
+    const plotHeight = height - top - bottom;
+    const values = series.map((bucket) => Math.max(0, Number(bucket.cost_usd) || 0));
+    const maximum = Math.max(0.01, ...values);
+    const parts = [];
+    for (const fraction of [0, 0.5, 1]) {
+      const y = top + plotHeight - plotHeight * fraction;
+      parts.push(svgLine(left, y, width - right, y, "usage-chart-grid"));
+      parts.push(svgText(formatUSD(maximum * fraction), left - 4, y + 3, "usage-chart-axis", "end"));
+    }
+    const slot = plotWidth / Math.max(1, series.length);
+    const barWidth = Math.max(2, slot * 0.62);
+    series.forEach((bucket, index) => {
+      const value = values[index];
+      if (value > 0) {
+        const barHeight = (value / maximum) * plotHeight;
+        parts.push(svgRect(left + slot * index + (slot - barWidth) / 2, top + plotHeight - barHeight, barWidth, barHeight, "usage-chart-bar usage-chart-cost"));
+      }
+    });
+    usageChartAxis(parts, series, range, left, slot, height);
+    const total = values.reduce((sum, value) => sum + value, 0);
+    return usageChart(t("usageCostChartAria", { cost: formatUSD(total), buckets: series.length }), `0 0 ${width} ${height}`, parts);
+  }
+
   function usageToolsChart(tools) {
     const width = 320;
     const rowHeight = 26;
@@ -2733,7 +2814,9 @@
     for (const model of models) {
       const row = element("div", "usage-row");
       row.appendChild(element("div", "content", model.model || t("modelUnspecified")));
-      row.appendChild(element("div", "meta", `${model.calls} ${t("modelCalls")} · ${model.tokens_in} ${t("tokensIn")} · ${model.tokens_out} ${t("tokensOut")}`));
+      let meta = `${model.calls} ${t("modelCalls")} · ${model.tokens_in} ${t("tokensIn")} · ${model.tokens_out} ${t("tokensOut")}`;
+      if (model.cost_usd !== undefined && model.cost_usd !== null) meta += ` · ${t("usageCost")}: ${formatUSD(model.cost_usd)}`;
+      row.appendChild(element("div", "meta", meta));
       section.appendChild(row);
     }
   }
@@ -2772,6 +2855,7 @@
       [t("modelCalls"), Number(totals.model_calls) || sumSeries("model_calls")],
       [t("tokensIn"), Number(totals.tokens_in) || sumSeries("tokens_in")],
       [t("tokensOut"), Number(totals.tokens_out) || sumSeries("tokens_out")],
+      [t("usageCost"), formatUSD(Number(totals.cost_usd) || sumSeries("cost_usd"))],
       [t("usageToolsChart"), Number(totals.tool_calls) || sumSeries("tools_total")],
     ];
     for (const [label, value] of totalsValues) {
@@ -2791,6 +2875,10 @@
       tokens.appendChild(usageTokensChart(series, range));
       tokens.appendChild(usageTokenLegend());
       ui.content.appendChild(tokens);
+
+      const cost = settingsSection(t("usageCostChart"), t("usageCostChartHint"));
+      cost.appendChild(usageCostChart(series, range));
+      ui.content.appendChild(cost);
     }
 
     const rangeModels = settingsSection(t("usageRangeModels"), "");

@@ -41,7 +41,10 @@ var (
 	ErrModelDailyLimited = errors.New("model daily limit exceeded")
 	// ErrChatModelDailyLimited — the chat's own daily_model_limit refused the call. It is separate from
 	// ErrModelDailyLimited so the refusal can name the chat limit and the admin knows which budget bit.
-	ErrChatModelDailyLimited  = errors.New("chat daily model limit exceeded")
+	ErrChatModelDailyLimited = errors.New("chat daily model limit exceeded")
+	// ErrChatCostDailyLimited — the chat's daily cost budget refused the call. It is a separate sentinel
+	// from the call counter because the administrator set a dollar amount, not a number of requests.
+	ErrChatCostDailyLimited   = errors.New("chat daily cost budget exceeded")
 	errNetworkApprovalPending = errors.New("network action is waiting for user confirmation")
 )
 
@@ -72,6 +75,11 @@ func modelLimitNotice(err error) (string, bool) {
 	case errors.Is(err, ErrModelDailyLimited):
 		return modelDailyLimitErrorText, true
 	case errors.Is(err, ErrChatModelDailyLimited):
+		if text := chatLimitRefusalText(err); text != "" {
+			return text, true
+		}
+		return chatDailyModelLimitErrorText, true
+	case errors.Is(err, ErrChatCostDailyLimited):
 		if text := chatLimitRefusalText(err); text != "" {
 			return text, true
 		}
@@ -321,6 +329,36 @@ func (d *Dispatcher) callModel(ctx context.Context, userID int64, req model.Requ
 				return model.Response{}, &chatLimitRefusal{
 					cause: ErrChatModelDailyLimited,
 					text:  i18n.T(d.chatLanguage(ctx, chatID), "ask.chat_daily_limited", limits.DailyModelLimit),
+				}
+			}
+		}
+		// The cost budget is checked only when the operator configured at least one positive price: an
+		// empty or all-zero MODEL_PRICES table would otherwise refuse every call against a spend of zero.
+		if found && limits.DailyCostLimitMicros > 0 && d.deps.Cfg.ModelPrices.HasPrices() {
+			spent, costErr := store.ChatDailyCostMicros(ctx, d.deps.DB, chatID, d.now(), d.deps.Cfg.ModelPrices)
+			if costErr != nil {
+				return model.Response{}, fmt.Errorf("read chat daily cost: %w", costErr)
+			}
+			warningAt := (limits.DailyCostLimitMicros*store.ChatDailyCostWarningPercent + 99) / 100
+			if spent >= warningAt {
+				warned, warnErr := store.ChatEventKindToday(ctx, d.deps.DB, chatID,
+					store.EventChatCostBudgetWarning, d.now())
+				if warnErr != nil {
+					return model.Response{}, fmt.Errorf("read chat daily cost warning: %w", warnErr)
+				}
+				if !warned {
+					d.logChatEvent(ctx, chatID, userID, store.EventChatCostBudgetWarning,
+						fmt.Sprintf("%d/%d micros", spent, limits.DailyCostLimitMicros))
+				}
+			}
+			if spent >= limits.DailyCostLimitMicros {
+				d.logChatEvent(ctx, chatID, userID, store.EventLimit,
+					fmt.Sprintf("chat_cost_daily %d/%d", spent, limits.DailyCostLimitMicros))
+				return model.Response{}, &chatLimitRefusal{
+					cause: ErrChatCostDailyLimited,
+					text: i18n.T(d.chatLanguage(ctx, chatID), "ask.chat_cost_daily_limited",
+						fmt.Sprintf("%.2f", float64(spent)/1_000_000),
+						fmt.Sprintf("%.2f", float64(limits.DailyCostLimitMicros)/1_000_000)),
 				}
 			}
 		}

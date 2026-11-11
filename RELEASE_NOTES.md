@@ -2,7 +2,18 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.66.0
+## Новейший выпуск: v1.67.0
+
+# tg-llm-proxy v1.67.0
+
+## Costs and daily cost budgets
+
+- `MODEL_PRICES` (row 78) maps models (`provider:model` or plain) to USD per million input/output tokens; empty/absent means zero cost and disabled budgets. Usage (`/api/usage`, all ranges) now reports `cost_usd` per model, bucket and totals, computed from assistant token counts. Defaults configured for DeepSeek Flash/V4-Pro (peak rates), Kimi K3/K2.6 and local STRATA = 0.
+- Schema 23 adds `chat_limits.daily_cost_limit_micros` (0 = unlimited). Admin Settings/API accept `daily_cost_limit_usd`; `/limits cost N` sets it; `/limits` shows today's spend and budget.
+- Enforcement before the model call: at/over budget a localized refusal (`ErrChatCostDailyLimited`), event `limit/chat_cost_daily`; at 80% one warning event per UTC day. The check allows one in-flight answer to overshoot.
+- Usage UI adds cost KPI, per-bucket cost and per-model cost (2 decimals); admin limits add the budget field, today's spend and warning. Tests: 16 packages unit, 59 JS.
+
+## Предыдущий выпуск: v1.66.0
 
 # tg-llm-proxy v1.66.0
 

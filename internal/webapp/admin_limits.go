@@ -7,16 +7,19 @@ package webapp
 // a private chat has a positive id, a group a negative one — with today's usage and the current limits;
 // the two mutation endpoints set or reset exactly one chat_limits row.
 //
-// The payload is strict: unknown fields are rejected by the shared decoder, every number is required
-// and limited to 0..store.ChatLimitMax (0 = unlimited), and disabled_tools accepts only the known tool
-// names. "Unknown chat" is a 404, a bad body a 400, and every successful mutation is audited by the
+// The payload is strict: unknown fields are rejected by the shared decoder, the three counter limits are
+// required and limited to 0..store.ChatLimitMax (0 = unlimited), daily_cost_limit_usd is optional and
+// limited to 0..100000 USD (omitted keeps the stored budget), and disabled_tools accepts only the known
+// tool names. "Unknown chat" is a 404, a bad body a 400, and every successful mutation is audited by the
 // generic Mini App mutation log as admin.limits.set / admin.limits.reset.
 
 import (
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"bot/internal/store"
 )
@@ -26,18 +29,38 @@ const (
 	adminChatListMaxLimit     = 200
 )
 
+// adminChatCostWarning is the value of today.warning when spend reached 80% of an active budget. It is the
+// same name as the event kind, so the UI and the audit trail cannot drift apart.
+const adminChatCostWarning = "chat_cost_budget_warning"
+
 type adminChatLimits struct {
 	DailyModelLimit   int64    `json:"daily_model_limit"`
 	DailyNetworkLimit int64    `json:"daily_network_limit"`
 	PerMinuteLimit    int64    `json:"per_minute_limit"`
+	DailyCostLimitUSD float64  `json:"daily_cost_limit_usd"`
 	DisabledTools     []string `json:"disabled_tools"`
 }
 
 type adminChatToday struct {
-	ModelCalls int64 `json:"model_calls"`
-	ReadURL    int64 `json:"read_url"`
-	WebSearch  int64 `json:"web_search"`
-	Calculator int64 `json:"calculator"`
+	ModelCalls int64   `json:"model_calls"`
+	ReadURL    int64   `json:"read_url"`
+	WebSearch  int64   `json:"web_search"`
+	Calculator int64   `json:"calculator"`
+	CostUSD    float64 `json:"cost_usd"`
+	Warning    string  `json:"warning,omitempty"`
+}
+
+func adminChatLimitsFor(limits store.ChatLimits) adminChatLimits {
+	result := adminChatLimits{
+		DailyModelLimit: limits.DailyModelLimit, DailyNetworkLimit: limits.DailyNetworkLimit,
+		PerMinuteLimit:    limits.PerMinuteLimit,
+		DailyCostLimitUSD: float64(limits.DailyCostLimitMicros) / 1_000_000,
+		DisabledTools:     append([]string{}, limits.DisabledTools...),
+	}
+	if result.DisabledTools == nil {
+		result.DisabledTools = []string{}
+	}
+	return result
 }
 
 type adminChatItem struct {
@@ -49,6 +72,8 @@ type adminChatItem struct {
 	Today        adminChatToday  `json:"today"`
 	Limits       adminChatLimits `json:"limits"`
 	HasLimits    bool            `json:"has_limits"`
+	// Warning mirrors today.warning at the item level for clients that read the flat chat row.
+	Warning string `json:"warning,omitempty"`
 }
 
 // adminChatItemFor maps the store row to the wire shape. The disabled-tools list is always an array,
@@ -60,15 +85,13 @@ func adminChatItemFor(chat store.ActiveChat) adminChatItem {
 		Today: adminChatToday{
 			ModelCalls: chat.Today.ModelCalls, ReadURL: chat.Today.ReadURL,
 			WebSearch: chat.Today.WebSearch, Calculator: chat.Today.Calculator,
+			CostUSD: chat.Today.CostUSD,
 		},
-		Limits: adminChatLimits{
-			DailyModelLimit: chat.Limits.DailyModelLimit, DailyNetworkLimit: chat.Limits.DailyNetworkLimit,
-			PerMinuteLimit: chat.Limits.PerMinuteLimit,
-			DisabledTools:  append([]string{}, chat.Limits.DisabledTools...),
-		},
+		Limits: adminChatLimitsFor(chat.Limits),
 	}
-	if item.Limits.DisabledTools == nil {
-		item.Limits.DisabledTools = []string{}
+	if chat.Today.CostWarning {
+		item.Today.Warning = adminChatCostWarning
+		item.Warning = adminChatCostWarning
 	}
 	return item
 }
@@ -88,7 +111,7 @@ func (a *App) adminChats(w http.ResponseWriter, req *http.Request, current scope
 		writeError(w, http.StatusBadRequest, "invalid_limit", "The limit must be an integer from 1 to 200.")
 		return
 	}
-	chats, err := store.ListActiveChats(req.Context(), a.db, limit)
+	chats, err := store.ListActiveChatsWithCost(req.Context(), a.db, time.Now(), limit, a.cfg.ModelPrices)
 	if err != nil {
 		a.queryFailed(w, "admin chats", err)
 		return
@@ -167,6 +190,7 @@ func (a *App) setAdminChatLimits(w http.ResponseWriter, req *http.Request, chatI
 		DailyModelLimit   *int64    `json:"daily_model_limit"`
 		DailyNetworkLimit *int64    `json:"daily_network_limit"`
 		PerMinuteLimit    *int64    `json:"per_minute_limit"`
+		DailyCostLimitUSD *float64  `json:"daily_cost_limit_usd"`
 		DisabledTools     *[]string `json:"disabled_tools"`
 	}
 	if status, ok := decodeSettingsJSON(req, &input); !ok {
@@ -181,6 +205,26 @@ func (a *App) setAdminChatLimits(w http.ResponseWriter, req *http.Request, chatI
 		if value < 0 || value > store.ChatLimitMax {
 			writeError(w, http.StatusBadRequest, "invalid_limits", "Every limit must be an integer from 0 to 1000000 (0 means unlimited).")
 			return
+		}
+	}
+	// The cost budget is optional for backward compatibility: an old client that does not know the field
+	// keeps the stored budget instead of silently clearing it.
+	costMicros := int64(0)
+	if input.DailyCostLimitUSD != nil {
+		usd := *input.DailyCostLimitUSD
+		if math.IsNaN(usd) || math.IsInf(usd, 0) || usd < 0 || usd > 100000 {
+			writeError(w, http.StatusBadRequest, "invalid_limits", "daily_cost_limit_usd must be a number from 0 to 100000 (0 means unlimited).")
+			return
+		}
+		costMicros = int64(math.Round(usd * 1_000_000))
+	} else {
+		existing, found, err := store.GetChatLimits(req.Context(), a.db, chatID)
+		if err != nil {
+			a.queryFailed(w, "admin chat limits cost", err)
+			return
+		}
+		if found {
+			costMicros = existing.DailyCostLimitMicros
 		}
 	}
 	tools, err := store.NormalizeDisabledTools(*input.DisabledTools)
@@ -198,11 +242,12 @@ func (a *App) setAdminChatLimits(w http.ResponseWriter, req *http.Request, chatI
 		return
 	}
 	limits := store.ChatLimits{
-		ChatID:            chatID,
-		DailyModelLimit:   *input.DailyModelLimit,
-		DailyNetworkLimit: *input.DailyNetworkLimit,
-		PerMinuteLimit:    *input.PerMinuteLimit,
-		DisabledTools:     tools,
+		ChatID:               chatID,
+		DailyModelLimit:      *input.DailyModelLimit,
+		DailyNetworkLimit:    *input.DailyNetworkLimit,
+		PerMinuteLimit:       *input.PerMinuteLimit,
+		DailyCostLimitMicros: costMicros,
+		DisabledTools:        tools,
 	}
 	if err := store.SetChatLimits(req.Context(), a.db, limits); err != nil {
 		if errors.Is(err, store.ErrChatNotFound) {
@@ -217,13 +262,9 @@ func (a *App) setAdminChatLimits(w http.ResponseWriter, req *http.Request, chatI
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok": true,
-		"id": chatID,
-		"limits": adminChatLimits{
-			DailyModelLimit: limits.DailyModelLimit, DailyNetworkLimit: limits.DailyNetworkLimit,
-			PerMinuteLimit: limits.PerMinuteLimit,
-			DisabledTools:  append([]string{}, limits.DisabledTools...),
-		},
+		"ok":     true,
+		"id":     chatID,
+		"limits": adminChatLimitsFor(limits),
 	})
 }
 

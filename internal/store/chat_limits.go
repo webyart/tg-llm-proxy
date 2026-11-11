@@ -25,6 +25,11 @@ import (
 // admin API so a typo in the Mini App cannot store a value that overflows an int64 counter in SQL.
 const ChatLimitMax = int64(1000000)
 
+// ChatCostLimitMaxMicros is the upper bound of the daily cost budget: 100 000 USD per UTC day, in
+// micro-dollars. It is deliberately separate from ChatLimitMax (a call counter) because a dollar amount
+// needs six decimals and a much larger integer range.
+const ChatCostLimitMaxMicros = int64(100000) * 1_000_000
+
 // The tool names of the chat_limits.disabled_tools allowlist. They are the same names the model sees
 // in its tool schemas and the same names events(detail) carries.
 const (
@@ -44,16 +49,18 @@ var (
 // ChatLimits is one row of chat_limits in its Go form. DisabledTools is the parsed, deduplicated and
 // canonically ordered form; the database stores it as a comma-separated string.
 type ChatLimits struct {
-	ChatID            int64
-	DailyModelLimit   int64
-	DailyNetworkLimit int64
-	PerMinuteLimit    int64
-	DisabledTools     []string
+	ChatID               int64
+	DailyModelLimit      int64
+	DailyNetworkLimit    int64
+	PerMinuteLimit       int64
+	DailyCostLimitMicros int64
+	DisabledTools        []string
 }
 
 // IsUnlimited reports whether the row changes nothing: every counter unlimited and every tool enabled.
 func (l ChatLimits) IsUnlimited() bool {
-	return l.DailyModelLimit == 0 && l.DailyNetworkLimit == 0 && l.PerMinuteLimit == 0 && len(l.DisabledTools) == 0
+	return l.DailyModelLimit == 0 && l.DailyNetworkLimit == 0 && l.PerMinuteLimit == 0 &&
+		l.DailyCostLimitMicros == 0 && len(l.DisabledTools) == 0
 }
 
 // ToolDisabled reports whether the chat disabled a named tool. Unknown names are simply not disabled.
@@ -150,6 +157,12 @@ type ChatUsage struct {
 	ReadURL    int64
 	WebSearch  int64
 	Calculator int64
+	// CostUSD is today's spend computed from the stored assistant tokens and MODEL_PRICES. It stays zero
+	// when the chat has no prices configured or no answer has been stored yet.
+	CostUSD float64
+	// CostWarning is true at or above 80% of an active daily cost budget. The admin API exposes it as
+	// "chat_cost_budget_warning"; it is derived from the same numbers enforcement reads.
+	CostWarning bool
 }
 
 // NetworkToolCalls is the counter the daily network limit is compared with: read_url plus web_search,
@@ -216,9 +229,10 @@ func GetChatLimits(ctx context.Context, db *sql.DB, chatID int64) (ChatLimits, b
 	}
 	var disabled string
 	err := db.QueryRowContext(ctx, `
-		SELECT daily_model_limit, daily_network_limit, per_minute_limit, disabled_tools
+		SELECT daily_model_limit, daily_network_limit, per_minute_limit, daily_cost_limit_micros, disabled_tools
 		FROM chat_limits WHERE chat_id = ?`, chatID).
-		Scan(&limits.DailyModelLimit, &limits.DailyNetworkLimit, &limits.PerMinuteLimit, &disabled)
+		Scan(&limits.DailyModelLimit, &limits.DailyNetworkLimit, &limits.PerMinuteLimit,
+			&limits.DailyCostLimitMicros, &disabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ChatLimits{ChatID: chatID}, false, nil
 	}
@@ -240,6 +254,10 @@ func SetChatLimits(ctx context.Context, db *sql.DB, limits ChatLimits) error {
 			return fmt.Errorf("%w: a limit of %d is outside 0..%d", ErrInvalidChatLimits, value, ChatLimitMax)
 		}
 	}
+	if limits.DailyCostLimitMicros < 0 || limits.DailyCostLimitMicros > ChatCostLimitMaxMicros {
+		return fmt.Errorf("%w: a cost budget of %d micros is outside 0..%d", ErrInvalidChatLimits,
+			limits.DailyCostLimitMicros, ChatCostLimitMaxMicros)
+	}
 	tools, err := NormalizeDisabledTools(limits.DisabledTools)
 	if err != nil {
 		return err
@@ -252,15 +270,17 @@ func SetChatLimits(ctx context.Context, db *sql.DB, limits ChatLimits) error {
 		return fmt.Errorf("%w: %d", ErrChatNotFound, limits.ChatID)
 	}
 	_, err = db.ExecContext(ctx, `
-		INSERT INTO chat_limits (chat_id, daily_model_limit, daily_network_limit, per_minute_limit, disabled_tools)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO chat_limits (chat_id, daily_model_limit, daily_network_limit, per_minute_limit,
+			daily_cost_limit_micros, disabled_tools)
+		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(chat_id) DO UPDATE SET
 			daily_model_limit = excluded.daily_model_limit,
 			daily_network_limit = excluded.daily_network_limit,
 			per_minute_limit = excluded.per_minute_limit,
+			daily_cost_limit_micros = excluded.daily_cost_limit_micros,
 			disabled_tools = excluded.disabled_tools`,
 		limits.ChatID, limits.DailyModelLimit, limits.DailyNetworkLimit, limits.PerMinuteLimit,
-		FormatDisabledTools(tools))
+		limits.DailyCostLimitMicros, FormatDisabledTools(tools))
 	if err != nil {
 		return fmt.Errorf("write chat limits of %d: %w", limits.ChatID, err)
 	}
@@ -365,6 +385,7 @@ func ListActiveChatsAt(ctx context.Context, db *sql.DB, now time.Time, limit int
 			COALESCE(l.daily_model_limit, 0),
 			COALESCE(l.daily_network_limit, 0),
 			COALESCE(l.per_minute_limit, 0),
+			COALESCE(l.daily_cost_limit_micros, 0),
 			COALESCE(l.disabled_tools, '')
 		FROM chats c
 		LEFT JOIN chat_limits l ON l.chat_id = c.chat_id
@@ -392,7 +413,7 @@ func ListActiveChatsAt(ctx context.Context, db *sql.DB, now time.Time, limit int
 			&chat.ID, &chat.Title, &chat.UserID, &chat.LastActivity,
 			&chat.Today.ModelCalls, &chat.Today.ReadURL, &chat.Today.WebSearch, &chat.Today.Calculator,
 			&hasLimits, &chat.Limits.DailyModelLimit, &chat.Limits.DailyNetworkLimit,
-			&chat.Limits.PerMinuteLimit, &disabled); err != nil {
+			&chat.Limits.PerMinuteLimit, &chat.Limits.DailyCostLimitMicros, &disabled); err != nil {
 			return nil, fmt.Errorf("list active chats row: %w", err)
 		}
 		chat.Type = "private"

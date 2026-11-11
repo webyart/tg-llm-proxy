@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	"bot/internal/config"
 )
 
 type DailyModelUsage struct {
@@ -13,6 +15,8 @@ type DailyModelUsage struct {
 	Calls     int64
 	TokensIn  int64
 	TokensOut int64
+	// CostUSD is the six-decimal cost of this model's tokens today, zero when the model has no price.
+	CostUSD float64
 }
 
 type DailyToolUsage struct {
@@ -23,8 +27,24 @@ type DailyToolUsage struct {
 }
 
 type DailyUsage struct {
-	Models []DailyModelUsage
-	Tools  DailyToolUsage
+	Models  []DailyModelUsage
+	Tools   DailyToolUsage
+	CostUSD float64
+}
+
+// ApplyPrices fills the cost of every model and the total of the day from the MODEL_PRICES table. It is a
+// separate step so the existing query keeps its signature and a caller without prices still compiles.
+func (usage *DailyUsage) ApplyPrices(prices config.PriceTable) {
+	if usage == nil {
+		return
+	}
+	usage.CostUSD = 0
+	for index := range usage.Models {
+		cost := prices.CostMicros(usage.Models[index].Model,
+			usage.Models[index].TokensIn, usage.Models[index].TokensOut)
+		usage.Models[index].CostUSD = float64(cost) / 1_000_000
+		usage.CostUSD += usage.Models[index].CostUSD
+	}
 }
 
 func (usage DailyUsage) ModelCalls() int64 {

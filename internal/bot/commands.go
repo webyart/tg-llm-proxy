@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"path"
 	"strconv"
 	"strings"
@@ -1308,6 +1309,25 @@ func (d *Dispatcher) limitsControl(ctx context.Context, ev Event, arg string) er
 		}
 		d.logChatEvent(ctx, ev.ChatID, ev.UserID, store.EventCommand, "limits:set "+strings.ToLower(fields[0]))
 		return d.reply(ctx, ev.ChatID, i18n.T(lang, "limits.saved"))
+	case "cost":
+		if len(fields) != 2 {
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "limits.usage"))
+		}
+		usd, err := strconv.ParseFloat(fields[1], 64)
+		if err != nil || math.IsNaN(usd) || math.IsInf(usd, 0) || usd < 0 || usd > 100000 {
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "limits.invalid_cost", 100000))
+		}
+		limits, _, err := store.GetChatLimits(ctx, d.deps.DB, ev.ChatID)
+		if err != nil {
+			return err
+		}
+		limits.ChatID = ev.ChatID
+		limits.DailyCostLimitMicros = int64(math.Round(usd * 1_000_000))
+		if err := d.saveChatLimits(ctx, ev, limits); err != nil {
+			return err
+		}
+		d.logChatEvent(ctx, ev.ChatID, ev.UserID, store.EventCommand, "limits:set cost")
+		return d.reply(ctx, ev.ChatID, i18n.T(lang, "limits.saved"))
 	case "tools":
 		raw := strings.TrimSpace(strings.TrimPrefix(action, fields[0]))
 		if strings.EqualFold(raw, "none") {
@@ -1374,11 +1394,21 @@ func (d *Dispatcher) replyChatLimits(ctx context.Context, ev Event, lang string)
 	if err != nil {
 		return err
 	}
+	spentMicros, err := store.ChatDailyCostMicros(ctx, d.deps.DB, ev.ChatID, d.now(), d.deps.Cfg.ModelPrices)
+	if err != nil {
+		return err
+	}
 	limitText := func(value int64) string {
 		if value == 0 {
 			return i18n.T(lang, "limits.unlimited")
 		}
 		return strconv.FormatInt(value, 10)
+	}
+	costLimitText := func(value int64) string {
+		if value == 0 {
+			return i18n.T(lang, "limits.unlimited")
+		}
+		return fmt.Sprintf("%.2f", float64(value)/1_000_000)
 	}
 	source := i18n.T(lang, "limits.source_default")
 	if found {
@@ -1397,6 +1427,8 @@ func (d *Dispatcher) replyChatLimits(ctx context.Context, ev Event, lang string)
 		i18n.T(lang, "limits.source", source),
 		i18n.T(lang, "limits.today", usage.ModelCalls, limitText(limits.DailyModelLimit),
 			usage.NetworkToolCalls(), limitText(limits.DailyNetworkLimit)),
+		i18n.T(lang, "limits.cost", fmt.Sprintf("%.2f", float64(spentMicros)/1_000_000),
+			costLimitText(limits.DailyCostLimitMicros)),
 		i18n.T(lang, "limits.tools", usage.ReadURL, usage.WebSearch, usage.Calculator, disabled),
 		i18n.T(lang, "limits.per_minute", limitText(limits.PerMinuteLimit)),
 	}
@@ -1418,6 +1450,11 @@ func modelLimitNoticeFor(lang string, err error) (string, bool) {
 			return text, true
 		}
 		return i18n.T(lang, "ask.chat_daily_limited", 0), true
+	case errors.Is(err, ErrChatCostDailyLimited):
+		if text := chatLimitRefusalText(err); text != "" {
+			return text, true
+		}
+		return i18n.T(lang, "ask.chat_cost_daily_limited", "0.00", "0.00"), true
 	default:
 		return "", false
 	}

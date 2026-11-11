@@ -1751,10 +1751,11 @@ func (a *App) reminderControl(w http.ResponseWriter, req *http.Request, current 
 }
 
 type usageModel struct {
-	Model     string `json:"model"`
-	Calls     int64  `json:"calls"`
-	TokensIn  int64  `json:"tokens_in"`
-	TokensOut int64  `json:"tokens_out"`
+	Model     string  `json:"model"`
+	Calls     int64   `json:"calls"`
+	TokensIn  int64   `json:"tokens_in"`
+	TokensOut int64   `json:"tokens_out"`
+	CostUSD   float64 `json:"cost_usd"`
 }
 
 type usageResponse struct {
@@ -1785,6 +1786,7 @@ type usageSeriesBucket struct {
 	TokensOut  int64            `json:"tokens_out"`
 	Tools      map[string]int64 `json:"tools"`
 	ToolsTotal int64            `json:"tools_total"`
+	CostUSD    float64          `json:"cost_usd"`
 }
 
 type usageRangeTotals struct {
@@ -1792,6 +1794,7 @@ type usageRangeTotals struct {
 	TokensIn   int64            `json:"tokens_in"`
 	TokensOut  int64            `json:"tokens_out"`
 	ToolCalls  int64            `json:"tool_calls"`
+	CostUSD    float64          `json:"cost_usd"`
 	Models     []usageModel     `json:"models"`
 	Tools      map[string]int64 `json:"tools"`
 }
@@ -1840,12 +1843,17 @@ func (a *App) usage(w http.ResponseWriter, req *http.Request, current scope) {
 		a.queryFailed(w, "usage series", err)
 		return
 	}
+	// Prices are an environment row and never stored: the same answers are priced on every request, so a
+	// price change is visible immediately and no historical cost is rewritten.
+	daily.ApplyPrices(a.cfg.ModelPrices)
+	series.ApplyPrices(a.cfg.ModelPrices)
 	var response usageResponse
 	response.Date = now.Format("2006-01-02")
 	response.Models = make([]usageModel, 0, len(daily.Models))
 	for _, model := range daily.Models {
 		response.Models = append(response.Models, usageModel{
 			Model: model.Model, Calls: model.Calls, TokensIn: model.TokensIn, TokensOut: model.TokensOut,
+			CostUSD: model.CostUSD,
 		})
 	}
 	response.Tools.ReadURL = daily.Tools.ReadURL
@@ -1871,16 +1879,19 @@ func (a *App) usage(w http.ResponseWriter, req *http.Request, current scope) {
 			TokensOut:  bucket.TokensOut,
 			Tools:      tools,
 			ToolsTotal: bucket.ToolsTotal,
+			CostUSD:    bucket.CostUSD,
 		})
 	}
 	response.Totals.ModelCalls = series.ModelCalls
 	response.Totals.TokensIn = series.TokensIn
 	response.Totals.TokensOut = series.TokensOut
 	response.Totals.ToolCalls = series.ToolsTotal
+	response.Totals.CostUSD = series.CostUSD
 	response.Totals.Models = make([]usageModel, 0, len(series.Models))
 	for _, model := range series.Models {
 		response.Totals.Models = append(response.Totals.Models, usageModel{
 			Model: model.Model, Calls: model.Calls, TokensIn: model.TokensIn, TokensOut: model.TokensOut,
+			CostUSD: model.CostUSD,
 		})
 	}
 	response.Totals.Tools = make(map[string]int64, len(series.Tools))

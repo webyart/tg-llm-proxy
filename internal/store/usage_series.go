@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	"bot/internal/config"
 )
 
 // UsageRange is the window of the usage analytics series. The daily fields of /api/usage stay as
@@ -50,6 +52,16 @@ type UsageSeriesBucket struct {
 	TokensOut  int64
 	Tools      map[string]int64
 	ToolsTotal int64
+	// CostUSD is the priced cost of this bucket, filled by ApplyPrices.
+	CostUSD float64
+	// modelTokens keeps the per-model split of the bucket so ApplyPrices can price each model instead of
+	// averaging every token at one price. It is internal: the API exposes only the resulting cost.
+	modelTokens map[string]usageTokenPair
+}
+
+type usageTokenPair struct {
+	in  int64
+	out int64
 }
 
 type UsageSeriesModel struct {
@@ -57,6 +69,7 @@ type UsageSeriesModel struct {
 	Calls     int64
 	TokensIn  int64
 	TokensOut int64
+	CostUSD   float64
 }
 
 type UsageSeries struct {
@@ -68,7 +81,31 @@ type UsageSeries struct {
 	TokensIn   int64
 	TokensOut  int64
 	ToolsTotal int64
+	CostUSD    float64
 	Truncated  bool
+}
+
+// ApplyPrices fills the cost of every bucket, model and the range total from MODEL_PRICES. A model missing
+// from the table costs zero, so an unpriced model never invents a budget. The total is the sum of the
+// bucket costs, so the chart and the KPI are the same number.
+func (series *UsageSeries) ApplyPrices(prices config.PriceTable) {
+	if series == nil {
+		return
+	}
+	series.CostUSD = 0
+	for index := range series.Buckets {
+		var cost int64
+		for model, tokens := range series.Buckets[index].modelTokens {
+			cost += prices.CostMicros(model, tokens.in, tokens.out)
+		}
+		series.Buckets[index].CostUSD = float64(cost) / 1_000_000
+		series.CostUSD += series.Buckets[index].CostUSD
+	}
+	for index := range series.Models {
+		cost := prices.CostMicros(series.Models[index].Model,
+			series.Models[index].TokensIn, series.Models[index].TokensOut)
+		series.Models[index].CostUSD = float64(cost) / 1_000_000
+	}
 }
 
 type usageSeriesSpec struct {
@@ -170,7 +207,11 @@ func UserUsageSeries(ctx context.Context, db *sql.DB, userID int64, now time.Tim
 	indexes := make(map[string]int, len(spec.starts))
 	for index, start := range spec.starts {
 		indexes[start.Format(spec.keyLayout)] = index
-		result.Buckets = append(result.Buckets, UsageSeriesBucket{Start: start, Tools: newUsageToolCounts()})
+		result.Buckets = append(result.Buckets, UsageSeriesBucket{
+			Start:       start,
+			Tools:       newUsageToolCounts(),
+			modelTokens: map[string]usageTokenPair{},
+		})
 	}
 	startText := spec.starts[0].Format("2006-01-02 15:04:05")
 	endText := spec.end.Format("2006-01-02 15:04:05")
@@ -208,6 +249,10 @@ func UserUsageSeries(ctx context.Context, db *sql.DB, userID int64, now time.Tim
 		entry := modelAt(model)
 		entry.TokensIn += tokensIn
 		entry.TokensOut += tokensOut
+		tokens := result.Buckets[index].modelTokens[model]
+		tokens.in += tokensIn
+		tokens.out += tokensOut
+		result.Buckets[index].modelTokens[model] = tokens
 		result.Buckets[index].TokensIn += tokensIn
 		result.Buckets[index].TokensOut += tokensOut
 	}

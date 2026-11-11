@@ -18,6 +18,7 @@ func adminApp(t *testing.T) (*App, *httptest.Server, string, string) {
 	t.Helper()
 	app, server := newTestAppWithRaw(t, map[string]string{
 		"TELEGRAM_ADMIN_USERS": strconv.FormatInt(testUserID, 10),
+		"MODEL_PRICES":         `[{"model":"model-a","input_per_mtok_usd":1,"output_per_mtok_usd":1}]`,
 	})
 	bearer := launchSession(t, app, server)
 	otherBearer := launchSessionFor(t, app, server, otherTestUserID, otherTestUserID)
@@ -68,7 +69,7 @@ func TestAdminChatsListShowsUsageTypesAndLimits(t *testing.T) {
 	ctx := context.Background()
 	if err := store.SetChatLimits(ctx, app.db, store.ChatLimits{
 		ChatID: -100123, DailyModelLimit: 10, DailyNetworkLimit: 5, PerMinuteLimit: 2,
-		DisabledTools: []string{store.ChatToolWebSearch},
+		DailyCostLimitMicros: 1000, DisabledTools: []string{store.ChatToolWebSearch},
 	}); err != nil {
 		t.Fatalf("SetChatLimits: %v", err)
 	}
@@ -91,6 +92,13 @@ func TestAdminChatsListShowsUsageTypesAndLimits(t *testing.T) {
 	if _, err := store.Append(ctx, app.db, store.Message{ChatID: -100123, UserID: testUserID, Role: store.RoleUser, Content: "hi"}); err != nil {
 		t.Fatal(err)
 	}
+	tokensIn, tokensOut := int64(1000), int64(500)
+	if _, err := store.Append(ctx, app.db, store.Message{
+		ChatID: -100123, UserID: testUserID, Role: store.RoleAssistant, Content: "answer",
+		Model: "model-a", TokensIn: &tokensIn, TokensOut: &tokensOut,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	status, body, _ := apiRequest(t, server, http.MethodGet, "/api/admin/chats?limit=50", bearer)
 	if status != http.StatusOK {
@@ -107,7 +115,13 @@ func TestAdminChatsListShowsUsageTypesAndLimits(t *testing.T) {
 	if group.Today.ModelCalls != 2 || group.Today.ReadURL != 1 || group.Today.WebSearch != 1 || group.Today.Calculator != 1 {
 		t.Fatalf("group today=%+v", group.Today)
 	}
-	if !group.HasLimits || group.Limits.DailyModelLimit != 10 || group.Limits.DailyNetworkLimit != 5 || group.Limits.PerMinuteLimit != 2 {
+	// 1000 input + 500 output tokens at 1 USD/Mtok = 1500 micro-dollars of a 1000 micro-dollar budget:
+	// the admin list shows both the spend and the once-per-day warning.
+	if group.Today.CostUSD != 0.0015 || group.Today.Warning != adminChatCostWarning || group.Warning != adminChatCostWarning {
+		t.Fatalf("group cost today=%+v warning=%q, want 0.0015 and %q", group.Today, group.Warning, adminChatCostWarning)
+	}
+	if !group.HasLimits || group.Limits.DailyModelLimit != 10 || group.Limits.DailyNetworkLimit != 5 ||
+		group.Limits.PerMinuteLimit != 2 || group.Limits.DailyCostLimitUSD != 0.001 {
 		t.Fatalf("group limits=%+v has=%v", group.Limits, group.HasLimits)
 	}
 	if len(group.Limits.DisabledTools) != 1 || group.Limits.DisabledTools[0] != store.ChatToolWebSearch {
@@ -159,7 +173,7 @@ func TestAdminChatLimitsSetValidationAndReset(t *testing.T) {
 	app, server, bearer, _ := adminApp(t)
 	ctx := context.Background()
 
-	valid := `{"daily_model_limit":12,"daily_network_limit":6,"per_minute_limit":3,"disabled_tools":["web_search","calculator"]}`
+	valid := `{"daily_model_limit":12,"daily_network_limit":6,"per_minute_limit":3,"daily_cost_limit_usd":12.5,"disabled_tools":["web_search","calculator"]}`
 	status, body := putSettings(t, server.URL, adminLimitsPath(-100123), bearer, valid)
 	if status != http.StatusOK {
 		t.Fatalf("PUT limits status=%d body=%s", status, body)
@@ -172,7 +186,8 @@ func TestAdminChatLimitsSetValidationAndReset(t *testing.T) {
 	if err := json.Unmarshal(body, &putResponse); err != nil {
 		t.Fatalf("PUT limits JSON: %v body=%s", err, body)
 	}
-	if !putResponse.OK || putResponse.ID != -100123 || putResponse.Limits.PerMinuteLimit != 3 {
+	if !putResponse.OK || putResponse.ID != -100123 || putResponse.Limits.PerMinuteLimit != 3 ||
+		putResponse.Limits.DailyCostLimitUSD != 12.5 {
 		t.Fatalf("PUT response=%+v", putResponse)
 	}
 	limits, found, err := store.GetChatLimits(ctx, app.db, -100123)
@@ -180,7 +195,7 @@ func TestAdminChatLimitsSetValidationAndReset(t *testing.T) {
 		t.Fatalf("stored limits found=%v err=%v", found, err)
 	}
 	if limits.DailyModelLimit != 12 || limits.DailyNetworkLimit != 6 || limits.PerMinuteLimit != 3 ||
-		len(limits.DisabledTools) != 2 {
+		limits.DailyCostLimitMicros != 12_500_000 || len(limits.DisabledTools) != 2 {
 		t.Fatalf("stored limits=%+v", limits)
 	}
 
@@ -190,6 +205,8 @@ func TestAdminChatLimitsSetValidationAndReset(t *testing.T) {
 	}{
 		"negative":         {`{"daily_model_limit":-1,"daily_network_limit":0,"per_minute_limit":0,"disabled_tools":[]}`, http.StatusBadRequest},
 		"too_large":        {`{"daily_model_limit":1000001,"daily_network_limit":0,"per_minute_limit":0,"disabled_tools":[]}`, http.StatusBadRequest},
+		"negative_cost":    {`{"daily_model_limit":1,"daily_network_limit":0,"per_minute_limit":0,"daily_cost_limit_usd":-0.01,"disabled_tools":[]}`, http.StatusBadRequest},
+		"cost_too_large":   {`{"daily_model_limit":1,"daily_network_limit":0,"per_minute_limit":0,"daily_cost_limit_usd":100000.01,"disabled_tools":[]}`, http.StatusBadRequest},
 		"unknown_tool":     {`{"daily_model_limit":1,"daily_network_limit":0,"per_minute_limit":0,"disabled_tools":["shell"]}`, http.StatusBadRequest},
 		"missing_field":    {`{"daily_model_limit":1,"daily_network_limit":0,"per_minute_limit":0}`, http.StatusBadRequest},
 		"unknown_field":    {`{"daily_model_limit":1,"daily_network_limit":0,"per_minute_limit":0,"disabled_tools":[],"extra":1}`, http.StatusBadRequest},
@@ -201,6 +218,16 @@ func TestAdminChatLimitsSetValidationAndReset(t *testing.T) {
 		if status != test.status {
 			t.Errorf("%s: status=%d body=%s, want %d", name, status, body, test.status)
 		}
+	}
+
+	// An older client without the cost field keeps the stored budget instead of silently clearing it.
+	status, body = putSettings(t, server.URL, adminLimitsPath(-100123), bearer,
+		`{"daily_model_limit":7,"daily_network_limit":1,"per_minute_limit":1,"disabled_tools":[]}`)
+	if status != http.StatusOK {
+		t.Fatalf("PUT without cost status=%d body=%s", status, body)
+	}
+	if limits, _, _ := store.GetChatLimits(ctx, app.db, -100123); limits.DailyCostLimitMicros != 12_500_000 {
+		t.Fatalf("omitted daily_cost_limit_usd cleared the budget: %+v", limits)
 	}
 
 	// Unknown chat: the body is valid, the target is not.

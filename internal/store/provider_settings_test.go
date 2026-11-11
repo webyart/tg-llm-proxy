@@ -199,8 +199,8 @@ func TestMigration022PreservesTasks(t *testing.T) {
 		t.Fatalf("apply migration 022: %v", err)
 	}
 	version, err := SchemaVersion(ctx, db)
-	if err != nil || version != len(MigrationSQL) || version != 22 {
-		t.Fatalf("SchemaVersion=%d err=%v, want 22", version, err)
+	if err != nil || version != len(MigrationSQL) || version < 22 {
+		t.Fatalf("SchemaVersion=%d err=%v, want the newest migration (at least 22)", version, err)
 	}
 	var goal, status string
 	var statusMessageID sql.NullInt64

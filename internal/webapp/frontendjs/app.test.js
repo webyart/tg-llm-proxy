@@ -805,6 +805,7 @@ function usageSeries(count) {
       rag: index > 3 ? 1 : 0,
     },
     tools_total: (index % 2 === 0 ? 1 : 0) + (index > 1 ? 1 : 0) + (index > 3 ? 1 : 0),
+    cost_usd: index * 0.001,
   }));
 }
 
@@ -812,7 +813,7 @@ function usagePayload(range) {
   const series = usageSeries(range === "week" ? 8 : 7);
   return {
     date: "2026-03-02",
-    models: [{ model: "series-model", calls: 2, tokens_in: 7, tokens_out: 9 }],
+    models: [{ model: "series-model", calls: 2, tokens_in: 7, tokens_out: 9, cost_usd: 0.000123 }],
     tools: { read_url: 1, web_search: 2, calculator: 3, rag: 4 },
     limits: {
       model: { used: 2, limit: 10, remaining: 8 },
@@ -826,7 +827,8 @@ function usagePayload(range) {
       tokens_in: 7,
       tokens_out: 9,
       tool_calls: 10,
-      models: [{ model: "series-model", calls: 2, tokens_in: 7, tokens_out: 9 }],
+      cost_usd: 1.23,
+      models: [{ model: "series-model", calls: 2, tokens_in: 7, tokens_out: 9, cost_usd: 0.000123 }],
       tools: { read_url: 1, web_search: 2, calculator: 3, rag: 4 },
     },
   };
@@ -859,7 +861,7 @@ test("usage tab requests the selected range and renders accessible inline SVG ch
   assert.deepEqual(pressed, ["День"]);
 
   const svgs = content.querySelectorAll("svg");
-  assert.equal(svgs.length, 3);
+  assert.equal(svgs.length, 4);
   for (const svg of svgs) {
     assert.equal(svg.getAttribute("role"), "img");
     assert.ok((svg.getAttribute("aria-label") || "").length > 20);
@@ -870,6 +872,8 @@ test("usage tab requests the selected range and renders accessible inline SVG ch
   assert.ok(content.textContent.includes("series-model"));
   assert.ok(content.textContent.includes("Входящие"));
   assert.ok(content.textContent.includes("Исходящие"));
+  assert.ok(content.textContent.includes("$1.23"));
+  assert.ok(content.textContent.includes("Стоимость"));
 
   const weekButton = content.querySelectorAll("button").find((button) => button.textContent === "Неделя");
   weekButton.click();
@@ -880,7 +884,7 @@ test("usage tab requests the selected range and renders accessible inline SVG ch
     .filter((button) => button.getAttribute("aria-pressed") === "true")
     .map((button) => button.textContent);
   assert.deepEqual(pressedAfter, ["Неделя"]);
-  assert.equal(after.querySelectorAll("svg").length, 3);
+  assert.equal(after.querySelectorAll("svg").length, 4);
 });
 
 test("usage tab tolerates the pre-range response without series or totals", async () => {
@@ -902,8 +906,8 @@ function adminChatFixture(overrides = {}) {
     type: "private",
     user_id: 11,
     last_activity: "2026-01-01 10:00:00",
-    today: { model_calls: 3, read_url: 1, web_search: 2, calculator: 0 },
-    limits: { daily_model_limit: 10, daily_network_limit: 5, per_minute_limit: 2, disabled_tools: ["web_search"] },
+    today: { model_calls: 3, read_url: 1, web_search: 2, calculator: 0, cost_usd: 0.5 },
+    limits: { daily_model_limit: 10, daily_network_limit: 5, per_minute_limit: 2, daily_cost_limit_usd: 25, disabled_tools: ["web_search"] },
     has_limits: true,
     ...overrides,
   };
@@ -969,14 +973,18 @@ test("admin chat limits render usage, edit and save the strict payload", async (
   assert.ok(choice[0].querySelectorAll("option")[0].textContent.includes("11 · Личный чат · личный"));
   assert.ok(choice[0].querySelectorAll("option")[1].textContent.includes("-100200 · Рабочая группа · группа"));
 
+  assert.ok(section.textContent.includes("Расход за сегодня (UTC): $0.50 из $25.00"));
   const numbers = section.querySelectorAll("input").filter((input) => input.type === "number");
-  assert.deepEqual(numbers.map((input) => input.value), ["10", "5", "2"]);
+  assert.deepEqual(numbers.map((input) => input.value), ["10", "5", "2", "25"]);
+  assert.equal(numbers[3].step, "0.01");
+  assert.equal(numbers[3].max, "100000");
   const boxes = section.querySelectorAll("input").filter((input) => input.type === "checkbox");
   assert.deepEqual(boxes.map((box) => box.checked), [false, true, false]);
 
   numbers[0].value = "20";
   numbers[1].value = "6";
   numbers[2].value = "3";
+  numbers[3].value = "2.5";
   boxes[0].checked = true;
   findButton(section, "Сохранить").click();
   await harness.flush();
@@ -984,6 +992,7 @@ test("admin chat limits render usage, edit and save the strict payload", async (
   assert.equal(savedPath, "/api/admin/chats/11/limits");
   assert.deepEqual(savedBody, {
     daily_model_limit: 20, daily_network_limit: 6, per_minute_limit: 3,
+    daily_cost_limit_usd: 2.5,
     disabled_tools: ["read_url", "web_search"],
   });
   assert.ok(harness.element("notice").textContent.includes("Лимиты чата сохранены."));
@@ -996,8 +1005,8 @@ test("admin chat limits switch chat and reset one row", async () => {
     adminChatFixture(),
     adminChatFixture({
       id: -100200, title: "Рабочая группа", type: "group",
-      today: { model_calls: 7, read_url: 0, web_search: 1, calculator: 2 },
-      limits: { daily_model_limit: 0, daily_network_limit: 4, per_minute_limit: 1, disabled_tools: [] },
+      today: { model_calls: 7, read_url: 0, web_search: 1, calculator: 2, cost_usd: 0 },
+      limits: { daily_model_limit: 0, daily_network_limit: 4, per_minute_limit: 1, daily_cost_limit_usd: 0, disabled_tools: [] },
     }),
   ];
   let deletedPath = "";
@@ -1020,7 +1029,7 @@ test("admin chat limits switch chat and reset one row", async () => {
   section = limitsSection(harness);
   assert.ok(section.textContent.includes("модель 7, сеть 1, read_url 0, web_search 1, calculator 2"));
   const numbers = section.querySelectorAll("input").filter((input) => input.type === "number");
-  assert.deepEqual(numbers.map((input) => input.value), ["0", "4", "1"]);
+  assert.deepEqual(numbers.map((input) => input.value), ["0", "4", "1", "0"]);
   findButton(section, "Сбросить").click();
   await harness.flush();
   assert.equal(deletedPath, "/api/admin/chats/-100200/limits");
@@ -1046,6 +1055,33 @@ test("admin chat limits reject a non-integer before calling the API", async () =
   await harness.flush();
   assert.equal(harness.requests.length, before);
   assert.ok(harness.element("error").textContent.includes("целые числа от 0 до 1000000"));
+});
+
+test("admin chat cost budget shows the warning and rejects an invalid amount locally", async () => {
+  const harness = await createHarness();
+  const chat = adminChatFixture({
+    today: { model_calls: 3, read_url: 0, web_search: 0, calculator: 0, cost_usd: 0.8, warning: "chat_cost_budget_warning" },
+    limits: { daily_model_limit: 0, daily_network_limit: 0, per_minute_limit: 0, daily_cost_limit_usd: 1, disabled_tools: [] },
+  });
+  harness.setHandler(adminSettingsHandler([chat], {
+    handle(request) {
+      if (request.path.startsWith("/api/admin/chats/") && request.options.method === "PUT") {
+        return jsonResponse({ ok: true, id: 11 });
+      }
+      return null;
+    },
+  }));
+  await openTab(harness, "settings");
+  const section = limitsSection(harness);
+  assert.ok(section.textContent.includes("Расход за сегодня (UTC): $0.80 из $1.00"));
+  assert.ok(section.textContent.includes("Израсходовано не менее 80%"));
+  const numbers = section.querySelectorAll("input").filter((input) => input.type === "number");
+  numbers[3].value = "100000.5";
+  const before = harness.requests.length;
+  findButton(section, "Сохранить").click();
+  await harness.flush();
+  assert.equal(harness.requests.length, before);
+  assert.ok(harness.element("error").textContent.includes("от 0 до 100000 USD"));
 });
 
 test("admin chat list failure is localized inside the section", async () => {

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"bot/internal/config"
 	"bot/internal/store"
 )
 
@@ -127,6 +128,50 @@ func TestUsageReturnsContentFreeAggregatesLimitsAndRemaining(t *testing.T) {
 	}
 	if messagesAfter != messagesBefore || eventsAfter != eventsBefore {
 		t.Fatalf("read-only usage wrote rows: messages %d/%d events %d/%d", messagesBefore, messagesAfter, eventsBefore, eventsAfter)
+	}
+}
+
+func TestUsageReturnsCostPerModelBucketAndTotals(t *testing.T) {
+	app, server := newTestApp(t)
+	bearer := launchSession(t, app, server)
+	app.cfg.ModelPrices = config.PriceTable{
+		{Model: "model-a", InputPerMTokUSD: 1, OutputPerMTokUSD: 2},
+		{Model: "model-b", InputPerMTokUSD: 0.5, OutputPerMTokUSD: 0.5},
+	}
+	ctx := context.Background()
+	if _, err := store.Append(ctx, app.db, store.Message{ChatID: testChatID, UserID: testUserID, Role: store.RoleUser, Content: "question"}); err != nil {
+		t.Fatal(err)
+	}
+	appendWebappAssistant(t, app, testChatID, testUserID, "answer-a", "model-a", 1000, 500)
+	appendWebappAssistant(t, app, testChatID, testUserID, "answer-b", "model-b", 2000, 1000)
+	// model-a: 1000*1 + 500*2 = 2000 micros; model-b: 2000*0.5 + 1000*0.5 = 1500 micros.
+	status, body, _ := apiRequest(t, server, http.MethodGet, "/api/usage?range=day", bearer)
+	if status != http.StatusOK {
+		t.Fatalf("usage status=%d body=%s", status, body)
+	}
+	var decoded usageResponse
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	costs := map[string]float64{}
+	for _, model := range decoded.Models {
+		costs[model.Model] = model.CostUSD
+	}
+	if costs["model-a"] != 0.002 || costs["model-b"] != 0.0015 {
+		t.Fatalf("daily model costs=%v, want model-a 0.002 model-b 0.0015", costs)
+	}
+	if decoded.Totals.CostUSD != 0.0035 {
+		t.Fatalf("range total cost=%v, want 0.0035", decoded.Totals.CostUSD)
+	}
+	if len(decoded.Totals.Models) != 2 {
+		t.Fatalf("totals models=%+v", decoded.Totals.Models)
+	}
+	last := decoded.Series[len(decoded.Series)-1]
+	if last.CostUSD != 0.0035 {
+		t.Fatalf("current bucket cost=%v, want 0.0035", last.CostUSD)
+	}
+	if !strings.Contains(string(body), `"cost_usd":0.0035`) {
+		t.Fatalf("usage JSON misses the six-decimal total cost: %s", body)
 	}
 }
 

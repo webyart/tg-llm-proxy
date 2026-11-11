@@ -318,34 +318,45 @@ var migrationStatementGuards = map[int]migrationStatementGuard{
 	23: addColumnIfMissingGuard("chat_limits", "daily_cost_limit_micros"),
 	// 026_messages_ttft.sql: ALTER TABLE messages ADD COLUMN first_token_ms (one statement).
 	26: addColumnIfMissingGuard("messages", "first_token_ms"),
+	// 027_task_planning_lease.sql: ALTER TABLE tasks ADD COLUMN planning_owner / planning_lease_until
+	// (two nullable statements; the guarded runner must still reach the index).
+	27: addColumnIfMissingGuard("tasks", "planning_owner", "planning_lease_until"),
 }
 
 // addColumnIfMissingGuard skips exactly one `ALTER TABLE <table> ADD COLUMN <column> …` statement when
-// pragma_table_info says the column is already there. Other statements of the migration (the index of 011)
-// still run. The comparison is deliberately narrow: only the three identifiers are matched, and the column
-// name is checked as a whole token so `user_id_old` cannot satisfy it.
+// pragma_table_info says the column is already there. Other statements of the migration (the index of 011 or
+// of 027) still run. A migration that adds several columns to one table names them all and each statement is
+// matched against its own column. The comparison is deliberately narrow: only the three identifiers are
+// matched, and the column name is checked as a whole token so `user_id_old` cannot satisfy it.
 //
 // The leading comments of the statement are dropped first: every file in migrations/ opens with a header
 // comment, and without this step the guard would silently never match a documented ALTER (021 and 023 were
 // in that state) — the very case the guard exists for would fail with "duplicate column".
-func addColumnIfMissingGuard(table, column string) migrationStatementGuard {
-	prefix := strings.ToUpper("ALTER TABLE " + table + " ADD COLUMN " + column)
+func addColumnIfMissingGuard(table string, columns ...string) migrationStatementGuard {
+	prefixes := make([]string, 0, len(columns))
+	for _, column := range columns {
+		prefixes = append(prefixes, strings.ToUpper("ALTER TABLE "+table+" ADD COLUMN "+column))
+	}
 	return func(ctx context.Context, tx *sql.Tx, statement string) (bool, error) {
 		normalized := strings.ToUpper(strings.Join(strings.Fields(stripLeadingComments(statement)), " "))
-		if !strings.HasPrefix(normalized, prefix) {
-			return false, nil
-		}
-		if len(normalized) > len(prefix) {
-			next := normalized[len(prefix)]
-			if next != ' ' && next != '\t' && next != '(' {
-				return false, nil
+		for prefix := range prefixes {
+			if !strings.HasPrefix(normalized, prefixes[prefix]) {
+				continue
 			}
+			if len(normalized) > len(prefixes[prefix]) {
+				next := normalized[len(prefixes[prefix])]
+				if next != ' ' && next != '\t' && next != '(' {
+					continue
+				}
+			}
+			column := columns[prefix]
+			var present int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&present); err != nil {
+				return false, err
+			}
+			return present > 0, nil
 		}
-		var present int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&present); err != nil {
-			return false, err
-		}
-		return present > 0, nil
+		return false, nil
 	}
 }
 

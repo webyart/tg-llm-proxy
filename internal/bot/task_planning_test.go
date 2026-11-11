@@ -109,6 +109,10 @@ func TestTaskPlanningFailureThenReplan(t *testing.T) {
 		failed.Error != i18n.T(i18n.Default, "task.reason.plan_invalid") {
 		t.Fatalf("failed planning task=%+v found=%v err=%v", failed, found, err)
 	}
+	// A stored failure releases the planning lease: the row must be free for the replan below.
+	if failed.PlanningOwner != "" || failed.PlanningLeaseUntil != nil {
+		t.Fatalf("failed planning row owner=%q lease=%v, want a released lease", failed.PlanningOwner, failed.PlanningLeaseUntil)
+	}
 	if store.ActiveTaskStatus(failed.Status) {
 		t.Fatal("a failed plan still blocks the chat")
 	}
@@ -121,6 +125,9 @@ func TestTaskPlanningFailureThenReplan(t *testing.T) {
 	planned, found, err := store.CurrentTask(ctx, db, 100)
 	if err != nil || !found || planned.Status != store.TaskStatusReady || planned.PlanJSON != validTaskPlanOne || planned.Attempts != 0 {
 		t.Fatalf("replanned task=%+v found=%v err=%v", planned, found, err)
+	}
+	if planned.PlanningOwner != "" || planned.PlanningLeaseUntil != nil {
+		t.Fatalf("replanned row owner=%q lease=%v, want a released lease", planned.PlanningOwner, planned.PlanningLeaseUntil)
 	}
 	if m.callCount() != 2 {
 		t.Fatalf("planner calls=%d, want a retry", m.callCount())
@@ -163,6 +170,9 @@ func TestTaskCrashRecoveryReenqueuesAndCapsStalePlanning(t *testing.T) {
 		}
 		if current.PlanningAttempts != 2 || m.callCount() != 1 {
 			t.Fatalf("recovery attempts=%d calls=%d, want 2/1", current.PlanningAttempts, m.callCount())
+		}
+		if current.PlanningOwner != "" || current.PlanningLeaseUntil != nil {
+			t.Fatalf("recovered row owner=%q lease=%v, want a released lease", current.PlanningOwner, current.PlanningLeaseUntil)
 		}
 	})
 

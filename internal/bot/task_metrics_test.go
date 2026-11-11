@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +14,7 @@ import (
 )
 
 func TestTaskStepTimeoutMetricLabelsThePhase(t *testing.T) {
-	t.Run("step", func(t *testing.T) {
+	t.Run("tool", func(t *testing.T) {
 		reg := metrics.NewRegistry()
 		cfg := taskBudgetTestConfig(t, taskTestModelTimeout, taskTestStepDeadline, nil)
 		d := newTestDispatcher(t, cfg, &blockingTaskModel{plan: validTaskPlanTwo}, &fakeReplier{}, testStore(t))
@@ -26,10 +27,40 @@ func TestTaskStepTimeoutMetricLabelsThePhase(t *testing.T) {
 
 		body := taskMetricsExposition(t, reg)
 		if !strings.Contains(body, "bot_task_step_timeouts_total{phase=\"tool\"} 1") {
-			t.Errorf("the step timeout was not counted in the tool phase:\n%s", body)
+			t.Errorf("the tool-round timeout was not counted in the tool phase:\n%s", body)
 		}
-		if strings.Contains(body, "bot_task_step_timeouts_total{phase=\"synthesis\"}") {
-			t.Errorf("a step timeout was counted as synthesis:\n%s", body)
+		for _, other := range []string{"final", "synthesis"} {
+			if strings.Contains(body, "bot_task_step_timeouts_total{phase=\""+other+"\"}") {
+				t.Errorf("a tool-round timeout was also counted as %q:\n%s", other, body)
+			}
+		}
+		if count := taskStepTimeoutCount(t, body); count != 1 {
+			t.Errorf("bot_task_step_timeouts_total sums to %v for one failed step, want exactly 1:\n%s", count, body)
+		}
+	})
+
+	t.Run("final", func(t *testing.T) {
+		reg := metrics.NewRegistry()
+		cfg := taskBudgetTestConfig(t, taskTestModelTimeout, taskTestStepDeadline, nil)
+		d := newTestDispatcher(t, cfg, &finalPhaseTaskModel{plan: validTaskPlanOne}, &fakeReplier{}, testStore(t))
+		d.SetMetrics(reg)
+		d.taskStepRetryDelay = 0
+		if err := dispatch(t, d, testEvent(100, 11, 4103, "/task a slow final answer after research")); err != nil {
+			t.Fatal(err)
+		}
+		processTasks(t, d, 2)
+
+		body := taskMetricsExposition(t, reg)
+		if !strings.Contains(body, "bot_task_step_timeouts_total{phase=\"final\"} 1") {
+			t.Errorf("the final-answer timeout was not counted in the final phase:\n%s", body)
+		}
+		for _, other := range []string{"tool", "synthesis"} {
+			if strings.Contains(body, "bot_task_step_timeouts_total{phase=\""+other+"\"}") {
+				t.Errorf("a final-answer timeout was also counted as %q:\n%s", other, body)
+			}
+		}
+		if count := taskStepTimeoutCount(t, body); count != 1 {
+			t.Errorf("bot_task_step_timeouts_total sums to %v for one failed step, want exactly 1:\n%s", count, body)
 		}
 	})
 
@@ -48,10 +79,37 @@ func TestTaskStepTimeoutMetricLabelsThePhase(t *testing.T) {
 		if !strings.Contains(body, "bot_task_step_timeouts_total{phase=\"synthesis\"} 1") {
 			t.Errorf("the synthesis timeout was not counted in the synthesis phase:\n%s", body)
 		}
-		if strings.Contains(body, "bot_task_step_timeouts_total{phase=\"tool\"}") {
-			t.Errorf("a synthesis timeout was counted as a tool phase:\n%s", body)
+		for _, other := range []string{"tool", "final"} {
+			if strings.Contains(body, "bot_task_step_timeouts_total{phase=\""+other+"\"}") {
+				t.Errorf("a synthesis timeout was also counted as %q:\n%s", other, body)
+			}
+		}
+		if count := taskStepTimeoutCount(t, body); count != 1 {
+			t.Errorf("bot_task_step_timeouts_total sums to %v for one failed step, want exactly 1:\n%s", count, body)
 		}
 	})
+}
+
+// taskStepTimeoutCount sums every sample of bot_task_step_timeouts_total: a retry that counted the same failed
+// step twice cannot hide behind two phase labels this way.
+func taskStepTimeoutCount(t *testing.T, body string) float64 {
+	t.Helper()
+	var total float64
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, taskMetricStepTimeouts+"{") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			t.Fatalf("unexpected %s sample %q", taskMetricStepTimeouts, line)
+		}
+		value, err := strconv.ParseFloat(fields[1], 64)
+		if err != nil {
+			t.Fatalf("parse %s sample %q: %v", taskMetricStepTimeouts, line, err)
+		}
+		total += value
+	}
+	return total
 }
 
 func TestTaskPlanningFailureMetricClassifiesTheCause(t *testing.T) {

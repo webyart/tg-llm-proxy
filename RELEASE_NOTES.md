@@ -2,7 +2,17 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.72.1
+## Новейший выпуск: v1.73.0
+
+# tg-llm-proxy v1.73.0
+
+## Exact timeout phases and multi-instance planning lease
+
+- Task timeout metrics distinguish `phase="tool"`, `"final"` (final answer after the tool limit and its corrective retry) and `"synthesis"`; chat calls are never tagged, and a step counts exactly one timeout.
+- Schema 27 adds `tasks.planning_owner` / `planning_lease_until` with an index. Planning now claims rows atomically in SQLite (one winner across instances), renews a heartbeat lease (TTL = step deadline + 30s), releases on success/failure/cancel, and recovery only reclaims rows whose lease is free/expired. In-process `planningActive` remains a fast local dedupe.
+- Tests: two dispatchers on two handles plan exactly one; live lease skipped, expired reclaimed; heartbeat; concurrent claim/renew/release/CAS; migration 26→27; timeout phases tool/final/synthesis (one increment).
+
+## Предыдущий выпуск: v1.72.1
 
 # tg-llm-proxy v1.72.1
 

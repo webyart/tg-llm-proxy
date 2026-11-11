@@ -13,7 +13,6 @@ import (
 
 	"github.com/go-telegram/bot/models"
 
-	"bot/internal/config"
 	"bot/internal/i18n"
 	"bot/internal/model"
 	"bot/internal/store"
@@ -301,13 +300,9 @@ func (d *Dispatcher) ClearTasks(ctx context.Context, chatID int64) (int64, error
 }
 
 func (d *Dispatcher) planTask(ctx context.Context, userID int64, selectedModel string, goal string) (TaskPlan, error) {
-	planSeconds := d.deps.Cfg.TaskStepDeadlineSeconds
-	if planSeconds <= 0 {
-		planSeconds = config.DefaultTaskStepDeadlineSeconds
-	}
-	// Planning is a task model call: its context carries the task step deadline, and the caller (the command
-	// handler) never applies the chat reply budget to /task.
-	planCtx, cancel := context.WithTimeout(ctx, time.Duration(planSeconds)*time.Second)
+	// Planning is a task model call: its context carries the task step deadline (taskPlanningDeadline, the
+	// budget the planning lease covers), and the caller never applies the chat reply budget to /task.
+	planCtx, cancel := context.WithTimeout(ctx, d.taskPlanningDeadline())
 	defer cancel()
 	response, err := d.callModel(planCtx, userID, model.Request{Model: selectedModel, Timeout: d.taskModelTimeout(), Messages: []model.Message{
 		{Role: model.RoleSystem, Content: "Create a SHORT plan for the user's goal. Return ONLY one JSON object with exactly this shape: {\"steps\":[{\"description\":\"...\"}]}. Use 1 to 3 steps. Each description is at most 240 characters and describes reasoning or information gathering in plain language. Do not include URLs, tool names, network actions, code, shell commands, file operations, agents, or any extra JSON fields. Do not use Markdown fences."},

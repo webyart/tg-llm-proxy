@@ -365,13 +365,16 @@ func (d *Dispatcher) executeClaimedTask(ctx context.Context, task store.Task) er
 		return nil
 	}
 	if err != nil {
-		return d.taskBudgetError(stepCtx, task, taskPhaseStep, task.NextStep+1, err)
+		return d.taskBudgetError(stepCtx, task, taskCallPhase(err), task.NextStep+1, err)
 	}
 	return d.completeTaskStepResponse(ctx, task, response, time.Since(stepStarted))
 }
 
 // Task model call phases: the diagnostic log and the localized failure message name the unit that spent its
-// budget.
+// budget. taskPhaseTool and taskPhaseFinal are attached to the failing call INSIDE runToolLoop, so the phase
+// that reaches taskBudgetError and bot_task_step_timeouts_total{phase} is the phase of the call that actually
+// failed, not the phase of the step as a whole. taskPhaseStep is only the fallback for an error that no single
+// tool-loop call produced.
 const (
 	taskPhaseStep      = "step"
 	taskPhaseTool      = "tool"
@@ -396,7 +399,9 @@ func (e *taskTimeoutError) Error() string {
 func (e *taskTimeoutError) Unwrap() error { return e.cause }
 
 // taskBudgetError converts an exhausted model/step deadline of a task call into the task-specific error. A
-// user cancel, a shutdown, an approval pause and any non-deadline error pass through untouched.
+// user cancel, a shutdown, an approval pause and any non-deadline error pass through untouched. The phase is
+// the phase of the failing call (taskCallPhase of a step error, taskPhaseSynthesis for the final answer), so
+// the timeout counter labels a tool-round deadline, a final-answer deadline and a synthesis deadline apart.
 func (d *Dispatcher) taskBudgetError(ctx context.Context, task store.Task, phase string, step int, cause error) error {
 	if cause == nil || errors.Is(cause, errNetworkApprovalPending) || errors.Is(cause, errTaskStale) ||
 		errors.Is(cause, context.Canceled) || !errors.Is(cause, context.DeadlineExceeded) {
@@ -745,7 +750,7 @@ func (d *Dispatcher) taskNetworkApprovalControl(ctx context.Context, ev Event, o
 		return nil
 	}
 	if err != nil {
-		return d.failClaimedTask(ctx, claimed, d.taskBudgetError(stepCtx, claimed, taskPhaseStep, claimed.NextStep+1, err))
+		return d.failClaimedTask(ctx, claimed, d.taskBudgetError(stepCtx, claimed, taskCallPhase(err), claimed.NextStep+1, err))
 	}
 	if err := d.completeTaskStepResponse(ctx, claimed, response, time.Since(stepStarted)); errors.Is(err, errTaskStale) {
 		return nil

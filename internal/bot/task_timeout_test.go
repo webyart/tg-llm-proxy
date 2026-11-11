@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -352,5 +353,118 @@ func TestTaskModelAndStepBudgetsNeverFallBackToTheChatBudget(t *testing.T) {
 	}
 	if got := d.taskStepDeadline(); got != time.Duration(config.DefaultTaskStepDeadlineSeconds)*time.Second {
 		t.Fatalf("taskStepDeadline with an empty config = %s, want the task default", got)
+	}
+}
+
+// finalPhaseTaskModel spends every tool round of a step on a calculator call and then blocks on the final
+// answer call until its budget is spent. The step retry receives the same script, so the phase of the error
+// that finally fails the step must stay final.
+type finalPhaseTaskModel struct {
+	mu    sync.Mutex
+	plan  string
+	calls int
+}
+
+func (m *finalPhaseTaskModel) Complete(ctx context.Context, req model.Request) (model.Response, error) {
+	m.mu.Lock()
+	m.calls++
+	call := m.calls
+	m.mu.Unlock()
+	if call == 1 {
+		return model.Response{Content: m.plan, Model: "selected-model", Attempts: 1}, nil
+	}
+	if (call-2)%(toolRoundLimit+1) < toolRoundLimit {
+		return model.Response{ToolCalls: []model.ToolCall{{
+			ID: fmt.Sprintf("round-%d", call), Name: "calculator", Arguments: `{"expression":"2+2"}`,
+		}}, Model: "selected-model", Attempts: 1}, nil
+	}
+	budget := req.Timeout
+	if budget <= 0 {
+		budget = time.Minute
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining > 0 && remaining < budget {
+			budget = remaining
+		}
+	}
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return model.Response{}, fmt.Errorf("%w: %s", ctx.Err(), model.TelegramBudgetNotice)
+	case <-timer.C:
+		return model.Response{}, fmt.Errorf("%w: %s", context.DeadlineExceeded, model.TelegramBudgetNotice)
+	}
+}
+
+func (m *finalPhaseTaskModel) Models(context.Context) ([]string, error) { return nil, nil }
+
+// TestTaskCallPhaseTagsOnlyTaskCalls proves the boundary of the phase tag: a chat answer keeps the model
+// client's error untouched (no task label can leak into the chat path), while the same failure inside a task
+// step carries the phase of the call that produced it.
+func TestTaskCallPhaseTagsOnlyTaskCalls(t *testing.T) {
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "TOOLS_ENABLED": "true"})
+	var m = &taskScriptModel{results: []taskModelResult{
+		{err: context.DeadlineExceeded},
+		{err: context.DeadlineExceeded},
+	}}
+	var d = newTestDispatcher(t, cfg, m, &fakeReplier{}, testStore(t))
+	var request = model.Request{
+		Messages: []model.Message{{Role: model.RoleUser, Content: "q"}}, Timeout: time.Second,
+	}
+
+	_, chatErr := d.completeWithTools(context.Background(), 11, request, nil, nil)
+	if !errors.Is(chatErr, context.DeadlineExceeded) {
+		t.Fatalf("chat call error = %v, want the model client's deadline error", chatErr)
+	}
+	var tagged *taskCallPhaseError
+	if errors.As(chatErr, &tagged) {
+		t.Fatalf("a chat call was tagged with the task phase %q", tagged.phase)
+	}
+	if got := taskCallPhase(chatErr); got != taskPhaseStep {
+		t.Fatalf("taskCallPhase(chat error) = %q, want the unbounded step fallback", got)
+	}
+
+	var taskCtx = withToolLoopMetadata(context.Background(), toolLoopMetadata{
+		event: Event{ChatID: 100, UserID: 11}, selectedModel: "selected-model", taskID: 42, taskStep: 1,
+	})
+	_, taskErr := d.completeWithTools(taskCtx, 11, request, nil, nil)
+	if !errors.Is(taskErr, context.DeadlineExceeded) {
+		t.Fatalf("task call error = %v, want the model client's deadline error", taskErr)
+	}
+	if !errors.As(taskErr, &tagged) || tagged.phase != taskPhaseTool {
+		t.Fatalf("task tool-round error was not tagged with %q: %v", taskPhaseTool, taskErr)
+	}
+	if got := taskCallPhase(taskErr); got != taskPhaseTool {
+		t.Fatalf("taskCallPhase(task error) = %q, want %q", got, taskPhaseTool)
+	}
+}
+
+// TestTaskCallPhaseIsFinalAfterTheToolLimit tags the answer call that runs after every tool round. The phase
+// is what taskBudgetError receives, so this is the attribution the timeout counter reports.
+func TestTaskCallPhaseIsFinalAfterTheToolLimit(t *testing.T) {
+	var results = make([]taskModelResult, 0, toolRoundLimit+1)
+	for round := 0; round < toolRoundLimit; round++ {
+		results = append(results, taskModelResult{response: model.Response{
+			ToolCalls: []model.ToolCall{{
+				ID: fmt.Sprintf("round-%d", round), Name: "calculator", Arguments: `{"expression":"2+2"}`,
+			}},
+			Model: "selected-model", Attempts: 1,
+		}})
+	}
+	results = append(results, taskModelResult{err: context.DeadlineExceeded})
+	var cfg = testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "TOOLS_ENABLED": "true"})
+	var d = newTestDispatcher(t, cfg, &taskScriptModel{results: results}, &fakeReplier{}, testStore(t))
+	var taskCtx = withToolLoopMetadata(context.Background(), toolLoopMetadata{
+		event: Event{ChatID: 100, UserID: 11}, selectedModel: "selected-model", taskID: 42, taskStep: 1,
+	})
+	_, err := d.completeWithTools(taskCtx, 11, model.Request{
+		Messages: []model.Message{{Role: model.RoleUser, Content: "q"}}, Timeout: time.Second,
+	}, nil, nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("final call error = %v, want the model client's deadline error", err)
+	}
+	if got := taskCallPhase(err); got != taskPhaseFinal {
+		t.Fatalf("taskCallPhase(final error) = %q, want %q", got, taskPhaseFinal)
 	}
 }

@@ -778,18 +778,18 @@ func TestTaskStalePlanningScanAndReset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stale, err := ListStalePlanningTasks(ctx, db, now.Add(-2*time.Minute), 10)
+	stale, err := ListStalePlanningTasks(ctx, db, now.Add(-2*time.Minute), now, 10)
 	if err != nil || len(stale) != 1 || stale[0].ID != created.ID {
 		t.Fatalf("stale tasks=%+v err=%v", stale, err)
 	}
-	if reset, err := ResetTaskPlanning(ctx, db, created.ID, now, time.Hour); err != nil || !reset {
+	if reset, err := ResetTaskPlanning(ctx, db, created.ID, now.Add(-2*time.Minute), now, time.Hour); err != nil || !reset {
 		t.Fatalf("ResetTaskPlanning changed=%v err=%v", reset, err)
 	}
 	reset, found, err := CurrentTask(ctx, db, 100)
 	if err != nil || !found || reset.PlanningAttempts != 2 || reset.Status != TaskStatusPlanning || reset.Error != "" {
 		t.Fatalf("reset planning task=%+v found=%v err=%v", reset, found, err)
 	}
-	if after, err := ListStalePlanningTasks(ctx, db, now.Add(-2*time.Minute), 10); err != nil || len(after) != 0 {
+	if after, err := ListStalePlanningTasks(ctx, db, now.Add(-2*time.Minute), now, 10); err != nil || len(after) != 0 {
 		t.Fatalf("reset row is still stale: %+v err=%v", after, err)
 	}
 }

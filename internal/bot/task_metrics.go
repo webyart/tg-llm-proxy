@@ -108,8 +108,9 @@ func (d *Dispatcher) countTaskStepRetry() {
 	}
 }
 
-// taskTimeoutPhaseName maps the internal model-call phase to the bounded metric label. A step-level timeout
-// is the tool/research phase by default; the final-answer and synthesis phases keep their own names.
+// taskTimeoutPhaseName maps the internal model-call phase to the bounded metric label. The tool loop tags a
+// tool-round failure and a final-answer failure itself, so both keep their own names; synthesis is passed by
+// the scheduler. taskPhaseStep and any unexpected value are the bounded fallback "tool", never a raw label.
 func taskTimeoutPhaseName(phase string) string {
 	switch phase {
 	case taskPhaseSynthesis:

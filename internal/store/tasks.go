@@ -51,14 +51,20 @@ type Task struct {
 	Attempts    int
 	// PlanningAttempts counts how many times the background planner was started for this row. Crash
 	// recovery increments it; the counter caps the retries instead of re-enqueueing a broken row forever.
-	PlanningAttempts  int
-	DueAt             time.Time
-	ClaimToken        string
-	LeaseUntil        *time.Time
-	ContinuationJSON  string
-	ApprovalToken     string
-	ApprovalMessageID int64
-	ApprovalExpiresAt *time.Time
+	PlanningAttempts int
+	// PlanningOwner is the opaque id of the instance that currently holds the planning lease, and
+	// PlanningLeaseUntil is the moment that claim expires. Both are empty/nil when the row is not being
+	// planned: ANY instance (or this process after a crash) may claim it then. The owner never names a user
+	// or a chat, so it is safe to store and to log beside a task id.
+	PlanningOwner      string
+	PlanningLeaseUntil *time.Time
+	DueAt              time.Time
+	ClaimToken         string
+	LeaseUntil         *time.Time
+	ContinuationJSON   string
+	ApprovalToken      string
+	ApprovalMessageID  int64
+	ApprovalExpiresAt  *time.Time
 	// StatusMessageID is the single Telegram message a live task rewrites on step transitions. Zero means
 	// "no status message yet" (a row written by an older release, or a task created from the Mini App).
 	StatusMessageID int64
@@ -261,7 +267,7 @@ const taskColumns = `id, chat_id, user_id, goal, model, plan_json, results_json,
 	planning_attempts, due_at, COALESCE(claim_token, ''), COALESCE(lease_until, ''), COALESCE(continuation_json, ''),
 	COALESCE(approval_token, ''), COALESCE(approval_message_id, 0), COALESCE(approval_expires_at, ''),
 	expires_at, COALESCE(error, ''), created_at, updated_at, COALESCE(finished_at, ''),
-	COALESCE(status_message_id, 0)`
+	COALESCE(status_message_id, 0), COALESCE(planning_owner, ''), COALESCE(planning_lease_until, '')`
 
 type taskScanner interface {
 	Scan(dest ...any) error
@@ -269,11 +275,11 @@ type taskScanner interface {
 
 func scanTask(scanner taskScanner) (Task, error) {
 	var task Task
-	var dueAt, leaseUntil, approvalExpiresAt, expiresAt, createdAt, updatedAt, finishedAt string
+	var dueAt, leaseUntil, approvalExpiresAt, expiresAt, createdAt, updatedAt, finishedAt, planningLeaseUntil string
 	if err := scanner.Scan(&task.ID, &task.ChatID, &task.UserID, &task.Goal, &task.Model, &task.PlanJSON, &task.ResultsJSON,
 		&task.NextStep, &task.Status, &task.Attempts, &task.PlanningAttempts, &dueAt, &task.ClaimToken, &leaseUntil, &task.ContinuationJSON,
 		&task.ApprovalToken, &task.ApprovalMessageID, &approvalExpiresAt, &expiresAt, &task.Error, &createdAt, &updatedAt, &finishedAt,
-		&task.StatusMessageID); err != nil {
+		&task.StatusMessageID, &task.PlanningOwner, &planningLeaseUntil); err != nil {
 		return Task{}, err
 	}
 	var err error
@@ -289,7 +295,7 @@ func scanTask(scanner taskScanner) (Task, error) {
 	if task.UpdatedAt, err = parseReminderTime(updatedAt); err != nil {
 		return Task{}, err
 	}
-	for value, target := range map[string]**time.Time{leaseUntil: &task.LeaseUntil, approvalExpiresAt: &task.ApprovalExpiresAt, finishedAt: &task.FinishedAt} {
+	for value, target := range map[string]**time.Time{leaseUntil: &task.LeaseUntil, approvalExpiresAt: &task.ApprovalExpiresAt, finishedAt: &task.FinishedAt, planningLeaseUntil: &task.PlanningLeaseUntil} {
 		if value == "" {
 			continue
 		}
@@ -304,13 +310,16 @@ func scanTask(scanner taskScanner) (Task, error) {
 
 // SaveTaskPlan stores the plan produced by the background planner and moves the task to the state the
 // scheduler already claims ('ready'). It only matches a row still in 'planning': a cancel, a delete, or a
-// crash-recovery reset that won the race makes the update a no-op instead of resurrecting the task.
+// crash-recovery reset that won the race makes the update a no-op instead of resurrecting the task. The
+// planning lease is cleared here as well: a process that dies between this write and its own release must not
+// leave a claim on a row that is already ready.
 func SaveTaskPlan(ctx context.Context, db *sql.DB, taskID int64, planJSON string, now time.Time) (bool, error) {
 	if taskID <= 0 || planJSON == "" || len(planJSON) > 8192 || !json.Valid([]byte(planJSON)) {
 		return false, fmt.Errorf("%w: a stored plan needs a task and valid plan JSON", ErrTaskInvalid)
 	}
 	result, err := db.ExecContext(ctx, `UPDATE tasks
-		SET plan_json = ?, status = 'ready', due_at = ?, error = NULL, updated_at = ?
+		SET plan_json = ?, status = 'ready', due_at = ?, error = NULL, updated_at = ?,
+			planning_owner = NULL, planning_lease_until = NULL
 		WHERE id = ? AND status = 'planning'`,
 		planJSON, formatReminderTime(now), formatReminderTime(now), taskID)
 	if err != nil {
@@ -336,6 +345,7 @@ func FailTaskPlanning(ctx context.Context, db *sql.DB, taskID int64, reason stri
 	result, err := db.ExecContext(ctx, `UPDATE tasks
 		SET status = 'failed', error = ?, claim_token = NULL, lease_until = NULL, continuation_json = NULL,
 			approval_token = NULL, approval_message_id = NULL, approval_expires_at = NULL,
+			planning_owner = NULL, planning_lease_until = NULL,
 			updated_at = ?, finished_at = ?
 		WHERE id = ? AND status = 'planning'`,
 		reason, formatReminderTime(now), formatReminderTime(now), taskID)
@@ -346,16 +356,90 @@ func FailTaskPlanning(ctx context.Context, db *sql.DB, taskID int64, reason stri
 	return affected == 1, err
 }
 
-// ListStalePlanningTasks returns planning rows whose last update is at or before olderThan. The scheduler
-// periodically feeds them to crash recovery; an in-process planner is skipped by the dispatcher before the
-// row is reset, so this query alone does not guarantee that the plan is dead.
-func ListStalePlanningTasks(ctx context.Context, db *sql.DB, olderThan time.Time, limit int) ([]Task, error) {
+// planningLeaseFree is the condition of a planning row that any instance may claim: no owner, no deadline, or
+// a deadline that has already passed. The claim, the renewal-free stale scan and the crash recovery all use
+// this one condition, so recovery can never see a row the claim would refuse (or the reverse). The single ?
+// is the current time in the fixed reminder layout, so the TEXT comparison is chronological.
+const planningLeaseFree = "(planning_owner IS NULL OR planning_lease_until IS NULL OR planning_lease_until <= ?)"
+
+// ClaimPlanningTask atomically takes the lease of the oldest-due planning row that any instance may claim.
+// The UPDATE ... RETURNING is one statement: SQLite serializes the two writers, and the loser re-evaluates
+// the WHERE clause against the committed row, so two instances — or two stores of one process — never both
+// win the same row. owner is an opaque instance id, never a user or a chat id; lease is the TTL that the
+// planner extends with RenewPlanningLease while it works.
+//
+// A claim does not touch planning_attempts: the counter is the crash-recovery counter of ResetTaskPlanning
+// (creation already counts the first attempt), so a normal plan is never charged twice.
+func ClaimPlanningTask(ctx context.Context, db *sql.DB, now time.Time, owner string, lease time.Duration) (Task, bool, error) {
+	owner = strings.TrimSpace(owner)
+	if owner == "" || len([]rune(owner)) > 200 || lease <= 0 {
+		return Task{}, false, fmt.Errorf("%w: a planning claim needs an owner and a positive lease", ErrTaskInvalid)
+	}
+	nowText := formatReminderTime(now)
+	row := db.QueryRowContext(ctx, `UPDATE tasks
+		SET planning_owner = ?, planning_lease_until = ?, updated_at = ?
+		WHERE id = (
+			SELECT id FROM tasks WHERE status = 'planning' AND `+planningLeaseFree+`
+			ORDER BY due_at, id LIMIT 1
+		) AND status = 'planning' AND `+planningLeaseFree+`
+		RETURNING `+taskColumns,
+		owner, formatReminderTime(now.Add(lease)), nowText, nowText, nowText)
+	task, err := scanTask(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Task{}, false, nil
+	}
+	if err != nil {
+		return Task{}, false, err
+	}
+	return task, true, nil
+}
+
+// RenewPlanningLease extends the lease of a row this instance still owns. A false result means the claim was
+// lost — the row left 'planning' (a cancel, a save, an expiry) or another instance now owns it — and the
+// planner must stop instead of writing a plan over the new owner's work. updated_at is deliberately not
+// touched: the lease, not the age, is what proves that a plan is alive.
+func RenewPlanningLease(ctx context.Context, db *sql.DB, taskID int64, owner string, until time.Time) (bool, error) {
+	owner = strings.TrimSpace(owner)
+	if taskID <= 0 || owner == "" || until.IsZero() {
+		return false, fmt.Errorf("%w: a lease renewal needs a task, an owner and a deadline", ErrTaskInvalid)
+	}
+	result, err := db.ExecContext(ctx, `UPDATE tasks SET planning_lease_until = ?
+		WHERE id = ? AND status = 'planning' AND planning_owner = ?`,
+		formatReminderTime(until), taskID, owner)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
+}
+
+// ReleasePlanningLease clears a claim this instance still owns. It matches the owner only, so a late release
+// can never clear the lease of the instance that has already taken the row over; the status is not part of
+// the condition because a completed or failed row is released exactly the same way.
+func ReleasePlanningLease(ctx context.Context, db *sql.DB, taskID int64, owner string) (bool, error) {
+	owner = strings.TrimSpace(owner)
+	if taskID <= 0 || owner == "" {
+		return false, fmt.Errorf("%w: a lease release needs a task and an owner", ErrTaskInvalid)
+	}
+	result, err := db.ExecContext(ctx, `UPDATE tasks SET planning_owner = NULL, planning_lease_until = NULL
+		WHERE id = ? AND planning_owner = ?`, taskID, owner)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
+}
+
+// ListStalePlanningTasks returns planning rows whose lease is free or expired and whose last update is at or
+// before olderThan. A row leased by another instance is not stale whatever its age: only the owner's release
+// or the expiry of its lease can make it claimable.
+func ListStalePlanningTasks(ctx context.Context, db *sql.DB, olderThan time.Time, now time.Time, limit int) ([]Task, error) {
 	if limit <= 0 || limit > 20 {
 		limit = 20
 	}
 	rows, err := db.QueryContext(ctx, `SELECT `+taskColumns+` FROM tasks
-		WHERE status = 'planning' AND updated_at <= ?
-		ORDER BY updated_at, id LIMIT ?`, formatReminderTime(olderThan), limit)
+		WHERE status = 'planning' AND updated_at <= ? AND `+planningLeaseFree+`
+		ORDER BY updated_at, id LIMIT ?`, formatReminderTime(olderThan), formatReminderTime(now), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -372,8 +456,10 @@ func ListStalePlanningTasks(ctx context.Context, db *sql.DB, olderThan time.Time
 }
 
 // ResetTaskPlanning re-arms a planning row found by crash recovery: the attempt counter grows, the stale
-// error state and any claim leftovers are cleared, and the task lifetime is extended from now.
-func ResetTaskPlanning(ctx context.Context, db *sql.DB, taskID int64, now time.Time, lifetime time.Duration) (bool, error) {
+// error state and any claim leftovers are cleared, and the task lifetime is extended from now. staleBefore is
+// the discovery threshold (not the claim time): the update only matches a row that has not been reset or
+// re-claimed since the scan, so two instances that listed the same row cannot both bump the attempt counter.
+func ResetTaskPlanning(ctx context.Context, db *sql.DB, taskID int64, staleBefore time.Time, now time.Time, lifetime time.Duration) (bool, error) {
 	if taskID <= 0 || lifetime <= 0 {
 		return false, fmt.Errorf("%w: planning reset needs a task and a positive lifetime", ErrTaskInvalid)
 	}
@@ -381,9 +467,9 @@ func ResetTaskPlanning(ctx context.Context, db *sql.DB, taskID int64, now time.T
 		SET status = 'planning', planning_attempts = planning_attempts + 1, due_at = ?, expires_at = ?,
 			claim_token = NULL, lease_until = NULL, continuation_json = NULL, approval_token = NULL,
 			approval_message_id = NULL, approval_expires_at = NULL, error = NULL, finished_at = NULL,
-			updated_at = ?
-		WHERE id = ? AND status = 'planning'`,
-		formatReminderTime(now), formatReminderTime(now.Add(lifetime)), formatReminderTime(now), taskID)
+			planning_owner = NULL, planning_lease_until = NULL, updated_at = ?
+		WHERE id = ? AND status = 'planning' AND updated_at <= ?`,
+		formatReminderTime(now), formatReminderTime(now.Add(lifetime)), formatReminderTime(now), taskID, formatReminderTime(staleBefore))
 	if err != nil {
 		return false, err
 	}
@@ -403,7 +489,7 @@ func ReplanTask(ctx context.Context, db *sql.DB, chatID int64, taskID int64, now
 		SET status = 'planning', plan_json = '', planning_attempts = planning_attempts + 1, attempts = 0,
 			due_at = ?, expires_at = ?, claim_token = NULL, lease_until = NULL, continuation_json = NULL,
 			approval_token = NULL, approval_message_id = NULL, approval_expires_at = NULL,
-			error = NULL, finished_at = NULL, updated_at = ?
+			error = NULL, finished_at = NULL, planning_owner = NULL, planning_lease_until = NULL, updated_at = ?
 		WHERE id = (SELECT id FROM tasks WHERE chat_id = ? AND status = 'failed' ORDER BY id DESC LIMIT 1)
 			AND id = ? AND chat_id = ? AND status = 'failed' AND plan_json = ''
 		RETURNING `+taskColumns, nowText, formatReminderTime(now.Add(lifetime)), nowText, chatID, taskID, chatID)
@@ -671,6 +757,7 @@ func CancelTask(ctx context.Context, db *sql.DB, chatID int64, now time.Time) (T
 	row := db.QueryRowContext(ctx, `UPDATE tasks
 		SET status = 'cancelled', claim_token = NULL, lease_until = NULL, continuation_json = NULL,
 			approval_token = NULL, approval_message_id = NULL, approval_expires_at = NULL,
+			planning_owner = NULL, planning_lease_until = NULL,
 			updated_at = ?, finished_at = ?
 		WHERE id = (SELECT id FROM tasks WHERE chat_id = ? AND status IN ('planning', 'ready', 'running', 'awaiting_approval') ORDER BY id DESC LIMIT 1)
 			AND chat_id = ? AND status IN ('planning', 'ready', 'running', 'awaiting_approval')
@@ -693,7 +780,8 @@ func ResumeTask(ctx context.Context, db *sql.DB, chatID int64, taskID int64, now
 	row := db.QueryRowContext(ctx, `UPDATE tasks
 		SET status = 'ready', attempts = 0, due_at = ?, claim_token = NULL, lease_until = NULL,
 			continuation_json = NULL, approval_token = NULL, approval_message_id = NULL,
-			approval_expires_at = NULL, expires_at = ?, error = NULL, finished_at = NULL, updated_at = ?
+			approval_expires_at = NULL, expires_at = ?, error = NULL, finished_at = NULL, updated_at = ?,
+			planning_owner = NULL, planning_lease_until = NULL
 		WHERE id = (SELECT id FROM tasks WHERE chat_id = ? ORDER BY id DESC LIMIT 1)
 			AND id = ? AND chat_id = ? AND status IN ('failed', 'cancelled') AND plan_json <> ''
 		RETURNING `+taskColumns, nowText, formatReminderTime(now.Add(lifetime)), nowText, chatID, taskID, chatID)
@@ -725,7 +813,8 @@ func ExpireTasks(ctx context.Context, db *sql.DB, now time.Time, limit int) ([]T
 	rows, err := db.QueryContext(ctx, `UPDATE tasks
 		SET status = 'failed', error = 'task or network approval expired', claim_token = NULL,
 			lease_until = NULL, continuation_json = NULL, approval_token = NULL,
-			approval_message_id = NULL, approval_expires_at = NULL, updated_at = ?, finished_at = ?
+			approval_message_id = NULL, approval_expires_at = NULL,
+			planning_owner = NULL, planning_lease_until = NULL, updated_at = ?, finished_at = ?
 		WHERE id IN (
 			SELECT id FROM tasks WHERE status IN ('planning', 'ready', 'running', 'awaiting_approval')
 				AND (expires_at <= ? OR (status = 'awaiting_approval' AND approval_expires_at <= ?))

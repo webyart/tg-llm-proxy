@@ -203,11 +203,16 @@ type Dispatcher struct {
 	taskWake            chan struct{}
 	// Background task planning. planningActive deduplicates a job already running in this process,
 	// planningSlots bounds concurrent model calls, and planningCtx ties new jobs to the scheduler lifetime.
-	planningMu     sync.Mutex
-	planningActive map[int64]bool
-	planningSlots  chan struct{}
-	planningCtxMu  sync.RWMutex
-	planningCtx    context.Context
+	// None of them is the correctness bound: the planning lease in the database is (two instances on one
+	// database must not plan the same row). planningOwner identifies this process in tasks.planning_owner;
+	// planningLeaseTTL overrides the computed lease TTL in tests (zero means taskPlanningLease).
+	planningMu       sync.Mutex
+	planningActive   map[int64]bool
+	planningSlots    chan struct{}
+	planningCtxMu    sync.RWMutex
+	planningCtx      context.Context
+	planningOwner    string
+	planningLeaseTTL time.Duration
 
 	// The two sets of pending user decisions used to be package-level sync.Maps keyed by the *Dispatcher. A
 	// global keyed by a pointer leaks one entry per dispatcher for the life of the process (every test creates
@@ -272,6 +277,7 @@ func New(deps Deps) *Dispatcher {
 		now:                time.Now,
 		taskWake:           make(chan struct{}, 1),
 		planningSlots:      make(chan struct{}, taskPlanningConcurrency),
+		planningOwner:      newTaskPlanningOwner(),
 		taskStepRetryDelay: taskStepRetryBackoff,
 	}
 	d.configureAdmission(int(deps.Cfg.MaxConcurrentRequests))

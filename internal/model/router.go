@@ -218,7 +218,7 @@ func NewRouter(opts RouterOptions) Client {
 	switch {
 	case streams && transcribes:
 		return &routerStreamTranscriber{
-			routerStreamer:    &routerStreamer{routerClient: base, defaultStreamer: streamer},
+			routerStreamer:     &routerStreamer{routerClient: base, defaultStreamer: streamer},
 			defaultTranscriber: transcriber,
 		}
 	case streams:

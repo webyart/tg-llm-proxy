@@ -859,6 +859,7 @@ func (d *Dispatcher) runToolLoop(ctx context.Context, state *toolLoopContinuatio
 			var err error
 			resp, err = d.callModel(ctx, state.userID, state.request, state.streamer, state.session)
 			if err != nil {
+				err = tagTaskCallPhase(state.metadata, taskPhaseTool, err)
 				d.logTaskModelFailure(ctx, state.metadata.taskID, state.metadata.taskStep, state.request.Timeout, taskPhaseTool, err)
 				return resp, err
 			}
@@ -998,6 +999,7 @@ func (d *Dispatcher) runToolLoop(ctx context.Context, state *toolLoopContinuatio
 	state.request.Tools = nil
 	var response, err = d.callModel(ctx, state.userID, state.request, state.streamer, state.session)
 	if err != nil {
+		err = tagTaskCallPhase(state.metadata, taskPhaseFinal, err)
 		d.logTaskModelFailure(ctx, state.metadata.taskID, state.metadata.taskStep, state.request.Timeout, taskPhaseFinal, err)
 	}
 	if err == nil && strings.TrimSpace(stripTextualToolCalls(response.Content)) == "" {
@@ -1011,6 +1013,7 @@ func (d *Dispatcher) runToolLoop(ctx context.Context, state *toolLoopContinuatio
 		retryRequest.Messages = append([]model.Message{{Role: model.RoleSystem, Content: finalAnswerWithoutToolsInstruction}}, state.request.Messages...)
 		response, err = d.callModel(ctx, state.userID, retryRequest, state.streamer, state.session)
 		if err != nil {
+			err = tagTaskCallPhase(state.metadata, taskPhaseFinal, err)
 			d.logTaskModelFailure(ctx, state.metadata.taskID, state.metadata.taskStep, retryRequest.Timeout, taskPhaseFinal, err)
 		}
 	}
@@ -1054,6 +1057,38 @@ func (d *Dispatcher) logTaskModelFailure(ctx context.Context, taskID int64, step
 // confirmation. Chat answers never take this path: taskID is zero outside a task step.
 func (d *Dispatcher) taskAutoApprovesNetwork(state *toolLoopContinuation) bool {
 	return state != nil && state.metadata.taskID != 0 && d.deps.Cfg.TaskAutoApproveNetwork
+}
+
+// taskCallPhaseError tags a failed TASK model call with the phase that actually spent its budget: a tool-round
+// call (taskPhaseTool) or the final answer after the tool limit, including its corrective retry
+// (taskPhaseFinal). The tool loop wraps only a task call (metadata.taskID != 0); a chat answer keeps the model
+// client's error exactly as it was and is never attributed to a task phase.
+type taskCallPhaseError struct {
+	phase string
+	cause error
+}
+
+func (e *taskCallPhaseError) Error() string { return e.cause.Error() }
+func (e *taskCallPhaseError) Unwrap() error { return e.cause }
+
+// tagTaskCallPhase attaches the phase to a failing task call. A nil cause and a chat call pass through
+// untouched, so no non-task path can observe this type.
+func tagTaskCallPhase(metadata toolLoopMetadata, phase string, cause error) error {
+	if cause == nil || metadata.taskID == 0 {
+		return cause
+	}
+	return &taskCallPhaseError{phase: phase, cause: cause}
+}
+
+// taskCallPhase reports the phase of a failed task model call. An error the tool loop did not tag (an empty
+// answer, a store failure, an error of the step context itself) belongs to the step call path the metric has
+// always called the tool phase.
+func taskCallPhase(cause error) string {
+	var tagged *taskCallPhaseError
+	if errors.As(cause, &tagged) && tagged.phase != "" {
+		return tagged.phase
+	}
+	return taskPhaseStep
 }
 
 // toolResultKey identifies a repeated tool call with identical arguments so the loop reuses its result instead of

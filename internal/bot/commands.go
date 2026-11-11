@@ -1462,6 +1462,13 @@ func modelLimitNoticeFor(lang string, err error) (string, bool) {
 			return text, true
 		}
 		return i18n.T(lang, "ask.chat_cost_daily_limited", "0.00", "0.00"), true
+	case errors.Is(err, ErrProviderBudgetExceeded):
+		// The refusal already carries the sentence in the chat's language; the fallback is for a caller
+		// that built the sentinel without one (a unit test).
+		if text := chatLimitRefusalText(err); text != "" {
+			return text, true
+		}
+		return i18n.T(lang, "ask.provider_budget_limited"), true
 	default:
 		return "", false
 	}

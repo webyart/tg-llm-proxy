@@ -486,6 +486,16 @@
       providerSource: "Источник: {source}", providerSourceEnv: "env (MODEL_PROVIDERS)",
       providerSourceDB: "база (сохранено в Mini App)", providerBaseHost: "host: {host}",
       providerConfiguredModels: "env-список: {models}", providerModelsCount: "{count} / 20",
+      providerBudgetLabel: "Дневной бюджет, USD (пусто или 0 — без ограничения)",
+      providerBudgetPlaceholder: "0", providerBudgetInvalid: "Бюджет — число от 0 до 100000 USD.",
+      providerBudgetToday: "Сегодня потрачено: {cost}",
+      providerBudgetLine: "бюджет: {budget} · осталось: {remaining}",
+      providerBudgetUnlimited: "бюджет: без ограничения",
+      providerBudgetWarning: "Израсходовано не менее 80% дневного бюджета.",
+      usageProviderCosts: "Стоимость по провайдерам", usageProviderCostHint: "Глобальный расход всех чатов за UTC-сутки; с этим числом бот сравнивает дневной бюджет провайдера до вызова модели.",
+      usageProviderCostLine: "{provider}: {cost} из {budget}", usageProviderCostRemaining: "осталось {remaining}",
+      usageProviderCostUnlimited: "{provider}: {cost} (без ограничения)",
+      usageProviderCostWarning: "≥80% бюджета",
       errorAdminRequired: "Раздел доступен только администратору.", errorChatNotFound: "Чат не найден.",
       errorInvalidTimezone: "Неизвестный часовой пояс. Выберите IANA-название из списка.",
       errorTimezoneForbidden: "Менять часовой пояс может только владелец личного чата или администратор.",
@@ -730,6 +740,16 @@
       providerSource: "Source: {source}", providerSourceEnv: "env (MODEL_PROVIDERS)",
       providerSourceDB: "database (saved in the Mini App)", providerBaseHost: "host: {host}",
       providerConfiguredModels: "env list: {models}", providerModelsCount: "{count} / 20",
+      providerBudgetLabel: "Daily budget, USD (empty or 0 means unlimited)",
+      providerBudgetPlaceholder: "0", providerBudgetInvalid: "The budget must be a number from 0 to 100000 USD.",
+      providerBudgetToday: "Spent today: {cost}",
+      providerBudgetLine: "budget: {budget} · remaining: {remaining}",
+      providerBudgetUnlimited: "budget: unlimited",
+      providerBudgetWarning: "At least 80% of the daily budget is spent.",
+      usageProviderCosts: "Cost by provider", usageProviderCostHint: "Global spend of every chat per UTC day; the bot compares a provider's daily budget with this number before a model call.",
+      usageProviderCostLine: "{provider}: {cost} of {budget}", usageProviderCostRemaining: "remaining {remaining}",
+      usageProviderCostUnlimited: "{provider}: {cost} (unlimited)",
+      usageProviderCostWarning: "≥80% of the budget",
       errorAdminRequired: "This section is available to administrators only.", errorChatNotFound: "The chat was not found.",
       errorInvalidTimezone: "Unknown timezone. Choose an IANA name from the list.",
       errorTimezoneForbidden: "Only the private chat owner or an administrator can change the timezone.",
@@ -2786,6 +2806,35 @@
       defaultField.appendChild(defaultChoice);
       card.appendChild(defaultField);
 
+      // Daily budget of this provider. The div keeps the .provider-field look without becoming another
+      // <label>: the input carries its own aria-label, and an empty value means 0 (unlimited). The spend
+      // line below is the same attributed number the bot compares with the budget before a model call.
+      const storedBudget = Number(provider.daily_budget_usd) || 0;
+      const budgetField = element("div", "provider-field provider-budget");
+      budgetField.appendChild(element("span", "", t("providerBudgetLabel")));
+      const budgetInput = element("input", "provider-budget-input");
+      budgetInput.type = "number";
+      budgetInput.setAttribute("min", "0");
+      budgetInput.setAttribute("max", "100000");
+      budgetInput.setAttribute("step", "0.000001");
+      budgetInput.inputMode = "decimal";
+      budgetInput.placeholder = t("providerBudgetPlaceholder");
+      budgetInput.value = storedBudget > 0 ? String(storedBudget) : "";
+      budgetInput.setAttribute("aria-label", `${provider.name}: ${t("providerBudgetLabel")}`);
+      budgetField.appendChild(budgetInput);
+      card.appendChild(budgetField);
+
+      const spentToday = Number(provider.today_cost_usd) || 0;
+      const spendText = storedBudget > 0
+        ? `${t("providerBudgetToday", { cost: formatUSD(spentToday) })} · ${t("providerBudgetLine", {
+          budget: formatUSD(storedBudget), remaining: formatUSD(Math.max(0, storedBudget - spentToday)),
+        })}`
+        : `${t("providerBudgetToday", { cost: formatUSD(spentToday) })} · ${t("providerBudgetUnlimited")}`;
+      card.appendChild(element("p", "meta provider-budget-spend", spendText));
+      if (provider.warning) {
+        card.appendChild(element("p", "meta provider-budget-warning", t("providerBudgetWarning")));
+      }
+
       textarea.addEventListener("input", () => {
         const current = providerModelLines(textarea);
         const chosen = fillProviderDefaults(defaultChoice, current, defaultChoice.value);
@@ -2797,7 +2846,7 @@
 
       const actions = element("div", "settings-row");
       actions.appendChild(settingsButton(t("providerSettingsSave"),
-        () => saveAdminProvider(provider.name, textarea, defaultChoice, toggle)));
+        () => saveAdminProvider(provider, textarea, defaultChoice, toggle, budgetInput)));
       actions.appendChild(settingsButton(t("providerSettingsReset"),
         () => resetAdminProvider(provider.name), true));
       card.appendChild(actions);
@@ -2832,8 +2881,20 @@
     renderAdminProvidersBody(live);
   }
 
-  async function saveAdminProvider(name, textarea, defaultChoice, toggle) {
+  // providerBudgetUSD parses the budget input: empty is 0 (unlimited), and null means "not a valid amount".
+  // The server accepts 0..100000 USD with six decimals; the same range is enforced here so a typo is
+  // reported before a request is sent.
+  function providerBudgetUSD(input) {
+    const raw = String(input.value).trim();
+    if (raw === "") return 0;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100000) return null;
+    return parsed;
+  }
+
+  async function saveAdminProvider(provider, textarea, defaultChoice, toggle, budgetInput) {
     if (loading || !session) return;
+    const name = provider.name;
     const models = providerModelLines(textarea);
     const defaultModel = defaultChoice.value;
     if (!providerModelsValid(models, defaultModel)) {
@@ -2842,6 +2903,17 @@
       showError(t("providerSettingsInvalid"));
       return;
     }
+    const budget = providerBudgetUSD(budgetInput);
+    if (budget === null) {
+      budgetInput.setAttribute("aria-invalid", "true");
+      showError(t("providerBudgetInvalid"));
+      return;
+    }
+    budgetInput.setAttribute("aria-invalid", "false");
+    const body = { models, default_model: defaultModel, enabled: toggle.checked };
+    // The budget is sent only when it really changed: an omitted value means "preserve the stored one" on
+    // the server, so a model edit cannot lift or introduce a budget by accident.
+    if (budget !== (Number(provider.daily_budget_usd) || 0)) body.daily_budget_usd = budget;
     setBusy(true);
     showError("");
     let saved = false;
@@ -2849,7 +2921,7 @@
       await api(`/api/admin/providers/${encodeURIComponent(name)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ models, default_model: defaultModel, enabled: toggle.checked }),
+        body: JSON.stringify(body),
       });
       saved = true;
     } catch (error) {
@@ -3448,6 +3520,35 @@
       const cost = settingsSection(t("usageCostChart"), t("usageCostChartHint"));
       cost.appendChild(usageCostChart(series, range));
       ui.content.appendChild(cost);
+    }
+
+    // Provider spend against the daily budget of each configured provider. The number is global — a
+    // provider budget covers every chat — and only a provider with a budget or with spend today is shown,
+    // so a deployment without budgets keeps this block out of the tab entirely.
+    const providerCosts = Array.isArray(data.provider_costs) ? data.provider_costs : [];
+    if (providerCosts.length) {
+      const providerSection = settingsSection(t("usageProviderCosts"), t("usageProviderCostHint"));
+      for (const item of providerCosts) {
+        const costUSD = Number(item.cost_usd) || 0;
+        const budgetUSD = Number(item.budget_usd) || 0;
+        let text;
+        if (budgetUSD > 0) {
+          const remaining = item.remaining_usd === null || item.remaining_usd === undefined
+            ? Math.max(0, budgetUSD - costUSD)
+            : Number(item.remaining_usd) || 0;
+          text = `${t("usageProviderCostLine", {
+            provider: item.provider, cost: formatUSD(costUSD), budget: formatUSD(budgetUSD),
+          })} · ${t("usageProviderCostRemaining", { remaining: formatUSD(remaining) })}`;
+        } else {
+          text = t("usageProviderCostUnlimited", { provider: item.provider, cost: formatUSD(costUSD) });
+        }
+        const row = element("p", "meta usage-provider-cost", text);
+        if (item.warning) {
+          row.appendChild(element("span", "usage-provider-warning", ` · ${t("usageProviderCostWarning")}`));
+        }
+        providerSection.appendChild(row);
+      }
+      ui.content.appendChild(providerSection);
     }
 
     const rangeModels = settingsSection(t("usageRangeModels"), "");

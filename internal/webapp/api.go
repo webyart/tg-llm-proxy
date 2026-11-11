@@ -1980,6 +1980,9 @@ type usageResponse struct {
 	Truncated bool                `json:"truncated"`
 	Series    []usageSeriesBucket `json:"series"`
 	Totals    usageRangeTotals    `json:"totals"`
+	// ProviderCosts is today's spend of every configured provider with its daily budget. It is a separate
+	// block rather than part of totals: a budget covers all chats, while the totals describe this user.
+	ProviderCosts []usageProviderCost `json:"provider_costs"`
 }
 
 type usageSeriesBucket struct {
@@ -2101,5 +2104,11 @@ func (a *App) usage(w http.ResponseWriter, req *http.Request, current scope) {
 	for name, count := range series.Tools {
 		response.Totals.Tools[name] = count
 	}
+	providerCosts, err := a.usageProviderCosts(req.Context(), now)
+	if err != nil {
+		a.queryFailed(w, "usage provider costs", err)
+		return
+	}
+	response.ProviderCosts = providerCosts
 	writeJSON(w, http.StatusOK, response)
 }

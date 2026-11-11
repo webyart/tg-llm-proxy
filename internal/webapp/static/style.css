@@ -909,6 +909,22 @@ textarea { min-height: 78px; resize: vertical; line-height: 1.45; }
 .provider-enabled input { width: 22px; height: 22px; min-height: 22px; flex: 0 0 auto; accent-color: var(--accent); }
 .provider-card .settings-row { margin-top: 8px; }
 .provider-card .settings-row > button { flex: 1 1 auto; }
+/* Daily budget input of a provider card: the generic 44 px field, with tabular digits so 0.000001 and
+   100000 keep the same width and a warning stays readable down to a 320 px viewport. Empty means unlimited,
+   which is why the input has no spinner arrows of its own and no minimum. */
+.provider-field input {
+  width: 100%;
+  color: var(--text);
+  background-color: var(--field-bg);
+  border-color: var(--input-border);
+  font-variant-numeric: tabular-nums;
+}
+.provider-budget-spend { font-variant-numeric: tabular-nums; }
+.provider-budget-warning { color: var(--danger); font-weight: 650; }
+/* Usage tab: the global provider spend against each budget. One line per provider, wrapped rather than
+   clipped, and the ≥80% mark keeps the same danger colour as every other warning. */
+.usage-provider-cost { overflow-wrap: anywhere; }
+.usage-provider-warning { color: var(--danger); font-weight: 650; }
 .settings-toggle {
   min-width: 96px;
   min-height: 44px;

@@ -286,8 +286,10 @@ func TestMigration027PreservesTasksAndAddsNullableLeaseColumns(t *testing.T) {
 		t.Fatalf("upgrade schema 26 to 27: %v", err)
 	}
 	version, err := SchemaVersion(ctx, db)
-	if err != nil || version != len(MigrationSQL) || version != 27 {
-		t.Fatalf("SchemaVersion=%d err=%v, want 27", version, err)
+	// The 027 upgrade is measured by the full compiled history, not by the literal 27: later additive
+	// migrations (028 provider budgets) must not require editing this test to prove what 027 did.
+	if err != nil || version != len(MigrationSQL) || version < 27 {
+		t.Fatalf("SchemaVersion=%d err=%v, want %d (schema 27 or newer)", version, err, len(MigrationSQL))
 	}
 	for _, column := range []string{"planning_owner", "planning_lease_until"} {
 		var present int

@@ -3,24 +3,30 @@ package webapp
 // Admin provider/model editor of the Mini App.
 //
 // MODEL_PROVIDERS stays environment-only for name, base_url, api_key and timeout_seconds. This API edits
-// exactly the three runtime values an administrator may change — the closed model list, its default and the
-// enabled flag — stores them in provider_settings (migration 022) and applies them to the running router
-// without a restart. DELETE removes the row and restores the env values.
+// the runtime values an administrator may change — the closed model list, its default, the enabled flag and
+// since schema 28 the provider's daily USD budget — stores them in provider_settings (migrations 022/028)
+// and applies the model values to the running router without a restart. DELETE removes the row and restores
+// the env values, including "no budget".
 //
 // Every endpoint is admin-only by TELEGRAM_ADMIN_USERS and answers 403 admin_required before reading
-// anything. The payload is strict JSON: unknown fields are rejected by the shared decoder, all three fields
-// are required, models is 1..20 non-empty unique ids, default_model must be in models, and "strata" is the
-// reserved default endpoint and is never editable. Successful mutations are audited by the generic Mini App
-// mutation log as admin.provider.update / admin.provider.reset.
+// anything. The payload is strict JSON: unknown fields are rejected by the shared decoder, the three model
+// fields are required together, models is 1..20 non-empty unique ids, default_model must be in models, and
+// "strata" is the reserved default endpoint and is never editable. daily_budget_usd is optional: its
+// omission preserves the stored budget, and a body with only daily_budget_usd changes nothing but the
+// budget. GET additionally reports the budget, today's spend and the 80% warning of every provider.
+// Successful mutations are audited by the generic Mini App mutation log as admin.provider.update /
+// admin.provider.reset, and an explicit budget change adds an admin.provider.budget row.
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"bot/internal/model"
 	"bot/internal/store"
@@ -34,14 +40,19 @@ var adminProviderNamePattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
 
 // adminProviderEntry is one provider on the wire. BaseURL is the host of the env endpoint: no scheme path,
 // query, userinfo or key is ever sent, so the browser cannot learn a credential or an internal path.
+// DailyBudgetUSD is the stored budget (0 = unlimited); TodayCostUSD is today's spend attributed to this
+// provider with MODEL_PRICES; Warning is the 80% flag of that budget.
 type adminProviderEntry struct {
-	Name       string   `json:"name"`
-	BaseURL    string   `json:"base_url"`
-	Models     []string `json:"models"`
-	Default    string   `json:"default_model"`
-	Enabled    bool     `json:"enabled"`
-	Source     string   `json:"source"`
-	Configured []string `json:"configured_models,omitempty"`
+	Name           string   `json:"name"`
+	BaseURL        string   `json:"base_url"`
+	Models         []string `json:"models"`
+	Default        string   `json:"default_model"`
+	Enabled        bool     `json:"enabled"`
+	Source         string   `json:"source"`
+	Configured     []string `json:"configured_models,omitempty"`
+	DailyBudgetUSD float64  `json:"daily_budget_usd"`
+	TodayCostUSD   float64  `json:"today_cost_usd"`
+	Warning        bool     `json:"warning"`
 }
 
 // adminProviderName extracts {name} from /api/admin/providers/{name}. Exactly one non-empty path segment is
@@ -146,7 +157,8 @@ func (a *App) providerEntryFor(entry model.ProviderCatalogEntry) adminProviderEn
 }
 
 // adminProviderEntries answers GET. With no router it overlays the env catalogue with any stored row, so a
-// standalone Mini App still shows the persisted state; the running router path already contains it.
+// standalone Mini App still shows the persisted state; the running router path already contains it. The
+// budget and today's spend of every provider are filled from one grouped query, not one per card.
 func (a *App) adminProviderEntries(ctx context.Context) ([]adminProviderEntry, error) {
 	var catalog = a.providerCatalog()
 	var overrides = a.providerOverrides()
@@ -166,7 +178,57 @@ func (a *App) adminProviderEntries(ctx context.Context) ([]adminProviderEntry, e
 		}
 		items = append(items, a.providerEntryFor(entry))
 	}
+	if err := a.providerSpend(ctx, time.Now().UTC(), items); err != nil {
+		return nil, err
+	}
 	return items, nil
+}
+
+// providerSpend fills daily_budget_usd, today_cost_usd and warning of the wire entries. It reads the stored
+// budgets and prices today's assistant answers once for the whole list: the same grouped query and the same
+// attribution rule the bot enforces, so the admin card cannot disagree with the refusal. A deployment
+// without MODEL_PRICES has zero spend and skips the query entirely.
+func (a *App) providerSpend(ctx context.Context, now time.Time, items []adminProviderEntry) error {
+	budgets, err := store.ProviderDailyBudgets(ctx, a.db)
+	if err != nil {
+		return err
+	}
+	var costs map[string]int64
+	if a.cfg.ModelPrices.HasPrices() {
+		modelCosts, costErr := store.ModelDailyCostMicros(ctx, a.db, now, a.cfg.ModelPrices)
+		if costErr != nil {
+			return costErr
+		}
+		var catalog = make([]model.ProviderCatalogEntry, 0, len(items))
+		for _, item := range items {
+			catalog = append(catalog, model.ProviderCatalogEntry{
+				Provider: item.Name, Models: item.Models, DefaultModel: item.Default,
+				Enabled: item.Enabled, Source: item.Source,
+			})
+		}
+		costs = model.NewProviderAttribution(catalog).ProviderCosts(modelCosts)
+	}
+	for index := range items {
+		var budget = budgets[items[index].Name]
+		var cost = costs[items[index].Name]
+		items[index].DailyBudgetUSD = store.ProviderBudgetUSD(budget)
+		items[index].TodayCostUSD = float64(cost) / 1_000_000
+		if budget > 0 {
+			var warningAt = (budget*store.ProviderDailyCostWarningPercent + 99) / 100
+			items[index].Warning = cost >= warningAt
+		}
+	}
+	return nil
+}
+
+// providerEntryWithSpend returns one wire entry with the budget fields filled. It is the response shape of
+// PUT and DELETE, so the browser does not need a second GET to paint the card.
+func (a *App) providerEntryWithSpend(ctx context.Context, entry model.ProviderCatalogEntry) (adminProviderEntry, error) {
+	var items = []adminProviderEntry{a.providerEntryFor(entry)}
+	if err := a.providerSpend(ctx, time.Now().UTC(), items); err != nil {
+		return adminProviderEntry{}, err
+	}
+	return items[0], nil
 }
 
 // adminProviders — GET /api/admin/providers.
@@ -220,7 +282,7 @@ func (a *App) adminProvider(w http.ResponseWriter, req *http.Request, current sc
 	}
 	switch req.Method {
 	case http.MethodPut:
-		a.updateAdminProvider(w, req, name)
+		a.updateAdminProvider(w, req, name, current)
 	case http.MethodDelete:
 		a.resetAdminProvider(w, req, name)
 	default:
@@ -239,19 +301,51 @@ func (a *App) providerKnown(name string) bool {
 	return false
 }
 
-func (a *App) updateAdminProvider(w http.ResponseWriter, req *http.Request, name string) {
+// providerBudgetMessage is the one 400 text of an invalid daily_budget_usd: it names the range and the six
+// decimals the API stores, so a client can fix the value without guessing the unit.
+const providerBudgetMessage = "daily_budget_usd must be between 0 and 100000 USD with at most six decimals."
+
+func (a *App) updateAdminProvider(w http.ResponseWriter, req *http.Request, name string, current scope) {
 	var input struct {
-		Models       *[]string `json:"models"`
-		DefaultModel *string   `json:"default_model"`
-		Enabled      *bool     `json:"enabled"`
+		Models         *[]string `json:"models"`
+		DefaultModel   *string   `json:"default_model"`
+		Enabled        *bool     `json:"enabled"`
+		DailyBudgetUSD *float64  `json:"daily_budget_usd"`
 	}
 	if status, ok := decodeSettingsJSON(req, &input); !ok {
 		settingsDecodeError(w, status)
 		return
 	}
+	// The three model fields are still one unit: a request that changes any of them must carry all three.
+	// daily_budget_usd is optional and its omission PRESERVES the stored budget, so editing a model list can
+	// neither lift nor introduce a budget by accident. A body with only daily_budget_usd sets the budget and
+	// leaves the model override untouched.
+	if input.Models == nil && input.DefaultModel == nil && input.Enabled == nil {
+		if input.DailyBudgetUSD == nil {
+			writeError(w, http.StatusBadRequest, "provider_validation",
+				"Provide models, default_model and enabled together, or daily_budget_usd alone.")
+			return
+		}
+		a.updateAdminProviderBudget(w, req, name, current, *input.DailyBudgetUSD)
+		return
+	}
 	if input.Models == nil || input.DefaultModel == nil || input.Enabled == nil {
 		writeError(w, http.StatusBadRequest, "provider_validation", "All three fields are required: models, default_model, enabled.")
 		return
+	}
+	var budgetMicros int64
+	if input.DailyBudgetUSD != nil {
+		parsed, budgetErr := store.ProviderBudgetMicros(*input.DailyBudgetUSD)
+		if budgetErr != nil {
+			writeError(w, http.StatusBadRequest, "provider_validation", providerBudgetMessage)
+			return
+		}
+		budgetMicros = parsed
+	} else if existing, found, readErr := store.GetProviderSettings(req.Context(), a.db, name); readErr != nil {
+		a.queryFailed(w, "admin provider budget", readErr)
+		return
+	} else if found {
+		budgetMicros = existing.DailyBudgetMicros
 	}
 	var known []string
 	for _, entry := range a.providerCatalog() {
@@ -259,6 +353,7 @@ func (a *App) updateAdminProvider(w http.ResponseWriter, req *http.Request, name
 	}
 	settings, err := store.ValidateProviderSettings(store.ProviderSettings{
 		Provider: name, Models: *input.Models, DefaultModel: *input.DefaultModel, Enabled: *input.Enabled,
+		DailyBudgetMicros: budgetMicros,
 	}, known)
 	if err != nil {
 		if errors.Is(err, store.ErrUnknownProvider) {
@@ -276,6 +371,9 @@ func (a *App) updateAdminProvider(w http.ResponseWriter, req *http.Request, name
 		a.queryFailed(w, "admin provider update", err)
 		return
 	}
+	if input.DailyBudgetUSD != nil {
+		a.auditProviderBudget(req.Context(), current, name, settings.DailyBudgetMicros)
+	}
 	// Persist first, then apply: if the process dies between the two writes, the next start reads the row
 	// and applies it; the reverse order would leave a running router that no restart can reproduce.
 	if overrides := a.providerOverrides(); overrides != nil {
@@ -289,10 +387,72 @@ func (a *App) updateAdminProvider(w http.ResponseWriter, req *http.Request, name
 		}
 	}
 	a.invalidateModelCache()
-	writeJSON(w, http.StatusOK, a.providerEntryFor(model.ProviderCatalogEntry{
+	item, err := a.providerEntryWithSpend(req.Context(), model.ProviderCatalogEntry{
 		Provider: name, Models: settings.Models, DefaultModel: settings.DefaultModel,
 		Enabled: settings.Enabled, Source: model.ProviderSourceDB,
-	}))
+	})
+	if err != nil {
+		a.queryFailed(w, "admin provider update", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+// updateAdminProviderBudget stores the daily budget of one provider and nothing else. Models, default_model
+// and enabled stay exactly as they are (the stored row or the env base), so a budget can be changed without
+// resubmitting a model list.
+func (a *App) updateAdminProviderBudget(w http.ResponseWriter, req *http.Request, name string, current scope, usd float64) {
+	micros, err := store.ProviderBudgetMicros(usd)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "provider_validation", providerBudgetMessage)
+		return
+	}
+	var entry model.ProviderCatalogEntry
+	for _, candidate := range a.providerCatalog() {
+		if candidate.Provider == name {
+			entry = candidate
+			break
+		}
+	}
+	if err := store.SetProviderBudget(req.Context(), a.db, name, micros, store.ProviderSettings{
+		Provider: name, Models: entry.Models, DefaultModel: entry.DefaultModel, Enabled: entry.Enabled,
+		DailyBudgetMicros: micros,
+	}); err != nil {
+		if errors.Is(err, store.ErrInvalidProviderSettings) {
+			writeError(w, http.StatusBadRequest, "provider_validation", providerBudgetMessage)
+			return
+		}
+		a.queryFailed(w, "admin provider budget", err)
+		return
+	}
+	a.auditProviderBudget(req.Context(), current, name, micros)
+	// The row now exists, so the router reports "db" as its source exactly as a restart would apply it:
+	// the models themselves are unchanged (they came from the effective catalogue entry).
+	if overrides := a.providerOverrides(); overrides != nil {
+		if err := overrides.SetProviderModels(name, entry.Models, entry.DefaultModel, entry.Enabled); err != nil {
+			a.logger.Warn("the provider row was stored but its model list was not re-applied",
+				"provider", name, "error", err)
+		}
+	}
+	var updated = entry
+	updated.Source = model.ProviderSourceDB
+	item, err := a.providerEntryWithSpend(req.Context(), updated)
+	if err != nil {
+		a.queryFailed(w, "admin provider budget", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+// auditProviderBudget records an explicit budget change. The generic Mini App mutation log names the route
+// admin.provider.update; a budget has its own operation, so every amount ever set can be found without
+// parsing model lists out of a detail string.
+func (a *App) auditProviderBudget(ctx context.Context, current scope, name string, micros int64) {
+	var detail = fmt.Sprintf("operation=admin.provider.budget chat_id=%d provider=%s budget_micros=%d",
+		current.ChatID, name, micros)
+	if err := store.LogEvent(ctx, a.db, current.UserID, "miniapp_mutation", detail); err != nil {
+		a.logger.Error("Mini App provider budget audit failed", "provider", name, "error", err)
+	}
 }
 
 func (a *App) resetAdminProvider(w http.ResponseWriter, req *http.Request, name string) {
@@ -333,5 +493,10 @@ func (a *App) resetAdminProvider(w http.ResponseWriter, req *http.Request, name 
 		}
 	}
 	a.invalidateModelCache()
-	writeJSON(w, http.StatusOK, a.providerEntryFor(entry))
+	item, err := a.providerEntryWithSpend(req.Context(), entry)
+	if err != nil {
+		a.queryFailed(w, "admin provider reset", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }

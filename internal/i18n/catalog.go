@@ -667,6 +667,7 @@ var ruMessages = map[string]string{
 	// disabled-tools allowlist. Tool names (read_url, web_search, calculator) are never translated.
 	"ask.chat_daily_limited":      "Дневной лимит обращений к модели для этого чата исчерпан (не более %d вызовов за UTC-сутки). Попробуйте ещё раз после 00:00 UTC.",
 	"ask.chat_cost_daily_limited": "Дневной бюджет этого чата исчерпан: израсходовано $%s из $%s за UTC-сутки. Попробуйте ещё раз после 00:00 UTC.",
+	"ask.provider_budget_limited": "Дневной бюджет провайдера моделей исчерпан. Попробуйте ещё раз после 00:00 UTC.",
 	"chat.limit_minute":           "Слишком часто: в этом чате не больше %d сообщений в минуту. Подождите минуту и повторите.",
 	"limits.title":                "Лимиты чата %d (%s):",
 	"limits.source":               "Источник: %s",
@@ -1273,6 +1274,7 @@ var enMessages = map[string]string{
 	// disabled-tools allowlist. Tool names stay untranslated on purpose.
 	"ask.chat_daily_limited":      "The daily model call limit of this chat is exhausted (at most %d calls per UTC day). Try again after 00:00 UTC.",
 	"ask.chat_cost_daily_limited": "The daily cost budget of this chat is exhausted: $%s of $%s spent per UTC day. Try again after 00:00 UTC.",
+	"ask.provider_budget_limited": "The daily budget of the model provider is exhausted. Try again after 00:00 UTC.",
 	"chat.limit_minute":           "Too often: this chat allows at most %d messages per minute. Wait a minute and repeat.",
 	"limits.title":                "Limits of chat %d (%s):",
 	"limits.source":               "Source: %s",

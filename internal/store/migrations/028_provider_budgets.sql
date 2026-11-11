@@ -1,0 +1,13 @@
+-- 028_provider_budgets.sql — a daily USD budget per configured provider (schema 28).
+--
+-- The administrator sets a daily limit for one named provider (Kimi, DeepSeek, ...) in the Mini App. Before
+-- every model call the bot prices today's assistant answers with MODEL_PRICES, attributes each stored model
+-- to its provider and refuses the call of a provider whose spend already reached its budget. The column is
+-- additive and defaults to 0, which means "unlimited": a database upgraded from schema 27 keeps exactly the
+-- behaviour it had, and an operator who never sets a budget sees no change at all.
+--
+-- The budget is stored in millionths of a dollar, the same unit as chat_limits.daily_cost_limit_micros, so
+-- the API can report the six decimals it accepts and the comparison in callModel needs no float arithmetic.
+-- Only ADD COLUMN is used: there is no data copy and no table rebuild. A negative budget is refused by the
+-- store and the admin API; SQLite cannot add a CHECK constraint by ALTER TABLE, so the writer is the guard.
+ALTER TABLE provider_settings ADD COLUMN daily_budget_micros INTEGER NOT NULL DEFAULT 0;

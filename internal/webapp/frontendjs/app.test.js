@@ -1836,3 +1836,84 @@ test("usage bucket labels follow the chat timezone instead of UTC", async () => 
   assert.doesNotMatch(text, /21:00/, "usage axis still shows the UTC hour");
   assert.doesNotMatch(text, /\(UTC\)/, "usage screen still claims UTC");
 });
+
+// ---- v1.74: per-provider daily budgets -------------------------------------
+
+test("admin provider budget renders today's spend and is sent only when it changed", async () => {
+  const harness = await createHarness();
+  const saved = [];
+  harness.setHandler(adminSettingsHandler([], {
+    handle(request) {
+      if (request.path === "/api/admin/providers") {
+        return jsonResponse({
+          items: [adminProviderFixture({ daily_budget_usd: 10, today_cost_usd: 8.5, warning: true })],
+        });
+      }
+      if (request.path === "/api/admin/providers/kimi" && request.options.method === "PUT") {
+        saved.push(JSON.parse(request.options.body));
+        return jsonResponse(adminProviderFixture({ daily_budget_usd: 10 }));
+      }
+      return null;
+    },
+  }));
+  await openTab(harness, "settings");
+  let card = providerSection(harness).querySelector(".provider-card");
+  const input = card.querySelector(".provider-budget-input");
+  assert.ok(input, "the provider budget input is missing");
+  assert.equal(input.type, "number");
+  assert.equal(input.getAttribute("min"), "0");
+  assert.equal(input.getAttribute("max"), "100000");
+  assert.equal(input.getAttribute("step"), "0.000001");
+  assert.equal(input.value, "10");
+  assert.ok(card.textContent.includes("Сегодня потрачено: $8.50"));
+  assert.ok(card.textContent.includes("бюджет: $10.00 · осталось: $1.50"));
+  assert.ok(card.textContent.includes("Израсходовано не менее 80% дневного бюджета."));
+
+  // An unchanged budget is omitted from the strict payload: the server then preserves the stored amount.
+  findButton(card, "Сохранить").click();
+  await harness.flush();
+  assert.deepEqual(saved[0], { models: ["kimi-k3", "kimi-k2"], default_model: "kimi-k3", enabled: true });
+
+  // A typed amount is validated locally and then sent as a six-decimal number.
+  card = providerSection(harness).querySelector(".provider-card");
+  card.querySelector(".provider-budget-input").value = "100001";
+  harness.resetRequests();
+  findButton(card, "Сохранить").click();
+  await harness.flush();
+  assert.equal(harness.requests.length, 0, "an out-of-range budget must not reach the server");
+  assert.ok(harness.element("error").textContent.includes("Бюджет — число от 0 до 100000 USD."));
+  assert.equal(card.querySelector(".provider-budget-input").getAttribute("aria-invalid"), "true");
+
+  card.querySelector(".provider-budget-input").value = "12.5";
+  findButton(card, "Сохранить").click();
+  await harness.flush();
+  // adminSettingsHandler calls the custom handler twice per matching request, so the newest body is read.
+  assert.deepEqual(saved.at(-1), {
+    models: ["kimi-k3", "kimi-k2"], default_model: "kimi-k3", enabled: true, daily_budget_usd: 12.5,
+  });
+  assert.ok(harness.element("notice").textContent.includes("Настройки провайдера сохранены."));
+});
+
+test("usage tab shows provider costs against their daily budgets", async () => {
+  const harness = await createHarness();
+  enableSvg(harness);
+  harness.setHandler((request, fallback) => {
+    if (request.path.startsWith("/api/usage")) {
+      const payload = usagePayload("day");
+      payload.provider_costs = [
+        { provider: "kimi", cost_usd: 1.7, budget_usd: 2, remaining_usd: 0.3, warning: true },
+        { provider: "deepseek", cost_usd: 0.4, budget_usd: 0, remaining_usd: null, warning: false },
+      ];
+      return jsonResponse(payload);
+    }
+    return fallback();
+  });
+  await openTab(harness, "usage");
+  const content = harness.element("content");
+  const text = content.textContent;
+  assert.ok(text.includes("Стоимость по провайдерам"));
+  assert.match(text, /kimi: \$1\.70 из \$2\.00 · осталось \$0\.30/);
+  assert.match(text, /deepseek: \$0\.40 \(без ограничения\)/);
+  assert.ok(text.includes("≥80% бюджета"));
+  assert.equal(content.querySelectorAll(".usage-provider-cost").length, 2);
+});

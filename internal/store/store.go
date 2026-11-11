@@ -321,6 +321,8 @@ var migrationStatementGuards = map[int]migrationStatementGuard{
 	// 027_task_planning_lease.sql: ALTER TABLE tasks ADD COLUMN planning_owner / planning_lease_until
 	// (two nullable statements; the guarded runner must still reach the index).
 	27: addColumnIfMissingGuard("tasks", "planning_owner", "planning_lease_until"),
+	// 028_provider_budgets.sql: ALTER TABLE provider_settings ADD COLUMN daily_budget_micros (one statement).
+	28: addColumnIfMissingGuard("provider_settings", "daily_budget_micros"),
 }
 
 // addColumnIfMissingGuard skips exactly one `ALTER TABLE <table> ADD COLUMN <column> …` statement when

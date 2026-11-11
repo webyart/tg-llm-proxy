@@ -3,9 +3,10 @@ package store
 // Runtime overrides of a configured model provider.
 //
 // MODEL_PROVIDERS is the base: a provider is an environment row, so name, base_url, api_key and
-// timeout_seconds never enter this table. One row of provider_settings overrides exactly the three values
-// an administrator edits in the Mini App — models, default_model and enabled. The absence of a row is the
-// default state of the feature: the env list applies, and a DELETE is the reset that brings it back.
+// timeout_seconds never enter this table. One row of provider_settings overrides exactly the values an
+// administrator edits in the Mini App — models, default_model, enabled and (schema 28) the daily USD budget.
+// The absence of a row is the default state of the feature: the env list applies, and a DELETE is the reset
+// that brings it back (including "no budget").
 //
 // There is no foreign key because the parent of this row is the environment, not another table. A row for
 // a provider that MODEL_PROVIDERS no longer lists is therefore possible; startup ignores it (and logs the
@@ -13,7 +14,7 @@ package store
 //
 // Validation lives here as well as in the router/API: the store is the last place that can refuse an
 // override written by anything other than the Mini App, so a hand-edited row cannot silently empty a
-// provider or point its default at a model that is not in the list.
+// provider, point its default at a model that is not in the list, or store a negative budget.
 
 import (
 	"context"
@@ -21,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 	"time"
@@ -30,6 +32,13 @@ import (
 // the /model keyboard limit: a longer list is not a useful catalogue, and the Mini App textarea caps at
 // the same number.
 const MaxProviderModels = 20
+
+// MaxProviderDailyBudgetMicros is the upper bound of one provider's daily budget: 100000 USD. It matches the
+// admin API range (0..100000 with six decimals) and keeps a mistyped amount from becoming an absurd limit.
+// Zero is unlimited, so a provider without a budget is the default state.
+const MaxProviderDailyBudgetMicros int64 = 100_000_000_000
+
+const budgetMicrosPerUSD = 1_000_000.0
 
 // Errors of this file. The admin API maps ErrInvalidProviderSettings to 400 and ErrUnknownProvider to
 // 404; the startup apply only logs both.
@@ -43,13 +52,15 @@ var (
 var providerNamePattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
 
 // ProviderSettings is one provider_settings row in its Go form. Models is the parsed, trimmed and
-// deduplicated list; UpdatedAt is the stored timestamp of the last write.
+// deduplicated list; UpdatedAt is the stored timestamp of the last write. DailyBudgetMicros is the daily
+// USD budget in millionths of a dollar, where 0 means unlimited.
 type ProviderSettings struct {
-	Provider     string
-	Models       []string
-	DefaultModel string
-	Enabled      bool
-	UpdatedAt    string
+	Provider          string
+	Models            []string
+	DefaultModel      string
+	Enabled           bool
+	DailyBudgetMicros int64
+	UpdatedAt         string
 }
 
 // Clone returns a copy whose Models slice cannot be mutated through the receiver.
@@ -72,6 +83,10 @@ func NormalizeProviderSettings(settings ProviderSettings) (ProviderSettings, err
 	}
 	if !providerNamePattern.MatchString(settings.Provider) {
 		return ProviderSettings{}, fmt.Errorf("%w: provider %q must match [a-z0-9_-]+", ErrInvalidProviderSettings, settings.Provider)
+	}
+	if settings.DailyBudgetMicros < 0 || settings.DailyBudgetMicros > MaxProviderDailyBudgetMicros {
+		return ProviderSettings{}, fmt.Errorf("%w: daily budget of provider %q must be between 0 and %d micros (0..100000 USD)",
+			ErrInvalidProviderSettings, settings.Provider, MaxProviderDailyBudgetMicros)
 	}
 	if len(settings.Models) == 0 {
 		return ProviderSettings{}, fmt.Errorf("%w: provider %q has no models", ErrInvalidProviderSettings, settings.Provider)
@@ -128,7 +143,7 @@ func ValidateProviderSettings(settings ProviderSettings, known []string) (Provid
 // slice, not an error: a deployment without overrides keeps the env values on every start.
 func ListProviderSettings(ctx context.Context, db *sql.DB) ([]ProviderSettings, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT provider, models_json, default_model, enabled, updated_at
+		SELECT provider, models_json, default_model, enabled, daily_budget_micros, updated_at
 		FROM provider_settings
 		ORDER BY provider`)
 	if err != nil {
@@ -141,7 +156,7 @@ func ListProviderSettings(ctx context.Context, db *sql.DB) ([]ProviderSettings, 
 		var row ProviderSettings
 		var modelsJSON string
 		var enabled int
-		if err := rows.Scan(&row.Provider, &modelsJSON, &row.DefaultModel, &enabled, &row.UpdatedAt); err != nil {
+		if err := rows.Scan(&row.Provider, &modelsJSON, &row.DefaultModel, &enabled, &row.DailyBudgetMicros, &row.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("list provider settings row: %w", err)
 		}
 		if err := json.Unmarshal([]byte(modelsJSON), &row.Models); err != nil {
@@ -168,9 +183,9 @@ func GetProviderSettings(ctx context.Context, db *sql.DB, provider string) (Prov
 	var modelsJSON string
 	var enabled int
 	err := db.QueryRowContext(ctx, `
-		SELECT provider, models_json, default_model, enabled, updated_at
+		SELECT provider, models_json, default_model, enabled, daily_budget_micros, updated_at
 		FROM provider_settings WHERE provider = ?`, provider).
-		Scan(&row.Provider, &modelsJSON, &row.DefaultModel, &enabled, &row.UpdatedAt)
+		Scan(&row.Provider, &modelsJSON, &row.DefaultModel, &enabled, &row.DailyBudgetMicros, &row.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ProviderSettings{Provider: provider}, false, nil
 	}
@@ -201,14 +216,16 @@ func UpsertProviderSettings(ctx context.Context, db *sql.DB, settings ProviderSe
 		enabled = 1
 	}
 	_, err = db.ExecContext(ctx, `
-		INSERT INTO provider_settings (provider, models_json, default_model, enabled, updated_at)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO provider_settings (provider, models_json, default_model, enabled, daily_budget_micros, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(provider) DO UPDATE SET
 			models_json = excluded.models_json,
 			default_model = excluded.default_model,
 			enabled = excluded.enabled,
+			daily_budget_micros = excluded.daily_budget_micros,
 			updated_at = excluded.updated_at`,
 		normalized.Provider, string(modelsJSON), normalized.DefaultModel, enabled,
+		normalized.DailyBudgetMicros,
 		time.Now().UTC().Format("2006-01-02 15:04:05"))
 	if err != nil {
 		return fmt.Errorf("write provider settings of %q: %w", normalized.Provider, err)
@@ -217,7 +234,8 @@ func UpsertProviderSettings(ctx context.Context, db *sql.DB, settings ProviderSe
 }
 
 // DeleteProviderSettings removes one override and reports whether a row existed. Deleting an override
-// that is not there is not an error: the reset is idempotent and means "the env value applies now".
+// that is not there is not an error: the reset is idempotent and means "the env value applies now". The row
+// carries the budget as well, so the reset also restores "no daily budget" (0 = unlimited).
 func DeleteProviderSettings(ctx context.Context, db *sql.DB, provider string) (bool, error) {
 	provider = strings.TrimSpace(provider)
 	if provider == "" {
@@ -232,4 +250,132 @@ func DeleteProviderSettings(ctx context.Context, db *sql.DB, provider string) (b
 		return false, fmt.Errorf("delete provider settings of %q: rows affected: %w", provider, err)
 	}
 	return affected > 0, nil
+}
+
+// ProviderBudgetMicros converts a USD amount to the stored millionths of a dollar. It refuses a non-finite
+// or out-of-range amount; the value is rounded to the nearest micro, so a client that sends more than six
+// decimals is stored at the precision the API reports. Zero is unlimited and always accepted.
+func ProviderBudgetMicros(usd float64) (int64, error) {
+	if math.IsNaN(usd) || math.IsInf(usd, 0) {
+		return 0, fmt.Errorf("%w: the daily budget is not a finite number", ErrInvalidProviderSettings)
+	}
+	var micros = math.Round(usd * budgetMicrosPerUSD)
+	if micros < 0 || micros > float64(MaxProviderDailyBudgetMicros) {
+		return 0, fmt.Errorf("%w: the daily budget must be between 0 and %.0f USD",
+			ErrInvalidProviderSettings, float64(MaxProviderDailyBudgetMicros)/budgetMicrosPerUSD)
+	}
+	return int64(micros), nil
+}
+
+// ProviderBudgetUSD is ProviderBudgetMicros inverted: the six decimals the admin API and the usage response
+// report, where 0 means unlimited.
+func ProviderBudgetUSD(micros int64) float64 {
+	return float64(micros) / budgetMicrosPerUSD
+}
+
+// GetProviderBudget reads the daily budget of one provider in millionths of a dollar. A provider without a
+// provider_settings row has no budget, so the missing row is (0, nil) rather than an error: "unlimited" is
+// the default state of the feature.
+func GetProviderBudget(ctx context.Context, db *sql.DB, provider string) (int64, error) {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return 0, fmt.Errorf("%w: provider is empty", ErrInvalidProviderSettings)
+	}
+	var micros int64
+	err := db.QueryRowContext(ctx,
+		`SELECT daily_budget_micros FROM provider_settings WHERE provider = ?`, provider).Scan(&micros)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read provider budget of %q: %w", provider, err)
+	}
+	return micros, nil
+}
+
+// ProviderDailyBudgets returns the positive daily budgets of every provider in one query. A provider without
+// a row or with 0 is absent from the map: the caller skips it, so a deployment without budgets never reads
+// the spend table. The map is never nil, so a caller can range over it without a special case.
+func ProviderDailyBudgets(ctx context.Context, db *sql.DB) (map[string]int64, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT provider, daily_budget_micros
+		FROM provider_settings
+		WHERE daily_budget_micros > 0
+		ORDER BY provider`)
+	if err != nil {
+		return nil, fmt.Errorf("list provider budgets: %w", err)
+	}
+	defer rows.Close()
+	var budgets = map[string]int64{}
+	for rows.Next() {
+		var provider string
+		var micros int64
+		if err := rows.Scan(&provider, &micros); err != nil {
+			return nil, fmt.Errorf("list provider budgets row: %w", err)
+		}
+		budgets[provider] = micros
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list provider budgets rows: %w", err)
+	}
+	return budgets, nil
+}
+
+// SetProviderBudget stores only the daily budget of one provider. An existing row keeps its models, default
+// and enabled flag: models_json and default_model are required by the schema, but a budget change is not a
+// model change. A provider without a row gets one built from seed (the effective catalogue entry), so a
+// budget can be set before the administrator ever edits the model list.
+func SetProviderBudget(ctx context.Context, db *sql.DB, provider string, micros int64, seed ProviderSettings) error {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return fmt.Errorf("%w: provider is empty", ErrInvalidProviderSettings)
+	}
+	if micros < 0 || micros > MaxProviderDailyBudgetMicros {
+		return fmt.Errorf("%w: daily budget of provider %q must be between 0 and %d micros (0..100000 USD)",
+			ErrInvalidProviderSettings, provider, MaxProviderDailyBudgetMicros)
+	}
+	var updatedAt = time.Now().UTC().Format("2006-01-02 15:04:05")
+	// The fast path keeps the model columns untouched, and the seed is only validated when a row really has
+	// to be created.
+	result, err := db.ExecContext(ctx,
+		`UPDATE provider_settings SET daily_budget_micros = ?, updated_at = ? WHERE provider = ?`,
+		micros, updatedAt, provider)
+	if err != nil {
+		return fmt.Errorf("write provider budget of %q: %w", provider, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("write provider budget of %q: rows affected: %w", provider, err)
+	}
+	if affected > 0 {
+		return nil
+	}
+	seed.Provider = provider
+	seed.DailyBudgetMicros = micros
+	normalized, err := NormalizeProviderSettings(seed)
+	if err != nil {
+		return err
+	}
+	modelsJSON, err := json.Marshal(normalized.Models)
+	if err != nil {
+		return fmt.Errorf("provider budget of %q: models_json: %w", normalized.Provider, err)
+	}
+	var enabled = 0
+	if normalized.Enabled {
+		enabled = 1
+	}
+	// ON CONFLICT keeps the UPDATE/INSERT pair safe when two administrators save at the same moment: the
+	// loser overwrites only the budget and the timestamp, never the other process's model list.
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO provider_settings (provider, models_json, default_model, enabled, daily_budget_micros, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(provider) DO UPDATE SET
+			daily_budget_micros = excluded.daily_budget_micros,
+			updated_at = excluded.updated_at`,
+		normalized.Provider, string(modelsJSON), normalized.DefaultModel, enabled, normalized.DailyBudgetMicros,
+		updatedAt)
+	if err != nil {
+		return fmt.Errorf("write provider budget of %q: %w", normalized.Provider, err)
+	}
+	return nil
 }

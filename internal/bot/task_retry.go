@@ -39,7 +39,8 @@ func taskStepRetryable(ctx context.Context, cause error) bool {
 		errors.Is(cause, store.ErrTaskGoal), errors.Is(cause, ErrTaskPlan):
 		return false
 	case errors.Is(cause, ErrModelRateLimited), errors.Is(cause, ErrModelDailyLimited),
-		errors.Is(cause, ErrChatModelDailyLimited), errors.Is(cause, model.ErrNoRoom):
+		errors.Is(cause, ErrChatModelDailyLimited), errors.Is(cause, ErrProviderBudgetExceeded),
+		errors.Is(cause, model.ErrNoRoom):
 		return false
 	case errors.Is(cause, model.ErrEmptyAnswer):
 		return true

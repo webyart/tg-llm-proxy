@@ -50,7 +50,8 @@ func taskFailureReason(cause error) string {
 		return "other"
 	case errors.Is(cause, model.ErrEmptyAnswer):
 		return "empty"
-	case errors.Is(cause, ErrModelRateLimited), errors.Is(cause, ErrModelDailyLimited), errors.Is(cause, ErrChatModelDailyLimited):
+	case errors.Is(cause, ErrModelRateLimited), errors.Is(cause, ErrModelDailyLimited),
+		errors.Is(cause, ErrChatModelDailyLimited), errors.Is(cause, ErrProviderBudgetExceeded):
 		return "budget"
 	case errors.Is(cause, store.ErrTaskInvalid), errors.Is(cause, store.ErrTaskStepResult),
 		errors.Is(cause, store.ErrTaskGoal), errors.Is(cause, ErrTaskPlan):

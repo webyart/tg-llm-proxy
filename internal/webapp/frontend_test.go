@@ -1152,7 +1152,13 @@ func TestFrontendAdminProviderSection(t *testing.T) {
 		`providerSettingsInvalid: `, `providerSourceEnv: "env (MODEL_PROVIDERS)"`,
 		`await api("/api/admin/providers")`,
 		"await api(`/api/admin/providers/${encodeURIComponent(name)}`, {",
-		`method: "PUT"`, `body: JSON.stringify({ models, default_model: defaultModel, enabled: toggle.checked })`,
+		`method: "PUT"`, `body: JSON.stringify(body)`,
+		`if (budget !== (Number(provider.daily_budget_usd) || 0)) body.daily_budget_usd = budget`,
+		`providerBudgetUSD(`,
+		`providerBudgetLabel: "Дневной бюджет, USD (пусто или 0 — без ограничения)"`,
+		`providerBudgetLabel: "Daily budget, USD (empty or 0 means unlimited)"`,
+		`providerBudgetWarning: `, `providerBudgetInvalid: `, `providerBudgetToday: `,
+		`input.type = "number"`, `budgetInput.setAttribute("step", "0.000001")`,
 		`{ method: "DELETE" }`,
 		`if (data.is_admin)`,
 		`providerModelsValid(models, defaultModel)`,
@@ -1166,7 +1172,7 @@ func TestFrontendAdminProviderSection(t *testing.T) {
 		}
 	}
 	css := frontendAsset(t, "static/style.css")
-	for _, want := range []string{".provider-card", ".provider-enabled", ".provider-field", "min-height: 44px", "min-height: 88px"} {
+	for _, want := range []string{".provider-card", ".provider-enabled", ".provider-field", "min-height: 44px", "min-height: 88px", ".provider-field input", ".provider-budget-warning"} {
 		if !strings.Contains(css, want) {
 			t.Errorf("style.css misses the admin provider control style %q", want)
 		}

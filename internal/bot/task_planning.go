@@ -151,6 +151,7 @@ func (d *Dispatcher) failTaskPlan(ctx context.Context, task store.Task, cause er
 	task.Status = store.TaskStatusFailed
 	task.Error = reason
 	task.FinishedAt = &now
+	d.countTaskPlanningFailure(cause)
 	d.countTaskFailed(cause)
 	d.observeTaskDuration(task, now)
 	d.showTaskPlanFailureStatus(ctx, &task, reason)
@@ -282,6 +283,7 @@ func (d *Dispatcher) recoverStaleTaskPlanning(ctx context.Context, now time.Time
 			task.Status = store.TaskStatusFailed
 			task.Error = reason
 			task.FinishedAt = &now
+			d.countTaskPlanningFailure(errors.New("stale task planning"))
 			d.countTaskFailed(errors.New("stale task planning"))
 			d.observeTaskDuration(task, now)
 			d.showTaskPlanFailureStatus(ctx, &task, reason)

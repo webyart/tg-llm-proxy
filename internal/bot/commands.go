@@ -1043,6 +1043,8 @@ func (d *Dispatcher) finishModelAnswer(ctx context.Context, replyCtx context.Con
 		TokensOut: resp.TokensOut,
 		Model:     replyModel(resp.Model, selectedModel),
 		LatencyMs: resp.Latency.Milliseconds(),
+		// The same «⚡ 0.8s» the footer shows is persisted, so a Mini App reload can render it from history.
+		FirstTokenMs: firstTokenMs(resp.FirstTokenLatency),
 	})
 	if writeErr != nil {
 		return writeErr

@@ -107,6 +107,67 @@ test("a failed chat feedback click reverts the optimistic state", async () => {
   assert.equal(harness.element("notice").hidden, true);
 });
 
+test("chat history renders the stored TTFT in the stats line", async () => {
+  const harness = await createHarness();
+  harness.setHandler((request, fallback) => {
+    if (request.path.startsWith("/api/history?")) {
+      return jsonResponse({
+        items: [{
+          id: 9,
+          role: "assistant",
+          content: "стриминговый ответ",
+          created_at: "2026-01-01",
+          feedback: 0,
+          model: "qwen-test",
+          tokens_in: 12,
+          tokens_out: 40,
+          latency_ms: 4000,
+          first_token_ms: 800,
+        }],
+        next_before_id: null,
+      });
+    }
+    return fallback();
+  });
+  await openTab(harness, "chat");
+
+  const article = findArticle(harness.element("content"), "стриминговый ответ");
+  const stats = article.querySelector(".chat-stats");
+  assert.ok(stats, "a history assistant answer with metrics must render the stats line");
+  assert.match(stats.textContent, /⚡ 0\.8 с/);
+  assert.match(stats.textContent, /⏱ 4\.0 с/);
+});
+
+test("chat history omits the TTFT marker when nothing was measured", async () => {
+  const harness = await createHarness();
+  harness.setHandler((request, fallback) => {
+    if (request.path.startsWith("/api/history?")) {
+      return jsonResponse({
+        items: [{
+          id: 10,
+          role: "assistant",
+          content: "ответ без измерения",
+          created_at: "2026-01-01",
+          feedback: 0,
+          model: "qwen-test",
+          tokens_in: 12,
+          tokens_out: 40,
+          latency_ms: 1200,
+        }],
+        next_before_id: null,
+      });
+    }
+    return fallback();
+  });
+  await openTab(harness, "chat");
+
+  const article = findArticle(harness.element("content"), "ответ без измерения");
+  const stats = article.querySelector(".chat-stats");
+  assert.ok(stats, "a history assistant answer with metrics must render the stats line");
+  assert.match(stats.textContent, /⏱ 1\.2 с/);
+  assert.doesNotMatch(stats.textContent, /⚡/);
+});
+
 test("a streamed answer renders markdown and gets feedback from the done message_id", async () => {
   const harness = await createHarness();
   harness.setHandler((request, fallback) => {

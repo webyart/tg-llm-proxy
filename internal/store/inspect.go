@@ -210,14 +210,17 @@ func ListChats(ctx context.Context, db *sql.DB, chatID int64, limit int) ([]Chat
 // that printed 0 would claim «the model used zero tokens» where the truth is «nobody counted». LatencyMS is
 // -1 only if a row was written outside Append: Append stores the plain int64 of Message, so a user row
 type RecentMessage struct {
-	ID                int64
-	ChatID            int64
-	Role              string
-	Content           string
-	TokensIn          int64
-	TokensOut         int64
-	Model             string
-	LatencyMS         int64
+	ID        int64
+	ChatID    int64
+	Role      string
+	Content   string
+	TokensIn  int64
+	TokensOut int64
+	Model     string
+	LatencyMS int64
+	// FirstTokenMS is -1 when the row carries no measurement (NULL): a non-streamed answer, a tool-only
+	// turn or a row older than migration 026. The viewer prints it as «—», never as an instant 0 ms.
+	FirstTokenMS      int64
 	TelegramMessageID int64
 	CreatedAt         string
 }
@@ -231,7 +234,7 @@ func RecentMessages(ctx context.Context, db *sql.DB, chatID int64, limit int) ([
 		SELECT m.id, m.chat_id, m.role, m.content,
 		       COALESCE(m.tokens_in, -1), COALESCE(m.tokens_out, -1),
 		       COALESCE(m.model, ''), COALESCE(m.latency_ms, -1),
-		       COALESCE(m.telegram_message_id, -1), m.created_at
+		       COALESCE(m.first_token_ms, -1), COALESCE(m.telegram_message_id, -1), m.created_at
 		  FROM messages m`
 	var args = []any{}
 	if chatID > 0 {
@@ -251,7 +254,7 @@ func RecentMessages(ctx context.Context, db *sql.DB, chatID int64, limit int) ([
 	for rows.Next() {
 		var row RecentMessage
 		if scanErr := rows.Scan(&row.ID, &row.ChatID, &row.Role, &row.Content, &row.TokensIn, &row.TokensOut,
-			&row.Model, &row.LatencyMS, &row.TelegramMessageID, &row.CreatedAt); scanErr != nil {
+			&row.Model, &row.LatencyMS, &row.FirstTokenMS, &row.TelegramMessageID, &row.CreatedAt); scanErr != nil {
 			return nil, fmt.Errorf("store.RecentMessages: %w ", scanErr)
 		}
 		found = append(found, row)

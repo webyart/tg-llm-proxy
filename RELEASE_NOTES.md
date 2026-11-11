@@ -2,7 +2,17 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.71.0
+## Новейший выпуск: v1.72.0
+
+# tg-llm-proxy v1.72.0
+
+## TTFT in history and task/planning alerts
+
+- Schema 26 adds nullable `messages.first_token_ms`; assistant rows from Telegram, Mini App and task synthesis store `FirstTokenLatency`, and `/api/history` returns it. The Mini App history stats line now shows `⚡ 0.8 s` after reload; unknown/non-streamed stays NULL (no fake zero).
+- Alerts: `BotTaskFailureRate`, `BotTaskPlanningSlow` (p95 >120s), `BotTaskStepTimeouts` by phase, `BotTaskPlanningFailures` by reason; metrics `bot_task_step_timeouts_total{phase}`, `bot_tasks_planning_failures_total{reason}`, `bot_task_queue_depth`; Grafana dashboard v5 with task outcome/planning/timeout/failure panels; promtool tests green.
+- Tests: 17 packages, JS 74/74; guard fix for duplicate migration columns.
+
+## Предыдущий выпуск: v1.71.0
 
 # tg-llm-proxy v1.71.0
 

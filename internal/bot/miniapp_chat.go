@@ -467,6 +467,8 @@ func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64,
 			TokensOut: resp.TokensOut,
 			Model:     replyModel(resp.Model, selectedModel),
 			LatencyMs: resp.Latency.Milliseconds(),
+			// Persisted before the done event leaves: a reopened Mini App reads the TTFT from history.
+			FirstTokenMs: firstTokenMs(resp.FirstTokenLatency),
 		})
 		if err != nil {
 			return fmt.Errorf("%w: store answer: %v", errMiniAppInternal, err)

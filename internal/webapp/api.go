@@ -472,6 +472,10 @@ type historyItem struct {
 	TokensIn  *int64 `json:"tokens_in,omitempty"`
 	TokensOut *int64 `json:"tokens_out,omitempty"`
 	LatencyMs *int64 `json:"latency_ms,omitempty"`
+	// FirstTokenMs is the measured time to the first token of a streamed answer, the «⚡ 0.8s» number the
+	// live footer shows. Absent when nothing was measured (non-streamed, tool-only, a row before migration
+	// 026); 0 is never stored or sent, so a client cannot mistake "unknown" for "instant".
+	FirstTokenMs *int64 `json:"first_token_ms,omitempty"`
 	// Feedback — the current user's rating of this assistant answer: 1, -1 or 0 when unrated.
 	Feedback int `json:"feedback"`
 }
@@ -502,7 +506,7 @@ func (a *App) history(w http.ResponseWriter, req *http.Request, current scope) {
 		return
 	}
 	rows, err := a.db.QueryContext(req.Context(), `
-		SELECT id, role, content, created_at, COALESCE(model, ''), tokens_in, tokens_out, latency_ms FROM messages
+		SELECT id, role, content, created_at, COALESCE(model, ''), tokens_in, tokens_out, latency_ms, first_token_ms FROM messages
 		WHERE chat_id = ? AND role IN ('user', 'assistant') AND (? = 0 OR id < ?)
 		ORDER BY id DESC LIMIT ?`, current.ChatID, page.Before, page.Before, page.Limit+1)
 	if err != nil {
@@ -514,8 +518,8 @@ func (a *App) history(w http.ResponseWriter, req *http.Request, current scope) {
 	for rows.Next() {
 		var item historyItem
 		var model string
-		var tokensIn, tokensOut, latency sql.NullInt64
-		if err := rows.Scan(&item.ID, &item.Role, &item.Content, &item.CreatedAt, &model, &tokensIn, &tokensOut, &latency); err != nil {
+		var tokensIn, tokensOut, latency, firstToken sql.NullInt64
+		if err := rows.Scan(&item.ID, &item.Role, &item.Content, &item.CreatedAt, &model, &tokensIn, &tokensOut, &latency, &firstToken); err != nil {
 			a.queryFailed(w, "history", err)
 			return
 		}
@@ -528,6 +532,9 @@ func (a *App) history(w http.ResponseWriter, req *http.Request, current scope) {
 		}
 		if latency.Valid {
 			item.LatencyMs = &latency.Int64
+		}
+		if firstToken.Valid {
+			item.FirstTokenMs = &firstToken.Int64
 		}
 		item.Content, item.Truncated = boundedText(item.Content, maxHistoryRunes)
 		items = append(items, item)

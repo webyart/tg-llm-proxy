@@ -12,21 +12,27 @@ import (
 // Task metric family names. They are bounded and label-free except for the failure reason, so a series is
 // never created per chat, user or task. No goal, step text or model answer may become a label or value.
 const (
-	taskMetricStarted     = "bot_tasks_started_total"
-	taskMetricCompleted   = "bot_tasks_completed_total"
-	taskMetricFailed      = "bot_tasks_failed_total"
-	taskMetricStepRetries = "bot_task_step_retries_total"
-	taskMetricDuration    = "bot_task_duration_seconds"
-	taskMetricPlanning    = "bot_tasks_planning_seconds"
+	taskMetricStarted          = "bot_tasks_started_total"
+	taskMetricCompleted        = "bot_tasks_completed_total"
+	taskMetricFailed           = "bot_tasks_failed_total"
+	taskMetricStepRetries      = "bot_task_step_retries_total"
+	taskMetricStepTimeouts     = "bot_task_step_timeouts_total"
+	taskMetricPlanningFailures = "bot_tasks_planning_failures_total"
+	taskMetricQueueDepth       = "bot_task_queue_depth"
+	taskMetricDuration         = "bot_task_duration_seconds"
+	taskMetricPlanning         = "bot_tasks_planning_seconds"
 )
 
 const (
-	taskMetricStartedHelp     = "Tasks created and persisted in this process."
-	taskMetricCompletedHelp   = "Tasks that reached the completed state."
-	taskMetricFailedHelp      = "Tasks that stopped with an error, by bounded reason."
-	taskMetricStepRetriesHelp = "Task steps retried once after a transient model failure."
-	taskMetricDurationHelp    = "Wall time of a task from creation to a terminal state, in seconds."
-	taskMetricPlanningHelp    = "Wall time of the background STRATA plan of a task, in seconds."
+	taskMetricStartedHelp          = "Tasks created and persisted in this process."
+	taskMetricCompletedHelp        = "Tasks that reached the completed state."
+	taskMetricFailedHelp           = "Tasks that stopped with an error, by bounded reason."
+	taskMetricStepRetriesHelp      = "Task steps retried once after a transient model failure."
+	taskMetricStepTimeoutsHelp     = "Task model calls that ended with a spent deadline or model budget, by bounded phase."
+	taskMetricPlanningFailuresHelp = "Task plans that failed, by bounded classification reason."
+	taskMetricQueueDepthHelp       = "Tasks waiting in the planning or ready state at the last scheduler pass."
+	taskMetricDurationHelp         = "Wall time of a task from creation to a terminal state, in seconds."
+	taskMetricPlanningHelp         = "Wall time of the background STRATA plan of a task, in seconds."
 )
 
 // taskDurationBuckets cover a fast 1-step task through a long 3-step task with network approvals.
@@ -100,6 +106,85 @@ func (d *Dispatcher) countTaskStepRetry() {
 	if reg := d.metrics.Load(); reg != nil {
 		reg.Counter(taskMetricStepRetries, taskMetricStepRetriesHelp).Add(nil, 1)
 	}
+}
+
+// taskTimeoutPhaseName maps the internal model-call phase to the bounded metric label. A step-level timeout
+// is the tool/research phase by default; the final-answer and synthesis phases keep their own names.
+func taskTimeoutPhaseName(phase string) string {
+	switch phase {
+	case taskPhaseSynthesis:
+		return "synthesis"
+	case taskPhaseFinal:
+		return "final"
+	default:
+		return "tool"
+	}
+}
+
+// countTaskStepTimeout records a task model call that failed because its deadline or model budget was spent.
+// The label is a fixed phase name, never a task, chat or prompt identifier.
+func (d *Dispatcher) countTaskStepTimeout(phase string) {
+	if d == nil {
+		return
+	}
+	if reg := d.metrics.Load(); reg != nil {
+		reg.Counter(taskMetricStepTimeouts, taskMetricStepTimeoutsHelp).
+			Add(map[string]string{"phase": taskTimeoutPhaseName(phase)}, 1)
+	}
+}
+
+// taskPlanningFailureClass classifies a planning error into the bounded label set
+// model|timeout|invalid|other. It never carries the planner prompt or the provider error text.
+func taskPlanningFailureClass(cause error) string {
+	switch {
+	case cause == nil:
+		return "other"
+	case errors.Is(cause, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(cause, ErrTaskPlan):
+		return "invalid"
+	case errors.Is(cause, model.ErrEmptyAnswer):
+		return "model"
+	}
+	var apiErr *model.APIError
+	if errors.As(cause, &apiErr) || model.Retryable(cause) {
+		return "model"
+	}
+	return "other"
+}
+
+// countTaskPlanningFailure records one failed plan by bounded class. A plan that the user is invited to
+// retry after the model budget ran out is still a planning failure; only the stored failure is counted.
+func (d *Dispatcher) countTaskPlanningFailure(cause error) {
+	if d == nil {
+		return
+	}
+	if reg := d.metrics.Load(); reg != nil {
+		reg.Counter(taskMetricPlanningFailures, taskMetricPlanningFailuresHelp).
+			Add(map[string]string{"reason": taskPlanningFailureClass(cause)}, 1)
+	}
+}
+
+// observeTaskQueueDepth publishes how many tasks are still waiting for their plan or for a scheduler pass.
+// The count is one indexed query on the scheduler pass, and the gauge is label-free on purpose.
+func (d *Dispatcher) observeTaskQueueDepth(ctx context.Context) {
+	if d == nil || d.deps.DB == nil {
+		return
+	}
+	reg := d.metrics.Load()
+	if reg == nil {
+		return
+	}
+	var depth int64
+	if err := d.deps.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tasks WHERE status IN (?, ?)`,
+		store.TaskStatusPlanning, store.TaskStatusReady).Scan(&depth); err != nil {
+		return
+	}
+	if depth < 0 {
+		depth = 0
+	}
+	reg.Gauge(taskMetricQueueDepth, taskMetricQueueDepthHelp).Set(nil, float64(depth))
 }
 
 // observeTaskPlanning records one complete planning attempt (success or a stored failure). The startup

@@ -316,16 +316,22 @@ var migrationStatementGuards = map[int]migrationStatementGuard{
 	21: addColumnIfMissingGuard("tasks", "status_message_id"),
 	// 023_chat_cost.sql: ALTER TABLE chat_limits ADD COLUMN daily_cost_limit_micros (one statement).
 	23: addColumnIfMissingGuard("chat_limits", "daily_cost_limit_micros"),
+	// 026_messages_ttft.sql: ALTER TABLE messages ADD COLUMN first_token_ms (one statement).
+	26: addColumnIfMissingGuard("messages", "first_token_ms"),
 }
 
 // addColumnIfMissingGuard skips exactly one `ALTER TABLE <table> ADD COLUMN <column> …` statement when
 // pragma_table_info says the column is already there. Other statements of the migration (the index of 011)
 // still run. The comparison is deliberately narrow: only the three identifiers are matched, and the column
 // name is checked as a whole token so `user_id_old` cannot satisfy it.
+//
+// The leading comments of the statement are dropped first: every file in migrations/ opens with a header
+// comment, and without this step the guard would silently never match a documented ALTER (021 and 023 were
+// in that state) — the very case the guard exists for would fail with "duplicate column".
 func addColumnIfMissingGuard(table, column string) migrationStatementGuard {
 	prefix := strings.ToUpper("ALTER TABLE " + table + " ADD COLUMN " + column)
 	return func(ctx context.Context, tx *sql.Tx, statement string) (bool, error) {
-		normalized := strings.ToUpper(strings.Join(strings.Fields(statement), " "))
+		normalized := strings.ToUpper(strings.Join(strings.Fields(stripLeadingComments(statement)), " "))
 		if !strings.HasPrefix(normalized, prefix) {
 			return false, nil
 		}
@@ -340,6 +346,31 @@ func addColumnIfMissingGuard(table, column string) migrationStatementGuard {
 			return false, err
 		}
 		return present > 0, nil
+	}
+}
+
+// stripLeadingComments removes the `--` and `/* … */` comments that precede the first SQL code of a
+// statement. Statements() keeps comments as part of the statement text (it only cuts on ';'), so this is
+// what lets the ADD COLUMN guard match an ALTER that carries a documented header.
+func stripLeadingComments(statement string) string {
+	var rest = strings.TrimSpace(statement)
+	for {
+		switch {
+		case strings.HasPrefix(rest, "--"):
+			var newline = strings.IndexByte(rest, '\n')
+			if newline < 0 {
+				return ""
+			}
+			rest = strings.TrimSpace(rest[newline+1:])
+		case strings.HasPrefix(rest, "/*"):
+			var end = strings.Index(rest, "*/")
+			if end < 0 {
+				return ""
+			}
+			rest = strings.TrimSpace(rest[end+2:])
+		default:
+			return rest
+		}
 	}
 }
 

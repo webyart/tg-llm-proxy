@@ -8,6 +8,7 @@ import (
 
 	"bot/internal/i18n"
 	"bot/internal/model"
+	"bot/internal/store"
 )
 
 func TestLatencyFooterShowsTTFTBeforeTheModelName(t *testing.T) {
@@ -93,6 +94,19 @@ func TestMiniAppDoneCarriesAnswerStats(t *testing.T) {
 	if !strings.Contains(done.Delta, "⚡ 0.7s") {
 		t.Errorf("done text = %q, want the TTFT in the footer", done.Delta)
 	}
+	// The same measurement must be on the stored row: a Mini App reload renders the stats from history,
+	// where the footer of the content does not exist.
+	var rows, err = store.HistoryOfChat(context.Background(), d.deps.DB, 11, 10)
+	if err != nil {
+		t.Fatalf("HistoryOfChat: %v", err)
+	}
+	var stored = rows[len(rows)-1]
+	if stored.ID != done.MessageID {
+		t.Fatalf("the newest stored row is id %d, want the done message %d", stored.ID, done.MessageID)
+	}
+	if stored.FirstTokenMs == nil || *stored.FirstTokenMs != 700 {
+		t.Errorf("stored FirstTokenMs = %v, want 700ms", stored.FirstTokenMs)
+	}
 }
 
 func TestMiniAppDoneTTFTIsZeroForANonStreamedAnswer(t *testing.T) {
@@ -108,5 +122,24 @@ func TestMiniAppDoneTTFTIsZeroForANonStreamedAnswer(t *testing.T) {
 	}
 	if done.Stats.FirstTokenLatency != 0 {
 		t.Errorf("FirstTokenLatency = %s, want zero without a stream", done.Stats.FirstTokenLatency)
+	}
+	var rows, err = store.HistoryOfChat(context.Background(), d.deps.DB, 11, 10)
+	if err != nil {
+		t.Fatalf("HistoryOfChat: %v", err)
+	}
+	if stored := rows[len(rows)-1]; stored.FirstTokenMs != nil {
+		t.Errorf("stored FirstTokenMs = %v for a non-streamed answer, want nil (NULL, not 0)", *stored.FirstTokenMs)
+	}
+}
+
+// TestFirstTokenMsSkipsUnmeasuredAnswers pins the conversion every assistant-store path uses.
+func TestFirstTokenMsSkipsUnmeasuredAnswers(t *testing.T) {
+	for _, duration := range []time.Duration{0, -time.Second, 500 * time.Microsecond} {
+		if got := firstTokenMs(duration); got != nil {
+			t.Errorf("firstTokenMs(%s) = %d, want nil (never store 0)", duration, *got)
+		}
+	}
+	if got := firstTokenMs(800 * time.Millisecond); got == nil || *got != 800 {
+		t.Errorf("firstTokenMs(800ms) = %v, want 800", got)
 	}
 }

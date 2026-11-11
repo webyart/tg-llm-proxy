@@ -1,0 +1,13 @@
+-- 026_messages_ttft.sql — the measured time to the first token of an answer (schema 26).
+--
+-- first_token_ms is the time from the start of the streaming attempt to the first non-empty content delta,
+-- the same number the live footer renders as «⚡ 0.8s». It survives a Mini App reload because the history
+-- endpoint reads it from this column instead of the (footer-free) stored content.
+--
+-- NULL means "not measured": a non-streamed answer, a tool-call-only turn, a failed call and every row
+-- written before this migration. 0 is never stored — "not measured" and "answered instantly" must remain
+-- distinguishable — and the CHECK below enforces that at the storage layer as well as in Append.
+--
+-- The column is nullable and additive, so existing rows keep their values and every INSERT that does not
+-- name it keeps working; no table rebuild is needed (unlike 025).
+ALTER TABLE messages ADD COLUMN first_token_ms INTEGER CHECK (first_token_ms IS NULL OR first_token_ms > 0);

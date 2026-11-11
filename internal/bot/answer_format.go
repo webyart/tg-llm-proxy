@@ -2,6 +2,7 @@ package bot
 
 import (
 	"strings"
+	"time"
 
 	"bot/internal/i18n"
 	"bot/internal/model"
@@ -16,6 +17,21 @@ const documentTruncationNotice = "Внимание: документ был об
 // template for the Mini App and for callers that have no chat language.
 func documentTruncationNoticeFor(lang string) string {
 	return i18n.T(lang, "ask.doc_truncated")
+}
+
+// firstTokenMs is the measured TTFT in whole milliseconds for a stored assistant row, or nil when nothing
+// was measured. The store turns nil into NULL (migration 026), so every path that stores an answer uses this
+// one conversion: a non-streamed answer, a tool-only turn and a failed call must not claim «instant», and a
+// zero is never written. The sub-millisecond case rounds to 0 and is treated as unmeasured for the same reason.
+func firstTokenMs(d time.Duration) *int64 {
+	if d <= 0 {
+		return nil
+	}
+	ms := d.Milliseconds()
+	if ms <= 0 {
+		return nil
+	}
+	return &ms
 }
 
 // answerFormatOptions selects the optional parts of the final answer. The model content itself is

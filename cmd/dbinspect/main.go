@@ -272,9 +272,9 @@ func sections(ctx context.Context, db *sql.DB, chatID int64, limit int, integrit
 	if len(messages) == 0 {
 		fmt.Println("  (empty — no message stored for this filter)")
 	}
-	var msgTable = newTable("id", "chat_id", "role", "tokens", "ms", "tg_id", "created_at (UTC)", "content")
+	var msgTable = newTable("id", "chat_id", "role", "tokens", "ms", "ttft_ms", "tg_id", "created_at (UTC)", "content")
 	for _, row := range messages {
-		msgTable.write(row.ID, row.ChatID, row.Role, tokenPair(row), row.LatencyMS, dash(row.TelegramMessageID),
+		msgTable.write(row.ID, row.ChatID, row.Role, tokenPair(row), row.LatencyMS, dash(row.FirstTokenMS), dash(row.TelegramMessageID),
 			row.CreatedAt, brief(row.Content, 70))
 	}
 	msgTable.flush()

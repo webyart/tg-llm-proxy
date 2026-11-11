@@ -12,7 +12,7 @@ func ExportMessages(ctx context.Context, db *sql.DB, chatID int64, max int) ([]M
 		return nil, errors.New("export limit must be positive")
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, chat_id, user_id, role, content, tokens_in, tokens_out, model, latency_ms, telegram_message_id, created_at
+		SELECT id, chat_id, user_id, role, content, tokens_in, tokens_out, model, latency_ms, first_token_ms, telegram_message_id, created_at
 		FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?`, chatID, max)
 	if err != nil {
 		return nil, err
@@ -82,7 +82,7 @@ func StreamExportMessagesBounded(ctx context.Context, db *sql.DB, chatID int64, 
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, chat_id, role,
 			CASE WHEN ? > 0 AND length(content) > ? THEN '' ELSE content END,
-			tokens_in, tokens_out, model, latency_ms, telegram_message_id, created_at, length(content)
+			tokens_in, tokens_out, model, latency_ms, first_token_ms, telegram_message_id, created_at, length(content)
 		FROM messages WHERE chat_id = ? AND id >= ? AND id <= ? ORDER BY id ASC`, contentLimit, contentLimit, chatID, window.OldestID, window.NewestID)
 	if err != nil {
 		return window, truncated, err
@@ -109,9 +109,9 @@ func StreamExportMessagesBounded(ctx context.Context, db *sql.DB, chatID int64, 
 func scanExportMessage(rows *sql.Rows, contentLimit int64) (Message, error) {
 	var row Message
 	var model sql.NullString
-	var telegramID, tokensIn, tokensOut, latency sql.NullInt64
+	var telegramID, tokensIn, tokensOut, latency, firstToken sql.NullInt64
 	var contentLength int64
-	if err := rows.Scan(&row.ID, &row.ChatID, &row.Role, &row.Content, &tokensIn, &tokensOut, &model, &latency, &telegramID, &row.CreatedAt, &contentLength); err != nil {
+	if err := rows.Scan(&row.ID, &row.ChatID, &row.Role, &row.Content, &tokensIn, &tokensOut, &model, &latency, &firstToken, &telegramID, &row.CreatedAt, &contentLength); err != nil {
 		return Message{}, err
 	}
 	if contentLimit > 0 {
@@ -130,6 +130,10 @@ func scanExportMessage(rows *sql.Rows, contentLimit int64) (Message, error) {
 	}
 	if latency.Valid {
 		row.LatencyMs = latency.Int64
+	}
+	if firstToken.Valid {
+		value := firstToken.Int64
+		row.FirstTokenMs = &value
 	}
 	if telegramID.Valid {
 		value := telegramID.Int64
@@ -152,7 +156,7 @@ func SearchMessages(ctx context.Context, db *sql.DB, chatID int64, query string,
 		return []Message{}, nil
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT m.id, m.chat_id, m.user_id, m.role, m.content, m.tokens_in, m.tokens_out, m.model, m.latency_ms, m.telegram_message_id, m.created_at
+		SELECT m.id, m.chat_id, m.user_id, m.role, m.content, m.tokens_in, m.tokens_out, m.model, m.latency_ms, m.first_token_ms, m.telegram_message_id, m.created_at
 		FROM messages_fts
 		JOIN messages m ON m.id = messages_fts.rowid
 		WHERE messages_fts MATCH ? AND m.chat_id = ?
@@ -182,9 +186,9 @@ func SearchMessages(ctx context.Context, db *sql.DB, chatID int64, query string,
 func scanSearchMessage(rows *sql.Rows) (Message, error) {
 	var row Message
 	var model sql.NullString
-	var telegramID, tokensIn, tokensOut, latency sql.NullInt64
+	var telegramID, tokensIn, tokensOut, latency, firstToken sql.NullInt64
 	if err := rows.Scan(&row.ID, &row.ChatID, &row.UserID, &row.Role, &row.Content, &tokensIn, &tokensOut,
-		&model, &latency, &telegramID, &row.CreatedAt); err != nil {
+		&model, &latency, &firstToken, &telegramID, &row.CreatedAt); err != nil {
 		return Message{}, err
 	}
 	if model.Valid {
@@ -200,6 +204,10 @@ func scanSearchMessage(rows *sql.Rows) (Message, error) {
 	}
 	if latency.Valid {
 		row.LatencyMs = latency.Int64
+	}
+	if firstToken.Valid {
+		value := firstToken.Int64
+		row.FirstTokenMs = &value
 	}
 	if telegramID.Valid {
 		value := telegramID.Int64

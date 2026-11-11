@@ -50,16 +50,21 @@ var ErrRole = fmt.Errorf("the message role must be one of %s/%s/%s ", RoleUser, 
 
 // answer has no telegram_message_id, and tokens/latency stay NULL when the provider said nothing
 type Message struct {
-	ID                int64
-	ChatID            int64
-	UserID            int64
-	Role              string
-	Content           string
-	ContentLength     int64
-	TokensIn          *int64
-	TokensOut         *int64
-	Model             string
-	LatencyMs         int64
+	ID            int64
+	ChatID        int64
+	UserID        int64
+	Role          string
+	Content       string
+	ContentLength int64
+	TokensIn      *int64
+	TokensOut     *int64
+	Model         string
+	LatencyMs     int64
+	// FirstTokenMs is the measured time from the start of the streaming attempt to the first non-empty
+	// content delta, the number the footer renders as «⚡ 0.8s». It is nil when nothing was measured (a
+	// non-streamed answer, a tool-call-only turn, a row written before migration 026), and Append writes
+	// NULL rather than 0 for such a row: "unknown" must not read back as "instant".
+	FirstTokenMs      *int64
 	TelegramMessageID *int64
 	CreatedAt         string
 }
@@ -101,9 +106,9 @@ func Append(ctx context.Context, db *sql.DB, m Message) (int64, error) {
 		return 0, err
 	}
 	var res, err = db.ExecContext(ctx, `
-		INSERT INTO messages (chat_id, user_id, role, content, tokens_in, tokens_out, model, latency_ms, telegram_message_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ChatID, m.UserID, m.Role, m.Content, m.TokensIn, m.TokensOut, nullable(m.Model), m.LatencyMs, m.TelegramMessageID)
+		INSERT INTO messages (chat_id, user_id, role, content, tokens_in, tokens_out, model, latency_ms, first_token_ms, telegram_message_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ChatID, m.UserID, m.Role, m.Content, m.TokensIn, m.TokensOut, nullable(m.Model), m.LatencyMs, firstTokenOrNull(m.FirstTokenMs), m.TelegramMessageID)
 	if err != nil {
 		if isUniqueTelegramID(err) {
 			return 0, fmt.Errorf("%w: %v", ErrDuplicateMessage, err)
@@ -143,9 +148,9 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 	for rows.Next() {
 		var m = Message{}
 		var model sql.NullString // messages.model is TEXT
-		var tgID, tokensIn, tokensOut, latency sql.NullInt64
+		var tgID, tokensIn, tokensOut, latency, firstToken sql.NullInt64
 		if err := rows.Scan(&m.ID, &m.ChatID, &m.UserID, &m.Role, &m.Content, &tokensIn, &tokensOut,
-			&model, &latency, &tgID, &m.CreatedAt); err != nil {
+			&model, &latency, &firstToken, &tgID, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		if model.Valid {
@@ -161,6 +166,10 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 		}
 		if latency.Valid {
 			m.LatencyMs = latency.Int64
+		}
+		if firstToken.Valid {
+			var v = firstToken.Int64
+			m.FirstTokenMs = &v
 		}
 		if tgID.Valid {
 			var v = tgID.Int64
@@ -223,7 +232,7 @@ func RecentByChat(ctx context.Context, db *sql.DB, chatID int64, limit int) ([]M
 	queryArgs = append(queryArgs, args...) // the placeholder of contextFilter, when it has one
 	queryArgs = append(queryArgs, limit)   // LIMIT ? is the last placeholder of the statement
 	var rows, queryErr = db.QueryContext(ctx, `
-		SELECT m.id, m.chat_id, m.user_id, m.role, m.content, m.tokens_in, m.tokens_out, m.model, m.latency_ms, m.telegram_message_id, m.created_at
+		SELECT m.id, m.chat_id, m.user_id, m.role, m.content, m.tokens_in, m.tokens_out, m.model, m.latency_ms, m.first_token_ms, m.telegram_message_id, m.created_at
 		FROM messages m
 		WHERE m.chat_id = ? AND `+filter+`
 		ORDER BY m.id DESC
@@ -241,7 +250,7 @@ func HistoryOfChat(ctx context.Context, db *sql.DB, chatID int64, limit int) ([]
 		return []Message{}, nil
 	}
 	var rows, err = db.QueryContext(ctx, `
-		SELECT id, chat_id, user_id, role, content, tokens_in, tokens_out, model, latency_ms, telegram_message_id, created_at
+		SELECT id, chat_id, user_id, role, content, tokens_in, tokens_out, model, latency_ms, first_token_ms, telegram_message_id, created_at
 		FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?`, chatID, limit)
 	if err != nil {
 		return nil, err
@@ -366,7 +375,7 @@ func lastVisibleRow(ctx context.Context, db *sql.DB, chatID int64) (Message, err
 	}
 	var queryArgs = append([]any{chatID}, args...) // the placeholder of contextFilter, when it has one
 	var rows, queryErr = db.QueryContext(ctx, `
-		SELECT m.id, m.chat_id, m.user_id, m.role, m.content, m.tokens_in, m.tokens_out, m.model, m.latency_ms, m.telegram_message_id, m.created_at
+		SELECT m.id, m.chat_id, m.user_id, m.role, m.content, m.tokens_in, m.tokens_out, m.model, m.latency_ms, m.first_token_ms, m.telegram_message_id, m.created_at
 		FROM messages m
 		WHERE m.chat_id = ? AND `+filter+`
 		ORDER BY m.id DESC
@@ -563,4 +572,14 @@ func nullable(value string) any {
 		return nil
 	}
 	return value
+}
+
+// firstTokenOrNull — messages.first_token_ms is NULL for "not measured". A nil pointer (the ordinary case)
+// and a non-positive value both write NULL, never 0: the CHECK of migration 026 rejects the zero, and a
+// stored 0 would read back as "the first token arrived instantly" instead of "nobody measured it".
+func firstTokenOrNull(value *int64) any {
+	if value == nil || *value <= 0 {
+		return nil
+	}
+	return *value
 }

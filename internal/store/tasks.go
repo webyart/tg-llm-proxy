@@ -632,9 +632,9 @@ func CompleteTask(ctx context.Context, db *sql.DB, task Task, answer Message, no
 		return false, nil
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO messages
-		(chat_id, user_id, role, content, tokens_in, tokens_out, model, latency_ms, telegram_message_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, answer.ChatID, answer.UserID, answer.Role, answer.Content, answer.TokensIn, answer.TokensOut,
-		nullable(answer.Model), answer.LatencyMs, answer.TelegramMessageID); err != nil {
+		(chat_id, user_id, role, content, tokens_in, tokens_out, model, latency_ms, first_token_ms, telegram_message_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, answer.ChatID, answer.UserID, answer.Role, answer.Content, answer.TokensIn, answer.TokensOut,
+		nullable(answer.Model), answer.LatencyMs, firstTokenOrNull(answer.FirstTokenMs), answer.TelegramMessageID); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(); err != nil {

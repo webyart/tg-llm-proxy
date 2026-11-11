@@ -4408,7 +4408,7 @@
               text: item.content,
               id: item.id,
               feedback: Number(item.feedback) === -1 ? -1 : Number(item.feedback) === 1 ? 1 : 0,
-              stats: item.role === "assistant" && (item.tokens_in != null || item.latency_ms != null)
+              stats: item.role === "assistant" && (item.tokens_in != null || item.latency_ms != null || item.first_token_ms != null)
                 ? {
                   latencyMs: Number(item.latency_ms) || 0,
                   firstTokenMs: Number(item.first_token_ms) || 0,

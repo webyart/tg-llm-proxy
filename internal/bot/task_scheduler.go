@@ -192,6 +192,7 @@ func (d *Dispatcher) RunTaskScheduler(ctx context.Context) {
 
 func (d *Dispatcher) ProcessDueTasks(ctx context.Context, now time.Time, limit int) (int, error) {
 	d.pruneExpiredNonTaskNetworkConfirmations(now)
+	d.observeTaskQueueDepth(ctx)
 	if limit <= 0 || limit > TaskBatchLimit {
 		limit = TaskBatchLimit
 	}
@@ -405,6 +406,7 @@ func (d *Dispatcher) taskBudgetError(ctx context.Context, task store.Task, phase
 		// The scheduler is stopping; the task is left for the next process instead of being failed as a timeout.
 		return cause
 	}
+	d.countTaskStepTimeout(phase)
 	return &taskTimeoutError{phase: phase, step: step, budget: d.taskStepDeadline(), cause: cause}
 }
 
@@ -556,7 +558,8 @@ func (d *Dispatcher) synthesizeAndCompleteTask(ctx context.Context, task store.T
 	completed, err := store.CompleteTask(ctx, d.deps.DB, task, store.Message{
 		ChatID: task.ChatID, UserID: task.UserID, Role: store.RoleAssistant, Content: response.Content,
 		TokensIn: response.TokensIn, TokensOut: response.TokensOut, Model: replyModel(response.Model, task.Model),
-		LatencyMs: response.Latency.Milliseconds(),
+		LatencyMs:    response.Latency.Milliseconds(),
+		FirstTokenMs: firstTokenMs(response.FirstTokenLatency),
 	}, d.now())
 	if err != nil {
 		return err

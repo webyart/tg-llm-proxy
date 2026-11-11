@@ -413,7 +413,7 @@ Reverse proxy или туннель должен перенаправлять п
 | `/remind <время> <текст>` | `через 1 минуту`, `через 2 часа` или `каждый день 09:00` по `REMINDER_TIMEZONE`; текст до 500 runes |
 | `/reminders` | список и inline-меню активных напоминаний; `cancel <id>` или `delete <id>` отменяет активную запись; в меню есть создание и до 5 недоставленных с Retry/Delete |
 | `/links` | сохранённые ссылки; `add <url>`, `search <текст>`, `summary <id>`, `delete <id>`; `add` читает страницу, поэтому работает только при `URL_READER_ENABLED=true` и `TOOLS_ENABLED=true` |
-| `/task <цель>` | read-only задача из 1–3 шагов с прогрессом; без аргумента — статус, `/task cancel` — отмена, `/task resume <id>` — возобновление только последней failed/cancelled текущего чата с сохранением прогресса, `/task clear` — очистка списка с подтверждением |
+| `/task <цель>` | read-only задача из 1–3 шагов с живым прогрессом в одном редактируемом сообщении; без аргумента — статус, `/task cancel` — отмена, `/task resume <id>` — возобновление только последней failed/cancelled текущего чата с сохранением прогресса, `/task clear` — очистка списка с подтверждением |
 | `/tts <текст>` | opt-in озвучка через Speaches и `sendAudio`; `/tts last` — последний ответ ассистента, `/tts speed [0.75\|1\|1.25\|1.5]` — скорость чата; по умолчанию выключено |
 | `/docs` | RAG-база; `/docs add` (текст UTF-8, PDF, DOCX), `search <query>`, `export`, `delete <id>` и `clear`; поиск показывает до 3 фрагментов с document id и score |
 | `/export [md\|json]` | экспорт последних 10000 сообщений с явным truncation warning и ID/time window |
@@ -430,6 +430,14 @@ Reverse proxy или туннель должен перенаправлять п
 | `/whoami` | `user_id`, `chat_id` и состояние allowlist |
 | `/admin` | агрегаты, usage RAG/calculator/read_url, активные model calls и busy chats; только для `TELEGRAM_ADMIN_USERS` |
 | `/limits [model N\|network N\|minute N\|tools read_url,web_search\|reset]` | лимиты текущего чата или группы и расход за UTC-сутки; без аргумента — отчёт, `reset` — снять ограничения; запись разрешена администратору, в личном чате — его владельцу |
+
+## Задачи: живой прогресс, повтор шага и метрики
+
+Схема 21 (миграция `021_task_status.sql`) добавляет nullable `tasks.status_message_id`. Сообщение о создании задачи (с планом) переиспользуется как единственное статус-сообщение: после claim шага и после сохранения его результата бот редактирует именно это сообщение — `Задача #N · шаг K/M · <короткий шаг> · прошло m:ss · ETA ~m:ss` (вместо ETA `—`, пока не завершён первый шаг). На завершении, отмене или ошибке к нему добавляется финальная строка. Новые сообщения на каждый шаг не отправляются; правки привязаны к переходам шага и ограничены примерно одной правкой в 15 с на чат, а финальная строка доставляется всегда. Неудачная правка только логируется и не отменяет задачу. Старые строки с `NULL` и задачи, созданные из Mini App, продолжают работать: первое статус-сообщение создаётся при claim первого шага.
+
+Транзиентный сбой шага (пустой ответ модели, retryable provider error, дедлайн модели при ещё живом дедлайне шага) повторяется один раз тем же шагом с backoff 2 с; сохранённые результаты и continuation не сбрасываются. Отмена, approval-pending, stale lease, invalid plan/step result и исчерпанный бюджет модели не повторяются. Попытка записывается в `events(kind='task_step_retry')` (только номер шага и класс ошибки) и в `bot_task_step_retries_total`.
+
+Метрики задач не содержат chat/user/task id и текстов: `bot_tasks_started_total`, `bot_tasks_completed_total`, `bot_tasks_failed_total{reason="model|empty|invalid|timeout|budget|other"}`, `bot_task_step_retries_total` и гистограмма `bot_task_duration_seconds`.
 
 ## Лимиты чатов и групп
 
@@ -681,7 +689,7 @@ Maintenance останавливает бота и ждёт состояния `
 
 Метрики и готовность бота разведены по разным listener'ам. Готовность: `GET http://127.0.0.1:8081/healthz` и `/readyz` (host-порт `${HEALTH_PORT}` → in-container `HEALTH_PROBE_PORT=8080`; `/readyz` проверяет БД и доступность модели); этот же listener опрашивает Docker HEALTHCHECK. Метрики: `/metrics` слушает только конкретный адрес `METRICS_LISTEN_HOST:${HEALTH_PORT}` — в compose это статический `172.24.0.250` на сети `edge-gateway_edge-monitoring`. Prometheus из `edge-gateway` уже в этой сети и скрейпит `bot:8081`; другие контейнеры (`default`, `edge-telegram`, Whisper, SearxNG) в неё не входят и не могут открыть сокет метрик, а host-публикация `127.0.0.1:8081` ведёт на health-listener, поэтому `curl http://127.0.0.1:8081/metrics` отвечает 404. Если gateway пересоздаст сеть с другой подсетью, задайте свободный адрес этой подсети в `METRICS_LISTEN_HOST_CONTAINER` (он заполняет и `METRICS_LISTEN_HOST`, и `ipv4_address` бота).
 
-Метрики не содержат идентификаторов чатов и пользователей: `queue_depth` — агрегат по всем чатам без labels, рядом `busy_chats` (число чатов с удержанным lock), `active_handlers`, `active_model_requests`; `chat_id`/`user_id` остаются только в логах и БД и никогда не становятся label'ами. Это проверяет тест `internal/bot/metrics_privacy_test.go`, который дампит registry во время ожидания в очереди. Prometheus держит дашборд `Bot overview` и отправляет алерты (down, ошибки модели, p95, очередь, рост БД, смена схемы) в Telegram через Alertmanager; настройка и список правил — в `C:\Kimi code\edge-gateway\README.md`.
+Метрики не содержат идентификаторов чатов и пользователей: `queue_depth` — агрегат по всем чатам без labels, рядом `busy_chats` (число чатов с удержанным lock), `active_handlers`, `active_model_requests`; `chat_id`/`user_id` остаются только в логах и БД и никогда не становятся label'ами. Метрики задач устроены так же: имена `bot_tasks_*`/`bot_task_*`, единственный label — фиксированный `reason`, без id задач и текстов. Это проверяет тест `internal/bot/metrics_privacy_test.go`, который дампит registry во время ожидания в очереди. Prometheus держит дашборд `Bot overview` и отправляет алерты (down, ошибки модели, p95, очередь, рост БД, смена схемы) в Telegram через Alertmanager; настройка и список правил — в `C:\Kimi code\edge-gateway\README.md`.
 
 Speaches CPU/CUDA images закреплены по digest. Для NVIDIA GPU после настройки Docker GPU support используйте:
 

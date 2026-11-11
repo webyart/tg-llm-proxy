@@ -2,7 +2,19 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.64.1
+## Новейший выпуск: v1.65.0
+
+# tg-llm-proxy v1.65.0
+
+## Task progress, per-step retry, TTFT and task metrics
+
+- **Live task progress:** the plan message becomes a single edited status (`Задача #N · шаг K/M · title · elapsed · ETA`) and updates on claim, stored step, approval wait and terminal state. The message id is stored in `tasks.status_message_id` (schema 21), edits are throttled and a failed edit never fails the task.
+- **Per-step retry:** a transient step failure (retryable provider error, empty answer, model-layer deadline) is retried once for the SAME step with a 2 s backoff, keeping stored results and continuation; cancel, invalid plan/step result, approval-pending, stale lease and rate/daily limits are not retried. Recorded as `task_step_retry` event.
+- **First-token latency (TTFT):** streaming responses carry `FirstTokenLatency`; the footer adds `⚡ 0.8s` and Mini App `done.stats` includes `first_token_ms`, `tokens_per_second`, tokens and model. TTFT is measured to the first non-empty content delta, not tool-call deltas.
+- **Metrics:** `bot_tasks_started_total`, `bot_tasks_completed_total`, `bot_tasks_failed_total{reason}`, `bot_task_step_retries_total`, `bot_task_duration_seconds`, `bot_model_ttft_seconds{provider,model}`, `bot_model_call_duration_seconds{provider,model,outcome}` (no chat/user ids).
+- Monitoring: Grafana TTFT/provider-latency panels and alert rules updated in the edge-gateway repo.
+
+## Предыдущий выпуск: v1.64.1
 
 # tg-llm-proxy v1.64.1
 

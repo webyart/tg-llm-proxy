@@ -16,6 +16,8 @@
       chatLiveStats: "{stage} · {seconds} с · ~{tokens} токенов",
       chatStats: "⏱ {seconds} с · {input}→{output} токенов · {rate} · модель {model}",
       chatStatsNoRate: "⏱ {seconds} с · {input}→{output} токенов · модель {model}",
+      chatStatsTTFT: "⏱ {seconds} с · {input}→{output} токенов · {rate} · ⚡ {ttft} с · модель {model}",
+      chatStatsNoRateTTFT: "⏱ {seconds} с · {input}→{output} токенов · ⚡ {ttft} с · модель {model}",
       chatRate: "{rate} ток/с",
       chatMessageEmpty: "Введите текст сообщения.", chatMessageTooLong: "Сообщение должно быть не длиннее 2000 символов.",
       chatReset: "Очистить контекст", chatResetConfirm: "Подтвердить", chatResetWarning: "Очистить контекст диалога? История останется, но модель перестанет её видеть.",
@@ -215,6 +217,8 @@
       chatLiveStats: "{stage} · {seconds}s · ~{tokens} tokens",
       chatStats: "⏱ {seconds}s · {input}→{output} tokens · {rate} · model {model}",
       chatStatsNoRate: "⏱ {seconds}s · {input}→{output} tokens · model {model}",
+      chatStatsTTFT: "⏱ {seconds}s · {input}→{output} tokens · {rate} · ⚡ {ttft}s · model {model}",
+      chatStatsNoRateTTFT: "⏱ {seconds}s · {input}→{output} tokens · ⚡ {ttft}s · model {model}",
       chatRate: "{rate} tok/s",
       chatMessageEmpty: "Enter a message.", chatMessageTooLong: "The message must be at most 2000 characters.",
       chatReset: "Reset context", chatResetConfirm: "Confirm", chatResetWarning: "Reset the conversation context? History stays, but the model will no longer see it.",
@@ -2633,13 +2637,32 @@
     const latency = Math.max(0, Number(stats.latencyMs) || 0);
     const input = Math.max(0, Number(stats.tokensIn) || 0);
     const output = Math.max(0, Number(stats.tokensOut) || 0);
+    const firstToken = Math.max(0, Number(stats.firstTokenMs) || 0);
     const seconds = latency > 0 ? (latency / 1000).toFixed(latency < 10000 ? 1 : 0) : "0";
+    const ttft = firstToken > 0 ? (firstToken / 1000).toFixed(firstToken < 10000 ? 1 : 0) : "";
     const rate = latency > 0 && output > 0 ? output / (latency / 1000) : 0;
     const rateText = rate > 0 ? t("chatRate", { rate: rate < 10 ? rate.toFixed(1) : String(Math.round(rate)) }) : "";
+    const options = { seconds, input, output, rate: rateText, ttft, model: stats.model || "" };
     const text = rateText
-      ? t("chatStats", { seconds, input, output, rate: rateText, model: stats.model || "" })
-      : t("chatStatsNoRate", { seconds, input, output, model: stats.model || "" });
+      ? t(ttft ? "chatStatsTTFT" : "chatStats", options)
+      : t(ttft ? "chatStatsNoRateTTFT" : "chatStatsNoRate", options);
     return element("div", "chat-stats", text);
+  }
+
+  // chatStatsFromPayload maps the done event's stats object. The footer of the same answer stays the
+  // source of truth for live output (chatMessageNode skips a second block when the text has ⏱), so this
+  // only feeds the fallback renderer used when a backend omits the footer.
+  function chatStatsFromPayload(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const latencyMs = Number(raw.latency_ms) || 0;
+    if (!latencyMs && raw.tokens_in == null && raw.tokens_out == null) return null;
+    return {
+      latencyMs,
+      firstTokenMs: Number(raw.first_token_ms) || 0,
+      tokensIn: Number(raw.tokens_in) || 0,
+      tokensOut: Number(raw.tokens_out) || 0,
+      model: typeof raw.model === "string" ? raw.model : "",
+    };
   }
 
   function applyChatFeedbackState(controls, value) {
@@ -3302,6 +3325,10 @@
               if (activeTab === "chat") renderChat();
             } else if (event.name === "done") {
               if (typeof event.data.text === "string") answer.text = event.data.text;
+              // The done stats duplicate the footer of a live answer by design: chatMessageNode keeps
+              // the footer as the single block whenever the text already carries ⏱.
+              const stats = chatStatsFromPayload(event.data.stats);
+              if (stats) answer.stats = stats;
               // The server sends the stored assistant row id; without it the bubble has no
               // feedback buttons, which is the correct state for a backend that stored nothing.
               const messageID = Number(event.data.message_id);
@@ -3501,6 +3528,7 @@
               stats: item.role === "assistant" && (item.tokens_in != null || item.latency_ms != null)
                 ? {
                   latencyMs: Number(item.latency_ms) || 0,
+                  firstTokenMs: Number(item.first_token_ms) || 0,
                   tokensIn: Number(item.tokens_in) || 0,
                   tokensOut: Number(item.tokens_out) || 0,
                   model: typeof item.model === "string" ? item.model : "",

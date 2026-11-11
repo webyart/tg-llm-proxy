@@ -568,3 +568,75 @@ func TestResumeTaskRejectsWrongChatNonLatestAndActiveTasks(t *testing.T) {
 		t.Fatalf("awaiting task resumed ok=%v err=%v", ok, err)
 	}
 }
+
+func TestTaskStatusMessageMigrationFromVersion20(t *testing.T) {
+	ctx := context.Background()
+	db, restore := openMemoryAtVersion(t, 20)
+	if err := EnsureChat(ctx, db, 100, 11, ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)
+	created, err := CreateTask(ctx, db, newStoreTask(100, now))
+	if err != nil {
+		t.Fatalf("create a task at schema 20: %v", err)
+	}
+	restore()
+	if err := ApplySchema(ctx, db); err != nil {
+		t.Fatalf("upgrade schema 20 -> 21: %v", err)
+	}
+	if version, err := SchemaVersion(ctx, db); err != nil || version != len(MigrationSQL) {
+		t.Fatalf("SchemaVersion=%d err=%v, want %d", version, err, len(MigrationSQL))
+	}
+	old, found, err := CurrentTask(ctx, db, 100)
+	if err != nil || !found || old.ID != created.ID {
+		t.Fatalf("the pre-021 task was lost: found=%v old=%+v err=%v", found, old, err)
+	}
+	if old.StatusMessageID != 0 {
+		t.Fatalf("a pre-021 task invented a status message id %d", old.StatusMessageID)
+	}
+	saved, err := SetTaskStatusMessage(ctx, db, old.ID, old.ChatID, 4242, now)
+	if err != nil || !saved {
+		t.Fatalf("SetTaskStatusMessage saved=%v err=%v", saved, err)
+	}
+	updated, found, err := CurrentTask(ctx, db, 100)
+	if err != nil || !found || updated.StatusMessageID != 4242 {
+		t.Fatalf("status message id was not read back: task=%+v err=%v", updated, err)
+	}
+}
+
+func TestSetTaskStatusMessageValidatesAndPersists(t *testing.T) {
+	ctx := context.Background()
+	db := taskTestDB(t)
+	now := time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)
+	if err := EnsureChat(ctx, db, 100, 11, ""); err != nil {
+		t.Fatal(err)
+	}
+	created, err := CreateTask(ctx, db, newStoreTask(100, now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []struct {
+		name      string
+		taskID    int64
+		chatID    int64
+		messageID int64
+	}{
+		{name: "task", taskID: 0, chatID: 100, messageID: 1},
+		{name: "chat", taskID: created.ID, chatID: 0, messageID: 1},
+		{name: "message", taskID: created.ID, chatID: 100, messageID: 0},
+	} {
+		if saved, err := SetTaskStatusMessage(ctx, db, bad.taskID, bad.chatID, bad.messageID, now); err == nil || saved {
+			t.Errorf("%s: SetTaskStatusMessage saved=%v err=%v, want an invalid-argument error", bad.name, saved, err)
+		}
+	}
+	if saved, err := SetTaskStatusMessage(ctx, db, created.ID, 999, 77, now); err != nil || saved {
+		t.Errorf("wrong chat: saved=%v err=%v, want no row updated", saved, err)
+	}
+	if saved, err := SetTaskStatusMessage(ctx, db, created.ID, 100, 77, now); err != nil || !saved {
+		t.Fatalf("SetTaskStatusMessage saved=%v err=%v", saved, err)
+	}
+	current, found, err := CurrentTask(ctx, db, 100)
+	if err != nil || !found || current.StatusMessageID != 77 {
+		t.Fatalf("stored status message id=%d found=%v err=%v", current.StatusMessageID, found, err)
+	}
+}

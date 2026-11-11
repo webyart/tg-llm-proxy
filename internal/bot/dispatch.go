@@ -227,6 +227,13 @@ type Dispatcher struct {
 	// was being produced, and a placeholder or draft sitting above that update must not be edited into the final
 	// answer — deliver() sends the answer as a new message instead.
 	turns chatTurns
+	// taskStatusEdits is the per-chat timestamp of the last rewrite of the single live task status message.
+	// It keeps a fast task inside Telegram's edit budget; the map holds one entry per chat with a live task.
+	taskStatusMu    sync.Mutex
+	taskStatusEdits map[int64]time.Time
+	// taskStepRetryDelay is the short backoff before the single retry of a transiently failed task step. It
+	// is a field so a test can set it to zero instead of sleeping.
+	taskStepRetryDelay time.Duration
 	// missingUsername makes the "getMe did not answer" degradation visible once per dispatcher, not on
 	// every group message.
 	missingUsername sync.Once
@@ -245,17 +252,18 @@ func New(deps Deps) *Dispatcher {
 	}
 	var d = &Dispatcher{
 		deps: deps, index: map[string]Command{}, created: time.Now(), startOffset: deps.StartOffset,
-		albums:           map[albumKey]*albumBatch{},
-		deniedReplies:    ratelimit.NewCoalescer(deniedReplyWindow, coalescerMaxKeys),
-		bootstrapReplies: ratelimit.NewCoalescer(bootstrapReplyWindow, coalescerMaxKeys),
-		overloadReplies:  ratelimit.NewCoalescer(overloadReplyWindow, coalescerMaxKeys),
-		chatBusyReplies:  ratelimit.NewCoalescer(overloadReplyWindow, coalescerMaxKeys),
-		chatQueueTimeout: chatQueueTimeoutFor(deps.Cfg.ReplyDeadlineSeconds),
-		modelWork:        ratelimit.New(int(deps.Cfg.RateLimitPerMinute) * modelWorkPerQuestion),
-		networkWork:      ratelimit.New(networkWorkPerMinute),
-		outboundTools:    make(chan struct{}, globalOutboundToolLimit),
-		now:              time.Now,
-		taskWake:         make(chan struct{}, 1),
+		albums:             map[albumKey]*albumBatch{},
+		deniedReplies:      ratelimit.NewCoalescer(deniedReplyWindow, coalescerMaxKeys),
+		bootstrapReplies:   ratelimit.NewCoalescer(bootstrapReplyWindow, coalescerMaxKeys),
+		overloadReplies:    ratelimit.NewCoalescer(overloadReplyWindow, coalescerMaxKeys),
+		chatBusyReplies:    ratelimit.NewCoalescer(overloadReplyWindow, coalescerMaxKeys),
+		chatQueueTimeout:   chatQueueTimeoutFor(deps.Cfg.ReplyDeadlineSeconds),
+		modelWork:          ratelimit.New(int(deps.Cfg.RateLimitPerMinute) * modelWorkPerQuestion),
+		networkWork:        ratelimit.New(networkWorkPerMinute),
+		outboundTools:      make(chan struct{}, globalOutboundToolLimit),
+		now:                time.Now,
+		taskWake:           make(chan struct{}, 1),
+		taskStepRetryDelay: taskStepRetryBackoff,
 	}
 	d.configureAdmission(int(deps.Cfg.MaxConcurrentRequests))
 	// Warm both sets so the normal path never takes the Once: a nil set in the struct would still work through
@@ -789,7 +797,15 @@ func (d *Dispatcher) SetMetrics(reg *metrics.Registry) {
 	reg.Counter("updates_total", "Dispatched updates by result.")
 	reg.Counter("tool_calls_total", "Tool calls requested by the model, by tool name.")
 	reg.Counter("telegram_send_failures_total", "Telegram replies that returned an error.")
-	d.deps.Model = wrapModelMetrics(d.deps.Model, reg)
+	// Task families are bounded: no chat/user/task ids, and the failure reason is a fixed set. They are
+	// registered eagerly so a fresh /metrics lists them at zero before the first task.
+	reg.Counter(taskMetricStarted, taskMetricStartedHelp)
+	reg.Counter(taskMetricCompleted, taskMetricCompletedHelp)
+	reg.Counter(taskMetricFailed, taskMetricFailedHelp)
+	reg.Counter(taskMetricStepRetries, taskMetricStepRetriesHelp)
+	reg.Histogram(taskMetricDuration, taskMetricDurationHelp, taskDurationBuckets)
+	var calls = newBotModelMetrics(reg, d.deps.Cfg)
+	d.deps.Model = wrapModelMetrics(d.deps.Model, reg, calls)
 }
 
 // countUpdate records one handled update; the result values are ok, error, denied, suppressed, album,
@@ -858,15 +874,19 @@ func (d *Dispatcher) noteChatTurn(chatID int64) int64 { return d.turns.next(chat
 // chatTurn is the number of the newest admitted update of the chat.
 func (d *Dispatcher) chatTurn(chatID int64) int64 { return d.turns.current(chatID) }
 
-// metricsModel counts the tool calls of a successful answer. It implements Stream only when the wrapped
-// client does, so the Streamer assertion of the tool loop keeps its old answer.
+// metricsModel counts the tool calls of a successful answer and records the TTFT/call-duration
+// families of every model call. It implements Stream only when the wrapped client does, so the
+// Streamer assertion of the tool loop keeps its old answer.
 type metricsModel struct {
 	inner     model.Client
 	toolCalls *metrics.Counter
+	calls     *botModelMetrics
 }
 
 func (m *metricsModel) Complete(ctx context.Context, req model.Request) (model.Response, error) {
+	var start = time.Now()
 	var response, err = m.inner.Complete(ctx, req)
+	m.calls.observe(req, response, err, time.Since(start), false)
 	if err == nil {
 		m.observe(response.ToolCalls)
 	}
@@ -887,7 +907,9 @@ type metricsStreamModel struct {
 }
 
 func (m *metricsStreamModel) Stream(ctx context.Context, req model.Request, h model.StreamHandler) (model.Response, error) {
+	var start = time.Now()
 	var response, err = m.streamer.Stream(ctx, req, h)
+	m.calls.observe(req, response, err, time.Since(start), true)
 	if err == nil {
 		m.observe(response.ToolCalls)
 	}
@@ -914,14 +936,16 @@ func (m *metricsAllModel) Transcribe(ctx context.Context, req model.Transcriptio
 
 // wrapModelMetrics keeps the optional interfaces of the client: the tool loop asks for Streamer and the
 // voice handler asks for Transcriber, and a wrapper that always answered both assertions would send a
-// client that supports neither down a path that fails at the call.
-func wrapModelMetrics(client model.Client, reg *metrics.Registry) model.Client {
+// client that supports neither down a path that fails at the call. calls instruments every answer
+// with the bounded model/provider families; it is nil only when the caller passed no registry.
+func wrapModelMetrics(client model.Client, reg *metrics.Registry, calls *botModelMetrics) model.Client {
 	if client == nil || reg == nil {
 		return client
 	}
 	var wrapped = &metricsModel{
 		inner:     client,
 		toolCalls: reg.Counter("tool_calls_total", "Tool calls requested by the model, by tool name."),
+		calls:     calls,
 	}
 	var streamer, isStreamer = client.(model.Streamer)
 	var transcriber, isTranscriber = client.(model.Transcriber)

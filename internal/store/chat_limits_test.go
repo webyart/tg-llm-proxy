@@ -292,8 +292,8 @@ func TestMigration020AddsChatLimitsAndEventAttribution(t *testing.T) {
 		t.Fatalf("apply migration 020: %v", err)
 	}
 	version, err := SchemaVersion(ctx, db)
-	if err != nil || version != 20 {
-		t.Fatalf("schema version=%d err=%v, want 20", version, err)
+	if err != nil || version != len(MigrationSQL) {
+		t.Fatalf("schema version=%d err=%v, want the current %d", version, err, len(MigrationSQL))
 	}
 	var chatID any
 	if err := db.QueryRowContext(ctx, `SELECT chat_id FROM events ORDER BY id LIMIT 1`).Scan(&chatID); err != nil {

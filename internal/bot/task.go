@@ -127,6 +127,7 @@ func (d *Dispatcher) CreateTask(ctx context.Context, chatID int64, userID int64,
 	if err != nil {
 		return store.Task{}, err
 	}
+	d.wakeTasks()
 	return created, nil
 }
 
@@ -174,7 +175,9 @@ func (d *Dispatcher) createTask(ctx context.Context, chatID int64, userID int64,
 	if err != nil {
 		return store.Task{}, TaskPlan{}, err
 	}
-	d.wakeTasks()
+	d.countTaskStarted()
+	// The scheduler is woken by the caller AFTER the creation message got its id. Waking here would let the
+	// first step claim before status_message_id is stored and create a second status message.
 	return created, plan, nil
 }
 
@@ -244,12 +247,33 @@ func (d *Dispatcher) task(ctx context.Context, ev Event, arg string) error {
 	if err != nil {
 		return err
 	}
+	// Wake only after the creation reply: the scheduler must see the stored status_message_id, otherwise it
+	// would create a second status message for the first step (see createTask).
+	defer d.wakeTasks()
 	lines := []string{i18n.T(lang, "task.created_header", created.ID, len(plan.Steps))}
 	for index, step := range plan.Steps {
 		lines = append(lines, fmt.Sprintf("%d. %s", index+1, step.Description))
 	}
 	lines = append(lines, i18n.T(lang, "task.created_hint"))
-	return d.reply(ctx, ev.ChatID, strings.Join(lines, "\n"))
+	text := strings.Join(lines, "\n")
+	// The creation message is the existing task reply: keep its id so the scheduler rewrites THIS message
+	// for every step instead of adding a new line per step. A replier without message ids keeps the old
+	// send-only behaviour.
+	if messenger, ok := d.taskStatusMessenger(); ok {
+		messageID, sendErr := messenger.SendTaskStatus(ctx, ev.ChatID, text)
+		if sendErr == nil && messageID > 0 {
+			created.StatusMessageID = messageID
+			if saved, saveErr := store.SetTaskStatusMessage(ctx, d.deps.DB, created.ID, ev.ChatID, messageID, d.now()); saveErr != nil || !saved {
+				d.logTaskStatusFailure("task status message id was not stored", &created, saveErr)
+			}
+			return nil
+		}
+		if sendErr != nil {
+			d.countSendFailure()
+			d.logTaskStatusFailure("task creation status message was not sent", &created, sendErr)
+		}
+	}
+	return d.reply(ctx, ev.ChatID, text)
 }
 
 func (d *Dispatcher) promptTaskClear(ctx context.Context, ev Event) error {
@@ -339,6 +363,11 @@ func (d *Dispatcher) CancelTask(ctx context.Context, chatID int64) (store.Task, 
 	cancelled, ok, err := store.CancelTask(ctx, d.deps.DB, chatID, d.now())
 	if err != nil || !ok {
 		return cancelled, ok, err
+	}
+	d.observeTaskDuration(cancelled, d.now())
+	if plan := taskPlanForStatus(cancelled); len(plan.Steps) > 0 {
+		lang := d.chatLanguage(ctx, chatID)
+		d.finishTaskStatus(ctx, cancelled, plan, i18n.T(lang, "task.live.cancelled", cancelled.ID), d.now())
 	}
 	d.clearTaskNetworkScopes(chatID, cancelled.ID)
 	if found && current.ID == cancelled.ID {

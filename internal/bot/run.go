@@ -384,8 +384,15 @@ func (r *telegramReplier) sendPlain(ctx context.Context, chatID int64, text stri
 }
 
 func (r *telegramReplier) sendWithMode(ctx context.Context, chatID int64, text string, markup *models.InlineKeyboardMarkup, parseMode models.ParseMode) error {
+	_, err := r.sendWithModeID(ctx, chatID, text, markup, parseMode)
+	return err
+}
+
+// sendWithModeID is the shared send path that also returns the message id. Live task progress needs that id
+// once, at creation, so every later step can rewrite the same message.
+func (r *telegramReplier) sendWithModeID(ctx context.Context, chatID int64, text string, markup *models.InlineKeyboardMarkup, parseMode models.ParseMode) (int64, error) {
 	if r.bot == nil {
-		return errors.New("the telegram bot is not attached ")
+		return 0, errors.New("the telegram bot is not attached ")
 	}
 	var attempt = 0
 	for {
@@ -397,24 +404,30 @@ func (r *telegramReplier) sendWithMode(ctx context.Context, chatID int64, text s
 		if markup != nil {
 			params.ReplyMarkup = *markup
 		}
-		var _, err = r.bot.SendMessage(ctx, params)
+		var msg, err = r.bot.SendMessage(ctx, params)
 		if err == nil {
-			return nil
+			if msg == nil || msg.ID == 0 {
+				return 0, errors.New("telegram answered the send with no message id")
+			}
+			return int64(msg.ID), nil
 		}
 		if isParseEntitiesError(err) && params.ParseMode != "" {
 			params.Text = plainForParseFallback(text, r.cfg.ParseMode)
 			params.ParseMode = ""
-			var _, fallbackErr = r.bot.SendMessage(ctx, params)
+			var fallbackMsg, fallbackErr = r.bot.SendMessage(ctx, params)
 			if fallbackErr == nil {
 				r.logger.Warn("telegram rejected formatted text; delivered it as plain text", "chat_id", chatID)
-				return nil
+				if fallbackMsg == nil || fallbackMsg.ID == 0 {
+					return 0, errors.New("telegram answered the send with no message id")
+				}
+				return int64(fallbackMsg.ID), nil
 			}
 			err = fallbackErr
 		}
 		var flood *tgbot.TooManyRequestsError
 		if !errors.As(err, &flood) || flood.RetryAfter <= 0 || attempt >= 1 {
 			// Anything else (403 the bot was blocked, 400 a bad parse mode) is the caller's problem:
-			return err
+			return 0, err
 		}
 		attempt++
 		var sleep = time.Duration(flood.RetryAfter) * time.Second
@@ -425,10 +438,21 @@ func (r *telegramReplier) sendWithMode(ctx context.Context, chatID int64, text s
 		r.logger.Warn("telegram answered 429, the chat waits", "chat_id", chatID, "retry_after", flood.RetryAfter)
 		select {
 		case <-ctx.Done():
-			return ctx.Err() // the reply budget of won
+			return 0, ctx.Err() // the reply budget of won
 		case <-time.After(sleep):
 		}
 	}
+}
+
+// SendTaskStatus sends the one message a live task keeps rewriting. It is the optional transport capability
+// asserted by task_progress.go; a plain Replier simply never gets it and the old per-step replies remain.
+func (r *telegramReplier) SendTaskStatus(ctx context.Context, chatID int64, text string) (int64, error) {
+	return r.sendWithModeID(ctx, chatID, text, nil, parseModeOf(r.cfg.ParseMode))
+}
+
+// EditTaskStatus rewrites an existing task status message with the ordinary parse-mode fallback.
+func (r *telegramReplier) EditTaskStatus(ctx context.Context, chatID int64, messageID int64, text string) error {
+	return r.EditStreamMessage(ctx, chatID, messageID, text, true)
 }
 
 // back by the final rewrite of deliver() once the text is complete and escaped (the half-open MarkdownV2 entity

@@ -60,7 +60,13 @@ type Response struct {
 	TokensIn  *int64
 	TokensOut *int64
 	Latency   time.Duration
-	Attempts  int
+	// FirstTokenLatency is the time from the start of one streaming attempt to the first non-empty
+	// content delta. It stays zero for a non-streamed answer, for a stream that never produced content
+	// (a tool-call-only answer) and for a call that failed before the first delta. A retry measures
+	// again, so a response returned by the fallback chain carries the latency of the attempt that
+	// actually answered.
+	FirstTokenLatency time.Duration
+	Attempts          int
 	// «ответ обрывается») would otherwise be visible only as a suspiciously short answer.
 	ReasoningRunes int
 	FinishReason   string

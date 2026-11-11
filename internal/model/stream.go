@@ -308,13 +308,14 @@ func (c *OpenAI) streamAttempt(ctx context.Context, body []byte, model string, a
 	}
 
 	var (
-		answer      strings.Builder
-		answerRunes int
-		response    = Response{Model: model}
-		delivered   bool
-		reasoning   int
-		finish      string
-		toolCalls   = map[int]*collectedStreamToolCall{}
+		answer       strings.Builder
+		answerRunes  int
+		response     = Response{Model: model}
+		delivered    bool
+		reasoning    int
+		finish       string
+		firstTokenAt time.Time
+		toolCalls    = map[int]*collectedStreamToolCall{}
 	)
 	var lastProgress time.Time
 	var progress = func() {
@@ -404,6 +405,13 @@ func (c *OpenAI) streamAttempt(ctx context.Context, body []byte, model string, a
 			deltaRunes := utf8.RuneCountInString(delta)
 			if deltaRunes > StreamAnswerLimit-answerRunes {
 				return fmt.Errorf("%w: answer content exceeds %d runes", ErrStreamLimit, StreamAnswerLimit)
+			}
+			// The first non-empty content delta is the first token the user could see: empty chunks,
+			// reasoning deltas and tool-call deltas above do not start this measurement. Each attempt
+			// has its own local timer, so a retry reports the latency of the attempt that answered.
+			if firstTokenAt.IsZero() {
+				firstTokenAt = time.Now()
+				response.FirstTokenLatency = firstTokenAt.Sub(attemptStart)
 			}
 			answer.WriteString(delta)
 			answerRunes += deltaRunes

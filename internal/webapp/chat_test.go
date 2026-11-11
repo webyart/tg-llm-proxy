@@ -35,6 +35,7 @@ type fakeChatBackend struct {
 	final     string
 	err       error
 	emitError bool
+	stats     *bot.MiniAppAnswerStats
 
 	calls  int
 	chatID int64
@@ -64,6 +65,7 @@ func (f *fakeChatBackend) AnswerForMiniApp(ctx context.Context, chatID, userID i
 	deltas := append([]string{}, f.deltas...)
 	stage, final := f.stage, f.final
 	err, emitError := f.err, f.emitError
+	stats := f.stats
 	f.mu.Unlock()
 
 	if stage != "" {
@@ -84,7 +86,7 @@ func (f *fakeChatBackend) AnswerForMiniApp(ctx context.Context, chatID, userID i
 		}
 		return err
 	}
-	return emit(bot.MiniAppStreamEvent{Delta: final, Done: true})
+	return emit(bot.MiniAppStreamEvent{Delta: final, Done: true, Stats: stats})
 }
 
 func (f *fakeChatBackend) ResolveMiniAppApproval(ctx context.Context, token string, chatID, userID int64, approve bool) error {
@@ -293,6 +295,88 @@ func TestChatMessageStreamsDeltaStageAndDoneForSessionScope(t *testing.T) {
 	}
 	if gotText != "привет" {
 		t.Fatalf("backend text = %q, want the trimmed session message", gotText)
+	}
+}
+
+func TestChatMessageDoneCarriesTTFTStats(t *testing.T) {
+	app, server := newTestApp(t)
+	var in, out = int64(10), int64(20)
+	var rate = 5.5
+	backend := &fakeChatBackend{
+		final: "Ответ",
+		stats: &bot.MiniAppAnswerStats{
+			Latency:           4 * time.Second,
+			TokensIn:          &in,
+			TokensOut:         &out,
+			TokensPerSecond:   &rate,
+			FirstTokenLatency: 800 * time.Millisecond,
+			Model:             "qwen",
+		},
+	}
+	app.SetChatBackend(backend)
+	bearer := launchSession(t, app, server)
+
+	status, body, _ := chatRequest(t, server, http.MethodPost, "/api/messages", bearer, `{"text":"привет"}`, "application/json")
+	if status != http.StatusOK {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	var events = parseChatSSE(t, body)
+	var done map[string]any
+	for _, event := range events {
+		if event.name == "done" {
+			done = event.data
+		}
+	}
+	if done == nil {
+		t.Fatalf("no done event in %s", body)
+	}
+	stats, ok := done["stats"].(map[string]any)
+	if !ok {
+		t.Fatalf("done payload has no stats object: %+v", done)
+	}
+	for key, want := range map[string]float64{
+		"latency_ms":        4000,
+		"tokens_in":         10,
+		"tokens_out":        20,
+		"tokens_per_second": 5.5,
+		"first_token_ms":    800,
+	} {
+		got, ok := stats[key].(float64)
+		if !ok || got != want {
+			t.Errorf("stats[%q] = %v, want %v", key, stats[key], want)
+		}
+	}
+	if stats["model"] != "qwen" {
+		t.Errorf("stats.model = %v, want qwen", stats["model"])
+	}
+}
+
+func TestChatMessageDoneStatsKeepUnknownTokensNull(t *testing.T) {
+	app, server := newTestApp(t)
+	backend := &fakeChatBackend{
+		final: "Ответ",
+		stats: &bot.MiniAppAnswerStats{Latency: time.Second, FirstTokenLatency: 250 * time.Millisecond, Model: "qwen"},
+	}
+	app.SetChatBackend(backend)
+	bearer := launchSession(t, app, server)
+
+	status, body, _ := chatRequest(t, server, http.MethodPost, "/api/messages", bearer, `{"text":"привет"}`, "application/json")
+	if status != http.StatusOK {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	var stats map[string]any
+	for _, event := range parseChatSSE(t, body) {
+		if event.name == "done" {
+			stats, _ = event.data["stats"].(map[string]any)
+		}
+	}
+	if stats == nil {
+		t.Fatalf("no stats object in %s", body)
+	}
+	for _, key := range []string{"tokens_in", "tokens_out", "tokens_per_second"} {
+		if value, present := stats[key]; !present || value != nil {
+			t.Errorf("stats[%q] = %v (present=%v), want an explicit null", key, value, present)
+		}
 	}
 }
 

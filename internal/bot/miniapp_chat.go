@@ -23,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -55,11 +56,24 @@ type MiniAppApprovalEvent struct {
 	ExpiresInSeconds int
 }
 
+// MiniAppAnswerStats — the numbers behind the final answer, sent with the done event. They describe
+// the same Response the latency footer was built from, so a client can show the metrics without
+// parsing the footer text. Unknown token counts stay nil instead of becoming a misleading zero.
+// FirstTokenLatency is measured for streamed answers only; it is zero when the model cannot stream.
+type MiniAppAnswerStats struct {
+	Latency           time.Duration
+	TokensIn          *int64
+	TokensOut         *int64
+	TokensPerSecond   *float64
+	FirstTokenLatency time.Duration
+	Model             string
+}
+
 // MiniAppStreamEvent is one visible event of a Mini App answer. Exactly one field is meaningful:
 // Delta for a text fragment (and for the final text of Done), Stage for a tool/thinking notice,
 // Approval for a pending network decision, Done for the last event, Error for a sanitized failure
-// message. MessageID is set only on Done: it is the stored assistant row, so the client can rate
-// that exact message without refetching the history.
+// message. MessageID and Stats are set only on Done: the stored assistant row and the answer
+// metrics, so the client can rate that exact message and render its numbers.
 type MiniAppStreamEvent struct {
 	Delta     string
 	Stage     string
@@ -67,6 +81,7 @@ type MiniAppStreamEvent struct {
 	Done      bool
 	Error     string
 	MessageID int64
+	Stats     *MiniAppAnswerStats
 }
 
 var (
@@ -152,7 +167,7 @@ func (d *Dispatcher) AnswerForMiniApp(ctx context.Context, chatID, userID int64,
 		}
 		return emit(event)
 	}
-	final, assistantID, err := d.answerForMiniApp(ctx, chatID, userID, text, forward)
+	final, assistantID, stats, err := d.answerForMiniApp(ctx, chatID, userID, text, forward)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return err // the reader is gone: a second write would only fail again
@@ -170,12 +185,30 @@ func (d *Dispatcher) AnswerForMiniApp(ctx context.Context, chatID, userID int64,
 			return err
 		}
 	}
-	var doneErr = emit(MiniAppStreamEvent{Delta: final, Done: true, MessageID: assistantID})
+	var doneErr = emit(MiniAppStreamEvent{Delta: final, Done: true, MessageID: assistantID, Stats: stats})
 	if doneErr != nil || ctx.Err() != nil {
 		// The window is gone but the answer exists; deliver it where the user will see it.
 		d.deliverMiniAppAnswerToTelegram(ctx, chatID, userID, final)
 	}
 	return doneErr
+}
+
+// miniAppAnswerStatsFor turns the final Response into the numbers of the done event. It mirrors the
+// latency footer: the rate is output tokens over the whole call, and a provider that returned no
+// usage leaves the token fields nil rather than zero.
+func miniAppAnswerStatsFor(resp model.Response, selectedModel string) *MiniAppAnswerStats {
+	stats := &MiniAppAnswerStats{
+		Latency:           resp.Latency,
+		TokensIn:          resp.TokensIn,
+		TokensOut:         resp.TokensOut,
+		FirstTokenLatency: resp.FirstTokenLatency,
+		Model:             replyModel(resp.Model, selectedModel),
+	}
+	if resp.TokensOut != nil && resp.Latency > 0 {
+		rate := math.Round(float64(*resp.TokensOut)/resp.Latency.Seconds()*10) / 10
+		stats.TokensPerSecond = &rate
+	}
+	return stats
 }
 
 // effectiveMiniAppTelegramFallback resolves the fallback for one chat: an explicit per-chat row wins, and the
@@ -306,9 +339,9 @@ func (d *Dispatcher) miniAppAllowed(ctx context.Context, userID int64) error {
 	return nil
 }
 
-func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64, text string, emit func(MiniAppStreamEvent) error) (string, int64, error) {
+func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64, text string, emit func(MiniAppStreamEvent) error) (string, int64, *MiniAppAnswerStats, error) {
 	if d.deps.Model == nil {
-		return "", 0, ErrMiniAppUnavailable
+		return "", 0, nil, ErrMiniAppUnavailable
 	}
 
 	// Streaming is decided before admission. The budget is the same pair Telegram uses in
@@ -323,7 +356,7 @@ func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64,
 	if streamer != nil {
 		enabled, _, err := d.streamingEnabled(ctx, chatID)
 		if err != nil {
-			return "", 0, fmt.Errorf("%w: read streaming setting: %v", errMiniAppInternal, err)
+			return "", 0, nil, fmt.Errorf("%w: read streaming setting: %v", errMiniAppInternal, err)
 		}
 		streaming = enabled
 	}
@@ -358,6 +391,7 @@ func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64,
 
 	var final string
 	var assistantID int64
+	var stats *MiniAppAnswerStats
 	var inChat bool
 	err := d.deps.Locks.WithChatBounded(queueCtx, chatID, perChatQueueCapacity, func() error {
 		inChat = true
@@ -438,6 +472,7 @@ func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64,
 			return fmt.Errorf("%w: store answer: %v", errMiniAppInternal, err)
 		}
 		assistantID = rowID
+		stats = miniAppAnswerStatsFor(resp, selectedModel)
 		// The same finalizer the Telegram path uses: latency, finish_reason notice, RAG sources
 		// and the document truncation marker. Without it a finish_reason=length answer looked
 		// complete in the Mini App while Telegram warned about it.
@@ -450,13 +485,13 @@ func (d *Dispatcher) answerForMiniApp(ctx context.Context, chatID, userID int64,
 	if err != nil {
 		switch {
 		case errors.Is(err, ratelimit.ErrChatQueueFull), errors.Is(err, errExecutionSlotBusy):
-			return "", 0, fmt.Errorf("%w: %v", errMiniAppOverloaded, err)
+			return "", 0, nil, fmt.Errorf("%w: %v", errMiniAppOverloaded, err)
 		case !inChat && errors.Is(err, context.DeadlineExceeded):
-			return "", 0, fmt.Errorf("%w: %v", errMiniAppChatBusy, err)
+			return "", 0, nil, fmt.Errorf("%w: %v", errMiniAppChatBusy, err)
 		}
-		return "", 0, err
+		return "", 0, nil, err
 	}
-	return final, assistantID, nil
+	return final, assistantID, stats, nil
 }
 
 // acquireMiniAppExecution takes one of the dispatcher's global execution slots, the same bounded

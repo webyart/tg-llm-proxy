@@ -1181,10 +1181,17 @@ func latencyLine(resp model.Response, configured string) string {
 }
 
 // latencyLineFor is the language-aware latency footer. The Mini App and the task scheduler still use
-// the Russian wrapper.
+// the Russian wrapper. A measured time-to-first-token is shown as «⚡ 0.8s» right before the model
+// name; a response without one (a non-streamed answer, a tool-only turn or an old caller) keeps the
+// line it had.
 func latencyLineFor(lang string, resp model.Response, configured string) string {
 	var name = replyModel(resp.Model, configured)
+	var ttft, hasTTFT = formatFirstToken(resp.FirstTokenLatency)
 	if resp.TokensIn == nil && resp.TokensOut == nil {
+		if hasTTFT {
+			return i18n.T(lang, "ask.latency_no_tokens_ttft",
+				resp.Latency.Round(time.Millisecond), ttft, name, resp.Attempts)
+		}
 		return i18n.T(lang, "ask.latency_no_tokens",
 			resp.Latency.Round(time.Millisecond), name, resp.Attempts)
 	}
@@ -1197,11 +1204,33 @@ func latencyLineFor(lang string, resp model.Response, configured string) string 
 		out = *resp.TokensOut
 	}
 	if rate, ok := tokensPerSecond(out, resp.Latency); ok {
+		if hasTTFT {
+			return i18n.T(lang, "ask.latency_tokens_rate_ttft",
+				resp.Latency.Round(time.Millisecond), in, out, rate, ttft, name, resp.Attempts)
+		}
 		return i18n.T(lang, "ask.latency_tokens_rate",
 			resp.Latency.Round(time.Millisecond), in, out, rate, name, resp.Attempts)
 	}
+	if hasTTFT {
+		return i18n.T(lang, "ask.latency_tokens_ttft",
+			resp.Latency.Round(time.Millisecond), in, out, ttft, name, resp.Attempts)
+	}
 	return i18n.T(lang, "ask.latency_tokens",
 		resp.Latency.Round(time.Millisecond), in, out, name, resp.Attempts)
+}
+
+// formatFirstToken renders a measured TTFT for the footer. Under ten seconds it keeps one decimal of
+// a second (0.8s, 4.6s), because that is the resolution a reader compares; longer waits are whole
+// seconds. A zero duration means «not measured» and is never rendered, so the footer of a
+// non-streamed answer does not grow a meaningless ⚡ 0.0s.
+func formatFirstToken(d time.Duration) (string, bool) {
+	if d <= 0 {
+		return "", false
+	}
+	if d < 10*time.Second {
+		return fmt.Sprintf("%.1fs", d.Seconds()), true
+	}
+	return d.Round(time.Second).String(), true
 }
 
 // tokensPerSecond renders the generation speed. It needs a positive latency and output count; the caller

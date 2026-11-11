@@ -30,6 +30,10 @@ var (
 	ErrTaskStateChange = errors.New("task state transition did not match the claimed row")
 )
 
+// EventTaskStepRetry — one audit row per retried step. The detail names the step number and the bounded
+// failure class only; the goal, step text and model answer are never written here.
+const EventTaskStepRetry = "task_step_retry"
+
 type Task struct {
 	ID                int64
 	ChatID            int64
@@ -48,11 +52,14 @@ type Task struct {
 	ApprovalToken     string
 	ApprovalMessageID int64
 	ApprovalExpiresAt *time.Time
-	ExpiresAt         time.Time
-	Error             string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	FinishedAt        *time.Time
+	// StatusMessageID is the single Telegram message a live task rewrites on step transitions. Zero means
+	// "no status message yet" (a row written by an older release, or a task created from the Mini App).
+	StatusMessageID int64
+	ExpiresAt       time.Time
+	Error           string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	FinishedAt      *time.Time
 }
 
 func ActiveTaskStatus(status string) bool {
@@ -120,7 +127,8 @@ func CreateTask(ctx context.Context, db *sql.DB, task Task) (Task, error) {
 const taskColumns = `id, chat_id, user_id, goal, model, plan_json, results_json, next_step, status, attempts,
 	due_at, COALESCE(claim_token, ''), COALESCE(lease_until, ''), COALESCE(continuation_json, ''),
 	COALESCE(approval_token, ''), COALESCE(approval_message_id, 0), COALESCE(approval_expires_at, ''),
-	expires_at, COALESCE(error, ''), created_at, updated_at, COALESCE(finished_at, '')`
+	expires_at, COALESCE(error, ''), created_at, updated_at, COALESCE(finished_at, ''),
+	COALESCE(status_message_id, 0)`
 
 type taskScanner interface {
 	Scan(dest ...any) error
@@ -131,7 +139,8 @@ func scanTask(scanner taskScanner) (Task, error) {
 	var dueAt, leaseUntil, approvalExpiresAt, expiresAt, createdAt, updatedAt, finishedAt string
 	if err := scanner.Scan(&task.ID, &task.ChatID, &task.UserID, &task.Goal, &task.Model, &task.PlanJSON, &task.ResultsJSON,
 		&task.NextStep, &task.Status, &task.Attempts, &dueAt, &task.ClaimToken, &leaseUntil, &task.ContinuationJSON,
-		&task.ApprovalToken, &task.ApprovalMessageID, &approvalExpiresAt, &expiresAt, &task.Error, &createdAt, &updatedAt, &finishedAt); err != nil {
+		&task.ApprovalToken, &task.ApprovalMessageID, &approvalExpiresAt, &expiresAt, &task.Error, &createdAt, &updatedAt, &finishedAt,
+		&task.StatusMessageID); err != nil {
 		return Task{}, err
 	}
 	var err error
@@ -256,6 +265,19 @@ func SaveTaskApproval(ctx context.Context, db *sql.DB, task Task, token string, 
 			approval_message_id = ?, approval_expires_at = ?, due_at = ?, updated_at = ?
 		WHERE id = ? AND status = 'running' AND claim_token = ? AND next_step < 3`,
 		continuationJSON, token, messageID, formatReminderTime(expiresAt), formatReminderTime(expiresAt), formatReminderTime(now), task.ID, task.ClaimToken)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
+}
+
+func SetTaskStatusMessage(ctx context.Context, db *sql.DB, taskID int64, chatID int64, messageID int64, now time.Time) (bool, error) {
+	if taskID <= 0 || chatID == 0 || messageID <= 0 {
+		return false, fmt.Errorf("%w: a status message needs a task, a chat and a positive message id", ErrTaskInvalid)
+	}
+	result, err := db.ExecContext(ctx, `UPDATE tasks SET status_message_id = ?, updated_at = ?
+		WHERE id = ? AND chat_id = ?`, messageID, formatReminderTime(now), taskID, chatID)
 	if err != nil {
 		return false, err
 	}

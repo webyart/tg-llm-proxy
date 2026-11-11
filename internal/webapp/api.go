@@ -217,6 +217,9 @@ func (a *App) chatMessage(w http.ResponseWriter, req *http.Request, current scop
 			if event.MessageID > 0 {
 				payload["message_id"] = event.MessageID
 			}
+			if event.Stats != nil {
+				payload["stats"] = miniAppAnswerStatsPayload(event.Stats)
+			}
 			return stream.send("done", payload)
 		case event.Delta != "":
 			return stream.send("delta", map[string]string{"text": event.Delta})
@@ -244,6 +247,31 @@ func (a *App) chatMessage(w http.ResponseWriter, req *http.Request, current scop
 		stream.errorSeen = true
 		_ = stream.send("error", map[string]string{"code": "chat_failed", "message": a.chatErrorMessage(err)})
 	}
+}
+
+// miniAppAnswerStatsPayload is the `stats` object of the done event. The keys are stable and always
+// present; an unknown token count is null, not zero, so a client can tell "not reported" from "0".
+// first_token_ms is 0 for a non-streamed answer, which is the same "no measurement" meaning the
+// footer uses.
+func miniAppAnswerStatsPayload(stats *bot.MiniAppAnswerStats) map[string]any {
+	payload := map[string]any{
+		"latency_ms":        stats.Latency.Milliseconds(),
+		"tokens_in":         nil,
+		"tokens_out":        nil,
+		"tokens_per_second": nil,
+		"first_token_ms":    stats.FirstTokenLatency.Milliseconds(),
+		"model":             stats.Model,
+	}
+	if stats.TokensIn != nil {
+		payload["tokens_in"] = *stats.TokensIn
+	}
+	if stats.TokensOut != nil {
+		payload["tokens_out"] = *stats.TokensOut
+	}
+	if stats.TokensPerSecond != nil {
+		payload["tokens_per_second"] = *stats.TokensPerSecond
+	}
+	return payload
 }
 
 // chatApproval — POST /api/chat/approval `{"token":"…","approve":true|false}`. It delivers the

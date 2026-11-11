@@ -21,6 +21,7 @@ import (
 
 	"bot/internal/i18n"
 	"bot/internal/store"
+	"bot/internal/timefmt"
 )
 
 // covers a month of a small family deployment.
@@ -289,7 +290,7 @@ func (d *Dispatcher) notifySupersededQuestions(ctx context.Context) error {
 			return stateErr
 		}
 		var text = i18n.T(d.chatLanguage(ctx, chat.ChatID), "recovery.superseded",
-			recoveryNoticeTime(question.CreatedAt))
+			recoveryNoticeTime(question.CreatedAt, d.chatLocation(ctx, chat.ChatID)))
 		if sendErr := d.reply(ctx, chat.ChatID, text); sendErr != nil {
 			d.deps.Logger.Error("the unanswered-question notice was not delivered",
 				"chat_id", chat.ChatID, "question_row", question.ID,
@@ -327,14 +328,15 @@ func resumeNoticeKey(chatID int64) string {
 	return resumeNoticeKeyPrefix + strconv.FormatInt(chatID, 10)
 }
 
-// recoveryNoticeTime renders the stored UTC SQLite timestamp as the HH:MM the user saw in the chat. A value
-// that does not parse is shown verbatim instead of becoming an empty «Вопрос от  остался…».
-func recoveryNoticeTime(createdAt string) string {
-	var created, err = time.Parse(time.DateTime, createdAt)
-	if err != nil {
+// recoveryNoticeTime renders the stored UTC SQLite timestamp as the HH:MM the user saw in the chat, in
+// the effective chat zone. A value that does not parse is shown verbatim instead of becoming an empty
+// «Вопрос от  остался…».
+func recoveryNoticeTime(createdAt string, location *time.Location) string {
+	created, ok := timefmt.Parse(createdAt)
+	if !ok {
 		return createdAt
 	}
-	return created.Format("15:04")
+	return timefmt.Clock(created, location)
 }
 
 func recoveryBackoff(attempt int) time.Duration {

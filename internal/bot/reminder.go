@@ -13,6 +13,7 @@ import (
 
 	"bot/internal/i18n"
 	"bot/internal/store"
+	"bot/internal/timefmt"
 )
 
 const (
@@ -25,11 +26,11 @@ const (
 
 var ErrReminderSyntax = errors.New("invalid reminder syntax")
 
-func reminderLocation(d *Dispatcher) *time.Location {
-	if d.deps.Cfg.ReminderLocation != nil {
-		return d.deps.Cfg.ReminderLocation
-	}
-	return time.UTC
+// reminderLocation resolves the effective chat zone (chat_timezone override or DEFAULT_TIMEZONE). The
+// reminder grammar and the daily wall-clock both use this location, so «/remind 18:30» means 18:30 for the
+// user, while the stored NextRunAt remains UTC.
+func (d *Dispatcher) reminderLocation(ctx context.Context, chatID int64) *time.Location {
+	return d.chatLocation(ctx, chatID)
 }
 
 func reminderRemainder(input string, words int) (string, bool) {
@@ -182,23 +183,18 @@ func AdvanceDailyReminder(previous time.Time, now time.Time, clock string, locat
 	return candidate.UTC(), nil
 }
 
-func reminderTimezone(d *Dispatcher) string {
-	if timezone := strings.TrimSpace(d.deps.Cfg.ReminderTimezone); timezone != "" {
-		return timezone
-	}
-	return reminderLocation(d).String()
+func (d *Dispatcher) reminderTimezone(ctx context.Context, chatID int64) string {
+	return d.chatTimezoneName(ctx, chatID)
 }
 
-func reminderSchedule(d *Dispatcher, reminder store.Reminder) string {
-	return reminderScheduleFor(i18n.Default, d, reminder)
-}
-
-func reminderScheduleFor(lang string, d *Dispatcher, reminder store.Reminder) string {
-	location := reminderLocation(d)
+func reminderScheduleFor(ctx context.Context, lang string, d *Dispatcher, reminder store.Reminder) string {
+	location := d.reminderLocation(ctx, reminder.ChatID)
 	if reminder.Cadence == store.ReminderCadenceDaily {
-		return i18n.T(lang, "remind.schedule_daily", reminder.DailyTime, reminder.NextRunAt.In(location).Format("MST"), reminderTimezone(d))
+		return i18n.T(lang, "remind.schedule_daily", reminder.DailyTime,
+			timefmt.Zone(reminder.NextRunAt, location), d.reminderTimezone(ctx, reminder.ChatID))
 	}
-	return fmt.Sprintf("%s (%s)", reminder.NextRunAt.In(location).Format("2006-01-02 15:04 MST"), reminderTimezone(d))
+	return i18n.T(lang, "remind.schedule_once",
+		timefmt.DateTimeZoned(reminder.NextRunAt, location, lang), d.reminderTimezone(ctx, reminder.ChatID))
 }
 
 func (d *Dispatcher) createReminder(ctx context.Context, ev Event, reminder store.Reminder) error {
@@ -218,12 +214,12 @@ func (d *Dispatcher) createReminder(ctx context.Context, ev Event, reminder stor
 	if err != nil {
 		return err
 	}
-	return d.reply(ctx, ev.ChatID, i18n.T(lang, "remind.created", created.ID, reminderScheduleFor(lang, d, created), created.Text))
+	return d.reply(ctx, ev.ChatID, i18n.T(lang, "remind.created", created.ID, reminderScheduleFor(ctx, lang, d, created), created.Text))
 }
 
 func (d *Dispatcher) remind(ctx context.Context, ev Event, arg string) error {
 	lang := d.chatLanguage(ctx, ev.ChatID)
-	reminder, err := ParseReminder(arg, d.now(), reminderLocation(d))
+	reminder, err := ParseReminder(arg, d.now(), d.reminderLocation(ctx, ev.ChatID))
 	if err != nil {
 		if errors.Is(err, store.ErrReminderText) {
 			return d.reply(ctx, ev.ChatID, i18n.T(lang, "remind.text_invalid", store.ReminderMaxTextRunes))
@@ -264,7 +260,7 @@ func (d *Dispatcher) beginReminderCreation(ctx context.Context, ev Event, choice
 	if !ok {
 		return d.showReminderCreateMenu(ctx, ev, menuExpiredFor(lang))
 	}
-	prompt := i18n.T(lang, "remind.create_prompt", store.ReminderMaxTextRunes, label, reminderTimezone(d))
+	prompt := i18n.T(lang, "remind.create_prompt", store.ReminderMaxTextRunes, label, d.reminderTimezone(ctx, ev.ChatID))
 	return d.beginPendingInput(ctx, ev, pendingReminderActionPrefix+choice, "menu:reminders", prompt)
 }
 
@@ -291,7 +287,7 @@ func (d *Dispatcher) reminders(ctx context.Context, ev Event, arg string) error 
 		if !found {
 			return d.reply(ctx, ev.ChatID, i18n.T(lang, "reminders.usage"))
 		}
-		reminder, err := quickReminder(choice, text, d.now(), reminderLocation(d))
+		reminder, err := quickReminder(choice, text, d.now(), d.reminderLocation(ctx, ev.ChatID))
 		if err != nil {
 			return d.showReminderCreateMenu(ctx, ev, menuExpiredFor(lang))
 		}
@@ -380,7 +376,7 @@ func (d *Dispatcher) reminderMenuContent(ctx context.Context, ev Event, note ...
 	if len(rows) > 0 {
 		lines := []string{i18n.T(lang, "reminders.header", store.ReminderListLimit)}
 		for _, reminder := range rows {
-			lines = append(lines, i18n.T(lang, "reminders.line", reminder.ID, reminderScheduleFor(lang, d, reminder), brief(reminder.Text, 100)))
+			lines = append(lines, i18n.T(lang, "reminders.line", reminder.ID, reminderScheduleFor(ctx, lang, d, reminder), brief(reminder.Text, 100)))
 		}
 		text = strings.Join(lines, "\n")
 	}
@@ -428,7 +424,7 @@ func reminderMenuMarkupFor(lang string, reminders []store.Reminder) models.Inlin
 
 func (d *Dispatcher) showReminderCreateMenu(ctx context.Context, ev Event, note ...string) error {
 	lang := d.chatLanguage(ctx, ev.ChatID)
-	text := i18n.T(lang, "reminders.create_menu", reminderTimezone(d))
+	text := i18n.T(lang, "reminders.create_menu", d.reminderTimezone(ctx, ev.ChatID))
 	markup := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
 		menuRow(menuButton(i18n.T(lang, "reminders.quick_10m"), "menu:reminder:new:10m")),
 		menuRow(menuButton(i18n.T(lang, "reminders.quick_1h"), "menu:reminder:new:1h")),

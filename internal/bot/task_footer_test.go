@@ -103,7 +103,7 @@ func TestTaskFooterHumanReadableDurationsRUAndEN(t *testing.T) {
 		{value: 6*time.Minute + 12*time.Second, ru: "6:12", en: "6:12"},
 		{value: 2*time.Hour + 5*time.Minute, ru: "2 ч 5 мин", en: "2 h 5 min"},
 		{value: time.Hour, ru: "1 ч", en: "1 h"},
-		{value: 59 * time.Second, ru: "0:59", en: "0:59"},
+		{value: 59 * time.Second, ru: "~<1 мин", en: "~<1 min"},
 	}
 	for _, test := range cases {
 		if got := formatTaskDuration(i18n.RU, test.value); got != test.ru {

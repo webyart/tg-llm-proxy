@@ -239,7 +239,11 @@ func TestHistoryExportAttachmentsContainExactData(t *testing.T) {
 	appendWebappMessage(t, app, testChatID, store.RoleAssistant, second)
 	appendWebappMessage(t, app, testChatID+1, store.RoleUser, "other-chat-export-secret")
 
-	expected, err := bot.ExportHistoryData(context.Background(), app.db, testChatID, "md")
+	location := app.cfg.TimezoneLocation
+	if location == nil {
+		location = time.UTC
+	}
+	expected, err := bot.ExportHistoryDataInLocation(context.Background(), app.db, testChatID, "md", location)
 	if err != nil {
 		t.Fatal(err)
 	}

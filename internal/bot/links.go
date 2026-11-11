@@ -15,6 +15,7 @@ import (
 	"bot/internal/i18n"
 	"bot/internal/model"
 	"bot/internal/store"
+	"bot/internal/timefmt"
 )
 
 const linksUsage = "Использование: /links, /links add <https-url>, /links search <текст>, /links summary <id>, /links delete <id>."
@@ -451,13 +452,13 @@ func linksMenuMarkupFor(lang string, rows []store.SavedLink) models.InlineKeyboa
 	return models.InlineKeyboardMarkup{InlineKeyboard: buttons}
 }
 
-func linksMenuText(rows []store.SavedLink, heading string, empty string) string {
+func linksMenuText(lang string, rows []store.SavedLink, heading string, empty string, location *time.Location) string {
 	lines := []string{heading}
 	if len(rows) == 0 {
 		lines = append(lines, empty)
 	}
 	for _, row := range rows {
-		lines = append(lines, fmt.Sprintf("#%d · %s · %s · %s", row.ID, brief(row.Title, 80), linkHost(row), row.UpdatedAt.UTC().Format("2006-01-02")))
+		lines = append(lines, fmt.Sprintf("#%d · %s · %s · %s", row.ID, brief(row.Title, 80), linkHost(row), timefmt.Date(row.UpdatedAt, location, lang)))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -469,7 +470,7 @@ func (d *Dispatcher) linksMenuContent(ctx context.Context, ev Event, note ...str
 		return "", models.InlineKeyboardMarkup{}, err
 	}
 	heading := i18n.T(lang, "links.heading", len(rows), store.SavedLinkListLimit, store.SavedLinkMaxPerChat)
-	return menuText(linksMenuText(rows, heading, i18n.T(lang, "links.none")), note), linksMenuMarkupFor(lang, rows), nil
+	return menuText(linksMenuText(lang, rows, heading, i18n.T(lang, "links.none"), d.chatLocation(ctx, ev.ChatID)), note), linksMenuMarkupFor(lang, rows), nil
 }
 
 func (d *Dispatcher) showLinksMenu(ctx context.Context, ev Event, note ...string) error {
@@ -505,7 +506,7 @@ func (d *Dispatcher) searchLinks(ctx context.Context, ev Event, query string) er
 	}
 	scope := i18n.T(lang, "links.search_scope", store.SavedLinkMaxPerChat, store.SavedLinkListLimit)
 	heading := i18n.T(lang, "links.search_heading", query, len(rows), scope)
-	text := menuText(linksMenuText(rows, heading, i18n.T(lang, "links.none")), nil)
+	text := menuText(linksMenuText(lang, rows, heading, i18n.T(lang, "links.none"), d.chatLocation(ctx, ev.ChatID)), nil)
 	if sender, ok := d.deps.Replier.(interface {
 		SendMenu(context.Context, int64, string, models.InlineKeyboardMarkup) error
 	}); ok {

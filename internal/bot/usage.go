@@ -59,7 +59,7 @@ func (d *Dispatcher) releaseDailyQuota(ctx context.Context, userID int64, class 
 
 func (d *Dispatcher) usage(ctx context.Context, ev Event, arg string) error {
 	lang := d.chatLanguage(ctx, ev.ChatID)
-	text, err := d.dailyUsageTextFor(ctx, ev.UserID, lang)
+	text, err := d.dailyUsageTextFor(ctx, ev.ChatID, ev.UserID, lang)
 	if err != nil {
 		return err
 	}
@@ -71,17 +71,17 @@ func (d *Dispatcher) usage(ctx context.Context, ev Event, arg string) error {
 
 // dailyUsageText keeps the historical Russian rendering for callers without a chat language.
 func (d *Dispatcher) dailyUsageText(ctx context.Context, userID int64) (string, error) {
-	return d.dailyUsageTextFor(ctx, userID, i18n.Default)
+	return d.dailyUsageTextFor(ctx, 0, userID, i18n.Default)
 }
 
-func (d *Dispatcher) dailyUsageTextFor(ctx context.Context, userID int64, lang string) (string, error) {
+func (d *Dispatcher) dailyUsageTextFor(ctx context.Context, chatID int64, userID int64, lang string) (string, error) {
 	now := d.now().UTC()
 	usage, err := store.UserDailyUsage(ctx, d.deps.DB, userID, now)
 	if err != nil {
 		return "", err
 	}
 	lines := []string{
-		i18n.T(lang, "usage.title", now.Format("2006-01-02")),
+		i18n.T(lang, "usage.title", d.localDate(ctx, chatID), d.zoneAbbreviation(ctx, chatID)),
 		i18n.T(lang, "usage.models"),
 	}
 	if len(usage.Models) == 0 {

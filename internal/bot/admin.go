@@ -9,6 +9,7 @@ import (
 
 	"bot/internal/i18n"
 	"bot/internal/store"
+	"bot/internal/timefmt"
 )
 
 func (d *Dispatcher) admin(ctx context.Context, ev Event, arg string) error {
@@ -35,14 +36,10 @@ func (d *Dispatcher) admin(ctx context.Context, ev Event, arg string) error {
 		i18n.T(lang, "admin.calls", d.activeModelRequests.Load(), d.deps.Locks.BusyChats()),
 		i18n.T(lang, "admin.sqlite", float64(info.Size())/1024),
 		i18n.T(lang, "admin.model", d.deps.Cfg.StrataModel),
-		"Uptime: " + timeSince(d.created),
+		i18n.T(lang, "admin.uptime", timefmt.Duration(time.Since(d.created), lang)),
 	}
 	if stats.LastActive != "" {
-		lines = append(lines, i18n.T(lang, "admin.last_active", stats.LastActive))
+		lines = append(lines, i18n.T(lang, "admin.last_active", d.storedTime(ctx, ev.ChatID, lang, stats.LastActive)))
 	}
 	return d.menuReply(ctx, ev, strings.Join(lines, "\n"), refreshBackMarkupFor(lang, "menu:admin", "menu:more"))
-}
-
-func timeSince(start time.Time) string {
-	return time.Since(start).Round(time.Second).String()
 }

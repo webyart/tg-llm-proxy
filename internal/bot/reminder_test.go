@@ -321,7 +321,7 @@ func TestReminderSchedulerRetryDeliveryAndDailyAdvance(t *testing.T) {
 	r := &fakeReplier{err: errors.New("temporary")}
 	m := &fakeModel{}
 	db := testStore(t)
-	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"}), m, r, db)
+	d := newTestDispatcher(t, testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "REMINDER_TIMEZONE": "UTC"}), m, r, db)
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	if err := store.EnsureChat(context.Background(), db, 100, 11, ""); err != nil {
 		t.Fatal(err)

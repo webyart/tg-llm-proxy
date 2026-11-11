@@ -2,7 +2,18 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.68.0
+## Новейший выпуск: v1.69.0
+
+# tg-llm-proxy v1.69.0
+
+## Human-readable time and a global timezone setting
+
+- `DEFAULT_TIMEZONE` (row 79, default `Asia/Yekaterinburg`) and per-chat `chat_timezone` (schema 24). `/timezone` and Mini App Settings switch the IANA zone (private owner / group admin); `GET/PUT /api/settings/timezone`, audited.
+- New `internal/timefmt`: durations (`6:12`, `2 ч 5 мин`, `~<1 мин`), ETA, relative (`через 12 мин`, `вчера 18:40`, `11 ноя, 00:53`) with RU/EN plurals and DST tests.
+- Telegram and Mini App task cards, task status/footer, reminders, history/search, `/stats`, `/limits`, `/usage`, links and export use the effective zone and human format; JSON/API keep ISO. No `T…Z` or nanoseconds on user screens.
+- Tests: 17 packages (incl. timefmt) green, JS 68/68.
+
+## Предыдущий выпуск: v1.68.0
 
 # tg-llm-proxy v1.68.0
 

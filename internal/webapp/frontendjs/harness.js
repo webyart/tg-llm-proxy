@@ -170,6 +170,12 @@ class FakeDocument {
     return new FakeElement(this, tagName);
   }
 
+  createElementNS(namespaceURI, tagName) {
+    const element = new FakeElement(this, tagName);
+    element.namespaceURI = namespaceURI;
+    return element;
+  }
+
   getElementById(id) {
     return this.documentElement.querySelector(`#${id}`);
   }

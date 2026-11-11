@@ -657,6 +657,9 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 	case "/api/settings/tts-speed":
 		a.settingsTTSSpeed(w, req, current)
 		return
+	case "/api/settings/timezone":
+		a.settingsTimezone(w, req, current)
+		return
 	}
 	if req.Method != http.MethodGet {
 		methodAllowed(w, http.MethodGet)
@@ -784,6 +787,8 @@ func miniAppMutationOperation(req *http.Request) (string, bool) {
 			operation = "settings.miniapp_fallback."
 		case "/api/settings/tts-speed":
 			operation = "settings.tts_speed."
+		case "/api/settings/timezone":
+			operation = "settings.timezone."
 		}
 		if operation != "" {
 			if req.Method == http.MethodPut {

@@ -49,6 +49,213 @@
 
   applyTheme(currentTheme, false);
 
+  // ---- Mini App chat timezone ----------------------------------------------
+  // The zone is a display preference stored on the server (chat_timezone, migration 024). localStorage
+  // mirrors it so the first paint after a reload already uses the right zone; the server value wins as
+  // soon as /api/status or /api/settings arrives. Storage and every timestamp stay UTC.
+  const timezoneStorageKey = "dsh-timezone";
+  const timezoneFallback = "Asia/Yekaterinburg";
+  const timezoneChoices = [
+    "Asia/Yekaterinburg", "Europe/Moscow", "Europe/Berlin", "UTC",
+    "Asia/Almaty", "Asia/Tbilisi", "America/New_York",
+  ];
+  const monthsRU = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+  const monthsEN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  function validTimezone(name) {
+    if (typeof name !== "string" || !name.trim()) return false;
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: name }).format(0);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function storedTimezone() {
+    try {
+      const value = localStorage.getItem(timezoneStorageKey);
+      return typeof value === "string" ? value : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function initialTimezone() {
+    const stored = storedTimezone();
+    return validTimezone(stored) ? stored : timezoneFallback;
+  }
+
+  let timezoneName = initialTimezone();
+  let timezoneDefault = timezoneFallback;
+  let timezoneSource = "global";
+
+  function setTimezoneState(name, source) {
+    if (validTimezone(name)) timezoneName = name;
+    timezoneSource = source === "chat" ? "chat" : "global";
+    try { localStorage.setItem(timezoneStorageKey, timezoneName); } catch (_) { /* storage is optional */ }
+  }
+
+  function applyTimezoneFromServer(value) {
+    if (!value || !validTimezone(value.current)) return;
+    timezoneDefault = validTimezone(value.default) ? value.default : timezoneDefault;
+    setTimezoneState(value.current, value.source);
+  }
+
+  function currentTimezoneOption() {
+    return timezoneName;
+  }
+
+  function parseTimestamp(value) {
+    if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+    if (typeof value === "number") {
+      const fromNumber = new Date(value);
+      return Number.isNaN(fromNumber.getTime()) ? null : fromNumber;
+    }
+    if (typeof value !== "string" || !value.trim()) return null;
+    let text = value.trim();
+    // SQLite stores `2026-11-11 10:00:00` without a zone; the storage contract is UTC.
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(text)) text = text.replace(" ", "T") + "Z";
+    const date = new Date(text);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  function zonedParts(value) {
+    const date = parseTimestamp(value);
+    if (!date) return null;
+    try {
+      const formatter = new Intl.DateTimeFormat("en-US", {
+        timeZone: timezoneName, year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+      });
+      const parts = {};
+      for (const part of formatter.formatToParts(date)) parts[part.type] = part.value;
+      if (parts.hour === "24") parts.hour = "00";
+      return {
+        date,
+        year: Number(parts.year), month: Number(parts.month), day: Number(parts.day),
+        hour: Number(parts.hour), minute: Number(parts.minute),
+      };
+    } catch (_) {
+      return { date, year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate(), hour: date.getUTCHours(), minute: date.getUTCMinutes() };
+    }
+  }
+
+  function clockText(parts) {
+    return `${String(parts.hour).padStart(2, "0")}:${String(parts.minute).padStart(2, "0")}`;
+  }
+
+  function zoneOffsetMinutes(parts) {
+    const asUTC = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute);
+    const instant = Date.UTC(parts.date.getUTCFullYear(), parts.date.getUTCMonth(), parts.date.getUTCDate(), parts.date.getUTCHours(), parts.date.getUTCMinutes());
+    return Math.round((asUTC - instant) / 60000);
+  }
+
+  // A short zone label where it helps: the server's zone abbreviation is not always available in Intl,
+  // so the known deployment zones get their conventional names; everything else keeps the IANA name.
+  function zoneAbbreviation(parts) {
+    const offset = zoneOffsetMinutes(parts);
+    switch (timezoneName) {
+      case "Asia/Yekaterinburg": return "YEKT";
+      case "Europe/Moscow": return "MSK";
+      case "Asia/Almaty": return "ALMT";
+      case "Asia/Tbilisi": return "GET";
+      case "Europe/Berlin": return offset === 120 ? "CEST" : "CET";
+      case "America/New_York": return offset === -240 ? "EDT" : "EST";
+      case "UTC": return "UTC";
+      default: return timezoneName;
+    }
+  }
+
+  function formatDateTime(value, withZone = false) {
+    const parts = zonedParts(value);
+    if (!parts) return "";
+    const months = language === "en" ? monthsEN : monthsRU;
+    const nowParts = zonedParts(new Date());
+    const year = nowParts && nowParts.year !== parts.year ? ` ${parts.year}` : "";
+    const text = `${parts.day} ${months[parts.month - 1]}${year}, ${clockText(parts)}`;
+    return withZone ? `${text} ${zoneAbbreviation(parts)}` : text;
+  }
+
+  function formatDateValue(value, withZone = false) {
+    const parts = zonedParts(value);
+    if (!parts) return "";
+    const months = language === "en" ? monthsEN : monthsRU;
+    const text = `${parts.day} ${months[parts.month - 1]} ${parts.year}`;
+    return withZone ? `${text} ${zoneAbbreviation(parts)}` : text;
+  }
+
+  function sameCalendarDay(left, right) {
+    return left.year === right.year && left.month === right.month && left.day === right.day;
+  }
+
+  function dayNumber(parts) {
+    return Math.floor(Date.UTC(parts.year, parts.month - 1, parts.day) / 86400000);
+  }
+
+  function pluralDaysRU(count) {
+    const mod100 = count % 100;
+    if (mod100 >= 11 && mod100 <= 14) return "дней";
+    switch (count % 10) {
+      case 1: return "день";
+      case 2: case 3: case 4: return "дня";
+      default: return "дней";
+    }
+  }
+
+  function relativeHoursText(value, future) {
+    const hours = Math.floor(value / 3600000);
+    const minutes = Math.floor((value % 3600000) / 60000);
+    const body = minutes
+      ? t("relativeHoursMinutes", { hours, minutes })
+      : t("relativeHoursOnly", { hours });
+    if (language === "en") return future ? `in ${body}` : `${body} ago`;
+    return future ? `через ${body}` : `${body} назад`;
+  }
+
+  // formatRelative mirrors internal/timefmt.Relative: minutes and hours nearby, yesterday/tomorrow for
+  // the adjacent day, a plural day count for the nearest week, and the absolute date beyond that.
+  function formatRelative(value) {
+    const target = zonedParts(value);
+    const now = zonedParts(new Date());
+    if (!target || !now) return "";
+    const difference = target.date.getTime() - now.date.getTime();
+    const future = difference > 0;
+    const absolute = Math.abs(difference);
+    if (absolute < 60000) return future ? t("relativeLessMinute") : t("relativeJustNow");
+    if (absolute < 3600000) {
+      const minutes = Math.floor(absolute / 60000);
+      return future ? t("relativeInMinutes", { n: minutes }) : t("relativeMinutesAgo", { n: minutes });
+    }
+    if (sameCalendarDay(target, now)) return relativeHoursText(absolute, future);
+    const days = dayNumber(target) - dayNumber(now);
+    if (days === 1) return t("relativeTomorrow", { time: clockText(target) });
+    if (days === -1) return t("relativeYesterday", { time: clockText(target) });
+    if (days >= 2 && days <= 6) {
+      if (language === "en") return t("relativeInDays", { n: days });
+      return t("relativeInDays", { n: days, unit: pluralDaysRU(days) });
+    }
+    if (days <= -2 && days >= -6) {
+      if (language === "en") return t("relativeDaysAgo", { n: -days });
+      return t("relativeDaysAgo", { n: -days, unit: pluralDaysRU(-days) });
+    }
+    return formatDateTime(value);
+  }
+
+  function formatDuration(milliseconds) {
+    const value = Number(milliseconds) || 0;
+    if (value <= 0) return "0:00";
+    if (value < 60000) return t("durationLessMinute");
+    if (value < 3600000) {
+      const totalSeconds = Math.floor(value / 1000);
+      return `${Math.floor(totalSeconds / 60)}:${String(totalSeconds % 60).padStart(2, "0")}`;
+    }
+    const hours = Math.floor(value / 3600000);
+    const minutes = Math.floor((value % 3600000) / 60000);
+    return minutes ? t("durationHoursMinutes", { hours, minutes }) : t("durationHoursOnly", { hours });
+  }
+
+
   const translations = {
     ru: {
       documentTitle: "Бот — компаньон", headerTitle: "Бот — компаньон", headerSubtitle: "Данные чата и его настройки",
@@ -184,14 +391,14 @@
       networkTools: "Сетевые инструменты", noUsage: "Обращений за сегодня не было.",
       usageRangeTitle: "Период", usageRangeLabel: "Диапазон статистики",
       usageRangeHour: "Час", usageRangeDay: "День", usageRangeWeek: "Неделя", usageRangeMonth: "Месяц",
-      usageRangeHint: "Агрегаты по UTC: без текстов запросов, ответов и целей задач.",
+      usageRangeHint: "Агрегаты без текстов запросов, ответов и целей задач; подписи — в выбранной зоне.",
       usageRangeTruncated: "Диапазон ограничен: показана только самая свежая часть.",
-      usageCallsChart: "Вызовы модели", usageCallsChartHint: "Вызовы по интервалам, UTC.",
+      usageCallsChart: "Вызовы модели", usageCallsChartHint: "Вызовы по интервалам; время — в выбранной зоне.",
       usageCallsChartAria: "График вызовов модели: {total} вызовов; интервалов: {buckets}.",
-      usageTokensChart: "Токены", usageTokensChartHint: "Входящие и исходящие токены по интервалам, UTC.",
+      usageTokensChart: "Токены", usageTokensChartHint: "Входящие и исходящие токены по интервалам; время — в выбранной зоне.",
       usageTokensChartAria: "График токенов: {tokens_in} входящих и {tokens_out} исходящих; интервалов: {buckets}.",
       usageTokensIn: "Входящие", usageTokensOut: "Исходящие",
-      usageCost: "Стоимость", usageCostChart: "Стоимость", usageCostChartHint: "Расход по интервалам, USD, UTC.",
+      usageCost: "Стоимость", usageCostChart: "Стоимость", usageCostChartHint: "Расход по интервалам, USD; время — в выбранной зоне.",
       usageCostChartAria: "График стоимости: {cost} за {buckets} интервалов.",
       usageToolsChart: "Вызовы инструментов", usageToolsChartAria: "Использование инструментов: {total} вызовов.",
       usageRangeModels: "Модели за период", usageRangeTools: "Инструменты за период",
@@ -224,6 +431,8 @@
       providerSourceDB: "база (сохранено в Mini App)", providerBaseHost: "host: {host}",
       providerConfiguredModels: "env-список: {models}", providerModelsCount: "{count} / 20",
       errorAdminRequired: "Раздел доступен только администратору.", errorChatNotFound: "Чат не найден.",
+      errorInvalidTimezone: "Неизвестный часовой пояс. Выберите IANA-название из списка.",
+      errorTimezoneForbidden: "Менять часовой пояс может только владелец личного чата или администратор.",
       errorInvalidProvider: "Провайдер не может быть изменён: strata зарезервирован за основным endpoint.",
       errorUnknownProvider: "Провайдер не настроен в MODEL_PROVIDERS.",
       errorProviderValidation: "Проверьте список моделей: 1–20 непустых уникальных строк и default из списка.",
@@ -254,6 +463,17 @@
       themeTitle: "Тема оформления", themeHint: "Пять приглушённых схем: графит, песочная, океан, лес и лаванда. Выбор применяется сразу и сохраняется в этом браузере.",
       themeAria: "Тема оформления", themeGraphite: "Графит (мягкая тёмная)", themeSand: "Песочная (тёплая светлая)",
       themeOcean: "Океан (серо-синяя)", themeForest: "Лес (приглушённая зелёная)", themeLavender: "Лаванда (пыльная светлая)",
+      timezoneTitle: "Часовой пояс", timezoneHint: "Время задач, напоминаний, истории и статистики показывается в этой зоне. Хранение и вычисления остаются в UTC.",
+      timezoneAria: "Часовой пояс чата", timezoneDefaultOption: "По умолчанию ({zone})",
+      timezoneSourceChat: "этот чат", timezoneSourceDefault: "по умолчанию",
+      timezoneSaved: "Часовой пояс применён.", timezoneSaveFailed: "Не удалось сохранить часовой пояс.",
+      relativeJustNow: "только что", relativeLessMinute: "через <1 мин",
+      relativeInMinutes: "через {n} мин", relativeMinutesAgo: "{n} мин назад",
+      relativeHoursMinutes: "{hours} ч {minutes} мин", relativeHoursOnly: "{hours} ч",
+      relativeYesterday: "вчера {time}", relativeTomorrow: "завтра {time}",
+      relativeInDays: "через {n} {unit}", relativeDaysAgo: "{n} {unit} назад",
+      durationLessMinute: "~<1 мин", durationHoursOnly: "{hours} ч", durationHoursMinutes: "{hours} ч {minutes} мин",
+      createdAt: "создана", dueAt: "срок", expiresAt: "до", durationLabel: "длительность",
       availableModels: "Доступные модели провайдера", noModels: "Провайдер не сообщил ни одной модели",
       useModel: "Применить модель", resetDefault: "Сбросить к общей",
       modelsTruncated: "Показаны первые 50 моделей. Обновите, чтобы снова проверить endpoint.",
@@ -408,14 +628,14 @@
       networkTools: "Network tools", noUsage: "No calls today.",
       usageRangeTitle: "Range", usageRangeLabel: "Statistics range",
       usageRangeHour: "Hour", usageRangeDay: "Day", usageRangeWeek: "Week", usageRangeMonth: "Month",
-      usageRangeHint: "UTC aggregates: request texts, answers, and task goals are never included.",
+      usageRangeHint: "Aggregates without request texts, answers, or task goals; labels use the selected zone.",
       usageRangeTruncated: "The range is capped; only the newest part is shown.",
-      usageCallsChart: "Model calls", usageCallsChartHint: "Calls per bucket, UTC.",
+      usageCallsChart: "Model calls", usageCallsChartHint: "Calls per bucket; time in the selected zone.",
       usageCallsChartAria: "Model calls chart: {total} calls across {buckets} buckets.",
-      usageTokensChart: "Tokens", usageTokensChartHint: "Input and output tokens per bucket, UTC.",
+      usageTokensChart: "Tokens", usageTokensChartHint: "Input and output tokens per bucket; time in the selected zone.",
       usageTokensChartAria: "Tokens chart: {tokens_in} input and {tokens_out} output tokens across {buckets} buckets.",
       usageTokensIn: "Input", usageTokensOut: "Output",
-      usageCost: "Cost", usageCostChart: "Cost", usageCostChartHint: "Spend per bucket, USD, UTC.",
+      usageCost: "Cost", usageCostChart: "Cost", usageCostChartHint: "Spend per bucket, USD; time in the selected zone.",
       usageCostChartAria: "Cost chart: {cost} across {buckets} buckets.",
       usageToolsChart: "Tool calls", usageToolsChartAria: "Tool usage: {total} calls.",
       usageRangeModels: "Models in range", usageRangeTools: "Tools in range",
@@ -448,6 +668,8 @@
       providerSourceDB: "database (saved in the Mini App)", providerBaseHost: "host: {host}",
       providerConfiguredModels: "env list: {models}", providerModelsCount: "{count} / 20",
       errorAdminRequired: "This section is available to administrators only.", errorChatNotFound: "The chat was not found.",
+      errorInvalidTimezone: "Unknown timezone. Choose an IANA name from the list.",
+      errorTimezoneForbidden: "Only the private chat owner or an administrator can change the timezone.",
       errorInvalidProvider: "This provider cannot be edited: strata is reserved for the default endpoint.",
       errorUnknownProvider: "The provider is not configured in MODEL_PROVIDERS.",
       errorProviderValidation: "Check the models: 1 to 20 non-empty unique lines and a default from that list.",
@@ -478,6 +700,17 @@
       themeTitle: "Color theme", themeHint: "Five muted schemes: graphite, sand, ocean, forest and lavender. The choice applies immediately and stays in this browser.",
       themeAria: "Color theme", themeGraphite: "Graphite (soft dark)", themeSand: "Sand (warm light)",
       themeOcean: "Ocean (cool blue-gray)", themeForest: "Forest (muted green)", themeLavender: "Lavender (dusty light)",
+      timezoneTitle: "Timezone", timezoneHint: "Task, reminder, history and usage times render in this zone. Storage and calculations stay in UTC.",
+      timezoneAria: "Chat timezone", timezoneDefaultOption: "Default ({zone})",
+      timezoneSourceChat: "this chat", timezoneSourceDefault: "default",
+      timezoneSaved: "Timezone applied.", timezoneSaveFailed: "The timezone could not be saved.",
+      relativeJustNow: "just now", relativeLessMinute: "in <1 min",
+      relativeInMinutes: "in {n} min", relativeMinutesAgo: "{n} min ago",
+      relativeHoursMinutes: "{hours} h {minutes} min", relativeHoursOnly: "{hours} h",
+      relativeYesterday: "yesterday {time}", relativeTomorrow: "tomorrow {time}",
+      relativeInDays: "in {n} days", relativeDaysAgo: "{n} days ago",
+      durationLessMinute: "~<1 min", durationHoursOnly: "{hours} h", durationHoursMinutes: "{hours} h {minutes} min",
+      createdAt: "created", dueAt: "due", expiresAt: "until", durationLabel: "duration",
       availableModels: "Available provider models", noModels: "No models reported by the provider",
       useModel: "Use model", resetDefault: "Reset to default",
       modelsTruncated: "Only the first 50 provider models are shown; refresh to check the endpoint again.",
@@ -528,6 +761,7 @@
     invalid_limits: "errorInvalidLimits", invalid_tools: "errorInvalidTools", invalid_limit: "errorInvalidLimits",
     invalid_provider: "errorInvalidProvider", unknown_provider: "errorUnknownProvider",
     provider_validation: "errorProviderValidation",
+    invalid_timezone: "errorInvalidTimezone", timezone_forbidden: "errorTimezoneForbidden",
   };
 
   function initialLanguage() {
@@ -948,13 +1182,14 @@
 
   function itemShell(id, timestamp) {
     const wrapper = element("article", "item");
-    wrapper.appendChild(element("div", "meta", `#${id}${timestamp ? ` · ${timestamp}` : ""}`));
+    const stamp = timestamp ? ` · ${formatDateTime(timestamp)}` : "";
+    wrapper.appendChild(element("div", "meta", `#${id}${stamp}`));
     return wrapper;
   }
 
   function renderStatus(data) {
     ui.content.replaceChildren();
-    if (data.last_activity) ui.content.appendChild(element("p", "meta", `${t("lastActivity")}: ${data.last_activity}`));
+    if (data.last_activity) ui.content.appendChild(element("p", "meta", `${t("lastActivity")}: ${formatRelative(data.last_activity)}`));
     const grid = element("div", "stats");
     const values = [
       [t("messages"), data.messages], [t("documents"), data.documents], [t("savedLinks"), data.links],
@@ -1461,10 +1696,10 @@
       return section;
     }
     for (const item of items) {
-      const wrapper = itemShell(item.id);
+      const wrapper = itemShell(item.id, item.created_at);
       wrapper.appendChild(element("div", "content", item.text));
       const cadence = item.cadence === "daily" ? `${t("reminderDaily")} ${item.daily_time || ""}`.trim() : t("reminderOnce");
-      wrapper.appendChild(element("div", "meta", `${t("reminderCadence")}: ${cadence} · ${t("reminderNextRun")}: ${item.next_run} · ${item.attempts} ${t("attempts")}`));
+      wrapper.appendChild(element("div", "meta", `${t("reminderCadence")}: ${cadence} · ${t("reminderNextRun")}: ${formatRelative(item.next_run)} · ${item.attempts} ${t("attempts")}`));
       const actions = element("div", "task-actions");
       if (failed) {
         actions.appendChild(settingsButton(t("retryReminder"), () => changeReminder(`/api/reminders/${item.id}/retry`)));
@@ -1622,8 +1857,9 @@
         const statusClass = item.status === "completed" ? "badge badge-success" : ["failed", "cancelled"].includes(item.status) ? "badge badge-danger" : "badge";
         wrapper.appendChild(element("span", statusClass, status));
         wrapper.appendChild(element("div", "content", item.goal));
-        wrapper.appendChild(element("div", "meta", `${status} · ${t("step")} ${item.next_step} · ${item.attempts} ${t("attempts")} · ${t("due")} ${item.due_at}`));
-        wrapper.appendChild(element("div", "meta", `${t("expires")}: ${item.expires_at}`));
+        wrapper.appendChild(element("div", "meta", `${status} · ${t("step")} ${item.next_step} · ${item.attempts} ${t("attempts")} · ${t("createdAt")}: ${formatRelative(item.created_at)} · ${t("dueAt")}: ${formatRelative(item.due_at)}`));
+        wrapper.appendChild(element("div", "meta", `${t("expiresAt")}: ${formatRelative(item.expires_at)}`));
+        if (item.duration_ms > 0) wrapper.appendChild(element("div", "meta", `${t("durationLabel")}: ${formatDuration(item.duration_ms)}`));
         if (item.error) wrapper.appendChild(element("div", "task-error", `${t("taskError")}: ${item.error}`));
         if (item.status === "awaiting_approval") wrapper.appendChild(element("p", "meta", t("networkApprovalTelegram")));
         const actions = element("div", "task-actions");
@@ -2464,8 +2700,51 @@
     showNotice(t("providerSettingsResetDone"));
   }
 
+  // changeTimezone applies the choice locally before the request, so the selector repaints immediately;
+  // the server remains the source of truth and load() re-reads it after a successful PUT.
+  async function changeTimezone(value, data) {
+    if (loading || !session) return;
+    const previousName = timezoneName;
+    const previousSource = timezoneSource;
+    const effective = value || data.timezone.default;
+    const source = value ? "chat" : "global";
+    setTimezoneState(effective, source);
+    data.timezone.current = effective;
+    data.timezone.source = source;
+    renderSettings(data);
+    setBusy(true);
+    showError("");
+    let saved = false;
+    try {
+      await api("/api/settings/timezone", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ timezone: value }),
+      });
+      saved = true;
+    } catch (error) {
+      showError(error.message || t("timezoneSaveFailed"));
+    } finally {
+      setBusy(false);
+    }
+    if (!saved) {
+      setTimezoneState(previousName, previousSource);
+      data.timezone.current = previousName;
+      data.timezone.source = previousSource;
+      renderSettings(data);
+      return;
+    }
+    resetArmedStates();
+    resetSearchState();
+    await load();
+    showNotice(t("timezoneSaved"));
+  }
+
   function renderSettings(data) {
     ui.content.replaceChildren();
+    if (!data.timezone || typeof data.timezone !== "object") {
+      data.timezone = { current: timezoneName, default: timezoneDefault, source: timezoneSource };
+    }
     const source = (value) => t(value === "chat" ? "sourceChat" : "sourceGlobal");
     const personaName = (value) => maybe(`persona_${value}`, value);
     const modelsUnavailable = data.warning === "models_unavailable";
@@ -2578,6 +2857,33 @@
       tts.appendChild(speedRow);
       ui.content.appendChild(tts);
     }
+
+    const timezone = data.timezone;
+    const timezoneSourceLabel = timezone.source === "chat" ? t("timezoneSourceChat") : t("timezoneSourceDefault");
+    const timezoneSection = settingsSection(t("timezoneTitle"),
+      `${t("current")}: ${timezone.current} · ${timezoneSourceLabel} · ${t("globalDefault")}: ${timezone.default}. ${t("timezoneHint")}`);
+    const timezoneRow = element("div", "settings-row");
+    const timezoneChoice = element("select", "timezone-select");
+    timezoneChoice.id = "timezone";
+    timezoneChoice.setAttribute("aria-label", t("timezoneAria"));
+    const defaultOption = element("option", "", t("timezoneDefaultOption", { zone: timezone.default }));
+    defaultOption.value = "";
+    defaultOption.selected = timezone.source !== "chat";
+    timezoneChoice.appendChild(defaultOption);
+    const timezoneValues = timezoneChoices.slice();
+    for (const name of [timezone.current, timezone.default]) {
+      if (validTimezone(name) && !timezoneValues.includes(name)) timezoneValues.push(name);
+    }
+    for (const name of timezoneValues) {
+      const option = element("option", "", name);
+      option.value = name;
+      option.selected = timezone.source === "chat" && name === timezone.current;
+      timezoneChoice.appendChild(option);
+    }
+    timezoneChoice.addEventListener("change", () => { void changeTimezone(timezoneChoice.value, data); });
+    timezoneRow.appendChild(timezoneChoice);
+    timezoneSection.appendChild(timezoneRow);
+    ui.content.appendChild(timezoneSection);
 
     if (data.is_admin) {
       const providers = element("section", "settings-section provider-settings");
@@ -2716,13 +3022,13 @@
   }
 
   function usageBucketLabel(start, range) {
-    const date = new Date(start);
-    if (Number.isNaN(date.getTime())) return "";
-    const month = String(date.getUTCMonth() + 1).padStart(2, "0");
-    const day = String(date.getUTCDate()).padStart(2, "0");
-    const hour = String(date.getUTCHours()).padStart(2, "0");
+    const parts = zonedParts(start);
+    if (!parts) return "";
+    const month = String(parts.month).padStart(2, "0");
+    const day = String(parts.day).padStart(2, "0");
+    const hour = String(parts.hour).padStart(2, "0");
     if (range === "hour") return `${hour}:00`;
-    if (range === "month") return `${month}.${String(date.getUTCFullYear()).slice(-2)}`;
+    if (range === "month") return `${month}.${String(parts.year).slice(-2)}`;
     return `${day}.${month}`;
   }
 
@@ -2923,7 +3229,8 @@
     if (usageRangeValues.includes(data.range)) usageRange = data.range;
     const sumSeries = (key) => series.reduce((sum, bucket) => sum + (Number(bucket[key]) || 0), 0);
 
-    ui.content.appendChild(element("p", "meta", `${t("usageDate")}: ${data.date || "—"} (UTC)`));
+    const usageDay = data.date ? formatDateValue(`${data.date}T00:00:00Z`, true) : "—";
+    ui.content.appendChild(element("p", "meta", `${t("usageDate")}: ${usageDay}`));
 
     const rangeSection = settingsSection(t("usageRangeTitle"), t("usageRangeHint"));
     rangeSection.appendChild(usageRangeSwitch());
@@ -3881,10 +4188,12 @@
     try {
       if (activeTab === "status") {
         view = { tab: activeTab, data: await api("/api/status"), items: [] };
+        applyTimezoneFromServer(view.data.timezone);
         renderStatus(view.data);
         nextBefore = null;
       } else if (activeTab === "settings") {
         view = { tab: activeTab, data: await api("/api/settings"), items: [] };
+        applyTimezoneFromServer(view.data.timezone);
         renderSettings(view.data);
         nextBefore = null;
       } else if (activeTab === "usage") {
@@ -3901,6 +4210,7 @@
           renderChat();
         } else {
           const status = await api("/api/status");
+          applyTimezoneFromServer(status.timezone);
           const history = await api("/api/history?limit=20");
           const identity = await api("/api/whoami");
           chat.pending = Boolean(status.pending);

@@ -29,6 +29,7 @@ const (
 	CommandMiniApp   = "miniapp"
 	CommandPersona   = "persona"
 	CommandLanguage  = "language"
+	CommandTimezone  = "timezone"
 	CommandAsk       = "ask"
 	CommandReset     = "reset"
 	CommandSkip      = "skip"
@@ -126,6 +127,7 @@ func (d *Dispatcher) registry() []Command {
 		{Name: CommandMiniApp, Description: "доставка ответа Mini App в Telegram: on, off, reset", Handler: d.miniappControl},
 		{Name: CommandPersona, Description: "роль модели для этого чата: пресеты, custom, reset", Handler: d.personaControl},
 		{Name: CommandLanguage, Description: "язык интерфейса бота: ru, en, reset", Handler: d.languageControl},
+		{Name: CommandTimezone, Description: "часовой пояс чата: показать, <IANA>, reset", Handler: d.timezoneControl},
 		{Name: CommandAsk, Description: "вопрос модели", NeedsArgs: true, UsesModel: true, Handler: d.ask},
 		{Name: CommandReset, Description: "очистить контекст чата", Handler: d.reset},
 		{Name: CommandSkip, Description: "не восстанавливать текущий unanswered-вопрос при старте", Handler: d.skip},
@@ -191,6 +193,8 @@ func (d *Dispatcher) helpLinesFor(lang string) []string {
 			usage += i18n.T(lang, "help.remind_suffix")
 		case cmd.Name == CommandLanguage:
 			usage += i18n.T(lang, "help.language_suffix")
+		case cmd.Name == CommandTimezone:
+			usage += i18n.T(lang, "help.timezone_suffix")
 		case cmd.NeedsArgs:
 			usage += i18n.T(lang, "help.args_suffix")
 		}
@@ -1127,7 +1131,7 @@ func (d *Dispatcher) history(ctx context.Context, ev Event, arg string) error {
 	var i = 0
 	for i < len(rows) {
 		var row = rows[i]
-		lines = append(lines, i18n.T(lang, "history.line", i+1, row.Role, brief(SanitizeToolMarkup(row.Content), 120)))
+		lines = append(lines, i18n.T(lang, "history.line", i+1, d.storedTime(ctx, ev.ChatID, lang, row.CreatedAt), row.Role, brief(SanitizeToolMarkup(row.Content), 120)))
 		i++
 	}
 	return d.menuReply(ctx, ev, strings.Join(lines, "\n"), historyMenuMarkupFor(lang))
@@ -1158,7 +1162,7 @@ func (d *Dispatcher) stats(ctx context.Context, ev Event, arg string) error {
 		lines = append(lines, i18n.T(lang, "stats.model", stats.Model))
 	}
 	if stats.LastAt != "" {
-		lines = append(lines, i18n.T(lang, "stats.last", stats.LastAt))
+		lines = append(lines, i18n.T(lang, "stats.last", d.storedTime(ctx, ev.ChatID, lang, stats.LastAt)))
 	}
 	return d.menuReply(ctx, ev, strings.Join(lines, "\n"), refreshBackMarkupFor(lang, "menu:stats", "menu:status"))
 }
@@ -1425,7 +1429,8 @@ func (d *Dispatcher) replyChatLimits(ctx context.Context, ev Event, lang string)
 	lines := []string{
 		i18n.T(lang, "limits.title", ev.ChatID, kind),
 		i18n.T(lang, "limits.source", source),
-		i18n.T(lang, "limits.today", usage.ModelCalls, limitText(limits.DailyModelLimit),
+		i18n.T(lang, "limits.today", d.localDate(ctx, ev.ChatID), d.zoneAbbreviation(ctx, ev.ChatID),
+			usage.ModelCalls, limitText(limits.DailyModelLimit),
 			usage.NetworkToolCalls(), limitText(limits.DailyNetworkLimit)),
 		i18n.T(lang, "limits.cost", fmt.Sprintf("%.2f", float64(spentMicros)/1_000_000),
 			costLimitText(limits.DailyCostLimitMicros)),

@@ -140,7 +140,7 @@ func TestExportAndSearchHistoryWithoutModel(t *testing.T) {
 }
 
 func TestExportAndSearchDescribeTruncatedWindow(t *testing.T) {
-	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11"})
+	cfg := testConfig(t, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "DEFAULT_TIMEZONE": "UTC"})
 	r := &fakeReplier{}
 	db := testStore(t)
 	d := newTestDispatcher(t, cfg, &fakeModel{}, r, db)
@@ -178,7 +178,8 @@ func TestExportAndSearchDescribeTruncatedWindow(t *testing.T) {
 		t.Fatalf("export md: %v", err)
 	}
 	markdown := string(r.documents[1].Data)
-	if !strings.Contains(markdown, "Внимание") || !strings.Contains(markdown, "ID 2–10001") || !strings.Contains(markdown, "время 2026-01-01T00:00:02Z") {
+	if !strings.Contains(markdown, "Внимание") || !strings.Contains(markdown, "ID 2–10001") ||
+		!strings.Contains(markdown, "время 1 янв, 00:00 UTC") || strings.Contains(markdown, "2026-01-01T00:00:02Z") {
 		t.Fatalf("markdown export warning/range missing: %.500s", markdown)
 	}
 	if err := dispatch(t, d, testEvent(202, 11, 1522, "/search needle-")); err != nil {

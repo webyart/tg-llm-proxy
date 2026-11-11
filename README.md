@@ -167,7 +167,8 @@ Fallback без compose: `TELEGRAM_BOT_TOKEN` и `STRATA_API_KEY` в окруж�
 | `TASK_STEP_DEADLINE_SECONDS` | 600 | бюджет всего шага задачи, включая несколько tool-round'ов; должен быть не меньше 2× `TASK_MODEL_TIMEOUT_SECONDS`, чтобы один вызов и его повтор помещались; lease = +30 с; результат шага хранится до 12 000 рун |
 | TG_REPLY_DEADLINE_SECONDS | 90 | общий бюджет ответа; должен быть больше timeout |
 | `RECOVERY_MAX_AGE_HOURS` | 24 | максимальный возраст unanswered-вопроса для автоматического recovery; `0` отключает лимит |
-| `REMINDER_TIMEZONE` | `UTC` | IANA timezone для напоминаний, например `Europe/Moscow` |
+| `DEFAULT_TIMEZONE` | `Asia/Yekaterinburg` | IANA-зона отображения по умолчанию для всех пользовательских времён; переопределяется `/timezone` и настройкой Mini App для чата; невалидная зона — ошибка старта. Хранение и вычисления остаются в UTC |
+| `REMINDER_TIMEZONE` | `UTC` | legacy-зона напоминаний; применяется только если `DEFAULT_TIMEZONE` не задан (иначе используется `DEFAULT_TIMEZONE`/зона чата), например `Europe/Moscow` |
 | `TTS_ENABLED` | false | opt-in `/tts` через существующий Speaches |
 | `TTS_MODEL` | `speaches-ai/piper-ru_RU-ruslan-medium` | русская Piper-модель |
 | `TTS_VOICE` | `ruslan` | voice для `/v1/audio/speech` |
@@ -428,7 +429,7 @@ Reverse proxy или туннель должен перенаправлять п
 | `/skip` | запретить recovery текущего unanswered-вопроса |
 | `/unskip` | снять suppression без немедленного вызова модели |
 | `/history [N]` | последние N сообщений, по умолчанию 5 |
-| `/remind <время> <текст>` | `через 1 минуту`, `через 2 часа` или `каждый день 09:00` по `REMINDER_TIMEZONE`; текст до 500 runes |
+| `/remind <время> <текст>` | `через 1 минуту`, `через 2 часа` или `каждый день 09:00` по часовому поясу чата; текст до 500 runes |
 | `/reminders` | список и inline-меню активных напоминаний; `cancel <id>` или `delete <id>` отменяет активную запись; в меню есть создание и до 5 недоставленных с Retry/Delete |
 | `/links` | сохранённые ссылки; `add <url>`, `search <текст>`, `summary <id>`, `delete <id>`; `add` читает страницу, поэтому работает только при `URL_READER_ENABLED=true` и `TOOLS_ENABLED=true` |
 | `/task <цель>` | read-only задача из 1–3 шагов с живым прогрессом в одном редактируемом сообщении; без аргумента — статус, `/task cancel` — отмена, `/task resume <id>` — возобновление только последней failed/cancelled текущего чата с сохранением прогресса, `/task clear` — очистка списка с подтверждением |
@@ -442,6 +443,7 @@ Reverse proxy или туннель должен перенаправлять п
 | `/model reset` | вернуть модель по умолчанию `STRATA_MODEL` |
 | `/stream [on\|off\|reset]` | стриминг текущего чата; без аргумента — состояние |
 | `/language [ru\|en\|reset]` | язык интерфейса чата; без аргумента — текущий язык и источник (этот чат или `DEFAULT_LANGUAGE`) |
+| `/timezone [IANA\|reset]` | часовой пояс отображения задач, напоминаний, истории, `/stats`, `/limits` и экспорта; без аргумента — текущая зона и источник; `reset` возвращает `DEFAULT_TIMEZONE`. В личном чате меняет владелец, в группе — администратор |
 | `/persona` | inline-меню и текущая роль; `assistant`, `coder`, `writer`, `translator`, `custom <текст>`, `reset` |
 | `/stats` | сообщения, токены и ошибки текущего чата |
 | `/usage` | дневные вызовы и tokens по моделям, использование tools и остаток лимитов без текстов запросов |
@@ -509,6 +511,8 @@ Mini App доступен **только в приватных чатах**: е�
 More → Mini App открывает companion со Status, History, Documents, Links, Tasks, Reminders, Usage и Settings. Для включения задайте `MINIAPP_ENABLED=true` и HTTPS `MINIAPP_PUBLIC_URL`; внутри контейнера listener `0.0.0.0`, host-порт бота остаётся loopback-only `127.0.0.1:8084`.
 
 `MINIAPP_TELEGRAM_FALLBACK` — глобальное значение по умолчанию. Для конкретного чата его переопределяют команда `/miniapp on|off|reset` в Telegram и переключатель «Mini App» в Settings: строка `chat_miniapp_fallback` (миграция 17) побеждает env, а `reset` возвращает env. Тот же выбор отдаёт `GET /api/settings` (`miniapp_fallback: {enabled, source}`) и меняют `PUT`/`DELETE /api/settings/miniapp-fallback`.
+
+Часовой пояс отображения: `GET /api/settings` и `GET /api/status` отдают `timezone: {current, default, source}`; `PUT /api/settings/timezone` принимает строго `{"timezone":"Asia/Yekaterinburg"}` (или `""` для сброса) и меняет строку `chat_timezone` (миграция `024_chat_timezone.sql`). В личном чате писать может владелец, в группе — только администратор; успешная запись аудируется как `settings.timezone.set`. Mini App Settings показывает список IANA-зон (Yekaterinburg, Moscow, Berlin, UTC, Almaty, Tbilisi, New York плюс текущая/дефолтная), применяет выбор сразу, перерисовывает Chat/Tasks/History/Reminders/Usage и запоминает его в `localStorage` для мгновенной загрузки; сервер остаётся источником истины. Все подписи времени на экранах — `11 ноя, 00:53`, `через 12 мин`, `2 ч 5 мин назад`, `6:12`, `~<1 мин`; API и JSON-экспорт сохраняют ISO, Markdown-экспорт форматируется в зоне чата. Хранение и расчёты (дневные квоты, интервалы usage, напоминания) остаются в UTC, поэтому смена зоны не переписывает историю и не сдвигает уже созданные напоминания.
 
 ### Голосовой ввод в чате Mini App
 

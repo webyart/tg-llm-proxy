@@ -13,6 +13,7 @@ import (
 
 	"bot/internal/bot"
 	"bot/internal/store"
+	"bot/internal/timefmt"
 )
 
 const (
@@ -408,14 +409,15 @@ func (a *App) miniAppWhoami(w http.ResponseWriter, req *http.Request, current sc
 
 func (a *App) status(w http.ResponseWriter, req *http.Request, current scope) {
 	var response struct {
-		Messages           int64  `json:"messages"`
-		Documents          int64  `json:"documents"`
-		Links              int64  `json:"links"`
-		Tasks              int64  `json:"tasks"`
-		ActiveTasks        int64  `json:"active_tasks"`
-		Pending            bool   `json:"pending"`
-		RecoverySuppressed bool   `json:"recovery_suppressed"`
-		LastActivity       string `json:"last_activity,omitempty"`
+		Messages           int64            `json:"messages"`
+		Documents          int64            `json:"documents"`
+		Links              int64            `json:"links"`
+		Tasks              int64            `json:"tasks"`
+		ActiveTasks        int64            `json:"active_tasks"`
+		Pending            bool             `json:"pending"`
+		RecoverySuppressed bool             `json:"recovery_suppressed"`
+		LastActivity       string           `json:"last_activity,omitempty"`
+		Timezone           timezoneSettings `json:"timezone"`
 	}
 	var lastActivity *string
 	err := a.db.QueryRowContext(req.Context(), `
@@ -449,6 +451,12 @@ func (a *App) status(w http.ResponseWriter, req *http.Request, current scope) {
 	if lastActivity != nil {
 		response.LastActivity = *lastActivity
 	}
+	timezone, _, err := a.timezoneSettingsFor(req.Context(), current.ChatID)
+	if err != nil {
+		a.queryFailed(w, "status timezone", err)
+		return
+	}
+	response.Timezone = timezone
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -626,7 +634,11 @@ func (a *App) exportHistory(w http.ResponseWriter, req *http.Request, current sc
 		writeError(w, http.StatusBadRequest, "invalid_query", "Use exactly one format of md or json.")
 		return
 	}
-	data, err := bot.ExportHistoryData(req.Context(), a.db, current.ChatID, format)
+	location := time.UTC
+	if _, effective, _, timezoneErr := bot.EffectiveTimezone(req.Context(), a.db, a.cfg, current.ChatID); timezoneErr == nil && effective != nil {
+		location = effective
+	}
+	data, err := bot.ExportHistoryDataInLocation(req.Context(), a.db, current.ChatID, format, location)
 	if errors.Is(err, bot.ErrHistoryExportTooLarge) || len(data) > bot.ExportMaxBytes {
 		writeError(w, http.StatusRequestEntityTooLarge, "export_too_large", "History export exceeds 5 MiB.")
 		return
@@ -1256,16 +1268,20 @@ func (a *App) linkControl(w http.ResponseWriter, req *http.Request, current scop
 const maxTaskErrorRunes = 300
 
 type taskItem struct {
-	ID             int64  `json:"id"`
-	Goal           string `json:"goal"`
-	Truncated      bool   `json:"truncated"`
-	Status         string `json:"status"`
-	NextStep       int    `json:"next_step"`
-	Attempts       int    `json:"attempts"`
-	DueAt          string `json:"due_at"`
-	ExpiresAt      string `json:"expires_at"`
-	CreatedAt      string `json:"created_at"`
-	UpdatedAt      string `json:"updated_at"`
+	ID        int64  `json:"id"`
+	Goal      string `json:"goal"`
+	Truncated bool   `json:"truncated"`
+	Status    string `json:"status"`
+	NextStep  int    `json:"next_step"`
+	Attempts  int    `json:"attempts"`
+	DueAt     string `json:"due_at"`
+	ExpiresAt string `json:"expires_at"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+	// FinishedAt and DurationMs let the Mini App render the human duration of a terminal task without
+	// parsing timestamps twice; the ISO fields stay untouched for machine clients.
+	FinishedAt     string `json:"finished_at,omitempty"`
+	DurationMs     int64  `json:"duration_ms,omitempty"`
 	Error          string `json:"error,omitempty"`
 	ErrorTruncated bool   `json:"error_truncated,omitempty"`
 }
@@ -1323,7 +1339,7 @@ func (a *App) tasks(w http.ResponseWriter, req *http.Request, current scope) {
 		return
 	}
 	rows, err := a.db.QueryContext(req.Context(), `
-		SELECT id, goal, status, next_step, attempts, due_at, expires_at, created_at, updated_at, COALESCE(error, '') FROM tasks
+		SELECT id, goal, status, next_step, attempts, due_at, expires_at, created_at, updated_at, COALESCE(finished_at, ''), COALESCE(error, '') FROM tasks
 		WHERE chat_id = ? AND (? = 0 OR id < ?)
 		ORDER BY id DESC LIMIT ?`, current.ChatID, page.Before, page.Before, page.Limit+1)
 	if err != nil {
@@ -1335,9 +1351,14 @@ func (a *App) tasks(w http.ResponseWriter, req *http.Request, current scope) {
 	for rows.Next() {
 		var item taskItem
 		if err := rows.Scan(&item.ID, &item.Goal, &item.Status, &item.NextStep, &item.Attempts,
-			&item.DueAt, &item.ExpiresAt, &item.CreatedAt, &item.UpdatedAt, &item.Error); err != nil {
+			&item.DueAt, &item.ExpiresAt, &item.CreatedAt, &item.UpdatedAt, &item.FinishedAt, &item.Error); err != nil {
 			a.queryFailed(w, "tasks", err)
 			return
+		}
+		if created, ok := timefmt.Parse(item.CreatedAt); ok {
+			if finished, ok := timefmt.Parse(item.FinishedAt); ok && finished.After(created) {
+				item.DurationMs = finished.Sub(created).Milliseconds()
+			}
 		}
 		item.Goal, item.Truncated = boundedText(item.Goal, maxTaskRunes)
 		if item.Status == store.TaskStatusFailed {
@@ -1613,9 +1634,9 @@ func (a *App) createReminder(w http.ResponseWriter, req *http.Request, current s
 			writeError(w, http.StatusBadRequest, "invalid_reminder", "A daily reminder needs only daily_time in HH:MM format.")
 			return
 		}
-		location := a.cfg.ReminderLocation
-		if location == nil {
-			location = time.UTC
+		location := time.UTC
+		if _, effective, _, timezoneErr := bot.EffectiveTimezone(req.Context(), a.db, a.cfg, current.ChatID); timezoneErr == nil && effective != nil {
+			location = effective
 		}
 		next, err := bot.NextDailyReminder(now, input.DailyTime, location)
 		if err != nil {

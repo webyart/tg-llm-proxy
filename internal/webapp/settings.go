@@ -148,6 +148,9 @@ type settingsResponse struct {
 		Default float64   `json:"default"`
 		Choices []float64 `json:"choices"`
 	} `json:"tts"`
+	// Timezone is the effective display zone of this chat. The client renders every timestamp in it and
+	// offers the same value in the Settings selector.
+	Timezone timezoneSettings `json:"timezone"`
 }
 
 func methodAllowed(w http.ResponseWriter, methods ...string) {
@@ -186,9 +189,15 @@ func (a *App) settings(w http.ResponseWriter, req *http.Request, current scope) 
 		a.queryFailed(w, "settings TTS speed", err)
 		return
 	}
+	timezone, _, err := a.timezoneSettingsFor(req.Context(), current.ChatID)
+	if err != nil {
+		a.queryFailed(w, "settings timezone", err)
+		return
+	}
 
 	var response settingsResponse
 	response.IsAdmin = a.cfg.IsAdmin(current.UserID)
+	response.Timezone = timezone
 	if modelsErr != nil {
 		response.Warning = "models_unavailable"
 	}

@@ -17,6 +17,7 @@ import (
 	"bot/internal/i18n"
 	"bot/internal/model"
 	"bot/internal/store"
+	"bot/internal/timefmt"
 )
 
 const (
@@ -459,6 +460,17 @@ func (d *Dispatcher) taskStatusText(ctx context.Context, ev Event) (string, stor
 	}
 	status := i18n.T(lang, statusKey)
 	lines := []string{i18n.T(lang, "task.status_line", task.ID, status), i18n.T(lang, "task.goal_line", brief(task.Goal, 300))}
+	location := d.chatLocation(ctx, ev.ChatID)
+	now := d.now()
+	if !task.CreatedAt.IsZero() {
+		lines = append(lines, i18n.T(lang, "task.created_line", timefmt.DateTimeZoned(task.CreatedAt, location, lang)))
+	}
+	if !task.DueAt.IsZero() && store.ActiveTaskStatus(task.Status) {
+		lines = append(lines, i18n.T(lang, "task.due_line", timefmt.Relative(task.DueAt, now, location, lang)))
+	}
+	if !task.ExpiresAt.IsZero() && store.ActiveTaskStatus(task.Status) {
+		lines = append(lines, i18n.T(lang, "task.expires_line", timefmt.Relative(task.ExpiresAt, now, location, lang)))
+	}
 	if planErr == nil {
 		progress := task.NextStep
 		if progress > len(plan.Steps) {

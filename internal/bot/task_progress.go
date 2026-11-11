@@ -3,7 +3,6 @@ package bot
 import (
 	"context"
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"bot/internal/i18n"
 	"bot/internal/model"
 	"bot/internal/store"
+	"bot/internal/timefmt"
 )
 
 // taskStatusEditInterval is the minimum gap between two edits of the same task status message. Telegram
@@ -56,43 +56,15 @@ func taskElapsed(task store.Task, now time.Time) time.Duration {
 	return elapsed
 }
 
-// formatTaskDuration renders elapsed/total task time: m:ss under an hour (the «6:12» the user reads) and a
-// localized hours+minutes form («2 ч 5 мин») above it. Seconds are deliberately dropped there: a task that
-// runs for hours does not need them.
+// formatTaskDuration renders elapsed/total task time through the shared formatter: m:ss under an hour (the
+// «6:12» the user reads), a localized hours+minutes form above it, «~<1 мин» under a minute.
 func formatTaskDuration(lang string, value time.Duration) string {
-	if value < 0 {
-		value = 0
-	}
-	if value < time.Hour {
-		seconds := int64(value / time.Second)
-		return fmt.Sprintf("%d:%02d", seconds/60, seconds%60)
-	}
-	hours := int64(value / time.Hour)
-	minutes := int64((value % time.Hour) / time.Minute)
-	if minutes == 0 {
-		return i18n.T(lang, "task.duration.hours", hours)
-	}
-	return i18n.T(lang, "task.duration.hours_minutes", hours, minutes)
+	return timefmt.Duration(value, lang)
 }
 
 // formatTaskETA renders the remaining-time estimate. The tilde is part of the text: an ETA is never a promise.
 func formatTaskETA(lang string, value time.Duration) string {
-	if value <= 0 {
-		return i18n.T(lang, "task.duration.none")
-	}
-	if value < time.Minute {
-		return i18n.T(lang, "task.duration.eta_less")
-	}
-	var totalMinutes = int64(math.Ceil(value.Minutes()))
-	if totalMinutes < 60 {
-		return i18n.T(lang, "task.duration.eta_minutes", totalMinutes)
-	}
-	hours := totalMinutes / 60
-	minutes := totalMinutes % 60
-	if minutes == 0 {
-		return i18n.T(lang, "task.duration.eta_hours_only", hours)
-	}
-	return i18n.T(lang, "task.duration.eta_hours", hours, minutes)
+	return timefmt.ETA(value, lang)
 }
 
 // formatTaskTokens shortens a token count to the form the footer uses: 950, 12.4k, 1.2M.

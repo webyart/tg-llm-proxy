@@ -11,6 +11,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	// The IANA database is embedded so DEFAULT_TIMEZONE loads in a minimal container even when the image
+	// has no /usr/share/zoneinfo. The run stage installs tzdata anyway; this keeps tests and the static
+	// binary independent of the host filesystem.
+	_ "time/tzdata"
 )
 
 // the absence of TELEGRAM_BOT_TOKEN → a fall on the start with a clear error;
@@ -60,6 +64,7 @@ var Env = []string{
 	"MINIAPP_PORT",
 	"MINIAPP_PUBLIC_URL",
 	"DB_PATH",
+	"DEFAULT_TIMEZONE",
 	"REMINDER_TIMEZONE",
 	"CONTEXT_MESSAGES",
 	"MAX_CONTEXT_CHARS",
@@ -166,6 +171,7 @@ const DefaultHealthPort = int64(8080)
 // probes, so the metrics port cannot be reached through the bot's default / edge-telegram addresses.
 const DefaultHealthListenHost = "127.0.0.1"
 const DefaultLogLevel = "info"
+const DefaultTimezone = "Asia/Yekaterinburg"
 const DefaultReminderTimezone = "UTC"
 
 // Telegram message instead of sending one, which is a visible change of behaviour for every chat, so the
@@ -286,14 +292,19 @@ type Config struct {
 	MiniAppHost             string
 	MiniAppPort             int64
 	DBPath                  string
-	ReminderTimezone        string
-	ReminderLocation        *time.Location
-	ContextMessages         int64
-	MaxContextChars         int64
-	MaxInputChars           int64
-	RAGMaxDocuments         int64
-	RAGResultLimit          int64
-	RAGMaxContextChars      int64
+	// Timezone is DEFAULT_TIMEZONE: the IANA name every display uses when the chat has no override
+	// (chat_timezone, migration 024). TimezoneLocation is the loaded form; it is never nil after LoadFrom.
+	// REMINDER_TIMEZONE remains a legacy fallback only when DEFAULT_TIMEZONE is not set.
+	Timezone           string
+	TimezoneLocation   *time.Location
+	ReminderTimezone   string
+	ReminderLocation   *time.Location
+	ContextMessages    int64
+	MaxContextChars    int64
+	MaxInputChars      int64
+	RAGMaxDocuments    int64
+	RAGResultLimit     int64
+	RAGMaxContextChars int64
 	// The optional hybrid RAG layer: an OpenAI-compatible embeddings server, disabled by default. Base is the
 	// normalized {…}/v1 base, URL is what the client posts to, and Model keys the stored vectors.
 	RAGEmbeddingsEnabled        bool
@@ -863,6 +874,36 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	}
 	cfg.DBPath = dbPath
 
+	// DEFAULT_TIMEZONE is the display default for every chat that has no chat_timezone row (migration 024).
+	// An explicit row in the old REMINDER_TIMEZONE keeps working when DEFAULT_TIMEZONE is absent, so an
+	// existing deployment does not silently move its reminders to a new zone. An invalid value is a startup
+	// problem (main exits 1), exactly like a malformed model or base URL.
+	timezone := strings.TrimSpace(raw["DEFAULT_TIMEZONE"])
+	if timezone == "" {
+		// The legacy row is only a default when it is itself loadable: an invalid REMINDER_TIMEZONE must
+		// produce exactly its own startup problem, not a second one under the new name.
+		if legacy := strings.TrimSpace(raw["REMINDER_TIMEZONE"]); legacy != "" {
+			if _, legacyErr := time.LoadLocation(legacy); legacyErr == nil {
+				timezone = legacy
+			}
+		}
+	}
+	if timezone == "" {
+		timezone = DefaultTimezone
+	}
+	timezoneLocation, timezoneErr := time.LoadLocation(timezone)
+	if !ValidTimezoneName(timezone) {
+		problems = Push(problems, fmt.Sprintf("ENV DEFAULT_TIMEZONE = %q could not be loaded: not a valid IANA zone; %s is used instead", timezone, DefaultTimezone))
+		timezone = DefaultTimezone
+		timezoneLocation, _ = time.LoadLocation(DefaultTimezone)
+	} else if timezoneErr != nil {
+		problems = Push(problems, fmt.Sprintf("ENV DEFAULT_TIMEZONE = %q could not be loaded: %v; %s is used instead", timezone, timezoneErr, DefaultTimezone))
+		timezone = DefaultTimezone
+		timezoneLocation, _ = time.LoadLocation(DefaultTimezone)
+	}
+	cfg.Timezone = timezone
+	cfg.TimezoneLocation = timezoneLocation
+
 	reminderTimezone := strings.TrimSpace(raw["REMINDER_TIMEZONE"])
 	if reminderTimezone == "" {
 		reminderTimezone = DefaultReminderTimezone
@@ -1020,6 +1061,19 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	problems = Push(problems, badLevel)
 
 	return cfg, problems
+}
+
+// ValidTimezoneName accepts the IANA shapes a chat may store. "Local" and filesystem-looking names are
+// refused: their meaning depends on the host rather than on the zone database, so the same chat would render
+// differently on two deployments.
+func ValidTimezoneName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 64 || name == "Local" || strings.Contains(name, "..") ||
+		strings.HasPrefix(name, "/") || strings.HasPrefix(name, `\`) {
+		return false
+	}
+	_, err := time.LoadLocation(name)
+	return err == nil
 }
 
 // outside this check — without them a user of a closed bot could never learn their own id.

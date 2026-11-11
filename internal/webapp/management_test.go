@@ -295,7 +295,8 @@ func TestReminderCreateOnceDailyLocationAndScope(t *testing.T) {
 	bearer := launchSession(t, app, server)
 	otherBearer := launchSessionFor(t, app, server, otherTestUserID, otherTestUserID)
 	location := time.FixedZone("UTC+5", 5*60*60)
-	app.cfg.ReminderLocation = location
+	app.cfg.Timezone = "Asia/Yekaterinburg"
+	app.cfg.TimezoneLocation = location
 
 	nextRun := time.Now().UTC().Add(2 * time.Hour).Truncate(time.Second)
 	onceBody := fmt.Sprintf(`{"text":"  private once  ","cadence":"once","next_run":%q}`, nextRun.Format(time.RFC3339))
@@ -340,7 +341,8 @@ func TestReminderCreateOnceDailyLocationAndScope(t *testing.T) {
 		t.Fatalf("daily scope chat=%d user=%d", chatID, userID)
 	}
 
-	app.cfg.ReminderLocation = nil
+	app.cfg.TimezoneLocation = time.UTC
+	app.cfg.Timezone = "UTC"
 	utcTime := time.Now().UTC().Add(2 * time.Hour).Format("15:04")
 	status, body = managementJSON(t, server, "/api/reminders", bearer,
 		fmt.Sprintf(`{"text":"UTC fallback","cadence":"daily","daily_time":%q}`, utcTime))

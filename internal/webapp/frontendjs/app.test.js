@@ -1496,3 +1496,141 @@ test("every theme keeps AA contrast for body text, labels, status and controls",
     assert.ok(edge >= 3, `${theme} --input-border on --field-bg = ${edge.toFixed(2)}:1, below 3:1`);
   }
 });
+
+test("timezone selector lists the IANA choices, applies immediately, sends a strict PUT and persists locally", async () => {
+  const storage = {
+    value: "",
+    getItem(key) { return key === "dsh-timezone" ? this.value || null : null; },
+    setItem(key, value) { if (key === "dsh-timezone") this.value = String(value); },
+  };
+  const harness = await createHarness({ globals: { localStorage: storage } });
+  await openTab(harness, "settings");
+  const content = harness.element("content");
+  const select = content.querySelector("#timezone");
+  assert.ok(select, "the Settings timezone selector is missing");
+  const values = select.querySelectorAll("option").map((option) => option.value);
+  for (const zone of ["Asia/Yekaterinburg", "Europe/Moscow", "Europe/Berlin", "UTC", "Asia/Almaty", "Asia/Tbilisi", "America/New_York"]) {
+    assert.ok(values.includes(zone), `the timezone selector misses ${zone}`);
+  }
+  assert.ok(values.includes(""), "the selector needs a reset-to-default option");
+
+  harness.resetRequests();
+  select.value = "Europe/Berlin";
+  select.dispatchEvent({ type: "change" });
+  const put = harness.requests.find((request) => request.path === "/api/settings/timezone");
+  assert.ok(put, "the timezone change did not reach the API");
+  assert.equal(put.options.method, "PUT");
+  assert.equal(put.options.body, JSON.stringify({ timezone: "Europe/Berlin" }));
+  assert.equal(storage.value, "Europe/Berlin");
+  await harness.flush();
+  assert.equal(harness.element("notice").textContent, "Часовой пояс применён.");
+  assert.equal(harness.element("error").hidden, true);
+
+  harness.resetRequests();
+  const refreshed = harness.element("content").querySelector("#timezone");
+  refreshed.value = "";
+  refreshed.dispatchEvent({ type: "change" });
+  const reset = harness.requests.find((request) => request.path === "/api/settings/timezone");
+  assert.equal(reset.options.body, JSON.stringify({ timezone: "" }));
+  assert.equal(storage.value, "Asia/Yekaterinburg");
+});
+
+test("task and reminder cards render human times in the chat zone and never raw ISO or nanoseconds", async () => {
+  const harness = await createHarness();
+  harness.setHandler((request, fallback) => {
+    const path = request.path.split("?")[0];
+    if (path === "/api/status") {
+      return jsonResponse({
+        messages: 2, documents: 0, links: 0, tasks: 1, active_tasks: 0, pending: false,
+        recovery_suppressed: false, timezone: { current: "Asia/Yekaterinburg", default: "Asia/Yekaterinburg", source: "global" },
+      });
+    }
+    if (path === "/api/tasks") {
+      return jsonResponse({ items: [{
+        id: 7, goal: "goal", status: "completed", next_step: 2, attempts: 1,
+        due_at: "2020-01-01T00:00:00Z", expires_at: "2020-01-02T00:00:00Z",
+        created_at: "2020-01-01T00:00:00Z", updated_at: "2020-01-01T01:00:00Z",
+        finished_at: "2020-01-01T01:02:00Z", duration_ms: 372123,
+      }] });
+    }
+    if (path === "/api/reminders") {
+      return jsonResponse({
+        active: [{ id: 9, text: "active reminder", cadence: "once", next_run: "2020-01-01T00:00:00Z", attempts: 0, created_at: "2020-01-01T00:00:00Z" }],
+        failed: [],
+      });
+    }
+    return fallback();
+  });
+  await openTab(harness, "status");
+  await openTab(harness, "tasks");
+  const tasks = harness.element("content").textContent;
+  assert.match(tasks, /1 янв 2020, 05:00/, `task card did not use the Yekaterinburg zone: ${tasks}`);
+  assert.match(tasks, /длительность: 6:12/, "the terminal task duration is not human-readable");
+  assert.doesNotMatch(tasks, /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/, "a task card still renders a raw ISO timestamp");
+  assert.doesNotMatch(tasks, /\d{2}:\d{2}:\d{2}\.\d+/, "a task card still renders nanoseconds");
+
+  await openTab(harness, "reminders");
+  const reminders = harness.element("content").textContent;
+  assert.match(reminders, /1 янв 2020, 05:00/, `reminder card did not use the chat zone: ${reminders}`);
+  assert.doesNotMatch(reminders, /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/, "a reminder card still renders raw ISO");
+});
+
+test("the stored timezone is applied on the next launch before the server answers", async () => {
+  const storage = {
+    value: "",
+    getItem(key) { return key === "dsh-timezone" ? this.value || null : null; },
+    setItem(key, value) { if (key === "dsh-timezone") this.value = String(value); },
+  };
+  const first = await createHarness({ globals: { localStorage: storage } });
+  await openTab(first, "settings");
+  const select = first.element("content").querySelector("#timezone");
+  select.value = "UTC";
+  select.dispatchEvent({ type: "change" });
+  await first.flush();
+  assert.equal(storage.value, "UTC");
+
+  const second = await createHarness({ globals: { localStorage: storage } });
+  second.setHandler((request, fallback) => {
+    const path = request.path.split("?")[0];
+    if (path === "/api/tasks") {
+      return jsonResponse({ items: [{
+        id: 3, goal: "goal", status: "failed", next_step: 1, attempts: 1,
+        due_at: "2020-01-01T00:00:00Z", expires_at: "2020-01-01T00:00:00Z",
+        created_at: "2020-01-01T00:00:00Z", updated_at: "2020-01-01T00:00:00Z",
+      }] });
+    }
+    return fallback();
+  });
+  await openTab(second, "tasks");
+  assert.match(second.element("content").textContent, /1 янв 2020, 00:00/);
+});
+
+test("usage bucket labels follow the chat timezone instead of UTC", async () => {
+  const harness = await createHarness();
+  harness.setHandler((request, fallback) => {
+    const path = request.path.split("?")[0];
+    if (path === "/api/status") {
+      return jsonResponse({
+        messages: 1, documents: 0, links: 0, tasks: 0, active_tasks: 0, pending: false,
+        recovery_suppressed: false, timezone: { current: "Asia/Yekaterinburg", default: "Asia/Yekaterinburg", source: "global" },
+      });
+    }
+    if (path === "/api/usage") {
+      return jsonResponse({
+        date: "2026-11-11",
+        models: [], tools: { read_url: 0, web_search: 0, calculator: 0, rag: 0 },
+        limits: { model: { used: 0, limit: 0, remaining: null }, network_tools: { used: 0, limit: 0, remaining: null } },
+        range: "hour", truncated: false,
+        series: [{ start: "2026-11-10T21:00:00Z", model_calls: 1, tokens_in: 1, tokens_out: 1, tools: {}, tools_total: 0, cost_usd: 0 }],
+        totals: { model_calls: 1, tokens_in: 1, tokens_out: 1, tool_calls: 0, cost_usd: 0, models: [], tools: {} },
+      });
+    }
+    return fallback();
+  });
+  await openTab(harness, "status");
+  await openTab(harness, "usage");
+  const text = harness.element("content").textContent;
+  assert.match(text, /02:00/, `usage axis did not convert to Yekaterinburg: ${text}`);
+  assert.doesNotMatch(text, /21:00/, "usage axis still shows the UTC hour");
+  assert.doesNotMatch(text, /\(UTC\)/, "usage screen still claims UTC");
+});

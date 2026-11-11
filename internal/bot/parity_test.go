@@ -18,6 +18,7 @@ var commandParityMatrix = map[string]string{
 	CommandMiniApp:       "/api/settings/miniapp-fallback",
 	CommandPersona:       "/api/settings/persona",
 	CommandLanguage:      "telegram-only: the Mini App has its own UI language and does not read the Telegram chat override",
+	CommandTimezone:      "/api/settings/timezone",
 	CommandAsk:           "/api/messages",
 	CommandReset:         "/api/context/reset",
 	CommandSkip:          "/api/pending/skip",

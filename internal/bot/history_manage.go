@@ -17,6 +17,7 @@ import (
 
 	"bot/internal/i18n"
 	"bot/internal/store"
+	"bot/internal/timefmt"
 )
 
 const (
@@ -149,6 +150,16 @@ type historyExportSerializer struct {
 	chatID       int64
 	output       historyExportBuffer
 	messageCount int
+	location     *time.Location
+}
+
+// exportTimestamp renders one stored timestamp in the export zone. The JSON export keeps the raw ISO value
+// (machine-readable contract); only the human-readable Markdown is converted.
+func exportTimestamp(raw string, location *time.Location) string {
+	if parsed, ok := timefmt.Parse(raw); ok {
+		return timefmt.DateTimeZoned(parsed, location, i18n.RU)
+	}
+	return strings.TrimSpace(raw)
 }
 
 func (s *historyExportSerializer) start(rows store.MessageExportWindow, truncated bool) error {
@@ -179,7 +190,8 @@ func (s *historyExportSerializer) start(rows store.MessageExportWindow, truncate
 	if _, err := fmt.Fprintf(&s.output, "Область экспорта: последние %d сообщений; включено: %d.\n", ExportRowLimit, rows.Count); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(&s.output, "Диапазон: ID %d–%d; время %s — %s.\n\n", window.OldestID, window.NewestID, window.OldestCreatedAt, window.NewestCreatedAt); err != nil {
+	if _, err := fmt.Fprintf(&s.output, "Диапазон: ID %d–%d; время %s — %s.\n\n", window.OldestID, window.NewestID,
+		exportTimestamp(window.OldestCreatedAt, s.location), exportTimestamp(window.NewestCreatedAt, s.location)); err != nil {
 		return err
 	}
 	if warning != "" {
@@ -192,7 +204,7 @@ func (s *historyExportSerializer) start(rows store.MessageExportWindow, truncate
 
 func (s *historyExportSerializer) add(row store.Message) error {
 	if s.format != "json" {
-		if _, err := fmt.Fprintf(&s.output, "## %s · %s\n\n", row.Role, row.CreatedAt); err != nil {
+		if _, err := fmt.Fprintf(&s.output, "## %s · %s\n\n", row.Role, exportTimestamp(row.CreatedAt, s.location)); err != nil {
 			return err
 		}
 		if err := s.writeString(SanitizeToolMarkup(row.Content)); err != nil {
@@ -247,6 +259,13 @@ func exportWarning(rowCount int, truncated bool) string {
 }
 
 func ExportHistoryData(ctx context.Context, db *sql.DB, chatID int64, format string) ([]byte, error) {
+	return ExportHistoryDataInLocation(ctx, db, chatID, format, time.UTC)
+}
+
+// ExportHistoryDataInLocation is ExportHistoryData with the chat's effective display zone. The JSON export
+// keeps ISO timestamps; the Markdown export renders them with timefmt. Calculations and stored rows are
+// untouched, so the same history exported in two zones contains the same instants.
+func ExportHistoryDataInLocation(ctx context.Context, db *sql.DB, chatID int64, format string, location *time.Location) ([]byte, error) {
 	format = strings.ToLower(strings.TrimSpace(format))
 	if format == "" {
 		format = "md"
@@ -254,7 +273,7 @@ func ExportHistoryData(ctx context.Context, db *sql.DB, chatID int64, format str
 	if format != "md" && format != "json" {
 		return nil, ErrHistoryExportFormat
 	}
-	serializer := historyExportSerializer{format: format, chatID: chatID}
+	serializer := historyExportSerializer{format: format, chatID: chatID, location: location}
 	window, _, err := store.StreamExportMessagesBounded(ctx, db, chatID, ExportRowLimit, ExportMaxBytes, serializer.start, serializer.add)
 	if errors.Is(err, store.ErrExportContentTooLarge) {
 		return nil, fmt.Errorf("%w: %w", ErrHistoryExportTooLarge, err)
@@ -278,7 +297,7 @@ func (d *Dispatcher) historyActionReply(ctx context.Context, ev Event, text stri
 func (d *Dispatcher) exportHistory(ctx context.Context, ev Event, arg string) error {
 	lang := d.chatLanguage(ctx, ev.ChatID)
 	format := strings.ToLower(strings.TrimSpace(arg))
-	data, err := ExportHistoryData(ctx, d.deps.DB, ev.ChatID, format)
+	data, err := ExportHistoryDataInLocation(ctx, d.deps.DB, ev.ChatID, format, d.chatLocation(ctx, ev.ChatID))
 	if errors.Is(err, ErrHistoryExportFormat) {
 		return d.historyActionReply(ctx, ev, i18n.T(lang, "export.usage"))
 	}
@@ -326,7 +345,7 @@ func (d *Dispatcher) searchHistory(ctx context.Context, ev Event, arg string) er
 		lines[0] += i18n.T(lang, "search.truncated_suffix")
 	}
 	for _, row := range matches {
-		lines = append(lines, i18n.T(lang, "search.line", row.ID, row.Role, row.CreatedAt, brief(SanitizeToolMarkup(row.Content), 160)))
+		lines = append(lines, i18n.T(lang, "search.line", row.ID, d.storedTime(ctx, ev.ChatID, lang, row.CreatedAt), row.Role, brief(SanitizeToolMarkup(row.Content), 160)))
 	}
 	return d.reply(ctx, ev.ChatID, strings.Join(lines, "\n"))
 }

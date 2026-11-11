@@ -92,6 +92,7 @@ var ruMessages = map[string]string{
 	"command.persona.description":   "роль модели для этого чата: пресеты, custom, reset",
 	"command.ask.description":       "вопрос модели",
 	"command.language.description":  "язык интерфейса бота: ru, en, reset",
+	"command.timezone.description":  "часовой пояс чата: показать, IANA-название, reset",
 	"command.reset.description":     "очистить контекст чата",
 	"command.skip.description":      "не восстанавливать текущий unanswered-вопрос при старте",
 	"command.unskip.description":    "снова разрешить recovery ранее пропущенного вопроса",
@@ -118,6 +119,7 @@ var ruMessages = map[string]string{
 	"help.args_suffix":     " <текст>",
 	"help.remind_suffix":   " <время> <текст>",
 	"help.language_suffix": " [ru|en|reset]",
+	"help.timezone_suffix": " [IANA|reset]",
 	"help.remind_example":  "Пример: /remind через 1 минуту купить молоко",
 	"help.attachments":     "Можно отправить альбом фото, текстовый документ, голосовое, аудио или видеосообщение.",
 	"start.greeting":       "Привет! Я прокси к локальной модели STRATA. Команды:",
@@ -206,6 +208,16 @@ var ruMessages = map[string]string{
 	"language.reset":          "Настройка языка сброшена. Язык этого чата по умолчанию: %s.",
 	"language.usage":          "Использование: /language — текущий язык, /language ru, /language en, /language reset — вернуть DEFAULT_LANGUAGE.",
 
+	// /timezone.
+	"timezone.current":        "Часовой пояс этого чата: %s (источник: %s). По умолчанию: %s. Сейчас: %s.",
+	"timezone.source_chat":    "этот чат",
+	"timezone.source_default": "по умолчанию",
+	"timezone.set":            "Часовой пояс этого чата: %s. Время в задачах, напоминаниях, истории и статистике теперь показывается в этой зоне.",
+	"timezone.reset":          "Часовой пояс этого чата сброшен. Используется DEFAULT_TIMEZONE: %s.",
+	"timezone.invalid":        "Неизвестный часовой пояс %q. Укажи IANA-название, например Asia/Yekaterinburg.",
+	"timezone.denied":         "Менять часовой пояс этого чата может только администратор (в личном чате — его владелец).",
+	"timezone.usage":          "Использование: /timezone — текущий пояс, /timezone Asia/Yekaterinburg — задать, /timezone reset — вернуть DEFAULT_TIMEZONE.",
+
 	// /reset.
 	"reset.done": "Контекст очищен: модель больше не видит %d сообщений. История осталась — /history.",
 
@@ -219,7 +231,7 @@ var ruMessages = map[string]string{
 	"history.usage":  "/history ждёт число: /history 10 (по умолчанию %d).",
 	"history.empty":  "История чата пуста.",
 	"history.header": "Последние %d сообщений :",
-	"history.line":   "%d. %s: %s",
+	"history.line":   "%d. %s · %s: %s",
 
 	// /stats.
 	"stats.messages": "Сообщений: %d ",
@@ -300,7 +312,7 @@ var ruMessages = map[string]string{
 	"delete.usage":            "Используй /delete, затем подтверди или отмени удаление кнопкой.",
 
 	// /usage.
-	"usage.title":         "Использование за %s (UTC):",
+	"usage.title":         "Использование за %s (%s):",
 	"usage.models":        "Модели:",
 	"usage.no_calls":      "- обращений не было",
 	"usage.model_line":    "- %s: вызовов %d; токены %d входящих / %d исходящих",
@@ -395,6 +407,7 @@ var ruMessages = map[string]string{
 	"remind.usage":           "Использование: /remind через 1 минуту <текст>, /remind через 2 часа <текст> или /remind каждый день 09:00 <текст>.",
 	"reminders.usage":        "Использование: /reminders, /reminders cancel <id> или /reminders delete <id>.",
 	"remind.schedule_daily":  "каждый день в %s %s (%s)",
+	"remind.schedule_once":   "%s (%s)",
 	"remind.text_invalid":    "Текст напоминания должен быть непустым и не длиннее %d символов.",
 	"remind.limit":           "В чате уже %d активных напоминаний. Сначала отмени одно через /reminders.",
 	"remind.created":         "Напоминание #%d сохранено: %s. Текст: %s",
@@ -454,6 +467,9 @@ var ruMessages = map[string]string{
 	"task.status.invalid":           "недействительное состояние",
 	"task.status_line":              "Задача #%d: %s.",
 	"task.goal_line":                "Цель: %s",
+	"task.created_line":             "Создана: %s",
+	"task.due_line":                 "Срок: %s",
+	"task.expires_line":             "Действует до: %s",
 	"task.progress":                 "Прогресс: %d/%d.",
 	"task.plan_invalid":             "Сохранённый план недействителен; выполнение будет остановлено без новых действий.",
 	"task.reason":                   "Причина: %s",
@@ -524,6 +540,7 @@ var ruMessages = map[string]string{
 	"admin.calls":       "Активных model calls: %d; чатов с lock: %d",
 	"admin.sqlite":      "Размер SQLite: %.1f KiB",
 	"admin.model":       "Модель по умолчанию: %s",
+	"admin.uptime":      "Uptime: %s",
 	"admin.last_active": "Последняя активность: %s UTC",
 
 	// Inline menus and their labels. Callback data never comes from here.
@@ -641,7 +658,7 @@ var ruMessages = map[string]string{
 	"limits.source":               "Источник: %s",
 	"limits.source_chat":          "настройки этого чата",
 	"limits.source_default":       "по умолчанию (без ограничений)",
-	"limits.today":                "Сегодня (UTC): вызовов модели %d (лимит %s); сетевых вызовов %d (лимит %s)",
+	"limits.today":                "Сегодня, %s (%s): вызовов модели %d (лимит %s); сетевых вызовов %d (лимит %s)",
 	"limits.cost":                 "Расход за сегодня (UTC): $%s (бюджет: $%s)",
 	"limits.tools":                "Инструменты за UTC-сутки: read_url %d, web_search %d, calculator %d; отключены: %s",
 	"limits.per_minute":           "Сообщений в минуту: %s",
@@ -668,6 +685,7 @@ var enMessages = map[string]string{
 	"command.persona.description":   "model role for this chat: presets, custom, reset",
 	"command.ask.description":       "ask the model a question",
 	"command.language.description":  "bot interface language: ru, en, reset",
+	"command.timezone.description":  "chat timezone: show, IANA name, reset",
 	"command.reset.description":     "clear the chat context",
 	"command.skip.description":      "do not recover the current unanswered question on restart",
 	"command.unskip.description":    "allow recovery of a previously skipped question again",
@@ -694,6 +712,7 @@ var enMessages = map[string]string{
 	"help.args_suffix":     " <text>",
 	"help.remind_suffix":   " <time> <text>",
 	"help.language_suffix": " [ru|en|reset]",
+	"help.timezone_suffix": " [IANA|reset]",
 	"help.remind_example":  "Example: /remind in 1 minute buy milk",
 	"help.attachments":     "You can send a photo album, a text document, a voice message, audio or a video note.",
 	"start.greeting":       "Hi! I am a proxy to the local STRATA model. Commands:",
@@ -782,6 +801,16 @@ var enMessages = map[string]string{
 	"language.reset":          "The language setting was reset. This chat now uses the default language: %s.",
 	"language.usage":          "Usage: /language — current language, /language ru, /language en, /language reset — return to DEFAULT_LANGUAGE.",
 
+	// /timezone.
+	"timezone.current":        "This chat's timezone: %s (source: %s). Default: %s. Now: %s.",
+	"timezone.source_chat":    "this chat",
+	"timezone.source_default": "default",
+	"timezone.set":            "This chat's timezone: %s. Times in tasks, reminders, history and usage now render in this zone.",
+	"timezone.reset":          "This chat's timezone was reset. DEFAULT_TIMEZONE is used: %s.",
+	"timezone.invalid":        "Unknown timezone %q. Use an IANA name such as Asia/Yekaterinburg.",
+	"timezone.denied":         "Only an administrator (in a private chat, its owner) can change this chat's timezone.",
+	"timezone.usage":          "Usage: /timezone — current zone, /timezone Asia/Yekaterinburg — set it, /timezone reset — return to DEFAULT_TIMEZONE.",
+
 	// /reset.
 	"reset.done": "Context cleared: the model no longer sees %d messages. The history is kept — /history.",
 
@@ -795,7 +824,7 @@ var enMessages = map[string]string{
 	"history.usage":  "/history expects a number: /history 10 (%d by default).",
 	"history.empty":  "The chat history is empty.",
 	"history.header": "Latest %d messages:",
-	"history.line":   "%d. %s: %s",
+	"history.line":   "%d. %s · %s: %s",
 
 	// /stats.
 	"stats.messages": "Messages: %d ",
@@ -876,7 +905,7 @@ var enMessages = map[string]string{
 	"delete.usage":            "Use /delete, then confirm or cancel the deletion with the button.",
 
 	// /usage.
-	"usage.title":         "Usage for %s (UTC):",
+	"usage.title":         "Usage for %s (%s):",
 	"usage.models":        "Models:",
 	"usage.no_calls":      "- no calls",
 	"usage.model_line":    "- %s: %d calls; tokens %d in / %d out",
@@ -971,6 +1000,7 @@ var enMessages = map[string]string{
 	"remind.usage":           "Usage: /remind in 1 minute <text>, /remind in 2 hours <text>, or /remind every day 09:00 <text>.",
 	"reminders.usage":        "Usage: /reminders, /reminders cancel <id> or /reminders delete <id>.",
 	"remind.schedule_daily":  "every day at %s %s (%s)",
+	"remind.schedule_once":   "%s (%s)",
 	"remind.text_invalid":    "The reminder text must be non-empty and at most %d characters.",
 	"remind.limit":           "This chat already has %d active reminders. Cancel one with /reminders first.",
 	"remind.created":         "Reminder #%d saved: %s. Text: %s",
@@ -1030,6 +1060,9 @@ var enMessages = map[string]string{
 	"task.status.invalid":           "invalid state",
 	"task.status_line":              "Task #%d: %s.",
 	"task.goal_line":                "Goal: %s",
+	"task.created_line":             "Created: %s",
+	"task.due_line":                 "Due: %s",
+	"task.expires_line":             "Valid until: %s",
 	"task.progress":                 "Progress: %d/%d.",
 	"task.plan_invalid":             "The stored plan is invalid; execution will stop without new actions.",
 	"task.reason":                   "Reason: %s",
@@ -1100,6 +1133,7 @@ var enMessages = map[string]string{
 	"admin.calls":       "Active model calls: %d; chats with a lock: %d",
 	"admin.sqlite":      "SQLite size: %.1f KiB",
 	"admin.model":       "Default model: %s",
+	"admin.uptime":      "Uptime: %s",
 	"admin.last_active": "Last activity: %s UTC",
 
 	// Inline menus and their labels. Callback data never comes from here.
@@ -1216,7 +1250,7 @@ var enMessages = map[string]string{
 	"limits.source":               "Source: %s",
 	"limits.source_chat":          "this chat's settings",
 	"limits.source_default":       "default (unlimited)",
-	"limits.today":                "Today (UTC): model calls %d (limit %s); network calls %d (limit %s)",
+	"limits.today":                "Today, %s (%s): model calls %d (limit %s); network calls %d (limit %s)",
 	"limits.cost":                 "Today's spend (UTC): $%s (budget: $%s)",
 	"limits.tools":                "Tool usage today (UTC): read_url %d, web_search %d, calculator %d; disabled: %s",
 	"limits.per_minute":           "Messages per minute: %s",

@@ -164,7 +164,7 @@ func (d *Dispatcher) processClaimedReminder(ctx context.Context, reminder store.
 		exhausted := reminder.Attempts >= ReminderMaxSendAttempts
 		var dailyNext time.Time
 		if exhausted && reminder.Cadence == store.ReminderCadenceDaily {
-			dailyNext, err = AdvanceDailyReminder(reminder.NextRunAt, now, reminder.DailyTime, reminderLocation(d))
+			dailyNext, err = AdvanceDailyReminder(reminder.NextRunAt, now, reminder.DailyTime, d.reminderLocation(ctx, reminder.ChatID))
 			if err != nil {
 				return err
 			}
@@ -189,7 +189,7 @@ func (d *Dispatcher) processClaimedReminder(ctx context.Context, reminder store.
 
 	var dailyNext time.Time
 	if reminder.Cadence == store.ReminderCadenceDaily {
-		dailyNext, err = AdvanceDailyReminder(reminder.NextRunAt, now, reminder.DailyTime, reminderLocation(d))
+		dailyNext, err = AdvanceDailyReminder(reminder.NextRunAt, now, reminder.DailyTime, d.reminderLocation(ctx, reminder.ChatID))
 		if err != nil {
 			return err
 		}

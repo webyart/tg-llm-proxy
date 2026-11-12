@@ -2,7 +2,17 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.75.0
+## Новейший выпуск: v1.75.1
+
+# tg-llm-proxy v1.75.1
+
+## Backup verification survives a restricted TEMP
+
+- `dbbackup.exe` (Go) was denied creating its FTS verification directory under `%TEMP%` on this host, so every scheduled maintenance run wrote `backup_last_ok 0` and `BackupStale` fired even though the snapshot itself was valid.
+- `scripts/db_backup.ps1` now gives the child a repo-local `data/tmp` via `TEMP`/`TMP` (restored afterwards), so the read-only FTS/integrity verification works; a verified backup was produced and the metric is fresh again.
+- Verified: `bot-20261112-084913.db`, 1 835 008 bytes, schema 28, `backup_last_ok 1`, backup age 0 h; `BackupStale` resolved.
+
+## Предыдущий выпуск: v1.75.0
 
 # tg-llm-proxy v1.75.0
 

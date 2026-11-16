@@ -18,10 +18,10 @@ func calculatorTools(enabled bool) []model.ToolDefinition {
 		return nil
 	}
 	return []model.ToolDefinition{{
-		Name: "calculator", Description: "Evaluate a basic arithmetic expression with +, -, *, /, %, parentheses and numbers.",
+		Name: "calculator", Description: "Basic arithmetic: +, -, *, /, %, parentheses and numbers.",
 		Parameters: map[string]any{
 			"type":       "object",
-			"properties": map[string]any{"expression": map[string]any{"type": "string", "description": "Arithmetic expression, for example 2+2*3"}},
+			"properties": map[string]any{"expression": map[string]any{"type": "string", "description": "Expression, for example 2+2*3"}},
 			"required":   []string{"expression"},
 		},
 	}}

@@ -72,6 +72,7 @@ var Env = []string{
 	"RAG_MAX_DOCUMENTS",
 	"RAG_RESULT_LIMIT",
 	"RAG_MAX_CONTEXT_CHARS",
+	"PROMPT_CACHE_FRIENDLY",
 	"RAG_EMBEDDINGS_ENABLED",
 	"RAG_EMBEDDINGS_BASE_URL",
 	"RAG_EMBEDDINGS_MODEL",
@@ -322,16 +323,21 @@ type Config struct {
 	// Timezone is DEFAULT_TIMEZONE: the IANA name every display uses when the chat has no override
 	// (chat_timezone, migration 024). TimezoneLocation is the loaded form; it is never nil after LoadFrom.
 	// REMINDER_TIMEZONE remains a legacy fallback only when DEFAULT_TIMEZONE is not set.
-	Timezone           string
-	TimezoneLocation   *time.Location
-	ReminderTimezone   string
-	ReminderLocation   *time.Location
-	ContextMessages    int64
-	MaxContextChars    int64
-	MaxInputChars      int64
-	RAGMaxDocuments    int64
-	RAGResultLimit     int64
-	RAGMaxContextChars int64
+	Timezone         string
+	TimezoneLocation *time.Location
+	ReminderTimezone string
+	ReminderLocation *time.Location
+	ContextMessages  int64
+	MaxContextChars  int64
+	MaxInputChars    int64
+	// PromptCacheFriendly moves the volatile RAG block to the tail of the request so the stable system
+	// prefix and the history stay a byte-identical prefix for a server that reuses it (llama.cpp-style
+	// implicit prompt cache). STRATA exposes no prompt-cache API, and a trailing system message depends
+	// on the chat template, so this stays off unless an operator verifies their endpoint.
+	PromptCacheFriendly bool
+	RAGMaxDocuments     int64
+	RAGResultLimit      int64
+	RAGMaxContextChars  int64
 	// The optional hybrid RAG layer: an OpenAI-compatible embeddings server, disabled by default. Base is the
 	// normalized {…}/v1 base, URL is what the client posts to, and Model keys the stored vectors.
 	RAGEmbeddingsEnabled        bool
@@ -970,6 +976,12 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	ragContext, badRAGContext := Num(raw, "RAG_MAX_CONTEXT_CHARS", DefaultRAGMaxContextChars, 256, 20000)
 	cfg.RAGMaxContextChars = ragContext
 	problems = Push(problems, badRAGContext)
+
+	// Off by default. STRATA (a local OpenAI-compatible server) exposes no prompt-cache API; the order
+	// below only helps a server that reuses the longest common prefix on its own. See the README row.
+	promptCacheFriendly, badPromptCacheFriendly := Flag(raw, "PROMPT_CACHE_FRIENDLY", false)
+	cfg.PromptCacheFriendly = promptCacheFriendly
+	problems = Push(problems, badPromptCacheFriendly)
 
 	// Hybrid RAG is opt-in and fully optional: with the flag off nothing is embedded and the search stays the
 	// lexical ranking it is today. The rows are still resolved, so enabling the feature later needs one line.

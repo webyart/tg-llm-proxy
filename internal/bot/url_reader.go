@@ -62,7 +62,7 @@ func urlReaderTools(enabled bool) []model.ToolDefinition {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"url": map[string]any{"type": "string", "description": "Public HTTPS URL to read"},
+				"url": map[string]any{"type": "string", "description": "Public HTTPS URL"},
 			},
 			"required": []string{"url"},
 		},

@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -491,6 +492,24 @@ func (c *OpenAI) UseModel(name string) {
 // `/model` slower than the answer it reports on.
 func (c *OpenAI) Models(ctx context.Context) ([]string, error) {
 	return FetchModelIDs(ctx, c.modelsURL, c.apiKey, c.timeout, c.client)
+}
+
+// PromptChars reports the character weight of one request: the text of every message plus the JSON of
+// the tool schemas exactly as marshalChatRequest sends them. It exists so the bot can publish the size
+// of what it asks the provider to prefill (bot_prompt_chars) and prove a prompt trim in production;
+// the provider's own prompt_tokens is still the authoritative count. Image URLs are not text and are
+// not counted.
+func PromptChars(messages []Message, tools []ToolDefinition) int {
+	var chars int
+	for _, m := range messages {
+		chars += utf8.RuneCountInString(m.Content)
+	}
+	if len(tools) > 0 {
+		if raw, err := json.Marshal(toWireTools(tools)); err == nil {
+			chars += len(raw)
+		}
+	}
+	return chars
 }
 
 func toWire(messages []Message) []chatMessage {

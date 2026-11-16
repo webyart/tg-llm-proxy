@@ -509,6 +509,10 @@ func (d *Dispatcher) modelInfo(ctx context.Context, ev Event, arg string) error 
 		requested = strings.TrimSpace(action[len(control):])
 	}
 	if strings.EqualFold(control, "reset") && requested == "" {
+		if !d.canManageModel(ctx, ev) {
+			d.logEvent(ctx, ev.UserID, store.EventDenied, "model:reset")
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "model.denied"))
+		}
 		if err := store.ClearChatModel(ctx, d.deps.DB, ev.ChatID); err != nil {
 			return err
 		}
@@ -549,6 +553,10 @@ func (d *Dispatcher) modelInfo(ctx context.Context, ev Event, arg string) error 
 		if !allowed {
 			return d.reply(ctx, ev.ChatID, i18n.T(lang, "model.not_found", requested, strings.Join(names, ", ")))
 		}
+		if !d.canManageModel(ctx, ev) {
+			d.logEvent(ctx, ev.UserID, store.EventDenied, "model:select")
+			return d.reply(ctx, ev.ChatID, i18n.T(lang, "model.denied"))
+		}
 		if err := store.EnsureChat(ctx, d.deps.DB, ev.ChatID, ev.UserID, ev.ChatTitle); err != nil {
 			return err
 		}
@@ -577,6 +585,10 @@ func (d *Dispatcher) modelMenuControl(ctx context.Context, ev Event, action stri
 		}
 		return d.showModelMenu(ctx, ev)
 	case action == "menu:reset":
+		if !d.canManageModel(ctx, ev) {
+			d.logEvent(ctx, ev.UserID, store.EventDenied, "model:reset")
+			return d.showModelMenu(ctx, ev, i18n.T(lang, "model.denied"))
+		}
 		if err := store.ClearChatModel(ctx, d.deps.DB, ev.ChatID); err != nil {
 			return err
 		}
@@ -586,6 +598,10 @@ func (d *Dispatcher) modelMenuControl(ctx context.Context, ev Event, action stri
 	index, err := strconv.Atoi(value)
 	if !ok || err != nil || index < 0 || index >= menuModelChoiceLimit {
 		return d.showModelMenu(ctx, ev, menuExpiredFor(lang))
+	}
+	if !d.canManageModel(ctx, ev) {
+		d.logEvent(ctx, ev.UserID, store.EventDenied, "model:select")
+		return d.showModelMenu(ctx, ev, i18n.T(lang, "model.denied"))
 	}
 	names, err := d.deps.Model.Models(ctx)
 	if err != nil {
@@ -867,15 +883,28 @@ func (d *Dispatcher) ask(ctx context.Context, ev Event, arg string) error {
 	if err != nil {
 		return err
 	}
-	messages, ragSources, err = d.addRAGContext(replyCtx, ev.ChatID, ev.UserID, text, messages)
+	// A document attached to this question is sent inline below; its RAG chunks would be the same text
+	// a second time, so the retrieval skips that document by name.
+	var inlineDocument string
+	if ev.Attachment != nil && ev.Attachment.Kind == AttachmentDocument && !isSpeechAttachment(ev.Attachment) {
+		inlineDocument = safeAttachmentName(ev.Attachment.FileName)
+	}
+	messages, ragSources, err = d.addRAGContextExcluding(replyCtx, ev.ChatID, ev.UserID, text, messages, inlineDocument)
 	if err != nil {
 		return err
 	}
 	if len(downloaded) > 0 {
-		if len(messages) == 0 || messages[len(messages)-1].Role != model.RoleUser {
+		// The attachment belongs to the newest USER message. With PROMPT_CACHE_FRIENDLY the volatile
+		// RAG system message is appended after that question, so the last message of the request is
+		// not necessarily the one the attachment must be written into.
+		lastIndex := len(messages) - 1
+		for lastIndex >= 0 && messages[lastIndex].Role != model.RoleUser {
+			lastIndex--
+		}
+		if lastIndex < 0 {
 			return errors.New("the stored attachment question is not the newest model message")
 		}
-		last := &messages[len(messages)-1]
+		last := &messages[lastIndex]
 		last.Content = text
 		switch ev.Attachment.Kind {
 		case AttachmentPhoto:
@@ -1276,7 +1305,7 @@ func (d *Dispatcher) limitsControl(ctx context.Context, ev Event, arg string) er
 	if action == "" || strings.EqualFold(action, "menu") {
 		return d.replyChatLimits(ctx, ev, lang)
 	}
-	if !d.canManageChatLimits(ctx, ev) {
+	if !d.canManageChatSettings(ctx, ev) {
 		d.logEvent(ctx, ev.UserID, store.EventDenied, "limits")
 		return d.reply(ctx, ev.ChatID, i18n.T(lang, "limits.denied"))
 	}
@@ -1359,8 +1388,11 @@ func (d *Dispatcher) limitsControl(ctx context.Context, ev Event, arg string) er
 	}
 }
 
-// canManageChatLimits is the write permission of /limits. Admin anywhere; the owner of a private chat.
-func (d *Dispatcher) canManageChatLimits(ctx context.Context, ev Event) bool {
+// canManageChatSettings is the write permission of the chat-wide settings: /limits, /timezone and
+// /model. Admin anywhere; the owner of a private chat. A group is managed by an administrator only —
+// a group member must never be able to change the group's model or lift its limit just because the
+// group id happens to resemble a user id.
+func (d *Dispatcher) canManageChatSettings(ctx context.Context, ev Event) bool {
 	if d.deps.Cfg.IsAdmin(ev.UserID) {
 		return true
 	}
@@ -1378,6 +1410,16 @@ func (d *Dispatcher) canManageChatLimits(ctx context.Context, ev Event) bool {
 		return ev.ChatID == ev.UserID
 	}
 	return owner == ev.UserID
+}
+
+// canManageModel is the write permission of /model. A private chat keeps the historical behaviour
+// (the only chat an allowed user can write to through Telegram is their own); a group, where the
+// model and its cost belong to every member, is administrator-only.
+func (d *Dispatcher) canManageModel(ctx context.Context, ev Event) bool {
+	if !isGroupChat(ev) {
+		return true
+	}
+	return d.canManageChatSettings(ctx, ev)
 }
 
 // saveChatLimits ensures the chats row exists (a first /limits on a fresh chat is not stored by the

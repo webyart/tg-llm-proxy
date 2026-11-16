@@ -107,6 +107,7 @@ func startupSummary(logger *slog.Logger, cfg config.Config) {
 		"task_model_timeout_seconds", cfg.TaskModelTimeoutSeconds,
 		"task_step_deadline_seconds", cfg.TaskStepDeadlineSeconds,
 		"streaming", cfg.Streaming,
+		"prompt_cache_friendly", cfg.PromptCacheFriendly,
 		"tools_enabled", cfg.ToolsEnabled,
 		"url_reader", cfg.URLReaderEnabled,
 		"web_search", cfg.WebSearchEnabled,

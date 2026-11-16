@@ -125,5 +125,5 @@ func (d *Dispatcher) timezoneControl(ctx context.Context, ev Event, arg string) 
 // /limits rule by construction, so a group member who is not an administrator can never move the group's
 // display zone (just as they cannot lift its limits).
 func (d *Dispatcher) canManageChatTimezone(ctx context.Context, ev Event) bool {
-	return d.canManageChatLimits(ctx, ev)
+	return d.canManageChatSettings(ctx, ev)
 }

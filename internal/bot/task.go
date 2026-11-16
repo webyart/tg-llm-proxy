@@ -304,10 +304,12 @@ func (d *Dispatcher) planTask(ctx context.Context, userID int64, selectedModel s
 	// budget the planning lease covers), and the caller never applies the chat reply budget to /task.
 	planCtx, cancel := context.WithTimeout(ctx, d.taskPlanningDeadline())
 	defer cancel()
-	response, err := d.callModel(planCtx, userID, model.Request{Model: selectedModel, Timeout: d.taskModelTimeout(), Messages: []model.Message{
+	planMessages := []model.Message{
 		{Role: model.RoleSystem, Content: "Create a SHORT plan for the user's goal. Return ONLY one JSON object with exactly this shape: {\"steps\":[{\"description\":\"...\"}]}. Use 1 to 3 steps. Each description is at most 240 characters and describes reasoning or information gathering in plain language. Do not include URLs, tool names, network actions, code, shell commands, file operations, agents, or any extra JSON fields. Do not use Markdown fences."},
 		{Role: model.RoleUser, Content: goal},
-	}}, nil, nil)
+	}
+	d.observePromptChars(promptScopePlanning, planMessages, nil)
+	response, err := d.callModel(planCtx, userID, model.Request{Model: selectedModel, Timeout: d.taskModelTimeout(), Messages: planMessages}, nil, nil)
 	if err != nil {
 		return TaskPlan{}, err
 	}

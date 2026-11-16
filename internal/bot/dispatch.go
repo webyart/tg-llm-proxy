@@ -51,6 +51,9 @@ type Event struct {
 	ReplyToUserID    int64
 	ReplyToUsername  string
 	ReplyToIsBot     bool
+	// MessageThreadID is the forum topic of the update (0 outside a topic). A group answer must be
+	// sent into the same topic, otherwise it lands in the General thread.
+	MessageThreadID int64
 	// GroupAccepted is set by groupGate once a group update passed the mention/reply/command gate. It
 	// keeps the Telegram handler from gating the same update twice after a pending menu input
 	// rewrites its text into a command without the original mention.
@@ -548,6 +551,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, ev Event) error {
 			return nil
 		}
 	}
+	// A group answer is anchored to the update it answers and stays in its forum topic. The target
+	// travels on the context of the whole answer, so chunks and every intermediate send share it.
+	ctx = withGroupReplyTarget(ctx, ev)
 	// Only a real incoming message starts a new user turn. A menu callback continues the current answer (an
 	// approval of a network tool, for example) and must not make the stream finalize as a new message. The turn
 	// counter is what lets deliver() notice that the NEXT question arrived mid-answer.
@@ -831,6 +837,10 @@ func (d *Dispatcher) SetMetrics(reg *metrics.Registry) {
 	reg.Counter(taskMetricFailed, taskMetricFailedHelp)
 	reg.Counter(taskMetricStepRetries, taskMetricStepRetriesHelp)
 	reg.Histogram(taskMetricDuration, taskMetricDurationHelp, taskDurationBuckets)
+	// Prompt-size families are bounded by the fixed call scope, and the synthesis-truncation counter is
+	// label-free. Registered eagerly so a fresh /metrics lists them before the first answer.
+	reg.Histogram(promptCharsMetric, promptCharsHelp, promptCharsBuckets)
+	reg.Counter(taskSynthesisTruncatedMetric, taskSynthesisTruncatedHelp)
 	// Provider budget families: one series per configured provider, no chat/user/model labels. They are
 	// registered eagerly so a fresh /metrics lists them before the first budget check.
 	reg.Gauge(providerBudgetRatioMetric, providerBudgetRatioHelp)

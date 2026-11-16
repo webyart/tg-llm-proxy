@@ -259,6 +259,9 @@ func (r *telegramReplier) SendMenuWithID(ctx context.Context, chatID int64, text
 	attempt := 0
 	for {
 		params := &tgbot.SendMessageParams{ChatID: chatID, Text: text, ParseMode: parseModeOf(r.cfg.ParseMode), ReplyMarkup: markup}
+		if target, ok := groupReplyTargetFrom(ctx); ok {
+			target.applyToMessage(params)
+		}
 		message, err := r.bot.SendMessage(ctx, params)
 		if err == nil {
 			if message == nil || message.ID == 0 {
@@ -509,6 +512,7 @@ func (d *Dispatcher) callbackEventOf(upd *models.Update) (Event, bool) {
 		ChatType:          string(message.Chat.Type),
 		ChatTitle:         chatTitle(message.Chat),
 		Text:              text,
+		MessageThreadID:   int64(message.MessageThreadID),
 		MenuCallback:      true,
 	}
 	if callback.From.ID != 0 {

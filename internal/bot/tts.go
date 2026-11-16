@@ -50,10 +50,14 @@ func (r *telegramReplier) SendAudio(ctx context.Context, chatID int64, audio Aud
 	if mime != "audio/mpeg" && mime != "audio/mp3" {
 		return errors.New("audio must be MP3")
 	}
-	_, err := r.bot.SendAudio(ctx, &tgbot.SendAudioParams{
+	params := &tgbot.SendAudioParams{
 		ChatID: chatID,
 		Audio:  &models.InputFileUpload{Filename: name, Data: bytes.NewReader(audio.Data)},
-	})
+	}
+	if target, ok := groupReplyTargetFrom(ctx); ok {
+		target.applyToAudio(params)
+	}
+	_, err := r.bot.SendAudio(ctx, params)
 	return err
 }
 

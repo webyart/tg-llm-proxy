@@ -429,6 +429,20 @@ func (d *Dispatcher) exportDocuments(ctx context.Context, ev Event) error {
 }
 
 func (d *Dispatcher) addRAGContext(ctx context.Context, chatID int64, userID int64, query string, messages []model.Message) ([]model.Message, []string, error) {
+	return d.addRAGContextExcluding(ctx, chatID, userID, query, messages, "")
+}
+
+// addRAGContextExcluding is addRAGContext for a turn whose newest user message already carries the full
+// text of one local document (an /ask attachment): inlineDocument names that document, so its chunks
+// are not retrieved a second time and the same text is not paid for twice. Identical chunks are
+// deduplicated as well; a RAG block with nothing new is not added at all.
+//
+// The stable prefix (native tool instruction + persona) is never touched. With PROMPT_CACHE_FRIENDLY
+// the volatile RAG block is appended to the tail instead of being inserted after the persona, so every
+// message before it keeps a byte-identical prefix from one turn to the next for a server that reuses
+// the longest common prefix on its own. STRATA has no explicit prompt-cache API; the flag is opt-in
+// because a trailing system message depends on the chat template.
+func (d *Dispatcher) addRAGContextExcluding(ctx context.Context, chatID int64, userID int64, query string, messages []model.Message, inlineDocument string) ([]model.Message, []string, error) {
 	result, err := d.searchRAG(ctx, chatID, query, int(d.deps.Cfg.RAGResultLimit), int(d.deps.Cfg.RAGMaxContextChars))
 	if err != nil || len(result.Chunks) == 0 {
 		return messages, nil, err
@@ -439,21 +453,46 @@ func (d *Dispatcher) addRAGContext(ctx context.Context, chatID int64, userID int
 		text.WriteString(warning + "\n")
 	}
 	sources := []string{}
-	seen := map[string]bool{}
+	seenSources := map[string]bool{}
+	seenContent := map[string]bool{}
+	inline := strings.TrimSpace(inlineDocument)
 	for _, chunk := range result.Chunks {
-		fmt.Fprintf(&text, "\n[Источник: %s]\n%s\n", chunk.Name, chunk.Content)
-		if !seen[chunk.Name] {
-			seen[chunk.Name] = true
+		if inline != "" && chunk.Name == inline {
+			continue
+		}
+		var key = strings.Join(strings.Fields(chunk.Content), " ")
+		if key == "" {
+			continue
+		}
+		// The source is recorded even when the fragment repeats one already sent: two documents do
+		// contain the same sentence, and the user still deserves both names. Only the text is deduped.
+		if !seenSources[chunk.Name] {
+			seenSources[chunk.Name] = true
 			sources = append(sources, chunk.Name)
 		}
+		if seenContent[key] {
+			continue
+		}
+		seenContent[key] = true
+		fmt.Fprintf(&text, "\n[Источник: %s]\n%s\n", chunk.Name, chunk.Content)
 	}
-	insertAt := 0
-	if len(messages) > 0 && messages[0].Role == model.RoleSystem {
-		insertAt = 1
+	if len(seenContent) == 0 {
+		// Every retrieved chunk repeated the attached document: sending the header alone would cost
+		// prefill and tell the model nothing.
+		return messages, nil, nil
 	}
-	messages = append(messages, model.Message{})
-	copy(messages[insertAt+1:], messages[insertAt:])
-	messages[insertAt] = model.Message{Role: model.RoleSystem, Content: text.String()}
+	var message = model.Message{Role: model.RoleSystem, Content: text.String()}
+	if d.deps.Cfg.PromptCacheFriendly {
+		messages = append(messages, message)
+	} else {
+		insertAt := 0
+		if len(messages) > 0 && messages[0].Role == model.RoleSystem {
+			insertAt = 1
+		}
+		messages = append(messages, model.Message{})
+		copy(messages[insertAt+1:], messages[insertAt:])
+		messages[insertAt] = message
+	}
 	d.logEvent(ctx, userID, store.EventUsage, "rag")
 	return messages, sources, nil
 }

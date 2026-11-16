@@ -244,6 +244,7 @@ func eventOf(upd *models.Update) (Event, bool) {
 		ChatTitle:         chatTitle(message.Chat),
 		Text:              text,
 		MediaGroupID:      message.MediaGroupID,
+		MessageThreadID:   int64(message.MessageThreadID),
 	}
 	if message.From != nil {
 		ev.UserID = message.From.ID
@@ -366,7 +367,11 @@ func (r *telegramReplier) SendTyping(ctx context.Context, chatID int64) error {
 	if r.bot == nil {
 		return errors.New("the telegram bot is not attached ")
 	}
-	_, err := r.bot.SendChatAction(ctx, &tgbot.SendChatActionParams{ChatID: chatID, Action: models.ChatActionTyping})
+	params := &tgbot.SendChatActionParams{ChatID: chatID, Action: models.ChatActionTyping}
+	if target, ok := groupReplyTargetFrom(ctx); ok {
+		target.applyToChatAction(params)
+	}
+	_, err := r.bot.SendChatAction(ctx, params)
 	return err
 }
 
@@ -400,6 +405,9 @@ func (r *telegramReplier) sendWithModeID(ctx context.Context, chatID int64, text
 			ChatID:    chatID,
 			Text:      text,
 			ParseMode: parseMode,
+		}
+		if target, ok := groupReplyTargetFrom(ctx); ok {
+			target.applyToMessage(params)
 		}
 		if markup != nil {
 			params.ReplyMarkup = *markup
@@ -460,10 +468,14 @@ func (r *telegramReplier) SendStreamMessage(ctx context.Context, chatID int64, t
 	if r.bot == nil {
 		return 0, errors.New("the telegram bot is not attached ")
 	}
-	var msg, err = r.bot.SendMessage(ctx, &tgbot.SendMessageParams{
+	params := &tgbot.SendMessageParams{
 		ChatID: chatID,
 		Text:   text,
-	})
+	}
+	if target, ok := groupReplyTargetFrom(ctx); ok {
+		target.applyToMessage(params)
+	}
+	var msg, err = r.bot.SendMessage(ctx, params)
 	if err != nil {
 		return 0, err
 	}

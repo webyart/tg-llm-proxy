@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -43,6 +44,50 @@ func TestToolCallDecodeAndRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(bodies[0], `"tools":[{"type":"function"`) || !strings.Contains(bodies[1], `"tool_call_id":"call-1"`) || !strings.Contains(bodies[1], `"name":"calculator"`) {
 		t.Fatalf("tool wire bodies=%q", bodies)
+	}
+}
+
+func TestPromptCharsMatchesTheWireBody(t *testing.T) {
+	var body string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body = string(raw)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"qwen","choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer server.Close()
+	client, err := New(Options{ChatURL: server.URL + "/v1/chat/completions", Model: "qwen", Attempts: 1, Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	messages := []Message{
+		{Role: RoleSystem, Content: "инструкция"},
+		{Role: RoleUser, Content: "вопрос 2+2"},
+	}
+	tools := []ToolDefinition{{Name: "calculator", Description: "arithmetic", Parameters: map[string]any{"type": "object", "properties": map[string]any{"expression": map[string]any{"type": "string"}}}}}
+	if _, err := client.Complete(context.Background(), Request{Messages: messages, Tools: tools}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	var sent struct {
+		Messages []struct {
+			Content string `json:"content"`
+		} `json:"messages"`
+		Tools json.RawMessage `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(body), &sent); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	want := 0
+	for _, message := range sent.Messages {
+		want += len([]rune(message.Content))
+	}
+	want += len(sent.Tools)
+	if got := PromptChars(messages, tools); got != want {
+		t.Fatalf("PromptChars = %d, want %d (messages + tool JSON sent on the wire)", got, want)
+	}
+	// A request without tools must not invent schema bytes.
+	if got := PromptChars(messages, nil); got != len([]rune("инструкция"))+len([]rune("вопрос 2+2")) {
+		t.Fatalf("PromptChars without tools = %d", got)
 	}
 }
 

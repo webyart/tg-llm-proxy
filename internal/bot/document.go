@@ -40,10 +40,14 @@ func (r *telegramReplier) SendDocument(ctx context.Context, chatID int64, docume
 	if caption == "" {
 		caption = "Экспорт истории"
 	}
-	_, err := r.bot.SendDocument(ctx, &tgbot.SendDocumentParams{
+	params := &tgbot.SendDocumentParams{
 		ChatID:   chatID,
 		Document: &models.InputFileUpload{Filename: name, Data: bytes.NewReader(document.Data)},
 		Caption:  caption,
-	})
+	}
+	if target, ok := groupReplyTargetFrom(ctx); ok {
+		target.applyToDocument(params)
+	}
+	_, err := r.bot.SendDocument(ctx, params)
 	return err
 }

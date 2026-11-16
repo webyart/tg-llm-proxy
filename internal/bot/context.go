@@ -72,10 +72,16 @@ func (d *Dispatcher) BuildMessages(ctx context.Context, chatID int64) ([]model.M
 // contextTurns groups rows (oldest first) into turns. A user row opens a turn, and every row after
 // it belongs to that turn. Rows before the first user row are the tail of a turn that
 // CONTEXT_MESSAGES cut in half: keeping them would put an answer into the request without its
-// question, so that prefix is dropped.
+// question, so that prefix is dropped. A stored system row is dropped for the same kind of reason:
+// the persona is the request's ONLY system prefix, so an old system message in history would either
+// repeat that prefix (paying for the same instruction twice) or smuggle a stale instruction into the
+// conversation with more authority than the current one.
 func contextTurns(rows []store.Message) [][]store.Message {
 	var turns [][]store.Message
 	for _, row := range rows {
+		if row.Role != store.RoleUser && row.Role != store.RoleAssistant {
+			continue
+		}
 		if row.Role == store.RoleUser {
 			turns = append(turns, []store.Message{row})
 			continue

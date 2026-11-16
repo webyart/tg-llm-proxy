@@ -27,7 +27,7 @@ const (
 	webSearchMaxResultURLRunes = 2048
 	webSearchProviderPath      = "/search"
 	webSearchProviderFormat    = "json"
-	webSearchToolDescription   = "Search the web through the operator's own SearxNG and return up to WEB_SEARCH_MAX_RESULTS results as JSON with title, url and snippet. Result URLs are text only: nothing is fetched from them."
+	webSearchToolDescription   = "Search the web via the operator's SearxNG; returns up to WEB_SEARCH_MAX_RESULTS JSON results (title, url, snippet). URLs are text only: results are not fetched."
 )
 
 // errWebSearchRedirect is returned by the client's CheckRedirect. It is a named value so the provider

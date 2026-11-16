@@ -532,8 +532,9 @@ func (d *Dispatcher) miniAppToolLoopState(clientCtx context.Context, userID int6
 	req.Tools = append(calculatorTools(allowed["calculator"]), urlReaderTools(allowed["read_url"])...)
 	req.Tools = append(req.Tools, webSearchTools(allowed["web_search"])...)
 	if len(req.Tools) > 0 {
-		req.Messages = append([]model.Message{{Role: model.RoleSystem, Content: nativeToolInstruction}}, req.Messages...)
+		req.Messages = withNativeToolInstruction(req.Messages)
 	}
+	d.observePromptChars(promptScopeChat, req.Messages, req.Tools)
 	state := &toolLoopContinuation{
 		userID: userID, request: req, allowedTools: allowed,
 		approvedCall: -1, approvedCalls: map[int]bool{},

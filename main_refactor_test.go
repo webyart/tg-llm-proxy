@@ -85,6 +85,55 @@ func TestStartupSummaryNamesTheMiniAppURL(t *testing.T) {
 	}
 }
 
+// TestStartupSummaryWarnsWhenTheStepBudgetCannotCoverAFullySlowStep — the step deadline is the hard ceiling of
+// a task step, so a step budget below 5 × TASK_MODEL_TIMEOUT_SECONDS cuts a fully slow step. The warning is
+// advisory (the operator may accept it), but it must stay: it fires for 600/240 and disappears only when the
+// configured value actually covers the worst case, as the shipped default 1500/240 does.
+func TestStartupSummaryWarnsWhenTheStepBudgetCannotCoverAFullySlowStep(t *testing.T) {
+	var summary = func(raw map[string]string) string {
+		t.Helper()
+		var cfg, problems = config.LoadFrom(raw)
+		if len(problems) > 0 {
+			t.Fatalf("config: %v", problems)
+		}
+		var buffer bytes.Buffer
+		startupSummary(slog.New(slog.NewTextHandler(&buffer, nil)), cfg)
+		return buffer.String()
+	}
+	var uncovered = summary(map[string]string{
+		"TELEGRAM_BOT_TOKEN":         "12345:test-token",
+		"TASK_MODEL_TIMEOUT_SECONDS": "240",
+		"TASK_STEP_DEADLINE_SECONDS": "600",
+	})
+	if !strings.Contains(uncovered, "cannot cover every model call") {
+		t.Fatalf("a 600 s step with 240 s calls produced no warning: %s", uncovered)
+	}
+	if !strings.Contains(uncovered, "recommended_task_step_deadline_seconds=1200") ||
+		!strings.Contains(uncovered, "task_lease_seconds=630") {
+		t.Fatalf("the warning does not name the recommended deadline and lease: %s", uncovered)
+	}
+
+	var covered = summary(map[string]string{
+		"TELEGRAM_BOT_TOKEN":         "12345:test-token",
+		"TASK_MODEL_TIMEOUT_SECONDS": "240",
+		"TASK_STEP_DEADLINE_SECONDS": "1500",
+	})
+	if strings.Contains(covered, "cannot cover every model call") {
+		t.Fatalf("a 1500 s step with 240 s calls still warned: %s", covered)
+	}
+
+	// The tools switch gates the warning: without tools a step is a single model call and cannot spend five.
+	var noTools = summary(map[string]string{
+		"TELEGRAM_BOT_TOKEN":         "12345:test-token",
+		"TASK_MODEL_TIMEOUT_SECONDS": "240",
+		"TASK_STEP_DEADLINE_SECONDS": "600",
+		"TOOLS_ENABLED":              "false",
+	})
+	if strings.Contains(noTools, "cannot cover every model call") {
+		t.Fatalf("the warning fired with tools disabled: %s", noTools)
+	}
+}
+
 // TestRunReturnsAnErrorWhenTheHealthPortIsTaken — the old code printed the listener error and called os.Exit
 // from inside the wiring. Now it returns, which is what makes a failed start testable.
 func TestRunReturnsAnErrorWhenTheHealthPortIsTaken(t *testing.T) {

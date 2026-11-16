@@ -61,13 +61,93 @@ func TestEveryStaticTranslationKeyHasCatalogEntry(t *testing.T) {
 	}
 }
 
+func TestFrontendThemeBootstrapRunsBeforeStylesheetAndMatchesSurfaceTokens(t *testing.T) {
+	index := frontendAsset(t, "static/index.html")
+	script := frontendAsset(t, "static/app.js")
+	bootstrap := frontendAsset(t, "static/theme.js")
+	css := frontendAsset(t, "static/style.css")
+
+	themeTag := `<script src="/theme.js"></script>`
+	stylesheetTag := `<link rel="stylesheet" href="/style.css">`
+	themeAt := strings.Index(index, themeTag)
+	stylesheetAt := strings.Index(index, stylesheetTag)
+	if themeAt < 0 || stylesheetAt < 0 || themeAt > stylesheetAt {
+		t.Fatalf("index must load theme.js before style.css: theme=%d stylesheet=%d", themeAt, stylesheetAt)
+	}
+	for _, forbidden := range []string{"<script>", "<script type=", "javascript:"} {
+		if strings.Contains(index, forbidden) {
+			t.Errorf("index uses an inline or non-self script %q; CSP is script-src 'self'", forbidden)
+		}
+	}
+	for _, want := range []string{`meta name="theme-color"`, `content="#faf4ea"`, `content="#1a1d25"`, `media="(prefers-color-scheme: light)"`, `media="(prefers-color-scheme: dark)"`} {
+		if !strings.Contains(index, want) {
+			t.Errorf("index misses the static theme-color fallback %q", want)
+		}
+	}
+	for _, asset := range []string{script, bootstrap} {
+		for _, want := range []string{`themeNames = ["graphite", "sand", "ocean", "forest", "lavender"]`, `meta[name="theme-color"]`, `applyThemeColor`} {
+			if !strings.Contains(asset, want) {
+				t.Errorf("theme bootstrap misses %q", want)
+			}
+		}
+	}
+	for _, theme := range []string{"graphite", "sand", "ocean", "forest", "lavender"} {
+		block := regexp.MustCompile(`(?s)html\[data-theme="` + theme + `"\] \{(.*?)\n\}`).FindStringSubmatch(css)
+		if len(block) != 2 {
+			t.Fatalf("%s palette block is missing", theme)
+		}
+		surface := regexp.MustCompile(`--surface:\s*(#[0-9a-fA-F]{6})`).FindStringSubmatch(block[1])
+		if len(surface) != 2 {
+			t.Fatalf("%s palette has no --surface", theme)
+		}
+		declaration := theme + `: "` + strings.ToLower(surface[1]) + `"`
+		if !strings.Contains(strings.ToLower(bootstrap), strings.ToLower(declaration)) {
+			t.Errorf("theme.js surface map differs from style.css for %s: want %q", theme, declaration)
+		}
+		if !strings.Contains(strings.ToLower(script), strings.ToLower(declaration)) {
+			t.Errorf("app.js fallback surface map differs from style.css for %s: want %q", theme, declaration)
+		}
+	}
+}
+
+func TestFrontendThemeSmokeAt320Pixels(t *testing.T) {
+	index := frontendAsset(t, "static/index.html")
+	css := frontendAsset(t, "static/style.css")
+	if !strings.Contains(index, `content="width=device-width, initial-scale=1, viewport-fit=cover"`) {
+		t.Fatal("index does not declare the mobile viewport")
+	}
+	// Every theme must keep the layout below the 320 px viewport: no fixed width or min-width may exceed
+	// it, and the mobile rule must stack settings controls (the timezone input and provider actions).
+	fixed := regexp.MustCompile(`(?:^|[;{])\s*(?:min-)?width:\s*([0-9]{3,})px`)
+	for _, match := range fixed.FindAllStringSubmatch(css, -1) {
+		width, err := strconv.Atoi(match[1])
+		if err != nil {
+			t.Fatalf("unreadable fixed width %q", match[1])
+		}
+		if width > 320 {
+			t.Errorf("style.css declares a %d px width that overflows a 320 px viewport", width)
+		}
+	}
+	for _, want := range []string{
+		"@media (max-width: 420px)",
+		".settings-row select, .settings-row input, .settings-row button { flex: 1 1 100%; width: 100%; }",
+		".provider-card .settings-row > button { flex: 1 1 100%; }",
+		"overflow-x: visible",
+		"max-width: 100%",
+	} {
+		if !strings.Contains(css, want) {
+			t.Errorf("320 px smoke check misses %q", want)
+		}
+	}
+}
+
 func TestFrontendMobileRulesWrapAndCapWidths(t *testing.T) {
 	css := frontendAsset(t, "static/style.css")
 	for _, want := range []string{
 		"flex-wrap: wrap", "overflow-x: visible", "min-width: 0", "max-width: 100%",
 		"overflow-wrap: anywhere", "word-break: break-word", "@media (max-width: 420px)",
 		"nav button { flex: 1 1 calc(50% - 5px); }",
-		".settings-row select, .settings-row button { flex: 1 1 100%; width: 100%; }",
+		".settings-row select, .settings-row input, .settings-row button { flex: 1 1 100%; width: 100%; }",
 	} {
 		if !strings.Contains(css, want) {
 			t.Errorf("responsive CSS misses %q", want)
@@ -373,7 +453,7 @@ func TestFrontendTaskCardsShowTheUsageFooterWithHumanTimes(t *testing.T) {
 	for _, want := range []string{
 		"function formatTaskTokens(value)",
 		"function formatTaskETA(seconds)",
-		"function formatTaskCost(value)",
+		"function formatTaskCost(value, priced = true)",
 		"function taskFooterText(item)",
 		"item.tokens_in", "item.tokens_out", "item.cost_usd",
 		"item.elapsed_seconds", "item.eta_seconds", "item.duration_ms",

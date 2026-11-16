@@ -16,6 +16,12 @@ function Get-TgPwshExecutable {
     if (Test-Path -LiteralPath $stable -PathType Leaf) {
         return [pscustomobject]@{ Path = $stable; Stable = $true }
     }
+    # Store/App Execution Alias: version-independent, unlike the versioned
+    # WindowsApps\Microsoft.PowerShell_<version>_* process path that a Store update deletes.
+    $alias = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\Microsoft.PowerShell_8wekyb3d8bbwe\pwsh.exe'
+    if (Test-Path -LiteralPath $alias -PathType Leaf) {
+        return [pscustomobject]@{ Path = $alias; Stable = $true }
+    }
     return [pscustomobject]@{ Path = ((Get-Process -Id $PID).Path); Stable = $false }
 }
 

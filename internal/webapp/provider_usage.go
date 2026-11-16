@@ -20,9 +20,12 @@ import (
 // usageProviderCost is one provider row of /api/usage. BudgetUSD 0 means unlimited, and RemainingUSD is null
 // in that case (the same convention as the daily limits). Warning is the 80% flag of an active budget.
 type usageProviderCost struct {
-	Provider     string   `json:"provider"`
-	CostUSD      float64  `json:"cost_usd"`
-	BudgetUSD    float64  `json:"budget_usd"`
+	Provider  string  `json:"provider"`
+	CostUSD   float64 `json:"cost_usd"`
+	BudgetUSD float64 `json:"budget_usd"`
+	// Priced is the deployment-level cost flag: without a positive MODEL_PRICES row the spend is unknown
+	// (—), not a measured $0.00.
+	Priced       bool     `json:"priced"`
 	RemainingUSD *float64 `json:"remaining_usd"`
 	Warning      bool     `json:"warning"`
 }
@@ -65,6 +68,7 @@ func (a *App) usageProviderCosts(ctx context.Context, now time.Time) ([]usagePro
 			Provider:  name,
 			CostUSD:   float64(cost) / 1_000_000,
 			BudgetUSD: store.ProviderBudgetUSD(budget),
+			Priced:    a.cfg.ModelPrices.HasPrices(),
 		}
 		if budget > 0 {
 			var remaining = budget - cost

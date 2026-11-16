@@ -85,8 +85,10 @@
   --shadow: 0 12px 36px #0a0c1266, 0 2px 8px #0a0c1240;
 }
 
-/* The first paint on a light system uses sand; a stored theme wins as soon as
-   app.js runs, because html[data-theme] is a more specific selector. */
+/* The first paint on a light system uses sand. A stored theme is applied by the synchronous
+   /theme.js in <head> before this stylesheet is painted, so a stored graphite/ocean/forest choice
+   does not flash light. The media-query palette below remains the fallback when JavaScript is
+   disabled or the CSP blocks self scripts; that is the documented no-JS limitation. */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
     color-scheme: light;
@@ -775,7 +777,7 @@ nav button:focus-visible { outline-offset: 1px; }
 /* The generic min-width: 0 above protects flex layout from long text; interactive children keep the
    WCAG 2.5.5 width even when their label is a single glyph. */
 .settings-row > button, .task-actions > button, .form-actions > button,
-.settings-row > select, .task-actions > select, .form-actions > select { min-width: 44px; }
+.settings-row > select, .settings-row > input, .task-actions > select, .form-actions > select { min-width: 44px; }
 .task-actions button, .form-actions button { flex: 0 1 auto; }
 .task-clear { padding: 11px; margin: 11px 0 3px; border: 1px solid color-mix(in srgb, var(--danger) 32%, transparent); border-radius: var(--radius-md); background: var(--danger-soft); }
 .task-clear > button { width: 100%; color: var(--danger-contrast); background: var(--danger-strong); }
@@ -833,7 +835,7 @@ option { color: var(--text); background: var(--surface); overflow-wrap: anywhere
   letter-spacing: .02em;
 }
 textarea { min-height: 78px; resize: vertical; line-height: 1.45; }
-.settings-row select { flex: 1 1 180px; width: auto; }
+.settings-row select, .settings-row input { flex: 1 1 180px; width: auto; }
 .settings-row button { flex: 0 1 auto; }
 /* Admin-only chat limits: three numeric fields on one row when there is room, stacked on a phone. Every
    control keeps the 44 px touch target of the generic input/button rules; only the checkbox itself is
@@ -1216,7 +1218,7 @@ textarea { min-height: 78px; resize: vertical; line-height: 1.45; }
   .workspace-panel { padding: 8px; }
   .item, .creation-panel, .document-search, .document-upload, .history-search, .link-search { padding: 10px; }
   .settings-row { align-items: stretch; }
-  .settings-row select, .settings-row button { flex: 1 1 100%; width: 100%; }
+  .settings-row select, .settings-row input, .settings-row button { flex: 1 1 100%; width: 100%; }
   .chat-actions button, .chat-form .form-actions button { flex: 1 1 auto; }
   .document-search-row input, .document-search-row button, .history-search-row input, .history-search-row button, .history-export button, .link-search-row input, .link-search-row button, .document-upload-row input, .document-upload-row button, .form-actions button { flex: 1 1 100%; width: 100%; }
   .header-actions { width: 100%; justify-content: flex-end; }

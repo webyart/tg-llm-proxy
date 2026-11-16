@@ -158,13 +158,16 @@ func startupSummary(logger *slog.Logger, cfg config.Config) {
 	// A research step may spend its per-call budget on every tool round. The step deadline is the hard ceiling,
 	// so a configuration that cannot cover the worst case silently cuts a fully slow step. This is a warning,
 	// not a startup error: most calls are much faster than the timeout, and raising the step budget also
-	// lengthens the task lease.
-	if calls := int64(bot.TaskModelCallsPerStep); cfg.ToolsEnabled && cfg.TaskStepDeadlineSeconds < calls*cfg.TaskModelTimeoutSeconds {
+	// lengthens the task lease. The formula itself lives in config.TaskStepDeadlineCoversWorstCase, so the
+	// recommendation and the defaults cannot drift apart; the warning names the lease as well, because an
+	// operator who raises the deadline also lengthens how long a dead instance keeps its claim.
+	if cfg.ToolsEnabled && !config.TaskStepDeadlineCoversWorstCase(cfg.TaskStepDeadlineSeconds, cfg.TaskModelTimeoutSeconds) {
 		logger.Warn("TASK_STEP_DEADLINE_SECONDS cannot cover every model call of a fully slow research step",
 			"task_step_deadline_seconds", cfg.TaskStepDeadlineSeconds,
 			"task_model_timeout_seconds", cfg.TaskModelTimeoutSeconds,
-			"model_calls_per_step", calls,
-			"recommended_task_step_deadline_seconds", calls*cfg.TaskModelTimeoutSeconds)
+			"model_calls_per_step", config.TaskModelCallsPerStep,
+			"recommended_task_step_deadline_seconds", config.TaskModelCallsPerStep*cfg.TaskModelTimeoutSeconds,
+			"task_lease_seconds", cfg.TaskStepDeadlineSeconds+config.TaskLeaseMarginSeconds)
 	}
 }
 
@@ -299,7 +302,22 @@ func run(ctx context.Context, cfg config.Config, commit string, out io.Writer, l
 	if discovered, changed := model.DiscoverModelName(ctx, primary, cfg.StrataModel, 3*time.Second); changed {
 		logger.Warn("the endpoint offers a single model; using it instead of STRATA_MODEL",
 			"configured", cfg.StrataModel, "loaded", discovered)
+		var configured = cfg.StrataModel
 		primary.UseModel(discovered)
+		// A per-chat selection and the model column of a live task are copies of the configured name. Discovery
+		// just changed the name every NEW request uses, so those copies would keep sending the old one to a
+		// single-model endpoint that no longer offers it: the chat would take the fallback or fail. Terminal
+		// tasks and the model stored on historical messages are history and stay untouched. The log line names
+		// counts only, never a chat or task id.
+		normalized, normalizeErr := store.NormalizeModelName(ctx, db, configured, discovered)
+		if normalizeErr != nil {
+			logger.Warn("could not rewrite persisted model selections to the discovered model",
+				"error", bot.Sanitize(normalizeErr, cfg.BotToken))
+		} else if normalized.ChatSettings > 0 || normalized.Tasks > 0 {
+			logger.Info("rewrote persisted model selections to the discovered model",
+				"chat_settings", normalized.ChatSettings, "tasks", normalized.Tasks,
+				"task_continuations", normalized.Continuations)
+		}
 		cfg.StrataModel = discovered
 	}
 

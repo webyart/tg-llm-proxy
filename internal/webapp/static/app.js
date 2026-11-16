@@ -3,12 +3,22 @@
 
   // ---- Mini App color theme -------------------------------------------------
   // The theme is a pure UI preference: it lives in localStorage ("dsh-theme") and never reaches the
-  // API. Five muted palettes are declared in style.css; an unknown stored value falls back to
-  // graphite, and prefers-color-scheme only chooses the very first default (graphite vs sand).
-  // This block is the earliest code app.js can run (the script is deferred), so the attribute is set
-  // before the app shell is rendered; the CSS light/dark media query covers the pre-script paint.
+  // API. Five muted palettes are declared in style.css. The tiny /theme.js bootstrap runs in <head>
+  // before the stylesheet and already applied the stored theme and the matching theme-color meta, so
+  // the light-system first paint is the selected palette rather than a flash of sand. This block keeps
+  // the same rules for later switches; if theme.js was blocked, it falls back to the stored value or
+  // prefers-color-scheme exactly as before.
   const themeStorageKey = "dsh-theme";
   const themeNames = ["graphite", "sand", "ocean", "forest", "lavender"];
+  // --surface of each palette in style.css. Runtime switches read the computed custom property first;
+  // this map is the fallback for a test harness and a browser that cannot expose computed styles.
+  const themeSurfaces = {
+    graphite: "#1a1d25",
+    sand: "#faf4ea",
+    ocean: "#16212b",
+    forest: "#182219",
+    lavender: "#f8f5fb",
+  };
 
   function storedTheme() {
     try {
@@ -28,12 +38,34 @@
     return "graphite";
   }
 
-  let currentTheme = initialTheme();
+  function themeSurface(theme) {
+    try {
+      if (window.getComputedStyle) {
+        const value = window.getComputedStyle(document.documentElement).getPropertyValue("--surface").trim();
+        if (value) return value;
+      }
+    } catch (_) { /* computed styles are optional outside a browser */ }
+    return themeSurfaces[theme] || themeSurfaces.graphite;
+  }
+
+  // All theme-color metas are updated together: the static light/dark fallbacks keep their media
+  // attributes for a no-JS client, and after the first theme switch every one of them names the
+  // selected surface, so whichever media query matches paints the same status-bar colour.
+  function applyThemeColor(theme) {
+    const color = themeSurface(theme);
+    for (const meta of document.querySelectorAll('meta[name="theme-color"]')) {
+      meta.setAttribute("content", color);
+    }
+  }
+
+  let currentTheme = document.documentElement.getAttribute("data-theme");
+  if (!themeNames.includes(currentTheme)) currentTheme = initialTheme();
 
   function applyTheme(name, persist) {
     const theme = themeNames.includes(name) ? name : "graphite";
     currentTheme = theme;
     document.documentElement.setAttribute("data-theme", theme);
+    applyThemeColor(theme);
     if (persist) {
       try { localStorage.setItem(themeStorageKey, theme); } catch (_) { /* storage is optional */ }
     }
@@ -56,16 +88,22 @@
   const timezoneStorageKey = "dsh-timezone";
   const timezoneFallback = "Asia/Yekaterinburg";
   const timezoneChoices = [
-    "Asia/Yekaterinburg", "Europe/Moscow", "Europe/Berlin", "UTC",
-    "Asia/Almaty", "Asia/Tbilisi", "America/New_York",
+    "Asia/Yekaterinburg", "Europe/Moscow", "Europe/Berlin", "Europe/London", "UTC",
+    "Asia/Almaty", "Asia/Tbilisi", "Asia/Dubai", "Asia/Kolkata", "Asia/Tokyo",
+    "America/New_York", "America/Los_Angeles", "America/Sao_Paulo",
+    "Australia/Sydney", "Pacific/Auckland",
   ];
   const monthsRU = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
   const monthsEN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
   function validTimezone(name) {
-    if (typeof name !== "string" || !name.trim()) return false;
+    if (typeof name !== "string") return false;
+    const trimmed = name.trim();
+    // The server refuses a name longer than 64 bytes before it ever reaches time.LoadLocation. The
+    // client applies the same bound so a pasted essay is a field error, not a round-trip.
+    if (!trimmed || trimmed.length > 64) return false;
     try {
-      new Intl.DateTimeFormat("en-US", { timeZone: name }).format(0);
+      new Intl.DateTimeFormat("en-US", { timeZone: trimmed }).format(0);
       return true;
     } catch (_) {
       return false;
@@ -277,8 +315,10 @@
   }
 
   // formatTaskCost mirrors the Telegram footer: a tiny nonzero estimate stays visible as «<$0.01» and a
-  // priced amount carries the same tilde. Without MODEL_PRICES the API sends zero, shown as «$0.00».
-  function formatTaskCost(value) {
+  // priced amount carries the same tilde. Without MODEL_PRICES the API sends priced=false and the footer
+  // shows «—» exactly like Telegram; a configured table with zero tokens stays a genuine «$0.00».
+  function formatTaskCost(value, priced = true) {
+    if (priced === false) return "—";
     const usd = Number(value) || 0;
     if (usd <= 0) return "$0.00";
     if (usd < 0.01) return "<$0.01";
@@ -296,7 +336,7 @@
       const totalMs = Number(item.duration_ms) > 0
         ? Number(item.duration_ms)
         : Math.max(0, Number(item.elapsed_seconds) || 0) * 1000;
-      return [t("taskFinalTotal", { duration: formatDuration(totalMs) }), tokens, t("taskCost", { cost: formatTaskCost(item.cost_usd) })].join(" · ");
+      return [t("taskFinalTotal", { duration: formatDuration(totalMs) }), tokens, t("taskCost", { cost: formatTaskCost(item.cost_usd, item.priced) })].join(" · ");
     }
     const elapsed = t("taskLiveElapsed", { duration: formatDuration(Math.max(0, Number(item.elapsed_seconds) || 0) * 1000) });
     if (item.status === "planning") return [t("taskPlanning"), elapsed, t("taskCanCancel")].join(" · ");
@@ -304,7 +344,7 @@
     if (item.eta_seconds !== null && item.eta_seconds !== undefined && Number(item.eta_seconds) > 0) {
       parts.push(t("taskLiveRemaining", { eta: formatTaskETA(item.eta_seconds) }));
     }
-    parts.push(tokens, formatTaskCost(item.cost_usd));
+    parts.push(tokens, formatTaskCost(item.cost_usd, item.priced));
     return parts.join(" · ");
   }
 
@@ -456,6 +496,7 @@
       usageTokensIn: "Входящие", usageTokensOut: "Исходящие",
       usageCost: "Стоимость", usageCostChart: "Стоимость", usageCostChartHint: "Расход по интервалам, USD; время — в выбранной зоне.",
       usageCostChartAria: "График стоимости: {cost} за {buckets} интервалов.",
+      usageCostUnavailable: "MODEL_PRICES не настроен: стоимость неизвестна и показана как «—».",
       usageToolsChart: "Вызовы инструментов", usageToolsChartAria: "Использование инструментов: {total} вызовов.",
       usageRangeModels: "Модели за период", usageRangeTools: "Инструменты за период",
       usageTodayModels: "Модели за сегодня", noRangeUsage: "За выбранный период обращений не было.",
@@ -492,6 +533,11 @@
       providerBudgetLine: "бюджет: {budget} · осталось: {remaining}",
       providerBudgetUnlimited: "бюджет: без ограничения",
       providerBudgetWarning: "Израсходовано не менее 80% дневного бюджета.",
+      providerRefresh: "Проверить /v1/models", providerRefreshDone: "Каталог провайдера проверен.",
+      providerRefreshFailed: "Не удалось прочитать список моделей провайдера.",
+      providerRefreshDiff: "Обновлено: добавлено {added}, удалено {removed}; сейчас {current}.",
+      providerRefreshSame: "Список совпадает: {current} моделей.",
+      providerRefreshIgnored: "Вне env-списка проигнорировано: {ignored}.",
       usageProviderCosts: "Стоимость по провайдерам", usageProviderCostHint: "Глобальный расход всех чатов за UTC-сутки; с этим числом бот сравнивает дневной бюджет провайдера до вызова модели.",
       usageProviderCostLine: "{provider}: {cost} из {budget}", usageProviderCostRemaining: "осталось {remaining}",
       usageProviderCostUnlimited: "{provider}: {cost} (без ограничения)",
@@ -710,6 +756,7 @@
       usageTokensIn: "Input", usageTokensOut: "Output",
       usageCost: "Cost", usageCostChart: "Cost", usageCostChartHint: "Spend per bucket, USD; time in the selected zone.",
       usageCostChartAria: "Cost chart: {cost} across {buckets} buckets.",
+      usageCostUnavailable: "No MODEL_PRICES row is configured: the cost is unknown and shown as —.",
       usageToolsChart: "Tool calls", usageToolsChartAria: "Tool usage: {total} calls.",
       usageRangeModels: "Models in range", usageRangeTools: "Tools in range",
       usageTodayModels: "Models today", noRangeUsage: "No calls in the selected range.",
@@ -746,6 +793,11 @@
       providerBudgetLine: "budget: {budget} · remaining: {remaining}",
       providerBudgetUnlimited: "budget: unlimited",
       providerBudgetWarning: "At least 80% of the daily budget is spent.",
+      providerRefresh: "Check /v1/models", providerRefreshDone: "The provider catalogue was checked.",
+      providerRefreshFailed: "The provider model list could not be read.",
+      providerRefreshDiff: "Updated: {added} added, {removed} removed; {current} in the list.",
+      providerRefreshSame: "The list matches: {current} models.",
+      providerRefreshIgnored: "Ignored outside the env list: {ignored}.",
       usageProviderCosts: "Cost by provider", usageProviderCostHint: "Global spend of every chat per UTC day; the bot compares a provider's daily budget with this number before a model call.",
       usageProviderCostLine: "{provider}: {cost} of {budget}", usageProviderCostRemaining: "remaining {remaining}",
       usageProviderCostUnlimited: "{provider}: {cost} (unlimited)",
@@ -848,6 +900,7 @@
     invalid_limits: "errorInvalidLimits", invalid_tools: "errorInvalidTools", invalid_limit: "errorInvalidLimits",
     invalid_provider: "errorInvalidProvider", unknown_provider: "errorUnknownProvider",
     provider_validation: "errorProviderValidation",
+    provider_unavailable: "providerRefreshFailed",
     invalid_timezone: "errorInvalidTimezone", timezone_forbidden: "errorTimezoneForbidden",
   };
 
@@ -922,6 +975,9 @@
   // Admin provider/model overrides. The fetched list survives a re-render of Settings (a language switch
   // does not refetch); null means "fetch on the next render". A non-admin never calls the endpoint.
   let adminProviders = { items: null, loading: false, error: "" };
+  // Last explicit /refresh diff per provider, keyed by name. It survives the settings re-render that follows
+  // the POST, so the card can show "added/removed/current" without a second request.
+  let adminProviderRefreshResults = {};
   let chat = { messages: [], pending: false, streaming: false, suppressed: false, stage: "", errorText: "", resetArmed: false, identity: null, approval: null, startedAt: 0, streamChars: 0 };
   let chatNodes = { log: null, answer: null, status: null, approvalNote: null };
   let chatLiveTimer = null;
@@ -2642,7 +2698,7 @@
 
     const costLimit = Number(limits.daily_cost_limit_usd) || 0;
     body.appendChild(element("p", "meta", t("chatLimitsCostToday", {
-      cost: formatUSD(today.cost_usd),
+      cost: formatPricedUSD(today.cost_usd, today.priced),
       limit: costLimit > 0 ? formatUSD(costLimit) : t("unlimited"),
     })));
     if (today.warning === "chat_cost_budget_warning") {
@@ -2752,6 +2808,21 @@
     return t(source === "db" ? "providerSourceDB" : "providerSourceEnv");
   }
 
+  // providerRefreshText renders the last explicit catalogue check. Counts only: the full model ids are
+  // already visible in the textarea/select above, and the build report is not a place to grow a second list.
+  function providerRefreshText(report) {
+    if (!report) return "";
+    const added = Array.isArray(report.added) ? report.added.length : 0;
+    const removed = Array.isArray(report.removed) ? report.removed.length : 0;
+    const current = Array.isArray(report.current) ? report.current.length : 0;
+    let text = report.applied
+      ? t("providerRefreshDiff", { added, removed, current })
+      : t("providerRefreshSame", { current });
+    const ignored = Number(report.ignored_count) || 0;
+    if (ignored > 0) text += ` ${t("providerRefreshIgnored", { ignored })}`;
+    return text;
+  }
+
   function renderAdminProvidersBody(body) {
     body.replaceChildren();
     if (adminProviders.loading) {
@@ -2826,10 +2897,10 @@
 
       const spentToday = Number(provider.today_cost_usd) || 0;
       const spendText = storedBudget > 0
-        ? `${t("providerBudgetToday", { cost: formatUSD(spentToday) })} · ${t("providerBudgetLine", {
-          budget: formatUSD(storedBudget), remaining: formatUSD(Math.max(0, storedBudget - spentToday)),
+        ? `${t("providerBudgetToday", { cost: formatPricedUSD(spentToday, provider.priced) })} · ${t("providerBudgetLine", {
+          budget: formatUSD(storedBudget), remaining: formatPricedUSD(Math.max(0, storedBudget - spentToday), provider.priced),
         })}`
-        : `${t("providerBudgetToday", { cost: formatUSD(spentToday) })} · ${t("providerBudgetUnlimited")}`;
+        : `${t("providerBudgetToday", { cost: formatPricedUSD(spentToday, provider.priced) })} · ${t("providerBudgetUnlimited")}`;
       card.appendChild(element("p", "meta provider-budget-spend", spendText));
       if (provider.warning) {
         card.appendChild(element("p", "meta provider-budget-warning", t("providerBudgetWarning")));
@@ -2847,9 +2918,15 @@
       const actions = element("div", "settings-row");
       actions.appendChild(settingsButton(t("providerSettingsSave"),
         () => saveAdminProvider(provider, textarea, defaultChoice, toggle, budgetInput)));
+      actions.appendChild(settingsButton(t("providerRefresh"),
+        () => refreshAdminProviderModels(provider.name), true));
       actions.appendChild(settingsButton(t("providerSettingsReset"),
         () => resetAdminProvider(provider.name), true));
       card.appendChild(actions);
+      const refreshResult = adminProviderRefreshResults[provider.name];
+      if (refreshResult) {
+        card.appendChild(element("p", "meta provider-refresh-result", providerRefreshText(refreshResult)));
+      }
       body.appendChild(card);
     }
   }
@@ -2892,9 +2969,32 @@
     return parsed;
   }
 
+  // refreshAdminProviderModels asks the server to fetch the provider's /v1/models and intersect it with the
+  // env allowlist. The server never adds an arbitrary third-party model; the returned diff is kept in
+  // adminProviderRefreshResults so the re-rendered card can show the result after load().
+  async function refreshAdminProviderModels(name) {
+    if (loading || !session) return;
+    setBusy(true);
+    showError("");
+    let report = null;
+    try {
+      report = await api(`/api/admin/providers/${encodeURIComponent(name)}/refresh`, { method: "POST" });
+    } catch (error) {
+      showError(error.message || t("providerRefreshFailed"));
+    } finally {
+      setBusy(false);
+    }
+    if (!report) return;
+    adminProviderRefreshResults[name] = report;
+    adminProviders.items = null;
+    await load();
+    showNotice(t("providerRefreshDone"));
+  }
+
   async function saveAdminProvider(provider, textarea, defaultChoice, toggle, budgetInput) {
     if (loading || !session) return;
     const name = provider.name;
+    delete adminProviderRefreshResults[name];
     const models = providerModelLines(textarea);
     const defaultModel = defaultChoice.value;
     if (!providerModelsValid(models, defaultModel)) {
@@ -2937,6 +3037,7 @@
 
   async function resetAdminProvider(name) {
     if (loading || !session) return;
+    delete adminProviderRefreshResults[name];
     setBusy(true);
     showError("");
     let reset = false;
@@ -2952,6 +3053,26 @@
     adminProviders.items = null;
     await load();
     showNotice(t("providerSettingsResetDone"));
+  }
+
+  // applyTimezoneInput validates the editable IANA field before any request. A value equal to the
+  // deployment default resets the override (the old empty option) so the source returns to "global";
+  // an unchanged effective value does not send a redundant PUT.
+  function applyTimezoneInput(input, data) {
+    const value = String(input.value || "").trim();
+    if (!validTimezone(value)) {
+      input.setAttribute("aria-invalid", "true");
+      showError(t("errorInvalidTimezone"));
+      return;
+    }
+    input.setAttribute("aria-invalid", "false");
+    const target = value === data.timezone.default ? "" : value;
+    const current = data.timezone.source === "chat" ? data.timezone.current : "";
+    if (target === current) {
+      input.value = data.timezone.current;
+      return;
+    }
+    void changeTimezone(target, data);
   }
 
   // changeTimezone applies the choice locally before the request, so the selector repaints immediately;
@@ -3116,26 +3237,47 @@
     const timezoneSourceLabel = timezone.source === "chat" ? t("timezoneSourceChat") : t("timezoneSourceDefault");
     const timezoneSection = settingsSection(t("timezoneTitle"),
       `${t("current")}: ${timezone.current} · ${timezoneSourceLabel} · ${t("globalDefault")}: ${timezone.default}. ${t("timezoneHint")}`);
+    // An editable IANA input, not a closed select: any zone in the bundled tz database is valid. The
+    // datalist offers the common choices plus the current chat value and the deployment default; the
+    // browser may show them as suggestions, but typing a zone outside the list is allowed. The same
+    // validation runs here and on the server (time.LoadLocation + the 64-byte bound).
     const timezoneRow = element("div", "settings-row");
-    const timezoneChoice = element("select", "timezone-select");
-    timezoneChoice.id = "timezone";
-    timezoneChoice.setAttribute("aria-label", t("timezoneAria"));
-    const defaultOption = element("option", "", t("timezoneDefaultOption", { zone: timezone.default }));
-    defaultOption.value = "";
-    defaultOption.selected = timezone.source !== "chat";
-    timezoneChoice.appendChild(defaultOption);
-    const timezoneValues = timezoneChoices.slice();
-    for (const name of [timezone.current, timezone.default]) {
-      if (validTimezone(name) && !timezoneValues.includes(name)) timezoneValues.push(name);
+    const timezoneInput = element("input", "timezone-input");
+    timezoneInput.id = "timezone";
+    timezoneInput.type = "text";
+    timezoneInput.value = timezone.current;
+    timezoneInput.maxLength = 64;
+    timezoneInput.autocomplete = "off";
+    timezoneInput.spellcheck = false;
+    timezoneInput.setAttribute("list", "timezone-options");
+    timezoneInput.setAttribute("autocapitalize", "off");
+    timezoneInput.setAttribute("aria-label", t("timezoneAria"));
+    const timezoneList = element("datalist");
+    timezoneList.id = "timezone-options";
+    const timezoneValues = [];
+    for (const name of [timezone.current, timezone.default, ...timezoneChoices]) {
+      const trimmed = String(name || "").trim();
+      if (validTimezone(trimmed) && !timezoneValues.includes(trimmed)) timezoneValues.push(trimmed);
     }
     for (const name of timezoneValues) {
-      const option = element("option", "", name);
+      const option = element("option");
       option.value = name;
-      option.selected = timezone.source === "chat" && name === timezone.current;
-      timezoneChoice.appendChild(option);
+      timezoneList.appendChild(option);
     }
-    timezoneChoice.addEventListener("change", () => { void changeTimezone(timezoneChoice.value, data); });
-    timezoneRow.appendChild(timezoneChoice);
+    timezoneRow.appendChild(timezoneInput);
+    timezoneRow.appendChild(timezoneList);
+    timezoneInput.addEventListener("change", () => { applyTimezoneInput(timezoneInput, data); });
+    timezoneInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      applyTimezoneInput(timezoneInput, data);
+    });
+    // The old select had an empty "default" option. An input cannot express that, so reset became its
+    // own secondary button and keeps the reset-on-empty API contract: PUT {"timezone":""}.
+    const timezoneReset = settingsButton(t("timezoneDefaultOption", { zone: timezone.default }),
+      () => { void changeTimezone("", data); }, true);
+    timezoneReset.classList.add("timezone-reset");
+    timezoneRow.appendChild(timezoneReset);
     timezoneSection.appendChild(timezoneRow);
     ui.content.appendChild(timezoneSection);
 
@@ -3273,6 +3415,12 @@
   // to a visible cent only when it really is one. Number(value) || 0 keeps a pre-cost payload at $0.00.
   function formatUSD(value, digits = 2) {
     return `$${(Number(value) || 0).toFixed(digits)}`;
+  }
+
+  // A cost-bearing payload from before the `priced` flag has no boolean; it keeps the old $0.00 rendering.
+  // An explicit false means "no MODEL_PRICES row configured" and is shown as an em dash, matching Telegram.
+  function formatPricedUSD(value, priced = true, digits = 2) {
+    return priced === false ? "—" : formatUSD(value, digits);
   }
 
   function usageBucketLabel(start, range) {
@@ -3455,7 +3603,7 @@
       const row = element("div", "usage-row");
       row.appendChild(element("div", "content", model.model || t("modelUnspecified")));
       let meta = `${model.calls} ${t("modelCalls")} · ${model.tokens_in} ${t("tokensIn")} · ${model.tokens_out} ${t("tokensOut")}`;
-      if (model.cost_usd !== undefined && model.cost_usd !== null) meta += ` · ${t("usageCost")}: ${formatUSD(model.cost_usd)}`;
+      if (model.cost_usd !== undefined && model.cost_usd !== null) meta += ` · ${t("usageCost")}: ${formatPricedUSD(model.cost_usd, model.priced)}`;
       row.appendChild(element("div", "meta", meta));
       section.appendChild(row);
     }
@@ -3482,6 +3630,9 @@
     const range = usageRangeValues.includes(data.range) ? data.range : usageRange;
     if (usageRangeValues.includes(data.range)) usageRange = data.range;
     const sumSeries = (key) => series.reduce((sum, bucket) => sum + (Number(bucket[key]) || 0), 0);
+    // Explicit false on either the daily total or the range total means no price row is configured;
+    // an older payload omits the field and keeps the previous $0.00 rendering.
+    const costPriced = data.priced !== false && totals.priced !== false;
 
     const usageDay = data.date ? formatDateValue(`${data.date}T00:00:00Z`, true) : "—";
     ui.content.appendChild(element("p", "meta", `${t("usageDate")}: ${usageDay}`));
@@ -3496,7 +3647,7 @@
       [t("modelCalls"), Number(totals.model_calls) || sumSeries("model_calls")],
       [t("tokensIn"), Number(totals.tokens_in) || sumSeries("tokens_in")],
       [t("tokensOut"), Number(totals.tokens_out) || sumSeries("tokens_out")],
-      [t("usageCost"), formatUSD(Number(totals.cost_usd) || sumSeries("cost_usd"))],
+      [t("usageCost"), formatPricedUSD(Number(totals.cost_usd) || sumSeries("cost_usd"), costPriced)],
       [t("usageToolsChart"), Number(totals.tool_calls) || sumSeries("tools_total")],
     ];
     for (const [label, value] of totalsValues) {
@@ -3518,7 +3669,11 @@
       ui.content.appendChild(tokens);
 
       const cost = settingsSection(t("usageCostChart"), t("usageCostChartHint"));
-      cost.appendChild(usageCostChart(series, range));
+      if (costPriced) {
+        cost.appendChild(usageCostChart(series, range));
+      } else {
+        cost.appendChild(element("p", "meta usage-cost-unavailable", t("usageCostUnavailable")));
+      }
       ui.content.appendChild(cost);
     }
 
@@ -3537,10 +3692,10 @@
             ? Math.max(0, budgetUSD - costUSD)
             : Number(item.remaining_usd) || 0;
           text = `${t("usageProviderCostLine", {
-            provider: item.provider, cost: formatUSD(costUSD), budget: formatUSD(budgetUSD),
-          })} · ${t("usageProviderCostRemaining", { remaining: formatUSD(remaining) })}`;
+            provider: item.provider, cost: formatPricedUSD(costUSD, item.priced), budget: formatUSD(budgetUSD),
+          })} · ${t("usageProviderCostRemaining", { remaining: formatPricedUSD(remaining, item.priced) })}`;
         } else {
-          text = t("usageProviderCostUnlimited", { provider: item.provider, cost: formatUSD(costUSD) });
+          text = t("usageProviderCostUnlimited", { provider: item.provider, cost: formatPricedUSD(costUSD, item.priced) });
         }
         const row = element("p", "meta usage-provider-cost", text);
         if (item.warning) {

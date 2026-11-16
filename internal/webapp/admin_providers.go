@@ -34,6 +34,15 @@ import (
 
 const adminProvidersPath = "/api/admin/providers"
 
+// adminProviderRefreshTimeout bounds one explicit catalogue fetch. It is intentionally shorter than a chat
+// request: an administrator is waiting for a card result, and a stuck third-party /v1/models must not hold
+// the Mini App request open for the provider's full model timeout.
+const adminProviderRefreshTimeout = 8 * time.Second
+
+// adminProviderRefreshLimit caps how many "not allowed by env" ids one response names. The count still
+// reports the full number, so a provider with a huge catalogue cannot turn the card into a giant payload.
+const adminProviderRefreshLimit = 50
+
 // adminProviderNamePattern is the same key rule MODEL_PROVIDERS uses. A name outside it is a bad request,
 // not an unknown provider: no valid configuration could ever have created it.
 var adminProviderNamePattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
@@ -52,7 +61,9 @@ type adminProviderEntry struct {
 	Configured     []string `json:"configured_models,omitempty"`
 	DailyBudgetUSD float64  `json:"daily_budget_usd"`
 	TodayCostUSD   float64  `json:"today_cost_usd"`
-	Warning        bool     `json:"warning"`
+	// Priced is the deployment-level MODEL_PRICES flag; without it today_cost_usd is unknown, not zero.
+	Priced  bool `json:"priced"`
+	Warning bool `json:"warning"`
 }
 
 // adminProviderName extracts {name} from /api/admin/providers/{name}. Exactly one non-empty path segment is
@@ -94,7 +105,9 @@ func (a *App) envProviderConfig(name string) (configProvider, bool) {
 		if provider.Name == name {
 			return configProvider{
 				name: provider.Name, baseURL: provider.BaseURL,
-				models: append([]string{}, provider.Models...),
+				models: append([]string{}, provider.Models...), defaultModel: provider.DefaultModel,
+				apiKey: provider.APIKey, modelsURL: provider.ModelsURL,
+				timeoutSeconds: provider.TimeoutSeconds,
 			}, true
 		}
 	}
@@ -102,11 +115,16 @@ func (a *App) envProviderConfig(name string) (configProvider, bool) {
 }
 
 // configProvider is the subset of config.ProviderConfig this file needs; the name keeps the import of the
-// config package out of the response code.
+// config package out of the response code. apiKey/modelsURL/timeout stay server-side: they are used only by
+// the explicit /refresh fetch and never appear in a JSON field.
 type configProvider struct {
-	name    string
-	baseURL string
-	models  []string
+	name           string
+	baseURL        string
+	models         []string
+	defaultModel   string
+	apiKey         string
+	modelsURL      string
+	timeoutSeconds int64
 }
 
 // envCatalog is the fallback catalogue used when the model client is not a router (no usable named provider,
@@ -213,6 +231,7 @@ func (a *App) providerSpend(ctx context.Context, now time.Time, items []adminPro
 		var cost = costs[items[index].Name]
 		items[index].DailyBudgetUSD = store.ProviderBudgetUSD(budget)
 		items[index].TodayCostUSD = float64(cost) / 1_000_000
+		items[index].Priced = a.cfg.ModelPrices.HasPrices()
 		if budget > 0 {
 			var warningAt = (budget*store.ProviderDailyCostWarningPercent + 99) / 100
 			items[index].Warning = cost >= warningAt
@@ -251,6 +270,241 @@ func (a *App) adminProviders(w http.ResponseWriter, req *http.Request, current s
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// adminProviderRefreshName extracts {name} from /api/admin/providers/{name}/refresh. The suffix is part of
+// the route, not a provider name, so it is parsed before adminProvider sees the path (which would otherwise
+// treat it as a nested invalid name).
+func adminProviderRefreshName(path string) (string, bool) {
+	const prefix = adminProvidersPath + "/"
+	if !strings.HasPrefix(path, prefix) {
+		return "", false
+	}
+	raw := strings.TrimPrefix(path, prefix)
+	name, action, found := strings.Cut(raw, "/")
+	if !found || name == "" || action != "refresh" || strings.Contains(name, "/") {
+		return "", false
+	}
+	return name, true
+}
+
+// adminProviderRefreshResult is the response of POST /api/admin/providers/{name}/refresh. current is the
+// resulting effective list (the provider's /v1/models intersected with the env allowlist); added/removed are
+// the differences from the list that was effective before the call. ignored names ids the provider serves
+// that MODEL_PROVIDERS does not allow: they are reported but can never reach the router.
+type adminProviderRefreshResult struct {
+	Provider     adminProviderEntry `json:"provider"`
+	Added        []string           `json:"added"`
+	Removed      []string           `json:"removed"`
+	Current      []string           `json:"current"`
+	Ignored      []string           `json:"ignored"`
+	IgnoredCount int                `json:"ignored_count"`
+	Fetched      int                `json:"fetched"`
+	Applied      bool               `json:"applied"`
+}
+
+// adminProviderRefresh — POST /api/admin/providers/{name}/refresh. It fetches the provider's OpenAI-compatible
+// /v1/models and intersects the answer with the models MODEL_PROVIDERS allows for this provider. A model that
+// is only in the provider's answer is reported under ignored and is never added: the env row remains the
+// allowlist. The intersection is persisted/applied only when it actually differs, and the response is the
+// same provider card the PUT path returns plus the diff.
+func (a *App) adminProviderRefresh(w http.ResponseWriter, req *http.Request, current scope, name string) {
+	if !a.cfg.IsAdmin(current.UserID) {
+		writeError(w, http.StatusForbidden, "admin_required", "Administrator access is required.")
+		return
+	}
+	if req.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_query", "Provider refresh does not accept query parameters.")
+		return
+	}
+	if req.Method != http.MethodPost {
+		methodAllowed(w, http.MethodPost)
+		return
+	}
+	if status, ok := emptySettingsBody(req); !ok {
+		settingsDecodeError(w, status)
+		return
+	}
+	if name == model.DefaultProviderName {
+		writeError(w, http.StatusBadRequest, "invalid_provider", "The default endpoint strata is not an editable provider.")
+		return
+	}
+	if !adminProviderNamePattern.MatchString(name) {
+		writeError(w, http.StatusBadRequest, "invalid_provider", "The provider name must match [a-z0-9_-]+.")
+		return
+	}
+	if !a.providerKnown(name) {
+		writeError(w, http.StatusNotFound, "unknown_provider", "The provider is not configured.")
+		return
+	}
+	env, found := a.envProviderConfig(name)
+	if !found {
+		writeError(w, http.StatusNotFound, "unknown_provider", "The provider is not configured in MODEL_PROVIDERS.")
+		return
+	}
+	if env.modelsURL == "" {
+		writeError(w, http.StatusBadGateway, "provider_unavailable", "The provider model list URL is not configured.")
+		return
+	}
+	var currentEntry model.ProviderCatalogEntry
+	for _, candidate := range a.providerCatalog() {
+		if candidate.Provider == name {
+			currentEntry = candidate
+			break
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(req.Context(), adminProviderRefreshTimeout)
+	defer cancel()
+	fetched, err := model.FetchModelIDs(ctx, env.modelsURL, env.apiKey, adminProviderRefreshTimeout, nil)
+	if err != nil {
+		a.logger.Warn("the admin provider catalogue refresh failed", "provider", name, "error", err)
+		writeError(w, http.StatusBadGateway, "provider_unavailable", "The provider /v1/models endpoint could not be read.")
+		return
+	}
+
+	var allowed = make(map[string]bool, len(env.models))
+	var order []string
+	for _, item := range env.models {
+		var trimmed = strings.TrimSpace(item)
+		if trimmed == "" || allowed[trimmed] {
+			continue
+		}
+		allowed[trimmed] = true
+		order = append(order, trimmed)
+	}
+	var seen = make(map[string]bool, len(fetched))
+	var offered, ignored []string
+	var ignoredCount int
+	for _, item := range fetched {
+		var trimmed = strings.TrimSpace(item)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		if !allowed[trimmed] {
+			ignoredCount++
+			if len(ignored) < adminProviderRefreshLimit {
+				ignored = append(ignored, trimmed)
+			}
+			continue
+		}
+		offered = append(offered, trimmed)
+	}
+	// The env order is the catalogue order, so the list a refresh writes is stable across two identical
+	// provider answers rather than following whatever order the endpoint happened to return.
+	var ordered []string
+	for _, item := range order {
+		if seen[item] {
+			ordered = append(ordered, item)
+		}
+	}
+	offered = ordered
+	if len(offered) == 0 {
+		writeError(w, http.StatusBadGateway, "provider_unavailable",
+			"The provider returned no model id that MODEL_PROVIDERS allows; the catalogue was not changed.")
+		return
+	}
+
+	var added, removed []string
+	for _, item := range offered {
+		if !containsString(currentEntry.Models, item) {
+			added = append(added, item)
+		}
+	}
+	for _, item := range currentEntry.Models {
+		if !containsString(offered, item) {
+			removed = append(removed, item)
+		}
+	}
+	var defaultModel = currentEntry.DefaultModel
+	if !containsString(offered, defaultModel) {
+		if env.defaultModel != "" && containsString(offered, env.defaultModel) {
+			defaultModel = env.defaultModel
+		} else {
+			defaultModel = offered[0]
+		}
+	}
+	var changed = len(added) > 0 || len(removed) > 0 || defaultModel != currentEntry.DefaultModel
+	var result = adminProviderRefreshResult{
+		Added: append([]string{}, added...), Removed: append([]string{}, removed...),
+		Current: append([]string{}, offered...), Ignored: append([]string{}, ignored...),
+		IgnoredCount: ignoredCount, Fetched: len(seen), Applied: changed,
+	}
+	if changed {
+		var budgetMicros int64
+		if existing, found, readErr := store.GetProviderSettings(ctx, a.db, name); readErr != nil {
+			a.queryFailed(w, "admin provider refresh budget", readErr)
+			return
+		} else if found {
+			budgetMicros = existing.DailyBudgetMicros
+		}
+		settings, validateErr := store.ValidateProviderSettings(store.ProviderSettings{
+			Provider: name, Models: offered, DefaultModel: defaultModel, Enabled: currentEntry.Enabled,
+			DailyBudgetMicros: budgetMicros,
+		}, a.providerNames())
+		if validateErr != nil {
+			writeError(w, http.StatusBadRequest, "provider_validation", "The refreshed provider model list is invalid.")
+			return
+		}
+		if err := store.UpsertProviderSettings(ctx, a.db, settings); err != nil {
+			if errors.Is(err, store.ErrInvalidProviderSettings) {
+				writeError(w, http.StatusBadRequest, "provider_validation", "The refreshed provider model list is invalid.")
+				return
+			}
+			a.queryFailed(w, "admin provider refresh", err)
+			return
+		}
+		// Persist first, then apply, exactly like PUT: a crash between the writes is repaired by startup.
+		if overrides := a.providerOverrides(); overrides != nil {
+			if err := overrides.SetProviderModels(name, settings.Models, settings.DefaultModel, settings.Enabled); err != nil {
+				a.logger.Warn("the refreshed provider row was stored but not applied", "provider", name, "error", err)
+			}
+		}
+		a.invalidateModelCache()
+		currentEntry = model.ProviderCatalogEntry{
+			Provider: name, Models: settings.Models, DefaultModel: settings.DefaultModel,
+			Enabled: settings.Enabled, Source: model.ProviderSourceDB,
+		}
+	} else {
+		currentEntry.Models = offered
+		currentEntry.DefaultModel = defaultModel
+	}
+	a.auditProviderRefresh(ctx, current, name, len(added), len(removed), len(offered), ignoredCount)
+	item, err := a.providerEntryWithSpend(ctx, currentEntry)
+	if err != nil {
+		a.queryFailed(w, "admin provider refresh", err)
+		return
+	}
+	result.Provider = item
+	writeJSON(w, http.StatusOK, result)
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) providerNames() []string {
+	var names []string
+	for _, entry := range a.providerCatalog() {
+		names = append(names, entry.Provider)
+	}
+	return names
+}
+
+// auditProviderRefresh records the diff counts, never the endpoint answer. It is a dedicated operation so a
+// catalogue sync is distinguishable from a hand edit in the audit trail.
+func (a *App) auditProviderRefresh(ctx context.Context, current scope, name string, added, removed, currentCount, ignored int) {
+	var detail = fmt.Sprintf("operation=admin.provider.refresh chat_id=%d provider=%s added=%d removed=%d current=%d ignored=%d",
+		current.ChatID, name, added, removed, currentCount, ignored)
+	if err := store.LogEvent(ctx, a.db, current.UserID, "miniapp_mutation", detail); err != nil {
+		a.logger.Error("Mini App provider refresh audit failed", "provider", name, "error", err)
+	}
 }
 
 // adminProvider — PUT/DELETE /api/admin/providers/{name}.

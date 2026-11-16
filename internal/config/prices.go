@@ -128,6 +128,16 @@ func (t PriceTable) CostMicros(model string, tokensIn, tokensOut int64) int64 {
 	return int64(math.Round(micros))
 }
 
+// Priced reports whether this model id has a configured price row with a positive rate. It is deliberately
+// separate from CostMicros returning zero: "no price configured" is unknown, while a positive price applied
+// to zero tokens is a genuine $0.00. A row of explicit zeroes is treated like an absent one, exactly as
+// PriceTable.HasPrices does for the Telegram footer. The API exposes it as "priced" so the Mini App can
+// render — instead of inventing a dollar amount.
+func (t PriceTable) Priced(model string) bool {
+	price, ok := t.Lookup(model)
+	return ok && (price.InputPerMTokUSD > 0 || price.OutputPerMTokUSD > 0)
+}
+
 // CostUSD is CostMicros in dollars with the six decimals of the usage API.
 func (t PriceTable) CostUSD(model string, tokensIn, tokensOut int64) float64 {
 	return float64(t.CostMicros(model, tokensIn, tokensOut)) / priceMicrosPerUSD

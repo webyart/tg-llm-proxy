@@ -89,6 +89,21 @@ func TestPriceTableScopeAndCostMath(t *testing.T) {
 	if (PriceTable{{Model: "zero"}}).HasPrices() {
 		t.Fatal("an all-zero table reported prices")
 	}
+	// priced distinguishes a positive row from a missing/zero one even though both cost the same.
+	for name, test := range map[string]struct {
+		prices PriceTable
+		model  string
+		want   bool
+	}{
+		"positive": {plain, "m", true},
+		"missing":  {plain, "unpriced", false},
+		"zero row": {PriceTable{{Model: "zero"}}, "zero", false},
+		"empty":    {PriceTable{}, "m", false},
+	} {
+		if got := test.prices.Priced(test.model); got != test.want {
+			t.Errorf("%s: Priced(%q)=%v, want %v", name, test.model, got, test.want)
+		}
+	}
 }
 
 func TestLoadFromModelPricesEmptyMeansNoPrices(t *testing.T) {

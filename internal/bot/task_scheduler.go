@@ -107,10 +107,9 @@ func (d *Dispatcher) currentTaskTools() map[string]bool {
 	}
 }
 
-// TaskModelCallsPerStep is the worst case of one research step for the budget formula: every tool round plus
-// the final answer. The step deadline is the hard ceiling, so a fully slow step that spends the whole model
-// timeout on each call needs a deadline of at least this many calls. It is exported for the startup warning.
-const TaskModelCallsPerStep = toolRoundLimit + 1
+// The worst case of one research step for the budget formula — every tool round plus the final answer — is
+// config.TaskModelCallsPerStep. It must stay toolRoundLimit+1: TestWorstCaseModelCallsMatchesTheConfig checks
+// that this loop and the documented budget formula still agree.
 
 func (d *Dispatcher) taskStepDeadline() time.Duration {
 	seconds := d.deps.Cfg.TaskStepDeadlineSeconds
@@ -121,7 +120,7 @@ func (d *Dispatcher) taskStepDeadline() time.Duration {
 }
 
 func (d *Dispatcher) taskLease() time.Duration {
-	return d.taskStepDeadline() + 30*time.Second
+	return d.taskStepDeadline() + time.Duration(config.TaskLeaseMarginSeconds)*time.Second
 }
 
 func (d *Dispatcher) taskStepTimeout(ctx context.Context) (context.Context, context.CancelFunc) {

@@ -44,7 +44,7 @@ const (
 	sessionReadBudget = 5 * time.Second
 )
 
-//go:embed static/index.html static/app.js static/style.css
+//go:embed static/index.html static/app.js static/theme.js static/style.css
 var staticFiles embed.FS
 
 type rateLimitBucket struct {
@@ -642,6 +642,10 @@ func (a *App) routeAPI(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if strings.HasPrefix(req.URL.Path, adminProvidersPath+"/") {
+		if name, ok := adminProviderRefreshName(req.URL.Path); ok {
+			a.adminProviderRefresh(w, req, current, name)
+			return
+		}
 		a.adminProvider(w, req, current)
 		return
 	}
@@ -944,6 +948,7 @@ func indexWithPrefix(content []byte, prefix string) []byte {
 	page = strings.Replace(page, "<title>", `<meta name="miniapp-base" content="`+prefix+`">`+"\n  <title>", 1)
 	page = strings.Replace(page, `href="/style.css"`, `href="`+prefix+`/style.css"`, 1)
 	page = strings.Replace(page, `src="/app.js"`, `src="`+prefix+`/app.js"`, 1)
+	page = strings.Replace(page, `src="/theme.js"`, `src="`+prefix+`/theme.js"`, 1)
 	return []byte(page)
 }
 
@@ -955,6 +960,8 @@ func (a *App) serveStatic(w http.ResponseWriter, req *http.Request) {
 		name, contentType = "static/index.html", "text/html; charset=utf-8"
 	case "/app.js":
 		name, contentType = "static/app.js", "text/javascript; charset=utf-8"
+	case "/theme.js":
+		name, contentType = "static/theme.js", "text/javascript; charset=utf-8"
 	case "/style.css":
 		name, contentType = "static/style.css", "text/css; charset=utf-8"
 	default:

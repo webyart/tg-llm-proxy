@@ -513,3 +513,27 @@ func TestLoadFromTaskBudgetsRequireRoomForTheSingleRetry(t *testing.T) {
 		t.Fatalf("a step budget of twice the model timeout was rejected: %v", problems)
 	}
 }
+
+// TestDefaultTaskStepDeadlineCoversTheWorstCase is the explicit validation of the shipped default: a fully slow
+// research step makes TaskModelCallsPerStep model calls, and the default step budget must hold all of them (plus
+// the tool work between them) without the startup warning. A future edit that lowers the default or raises the
+// per-call default fails here instead of shipping a configuration that warns about itself on every start.
+func TestDefaultTaskStepDeadlineCoversTheWorstCase(t *testing.T) {
+	if DefaultTaskModelTimeoutSeconds != int64(240) {
+		t.Fatalf("the per-call default changed to %d s: re-derive the step default and the warning", DefaultTaskModelTimeoutSeconds)
+	}
+	if !TaskStepDeadlineCoversWorstCase(DefaultTaskStepDeadlineSeconds, DefaultTaskModelTimeoutSeconds) {
+		t.Fatalf("default step deadline %d s cannot cover %d calls × %d s", DefaultTaskStepDeadlineSeconds,
+			TaskModelCallsPerStep, DefaultTaskModelTimeoutSeconds)
+	}
+	if got, want := DefaultTaskStepDeadlineSeconds, int64(1500); got != want {
+		t.Fatalf("default step deadline = %d s, want %d s (worst case 5×240=1200 with headroom)", got, want)
+	}
+	// 600 s was the old default and cannot cover 5×240=1200 s: it must keep tripping the advisory formula.
+	if TaskStepDeadlineCoversWorstCase(600, DefaultTaskModelTimeoutSeconds) {
+		t.Fatal("600 s was reported as covering the worst case of the default per-call budget")
+	}
+	if TaskStepDeadlineCoversWorstCase(5*300, 300) != true || TaskStepDeadlineCoversWorstCase(5*300-1, 300) != false {
+		t.Fatal("TaskStepDeadlineCoversWorstCase boundary is not TaskModelCallsPerStep × the per-call budget")
+	}
+}

@@ -4,19 +4,23 @@
 Create the local Docker secret files used by docker-compose.yml from .env.
 
 .DESCRIPTION
-docker-compose.yml mounts two secrets into the bot and passes only their paths
-(TELEGRAM_BOT_TOKEN_FILE / STRATA_API_KEY_FILE). The values themselves must live in local files:
+docker-compose.yml mounts four secrets into the bot and passes only their paths
+(TELEGRAM_BOT_TOKEN_FILE / STRATA_API_KEY_FILE / MODEL_PROVIDERS api_key_file). The values themselves must
+live in local files:
 
     secrets/telegram_bot_token  <- TELEGRAM_BOT_TOKEN from .env
     secrets/strata_api_key      <- STRATA_API_KEY from .env
+    secrets/kimi_api_key        <- MODEL_PROVIDERS api_key of provider "kimi"
+    secrets/deepseek_api_key    <- MODEL_PROVIDERS api_key of provider "deepseek"
 
 The script is idempotent: a non-empty existing secret file is kept, never overwritten. New files are
 written without a BOM and receive restrictive permissions (Windows ACL: current user + SYSTEM +
 Administrators; elsewhere chmod 600). Values are never printed.
 
 The secrets/ directory is gitignored and dockerignored. Rotate a secret by replacing its file (or
-deleting it and running this script again), then recreating the bot: the loader reads the file once at
-startup and there is no hot reload.
+deleting it and running this script again), then recreating the bot: the loader reads the files once at
+startup and there is no hot reload. The provider keys are separate files, so rotating one provider does
+not touch the Telegram/STRATA secrets or the other provider.
 
 .EXAMPLE
     .\scripts\setup_docker_secrets.ps1
@@ -35,6 +39,12 @@ $envPath = Join-Path $repoRoot '.env'
 $rows = [ordered]@{
     'telegram_bot_token' = 'TELEGRAM_BOT_TOKEN'
     'strata_api_key'     = 'STRATA_API_KEY'
+}
+
+# file name -> provider name inside the MODEL_PROVIDERS JSON
+$providerRows = [ordered]@{
+    'kimi_api_key'     = 'kimi'
+    'deepseek_api_key' = 'deepseek'
 }
 
 function Read-EnvValue {
@@ -56,6 +66,40 @@ function Read-EnvValue {
         }
     }
     return $value.Trim()
+}
+
+# The key of one named provider. The .env catalogue stays the source of truth for local runs; this script
+# copies only the key into secrets/, never the base_url or model list. An api_key_file already present in
+# MODEL_PROVIDERS is accepted as a source too, so a half-migrated .env still bootstraps.
+function Read-ProviderKey {
+    param([string]$Provider)
+
+    $raw = Read-EnvValue -Name 'MODEL_PROVIDERS'
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        throw "MODEL_PROVIDERS is empty or absent in .env: the container catalogue needs a key for provider $Provider"
+    }
+    try {
+        $providers = @($raw | ConvertFrom-Json -ErrorAction Stop)
+    }
+    catch {
+        throw "MODEL_PROVIDERS is not valid JSON: $($_.Exception.Message)"
+    }
+    foreach ($entry in $providers) {
+        if ([string]$entry.name -eq $Provider) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$entry.api_key)) {
+                return ([string]$entry.api_key).Trim()
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$entry.api_key_file)) {
+                $path = [string]$entry.api_key_file
+                if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                    throw "MODEL_PROVIDERS api_key_file of provider $Provider does not exist: $path"
+                }
+                return ([System.IO.File]::ReadAllText($path)).Trim()
+            }
+            return ''
+        }
+    }
+    return ''
 }
 
 function Set-RestrictedPermissions {
@@ -98,6 +142,26 @@ try {
             }
             [System.IO.File]::WriteAllText($target, $value, [System.Text.UTF8Encoding]::new($false))
             Write-Output "setup_docker_secrets: created secrets/$file from .env ($row)"
+        }
+        Set-RestrictedPermissions -Path $target
+    }
+
+    foreach ($file in $providerRows.Keys) {
+        $provider = $providerRows[$file]
+        $target = Join-Path $secretsDir $file
+        $exists = (Test-Path -LiteralPath $target) -and ((Get-Item -LiteralPath $target).Length -gt 0)
+
+        if ($exists) {
+            Write-Output "setup_docker_secrets: keeping existing secrets/$file"
+        }
+        else {
+            $value = Read-ProviderKey -Provider $provider
+            if ([string]::IsNullOrWhiteSpace($value)) {
+                throw "MODEL_PROVIDERS has no api_key for provider ${provider}: add it to .env (or place the key in secrets/$file) before creating Docker secrets; to run without it, remove that provider from docker-compose.yml's MODEL_PROVIDERS and secrets"
+            }
+            [System.IO.File]::WriteAllText($target, $value, [System.Text.UTF8Encoding]::new($false))
+            $bytes = [System.Text.Encoding]::UTF8.GetByteCount($value)
+            Write-Output "setup_docker_secrets: created secrets/$file from MODEL_PROVIDERS ($provider, $bytes bytes)"
         }
         Set-RestrictedPermissions -Path $target
     }

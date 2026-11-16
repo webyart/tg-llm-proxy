@@ -4,9 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
-  <meta name="theme-color" content="#f4f7fb" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#101218" media="(prefers-color-scheme: dark)">
+  <!-- Static no-JS fallback: sand surface for a light system and graphite surface for a dark one. The
+       synchronous /theme.js below rewrites both to the stored theme's --surface before the first paint;
+       it is an external self-hosted script because the CSP has no 'unsafe-inline'. Without JS (or with
+       self-scripts blocked) the media query picks one of these and a stored non-default theme can flash
+       once — the documented limitation of doing this without an inline bootstrap. -->
+  <meta name="theme-color" content="#faf4ea" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1a1d25" media="(prefers-color-scheme: dark)">
   <title>Бот — компаньон</title>
+  <script src="/theme.js"></script>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>

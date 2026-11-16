@@ -236,6 +236,9 @@ func TestTaskListShowsSanitizedFailureAndExpiry(t *testing.T) {
 	if item.ID != created.ID || item.Status != store.TaskStatusFailed || item.ExpiresAt == "" {
 		t.Fatalf("task item=%+v", item)
 	}
+	if item.Priced {
+		t.Fatalf("task priced=true without MODEL_PRICES: %+v", item)
+	}
 	if !item.ErrorTruncated || len([]rune(item.Error)) != maxTaskErrorRunes+1 {
 		t.Fatalf("error was not bounded: runes=%d truncated=%v", len([]rune(item.Error)), item.ErrorTruncated)
 	}

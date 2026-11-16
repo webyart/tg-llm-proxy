@@ -1301,15 +1301,18 @@ type taskItem struct {
 	// Usage is the same footer the Telegram status message and the final answer carry: step tokens, their
 	// MODEL_PRICES cost, the live elapsed time and the remaining-step estimate. Results are parsed
 	// server-side, so the Mini App never receives step contents, plans, or other task internals.
-	TokensIn       int64   `json:"tokens_in"`
-	TokensOut      int64   `json:"tokens_out"`
-	CostUSD        float64 `json:"cost_usd"`
-	ElapsedSeconds int64   `json:"elapsed_seconds"`
-	ETASeconds     *int64  `json:"eta_seconds"`
-	StepsCompleted int     `json:"steps_completed"`
-	StepsTotal     int     `json:"steps_total"`
-	Error          string  `json:"error,omitempty"`
-	ErrorTruncated bool    `json:"error_truncated,omitempty"`
+	TokensIn  int64   `json:"tokens_in"`
+	TokensOut int64   `json:"tokens_out"`
+	CostUSD   float64 `json:"cost_usd"`
+	// Priced is the deployment-level MODEL_PRICES flag of the Telegram task footer: false means no price
+	// is configured, so the UI shows — instead of a $0.00 that would claim a measured zero.
+	Priced         bool   `json:"priced"`
+	ElapsedSeconds int64  `json:"elapsed_seconds"`
+	ETASeconds     *int64 `json:"eta_seconds"`
+	StepsCompleted int    `json:"steps_completed"`
+	StepsTotal     int    `json:"steps_total"`
+	Error          string `json:"error,omitempty"`
+	ErrorTruncated bool   `json:"error_truncated,omitempty"`
 }
 
 // boundedTaskElapsedSeconds reports now-created in whole seconds, never negative and never above the cap.
@@ -1479,6 +1482,7 @@ func (a *App) tasks(w http.ResponseWriter, req *http.Request, current scope) {
 		}
 		var results []store.TaskStepResult
 		item.TokensIn, item.TokensOut, item.CostUSD, results = a.taskUsageTotals(taskModel, resultsJSON)
+		item.Priced = a.cfg.ModelPrices.HasPrices()
 		item.StepsCompleted = len(results)
 		item.StepsTotal = taskPlanStepCount(planJSON)
 		item.ETASeconds = taskRemainingSeconds(results, item.NextStep, item.StepsTotal)
@@ -1959,6 +1963,9 @@ type usageModel struct {
 	TokensIn  int64   `json:"tokens_in"`
 	TokensOut int64   `json:"tokens_out"`
 	CostUSD   float64 `json:"cost_usd"`
+	// Priced reports a configured MODEL_PRICES row for this model id. It is independent of CostUSD:
+	// a configured zero price is a genuine $0.00, a missing row is unknown (the UI shows —).
+	Priced bool `json:"priced"`
 }
 
 type usageResponse struct {
@@ -1976,13 +1983,18 @@ type usageResponse struct {
 		Model        usageLimit `json:"model"`
 		NetworkTools usageLimit `json:"network_tools"`
 	} `json:"limits"`
+	// Priced is the deployment-level cost flag of the daily total. A client that wants the exact
+	// per-model answer reads models[].priced.
+	Priced    bool                `json:"priced"`
 	Range     string              `json:"range"`
 	Truncated bool                `json:"truncated"`
 	Series    []usageSeriesBucket `json:"series"`
 	Totals    usageRangeTotals    `json:"totals"`
 	// ProviderCosts is today's spend of every configured provider with its daily budget. It is a separate
 	// block rather than part of totals: a budget covers all chats, while the totals describe this user.
-	ProviderCosts []usageProviderCost `json:"provider_costs"`
+	// Provider budgets are deployment-wide administrator data, so the field is present only for an admin;
+	// a non-admin response omits it entirely while every other usage field stays byte-for-byte the same.
+	ProviderCosts []usageProviderCost `json:"provider_costs,omitempty"`
 }
 
 type usageSeriesBucket struct {
@@ -1993,6 +2005,7 @@ type usageSeriesBucket struct {
 	Tools      map[string]int64 `json:"tools"`
 	ToolsTotal int64            `json:"tools_total"`
 	CostUSD    float64          `json:"cost_usd"`
+	Priced     bool             `json:"priced"`
 }
 
 type usageRangeTotals struct {
@@ -2001,6 +2014,7 @@ type usageRangeTotals struct {
 	TokensOut  int64            `json:"tokens_out"`
 	ToolCalls  int64            `json:"tool_calls"`
 	CostUSD    float64          `json:"cost_usd"`
+	Priced     bool             `json:"priced"`
 	Models     []usageModel     `json:"models"`
 	Tools      map[string]int64 `json:"tools"`
 }
@@ -2055,11 +2069,12 @@ func (a *App) usage(w http.ResponseWriter, req *http.Request, current scope) {
 	series.ApplyPrices(a.cfg.ModelPrices)
 	var response usageResponse
 	response.Date = now.Format("2006-01-02")
+	response.Priced = daily.Priced
 	response.Models = make([]usageModel, 0, len(daily.Models))
 	for _, model := range daily.Models {
 		response.Models = append(response.Models, usageModel{
 			Model: model.Model, Calls: model.Calls, TokensIn: model.TokensIn, TokensOut: model.TokensOut,
-			CostUSD: model.CostUSD,
+			CostUSD: model.CostUSD, Priced: model.Priced,
 		})
 	}
 	response.Tools.ReadURL = daily.Tools.ReadURL
@@ -2086,6 +2101,7 @@ func (a *App) usage(w http.ResponseWriter, req *http.Request, current scope) {
 			Tools:      tools,
 			ToolsTotal: bucket.ToolsTotal,
 			CostUSD:    bucket.CostUSD,
+			Priced:     bucket.Priced,
 		})
 	}
 	response.Totals.ModelCalls = series.ModelCalls
@@ -2093,21 +2109,28 @@ func (a *App) usage(w http.ResponseWriter, req *http.Request, current scope) {
 	response.Totals.TokensOut = series.TokensOut
 	response.Totals.ToolCalls = series.ToolsTotal
 	response.Totals.CostUSD = series.CostUSD
+	response.Totals.Priced = series.Priced
 	response.Totals.Models = make([]usageModel, 0, len(series.Models))
 	for _, model := range series.Models {
 		response.Totals.Models = append(response.Totals.Models, usageModel{
 			Model: model.Model, Calls: model.Calls, TokensIn: model.TokensIn, TokensOut: model.TokensOut,
-			CostUSD: model.CostUSD,
+			CostUSD: model.CostUSD, Priced: model.Priced,
 		})
 	}
 	response.Totals.Tools = make(map[string]int64, len(series.Tools))
 	for name, count := range series.Tools {
 		response.Totals.Tools[name] = count
 	}
-	providerCosts, err := a.usageProviderCosts(req.Context(), now)
-	if err != nil {
-		a.queryFailed(w, "usage provider costs", err)
-		return
+	var providerCosts []usageProviderCost
+	if a.cfg.IsAdmin(current.UserID) {
+		providerCosts, err = a.usageProviderCosts(req.Context(), now)
+		if err != nil {
+			a.queryFailed(w, "usage provider costs", err)
+			return
+		}
+		if providerCosts == nil {
+			providerCosts = []usageProviderCost{}
+		}
 	}
 	response.ProviderCosts = providerCosts
 	writeJSON(w, http.StatusOK, response)

@@ -183,6 +183,48 @@ func TestAdminProviderBudgetRejectsInvalidAmounts(t *testing.T) {
 	}
 }
 
+func TestUsageProviderCostsAreVisibleToAdminsOnly(t *testing.T) {
+	app, server, adminBearer, _ := providerBudgetFixture(t)
+	ctx := context.Background()
+	appendWebappAssistant(t, app, testChatID, testUserID, "admin spend", "kimi-k3", 1_700_000, 0)
+	if err := store.SetProviderBudget(ctx, app.db, "kimi", 2_000_000, store.ProviderSettings{
+		Provider: "kimi", Models: []string{"kimi-k3", "kimi-k2"}, DefaultModel: "kimi-k3", Enabled: true,
+	}); err != nil {
+		t.Fatalf("SetProviderBudget: %v", err)
+	}
+	otherBearer := launchSessionFor(t, app, server, otherTestUserID, otherTestUserID)
+
+	status, body, _ := apiRequest(t, server, http.MethodGet, "/api/usage", otherBearer)
+	if status != http.StatusOK {
+		t.Fatalf("non-admin GET usage status=%d body=%s", status, body)
+	}
+	var nonAdmin map[string]json.RawMessage
+	if err := json.Unmarshal(body, &nonAdmin); err != nil {
+		t.Fatalf("non-admin usage JSON: %v body=%s", err, body)
+	}
+	if _, present := nonAdmin["provider_costs"]; present {
+		t.Fatalf("non-admin /api/usage exposes provider_costs: %s", body)
+	}
+	// Everything else the existing contract promises is still there.
+	for _, key := range []string{"date", "models", "tools", "limits", "range", "truncated", "series", "totals"} {
+		if _, present := nonAdmin[key]; !present {
+			t.Errorf("non-admin /api/usage lost %q: %s", key, body)
+		}
+	}
+
+	status, body, _ = apiRequest(t, server, http.MethodGet, "/api/usage", adminBearer)
+	if status != http.StatusOK {
+		t.Fatalf("admin GET usage status=%d body=%s", status, body)
+	}
+	var admin map[string]json.RawMessage
+	if err := json.Unmarshal(body, &admin); err != nil {
+		t.Fatalf("admin usage JSON: %v body=%s", err, body)
+	}
+	if _, present := admin["provider_costs"]; !present {
+		t.Fatalf("admin /api/usage lost provider_costs: %s", body)
+	}
+}
+
 func TestUsageReportsProviderCosts(t *testing.T) {
 	app, server, bearer, _ := providerBudgetFixture(t)
 	ctx := context.Background()

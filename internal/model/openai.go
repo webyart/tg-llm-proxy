@@ -490,44 +490,7 @@ func (c *OpenAI) UseModel(name string) {
 
 // `/model` slower than the answer it reports on.
 func (c *OpenAI) Models(ctx context.Context) ([]string, error) {
-	var modelCtx, cancel = context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-	var httpReq, err = http.NewRequestWithContext(modelCtx, http.MethodGet, c.modelsURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	if c.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
-	var res, doErr = c.client.Do(httpReq)
-	if doErr != nil {
-		return nil, doErr
-	}
-	defer res.Body.Close()
-
-	var payload, readErr = io.ReadAll(io.LimitReader(res.Body, 1<<20))
-	if readErr != nil {
-		return nil, readErr
-	}
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return nil, &APIError{Status: res.StatusCode, Body: Flatten(string(payload), BodyLimit)}
-	}
-
-	var envelope modelsResponse
-	if err := json.Unmarshal(payload, &envelope); err == nil && len(envelope.Data) > 0 {
-		var ids = make([]string, 0, len(envelope.Data))
-		for _, m := range envelope.Data {
-			if strings.TrimSpace(m.ID) != "" {
-				ids = append(ids, m.ID)
-			}
-		}
-		return ids, nil
-	}
-	var bare []string
-	if err := json.Unmarshal(payload, &bare); err == nil {
-		return bare, nil
-	}
-	return nil, fmt.Errorf("GET %s answered %d with something that is not a model list ", c.modelsURL, res.StatusCode)
+	return FetchModelIDs(ctx, c.modelsURL, c.apiKey, c.timeout, c.client)
 }
 
 func toWire(messages []Message) []chatMessage {

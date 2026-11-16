@@ -1,7 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -138,6 +141,113 @@ func TestLoadFromModelProvidersRejectsBadRows(t *testing.T) {
 		if len(cfg.ModelProviders) != 0 {
 			t.Errorf("%s: a broken list must not leave providers active: %+v", name, cfg.ModelProviders)
 		}
+	}
+}
+
+func TestParseModelProvidersAPIKeyFile(t *testing.T) {
+	var providers, problems = parseModelProviders(`[{"name":"kimi","base_url":"https://api.moonshot.ai/v1","api_key_file":"/run/secrets/kimi_api_key","models":["kimi-k3.1-pro"]}]`,
+		fakeSecretFiles(map[string]string{"/run/secrets/kimi_api_key": "sk-from-file\n"}, nil))
+	if len(problems) > 0 {
+		t.Fatalf("problems: %v", problems)
+	}
+	if len(providers) != 1 {
+		t.Fatalf("providers = %d, want 1", len(providers))
+	}
+	if providers[0].APIKey != "sk-from-file" {
+		t.Fatalf("APIKey = %q, want the trimmed file content", providers[0].APIKey)
+	}
+	if providers[0].APIKeyFile != "" {
+		t.Fatalf("APIKeyFile = %q after resolution, want empty", providers[0].APIKeyFile)
+	}
+}
+
+// TestLoadFromModelProvidersAPIKeyFile is the end-to-end case: a real file on disk, exactly what the compose
+// secret mount provides. The path is absolute on both Windows and Linux.
+func TestLoadFromModelProvidersAPIKeyFile(t *testing.T) {
+	var path = filepath.Join(t.TempDir(), "kimi_api_key")
+	if err := os.WriteFile(path, []byte("sk-real-file\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	var row, marshalErr = json.Marshal([]map[string]any{{
+		"name":         "kimi",
+		"base_url":     "https://api.moonshot.ai/v1",
+		"api_key_file": path,
+		"models":       []string{"kimi-k3.1-pro"},
+	}})
+	if marshalErr != nil {
+		t.Fatalf("marshal: %v", marshalErr)
+	}
+	var cfg, problems = LoadFrom(map[string]string{
+		"TELEGRAM_BOT_TOKEN": "1:secret",
+		"MODEL_PROVIDERS":    string(row),
+	})
+	if len(problems) > 0 {
+		t.Fatalf("problems: %v", problems)
+	}
+	if len(cfg.ModelProviders) != 1 || cfg.ModelProviders[0].APIKey != "sk-real-file" {
+		t.Fatalf("providers = %+v, want the key read from %s", cfg.ModelProviders, path)
+	}
+}
+
+// TestParseModelProvidersRefusesBadKeyFiles keeps the fail-fast rule for every way a key file can be wrong.
+// None of the messages may repeat the content of the file: a configuration error ends up in logs and /healthz.
+func TestParseModelProvidersRefusesBadKeyFiles(t *testing.T) {
+	var cases = []struct {
+		name  string
+		row   string
+		files map[string]string
+		want  string
+	}{
+		{
+			name: "both spellings",
+			row:  `[{"name":"kimi","base_url":"https://api.moonshot.ai/v1","api_key":"sk-json","api_key_file":"/run/secrets/kimi","models":["m"]}]`,
+			want: "both api_key and api_key_file",
+		},
+		{
+			name: "relative path",
+			row:  `[{"name":"kimi","base_url":"https://api.moonshot.ai/v1","api_key_file":"secrets/kimi","models":["m"]}]`,
+			want: "absolute path",
+		},
+		{
+			name: "unreadable",
+			row:  `[{"name":"kimi","base_url":"https://api.moonshot.ai/v1","api_key_file":"/run/secrets/missing","models":["m"]}]`,
+			want: "cannot be read",
+		},
+		{
+			name:  "empty",
+			row:   `[{"name":"kimi","base_url":"https://api.moonshot.ai/v1","api_key_file":"/run/secrets/empty","models":["m"]}]`,
+			files: map[string]string{"/run/secrets/empty": " \n\t"},
+			want:  "empty file",
+		},
+		{
+			name:  "too large",
+			row:   `[{"name":"kimi","base_url":"https://api.moonshot.ai/v1","api_key_file":"/run/secrets/large","models":["m"]}]`,
+			files: map[string]string{"/run/secrets/large": strings.Repeat("x", secretFileMaxBytes+1)},
+			want:  "larger than",
+		},
+		{
+			name:  "nul byte",
+			row:   `[{"name":"kimi","base_url":"https://api.moonshot.ai/v1","api_key_file":"/run/secrets/nul","models":["m"]}]`,
+			files: map[string]string{"/run/secrets/nul": "sk-must-not-leak\x00"},
+			want:  "NUL bytes",
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			var providers, problems = parseModelProviders(test.row, fakeSecretFiles(test.files, nil))
+			if len(problems) != 1 {
+				t.Fatalf("problems = %v, want exactly one", problems)
+			}
+			if !strings.Contains(problems[0], "MODEL_PROVIDERS") || !strings.Contains(problems[0], test.want) {
+				t.Fatalf("problem %q does not name MODEL_PROVIDERS and %q", problems[0], test.want)
+			}
+			if strings.Contains(problems[0], "sk-must-not-leak") || strings.Contains(problems[0], "sk-json") {
+				t.Fatalf("problem message leaks a key value: %q", problems[0])
+			}
+			if len(providers) != 0 {
+				t.Fatalf("a broken key file must not leave providers active: %+v", providers)
+			}
+		})
 	}
 }
 

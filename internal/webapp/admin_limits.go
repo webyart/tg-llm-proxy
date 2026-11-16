@@ -47,6 +47,7 @@ type adminChatToday struct {
 	WebSearch  int64   `json:"web_search"`
 	Calculator int64   `json:"calculator"`
 	CostUSD    float64 `json:"cost_usd"`
+	Priced     bool    `json:"priced"`
 	Warning    string  `json:"warning,omitempty"`
 }
 
@@ -78,14 +79,14 @@ type adminChatItem struct {
 
 // adminChatItemFor maps the store row to the wire shape. The disabled-tools list is always an array,
 // never null, so the UI can iterate it without a guard.
-func adminChatItemFor(chat store.ActiveChat) adminChatItem {
+func adminChatItemFor(chat store.ActiveChat, priced bool) adminChatItem {
 	item := adminChatItem{
 		ID: chat.ID, Title: chat.Title, Type: chat.Type, UserID: chat.UserID,
 		LastActivity: chat.LastActivity, HasLimits: chat.HasLimits,
 		Today: adminChatToday{
 			ModelCalls: chat.Today.ModelCalls, ReadURL: chat.Today.ReadURL,
 			WebSearch: chat.Today.WebSearch, Calculator: chat.Today.Calculator,
-			CostUSD: chat.Today.CostUSD,
+			CostUSD: chat.Today.CostUSD, Priced: priced,
 		},
 		Limits: adminChatLimitsFor(chat.Limits),
 	}
@@ -118,7 +119,7 @@ func (a *App) adminChats(w http.ResponseWriter, req *http.Request, current scope
 	}
 	items := make([]adminChatItem, 0, len(chats))
 	for _, chat := range chats {
-		items = append(items, adminChatItemFor(chat))
+		items = append(items, adminChatItemFor(chat, a.cfg.ModelPrices.HasPrices()))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "limit": limit})
 }

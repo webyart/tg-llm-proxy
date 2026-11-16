@@ -498,7 +498,7 @@ func TestStrictTransportSecurityOnlyOnHTTPS(t *testing.T) {
 
 func TestStaticCSPAndNoExternalScriptsOrSecrets(t *testing.T) {
 	_, server := newTestApp(t)
-	for _, path := range []string{"/", "/app.js", "/style.css"} {
+	for _, path := range []string{"/", "/app.js", "/theme.js", "/style.css"} {
 		status, body, headers := apiRequest(t, server, http.MethodGet, path, "")
 		if status != http.StatusOK {
 			t.Fatalf("GET %s status=%d", path, status)
@@ -623,6 +623,7 @@ func TestIndexForwardedPrefixInjectionAndRootUnchanged(t *testing.T) {
 			`<meta name="miniapp-base" content="` + test.want + `">`,
 			`href="` + test.want + `/style.css"`,
 			`src="` + test.want + `/app.js"`,
+			`src="` + test.want + `/theme.js"`,
 		} {
 			if !strings.Contains(body, want) {
 				t.Errorf("prefix %q index misses %q", test.prefix, want)
@@ -662,7 +663,7 @@ func TestIndexRejectsUnsafeForwardedPrefixes(t *testing.T) {
 
 func TestForwardedPrefixDoesNotRewriteJavaScriptOrCSS(t *testing.T) {
 	app, _ := newTestApp(t)
-	for _, path := range []string{"/app.js", "/style.css"} {
+	for _, path := range []string{"/app.js", "/theme.js", "/style.css"} {
 		original, err := staticFiles.ReadFile("static" + path)
 		if err != nil {
 			t.Fatal(err)

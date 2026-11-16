@@ -75,8 +75,24 @@ try {
         Write-Output 'db_restore: built bin\dbrestore.exe (a maintenance tool, deliberately not in the runtime image)'
     }
 
-    & $exe -source $Source -dest $Dest
-    $code = $LASTEXITCODE
+    # Go binaries are denied writes directly under %TEMP% on this host (PowerShell itself can create there).
+    # The read-only backup verification needs a temporary directory for the FTS integrity check, so give the
+    # child a repo-local one instead of relying on the machine-wide TEMP. The directory is under data/ and is
+    # disposable (same workaround as db_backup.ps1).
+    $tempRoot = Join-Path $repoRoot 'data\tmp'
+    New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
+    $previousTemp = $env:TEMP
+    $previousTmp = $env:TMP
+    try {
+        $env:TEMP = $tempRoot
+        $env:TMP = $tempRoot
+        & $exe -source $Source -dest $Dest
+        $code = $LASTEXITCODE
+    }
+    finally {
+        $env:TEMP = $previousTemp
+        $env:TMP = $previousTmp
+    }
     if ($code -eq 0) {
         Write-Output 'db_restore: OK — source and restored file passed integrity_check and the bot-schema check'
         Write-Output "db_restore: inspect counts with: .\scripts\db_inspect.ps1 -Path `"$Dest`" -Counts"

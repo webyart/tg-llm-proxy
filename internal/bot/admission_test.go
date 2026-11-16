@@ -111,6 +111,23 @@ func TestUpdateFloodBoundsExecutionAndKeepsAcceptedFIFO(t *testing.T) {
 
 	var accepted sync.WaitGroup
 	accepted.Add(1)
+	// The accepted dispatches outlive a fatal assertion: on a failure the queued goroutines are still blocked
+	// on the chat lock and on the model. Release them and wait for the group BEFORE the test returns, otherwise
+	// they wake up after t.Cleanup closed the database and call t.Errorf on a finished test (a panic that hides
+	// the real failure).
+	defer func() {
+		m.unblock()
+		var drained = make(chan struct{})
+		go func() {
+			accepted.Wait()
+			close(drained)
+		}()
+		select {
+		case <-drained:
+		case <-time.After(5 * time.Second):
+			t.Errorf("accepted dispatches did not finish within 5s after the model was released")
+		}
+	}()
 	go func() {
 		defer accepted.Done()
 		if err := d.Dispatch(context.Background(), testEvent(100, 11, 1, "вопрос 1")); err != nil {
@@ -152,9 +169,20 @@ func TestUpdateFloodBoundsExecutionAndKeepsAcceptedFIFO(t *testing.T) {
 	if got := d.deps.Locks.Waiting(100); got != perChatQueueCapacity {
 		t.Fatalf("per-chat waiters = %d, want %d", got, perChatQueueCapacity)
 	}
-	if got := runtime.NumGoroutine(); got > baseline+perChatQueueCapacity+4 {
-		t.Fatalf("goroutines during flood = %d, baseline = %d, want no more than %d", got, baseline, baseline+perChatQueueCapacity+4)
-	}
+	// Pre-existing race: the rejected dispatches have RETURNED, but a goroutine between its last statement and
+	// the scheduler retiring it is still counted by runtime.NumGoroutine. The assertion used to sample the count
+	// once, immediately after the flood WaitGroup returned, so a full shuffled run could read the transient
+	// exit window (35 goroutines against a baseline of 3) and fail while the same test passed isolated. Sampling
+	// the bound instead of reading it once makes the assertion about live goroutines rather than about how fast
+	// the runtime retires them: a regression that keeps one goroutine per update (the old per-update async
+	// handling) still exceeds the bound on every poll and still fails, because those goroutines would be blocked
+	// in the chat lock or in the model.
+	var goroutineBound = baseline + perChatQueueCapacity + 4
+	testutil.Eventually(t, 5*time.Second, func() bool { return runtime.NumGoroutine() <= goroutineBound },
+		func() string {
+			return fmt.Sprintf("goroutines during flood = %d, baseline = %d, want no more than %d",
+				runtime.NumGoroutine(), baseline, goroutineBound)
+		})
 
 	m.unblock()
 	waitAdmissionGroup(t, &accepted)

@@ -37,6 +37,12 @@ services:
       TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
       STRATA_API_KEY: ""
       STRATA_API_KEY_FILE: /run/secrets/strata_api_key
+      # §7 named providers in the container get their keys from files too: MODEL_PROVIDERS is pinned here with
+      # api_key_file paths, because `environment` overrides the MODEL_PROVIDERS row that env_file would copy
+      # from .env (that row keeps plain api_key for local runs and back-compat). The list mirrors .env; when a
+      # provider or its models change, update both places — the container never reads the .env catalogue.
+      # `docker compose config` shows these paths, never the key values.
+      MODEL_PROVIDERS: '[{"name":"kimi","base_url":"https://api.moonshot.ai/v1","api_key_file":"/run/secrets/kimi_api_key","models":["kimi-k3.1-pro","kimi-k2.6","kimi-k3"],"default_model":"kimi-k3.1-pro","timeout_seconds":120},{"name":"deepseek","base_url":"https://api.deepseek.com/v1","api_key_file":"/run/secrets/deepseek_api_key","models":["deepseek-flash","deepseek-v4-pro"],"default_model":"deepseek-flash","timeout_seconds":120}]'
       # §7/§8.1: inside the container 127.0.0.1 is the container's OWN loopback, so the .env value that is
       # right for scripts/run.ps1 on Windows (http://127.0.0.1:8080/v1) would make the bot call its own
       # /healthz port and every /ask would fail. The host is reachable under host.docker.internal
@@ -76,12 +82,17 @@ services:
       - "127.0.0.1:${WEBHOOK_HOST_PORT:-8082}:${WEBHOOK_PORT:-8082}"
       - "127.0.0.1:${MINIAPP_HOST_PORT:-8084}:${MINIAPP_PORT:-8084}"
     # Local Docker secrets, created from .env by scripts/setup_docker_secrets.ps1 (or the .sh twin).
-    # The two files are gitignored and dockerignored; only their paths reach the container.
+    # The files are gitignored and dockerignored; only their paths reach the container. The two provider keys
+    # are separate files so rotating one provider does not touch the other or the Telegram/STRATA secrets.
     secrets:
       - source: telegram_bot_token
         target: /run/secrets/telegram_bot_token
       - source: strata_api_key
         target: /run/secrets/strata_api_key
+      - source: kimi_api_key
+        target: /run/secrets/kimi_api_key
+      - source: deepseek_api_key
+        target: /run/secrets/deepseek_api_key
     volumes:
       - bot-data:/data
     read_only: true
@@ -178,6 +189,12 @@ secrets:
     file: ./secrets/telegram_bot_token
   strata_api_key:
     file: ./secrets/strata_api_key
+  # Provider keys of MODEL_PROVIDERS; created from that JSON by scripts/setup_docker_secrets.* and never
+  # committed. Missing files make `docker compose up` fail loudly rather than start a bot without providers.
+  kimi_api_key:
+    file: ./secrets/kimi_api_key
+  deepseek_api_key:
+    file: ./secrets/deepseek_api_key
 
 networks:
   default:

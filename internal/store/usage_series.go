@@ -54,6 +54,9 @@ type UsageSeriesBucket struct {
 	ToolsTotal int64
 	// CostUSD is the priced cost of this bucket, filled by ApplyPrices.
 	CostUSD float64
+	// Priced is false when no MODEL_PRICES row is configured at all, so the UI can render — rather
+	// than a dollar amount, exactly like the Telegram task footer.
+	Priced bool
 	// modelTokens keeps the per-model split of the bucket so ApplyPrices can price each model instead of
 	// averaging every token at one price. It is internal: the API exposes only the resulting cost.
 	modelTokens map[string]usageTokenPair
@@ -70,6 +73,9 @@ type UsageSeriesModel struct {
 	TokensIn  int64
 	TokensOut int64
 	CostUSD   float64
+	// Priced reports a configured price row for this model id; CostUSD is zero both when the row says
+	// zero and when the row is missing.
+	Priced bool
 }
 
 type UsageSeries struct {
@@ -82,7 +88,10 @@ type UsageSeries struct {
 	TokensOut  int64
 	ToolsTotal int64
 	CostUSD    float64
-	Truncated  bool
+	// Priced follows the deployment-level rule of the Telegram footer: no positive price row means the
+	// range total is unknown, a configured table makes $0.00 genuine.
+	Priced    bool
+	Truncated bool
 }
 
 // ApplyPrices fills the cost of every bucket, model and the range total from MODEL_PRICES. A model missing
@@ -93,7 +102,9 @@ func (series *UsageSeries) ApplyPrices(prices config.PriceTable) {
 		return
 	}
 	series.CostUSD = 0
+	series.Priced = prices.HasPrices()
 	for index := range series.Buckets {
+		series.Buckets[index].Priced = series.Priced
 		var cost int64
 		for model, tokens := range series.Buckets[index].modelTokens {
 			cost += prices.CostMicros(model, tokens.in, tokens.out)
@@ -105,6 +116,7 @@ func (series *UsageSeries) ApplyPrices(prices config.PriceTable) {
 		cost := prices.CostMicros(series.Models[index].Model,
 			series.Models[index].TokensIn, series.Models[index].TokensOut)
 		series.Models[index].CostUSD = float64(cost) / 1_000_000
+		series.Models[index].Priced = prices.Priced(series.Models[index].Model)
 	}
 }
 

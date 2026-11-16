@@ -45,6 +45,58 @@ func insertWebappEventAt(t *testing.T, app *App, userID int64, kind string, deta
 	}
 }
 
+func TestUsagePricedFlagDistinguishesUnknownFromZero(t *testing.T) {
+	app, server := newTestAppWithRaw(t, map[string]string{
+		"MODEL_PRICES": `[{"model":"model-a","input_per_mtok_usd":1,"output_per_mtok_usd":2}]`,
+	})
+	bearer := launchSession(t, app, server)
+	appendWebappAssistant(t, app, testChatID, testUserID, "priced", "model-a", 0, 0)
+	appendWebappAssistant(t, app, testChatID, testUserID, "unpriced", "model-b", 1_000_000, 0)
+	status, body, _ := apiRequest(t, server, http.MethodGet, "/api/usage", bearer)
+	if status != http.StatusOK {
+		t.Fatalf("usage status=%d body=%s", status, body)
+	}
+	var decoded usageResponse
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !decoded.Priced {
+		t.Fatalf("usage.priced=false with MODEL_PRICES: %s", body)
+	}
+	if !decoded.Totals.Priced {
+		t.Fatalf("totals.priced=false with MODEL_PRICES: %s", body)
+	}
+	byModel := map[string]usageModel{}
+	for _, model := range decoded.Models {
+		byModel[model.Model] = model
+	}
+	if !byModel["model-a"].Priced || byModel["model-a"].CostUSD != 0 {
+		t.Errorf("a positive price with zero tokens must be priced $0.00: %+v", byModel["model-a"])
+	}
+	if byModel["model-b"].Priced {
+		t.Errorf("an unpriced model reported priced=true: %+v", byModel["model-b"])
+	}
+	if len(decoded.Series) == 0 || !decoded.Series[len(decoded.Series)-1].Priced {
+		t.Errorf("the current series bucket is not priced: %+v", decoded.Series)
+	}
+
+	// No MODEL_PRICES at all: the total and the models are unknown (—), not a measured $0.00.
+	plainApp, plainServer := newTestApp(t)
+	plainBearer := launchSession(t, plainApp, plainServer)
+	appendWebappAssistant(t, plainApp, testChatID, testUserID, "unpriced", "model-a", 1_000_000, 0)
+	status, body, _ = apiRequest(t, plainServer, http.MethodGet, "/api/usage", plainBearer)
+	if status != http.StatusOK {
+		t.Fatalf("plain usage status=%d body=%s", status, body)
+	}
+	var plain usageResponse
+	if err := json.Unmarshal(body, &plain); err != nil {
+		t.Fatal(err)
+	}
+	if plain.Priced || plain.Totals.Priced || len(plain.Models) != 1 || plain.Models[0].Priced {
+		t.Fatalf("usage without prices reported a priced total/model: %+v", plain)
+	}
+}
+
 func TestUsageReturnsContentFreeAggregatesLimitsAndRemaining(t *testing.T) {
 	app, server := newTestApp(t)
 	bearer := launchSession(t, app, server)

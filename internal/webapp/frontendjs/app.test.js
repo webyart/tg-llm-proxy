@@ -1367,6 +1367,39 @@ function descendants(node) {
   return all;
 }
 
+test("admin provider refresh posts /refresh and renders the added/removed/current result", async () => {
+  const harness = await createHarness();
+  let posted = false;
+  harness.setHandler(adminSettingsHandler([], {
+    handle(request) {
+      if (request.path === "/api/admin/providers") {
+        return jsonResponse({ items: [adminProviderFixture()] });
+      }
+      if (request.path === "/api/admin/providers/kimi/refresh" && request.options.method === "POST") {
+        posted = true;
+        return jsonResponse({
+          provider: adminProviderFixture({ models: ["kimi-k3"], default_model: "kimi-k3", source: "db" }),
+          added: [], removed: ["kimi-k2"], current: ["kimi-k3"],
+          ignored: ["gpt-4"], ignored_count: 1, fetched: 3, applied: true,
+        });
+      }
+      return null;
+    },
+  }));
+  await openTab(harness, "settings");
+  const card = providerSection(harness).querySelector(".provider-card");
+  const button = card.querySelectorAll("button").find((candidate) => candidate.textContent === "Проверить /v1/models");
+  assert.ok(button, "the provider refresh button is missing");
+  button.click();
+  await harness.flush();
+  assert.equal(posted, true, "the refresh action did not POST to /api/admin/providers/kimi/refresh");
+  const result = providerSection(harness).querySelector(".provider-refresh-result");
+  assert.ok(result, "the provider card does not show the refresh result");
+  assert.match(result.textContent, /Обновлено: добавлено 0, удалено 1; сейчас 1\./);
+  assert.match(result.textContent, /Вне env-списка проигнорировано: 1\./);
+  assert.equal(harness.requests.filter((request) => request.path.endsWith("/refresh")).length, 1);
+});
+
 test("admin provider cards use theme tokens and keep every default model fully visible", async () => {
   const harness = await createHarness();
   harness.setHandler(adminSettingsHandler([], {
@@ -1494,6 +1527,52 @@ test("theme switch applies immediately, persists in localStorage and survives a 
   assert.equal(memory.get("dsh-theme"), "lavender");
 });
 
+test("theme-color meta follows all five palette surfaces and the bootstrap map stays in sync", async () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const css = fs.readFileSync(path.join(__dirname, "../static/style.css"), "utf8");
+  const bootstrap = fs.readFileSync(path.join(__dirname, "../static/theme.js"), "utf8");
+  const surfaces = {};
+  for (const theme of ["graphite", "sand", "ocean", "forest", "lavender"]) {
+    const match = new RegExp(`html\\[data-theme="${theme}"\\] \\{([^}]*)\\}`).exec(css);
+    assert.ok(match, `${theme} theme block is missing`);
+    surfaces[theme] = (/--surface:\s*(#[0-9a-f]{6})/i.exec(match[1]) || [])[1];
+    assert.ok(surfaces[theme], `${theme} has no --surface`);
+    assert.match(bootstrap, new RegExp(`${theme}:\\s*"${surfaces[theme]}"`, "i"), `theme.js surface map differs for ${theme}`);
+  }
+
+  const harness = await createHarness();
+  const metas = harness.document.querySelectorAll('meta[name="theme-color"]');
+  assert.equal(metas.length, 2, "the static light/dark theme-color fallbacks are missing");
+  await openTab(harness, "settings");
+  const select = harness.element("theme");
+  for (const theme of ["graphite", "sand", "ocean", "forest", "lavender"]) {
+    select.value = theme;
+    select.dispatchEvent({ type: "change" });
+    assert.equal(harness.document.documentElement.getAttribute("data-theme"), theme);
+    for (const meta of metas) {
+      assert.equal(meta.getAttribute("content"), surfaces[theme], `${theme} did not update every theme-color meta`);
+    }
+  }
+});
+
+test("320 px smoke: every theme keeps the mobile shell and stacked settings controls", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const css = fs.readFileSync(path.join(__dirname, "../static/style.css"), "utf8");
+  const index = fs.readFileSync(path.join(__dirname, "../static/index.html"), "utf8");
+  assert.match(index, /content="width=device-width, initial-scale=1, viewport-fit=cover"/);
+  for (const match of css.matchAll(/(?:^|[;{])\s*(?:min-)?width:\s*(\d{3,})px/g)) {
+    assert.ok(Number(match[1]) <= 320, `a ${match[1]} px width overflows a 320 px viewport`);
+  }
+  assert.match(css, /@media \(max-width: 420px\)/);
+  assert.match(css, /\.settings-row select, \.settings-row input, \.settings-row button \{ flex: 1 1 100%; width: 100%; \}/);
+  assert.match(css, /\.provider-card \.settings-row > button \{ flex: 1 1 100%; \}/);
+  for (const theme of ["graphite", "sand", "ocean", "forest", "lavender"]) {
+    assert.match(css, new RegExp(`html\\[data-theme="${theme}"\\] \\{`), `${theme} palette is missing at 320 px`);
+  }
+});
+
 test("unknown stored themes fall back to graphite and prefers-color-scheme only seeds the default", async () => {
   const unknown = await createHarness({
     globals: {
@@ -1598,7 +1677,7 @@ test("every theme keeps AA contrast for body text, labels, status and controls",
   }
 });
 
-test("timezone selector lists the IANA choices, applies immediately, sends a strict PUT and persists locally", async () => {
+test("timezone input accepts any IANA zone, suggests common zones, validates locally and persists", async () => {
   const storage = {
     value: "",
     getItem(key) { return key === "dsh-timezone" ? this.value || null : null; },
@@ -1607,33 +1686,53 @@ test("timezone selector lists the IANA choices, applies immediately, sends a str
   const harness = await createHarness({ globals: { localStorage: storage } });
   await openTab(harness, "settings");
   const content = harness.element("content");
-  const select = content.querySelector("#timezone");
-  assert.ok(select, "the Settings timezone selector is missing");
-  const values = select.querySelectorAll("option").map((option) => option.value);
-  for (const zone of ["Asia/Yekaterinburg", "Europe/Moscow", "Europe/Berlin", "UTC", "Asia/Almaty", "Asia/Tbilisi", "America/New_York"]) {
-    assert.ok(values.includes(zone), `the timezone selector misses ${zone}`);
+  const input = content.querySelector("#timezone");
+  assert.ok(input, "the Settings timezone input is missing");
+  assert.equal(input.tagName, "INPUT");
+  assert.ok(input.classList.contains("timezone-input"));
+  assert.equal(input.value, "Asia/Yekaterinburg");
+  assert.equal(input.getAttribute("list"), "timezone-options");
+  const list = content.querySelector("#timezone-options");
+  assert.ok(list, "the timezone datalist is missing");
+  assert.equal(list.tagName, "DATALIST");
+  const values = list.querySelectorAll("option").map((option) => option.value);
+  for (const zone of ["Asia/Yekaterinburg", "Europe/Moscow", "Europe/Berlin", "UTC", "Asia/Almaty", "Asia/Tbilisi", "America/New_York", "Pacific/Auckland"]) {
+    assert.ok(values.includes(zone), `the timezone datalist misses ${zone}`);
   }
-  assert.ok(values.includes(""), "the selector needs a reset-to-default option");
+  assert.equal(values.includes(""), false, "an empty datalist option is not a zone");
 
+  // A malformed name is a local field error: no request, no stored override.
   harness.resetRequests();
-  select.value = "Europe/Berlin";
-  select.dispatchEvent({ type: "change" });
+  input.value = "Mars/Olympus_Mons";
+  input.dispatchEvent({ type: "change" });
+  assert.equal(harness.requests.length, 0, "an invalid IANA name was sent to the server");
+  assert.equal(input.getAttribute("aria-invalid"), "true");
+  assert.match(harness.element("error").textContent, /Неизвестный часовой пояс/);
+
+  // An arbitrary IANA zone outside the datalist is accepted and sent unchanged.
+  harness.resetRequests();
+  input.value = "Pacific/Chatham";
+  input.dispatchEvent({ type: "change" });
   const put = harness.requests.find((request) => request.path === "/api/settings/timezone");
   assert.ok(put, "the timezone change did not reach the API");
   assert.equal(put.options.method, "PUT");
-  assert.equal(put.options.body, JSON.stringify({ timezone: "Europe/Berlin" }));
-  assert.equal(storage.value, "Europe/Berlin");
+  assert.equal(put.options.body, JSON.stringify({ timezone: "Pacific/Chatham" }));
+  assert.equal(storage.value, "Pacific/Chatham");
   await harness.flush();
   assert.equal(harness.element("notice").textContent, "Часовой пояс применён.");
   assert.equal(harness.element("error").hidden, true);
 
+  // The separate reset button keeps the old empty-option contract (PUT {"timezone":""}).
   harness.resetRequests();
   const refreshed = harness.element("content").querySelector("#timezone");
-  refreshed.value = "";
-  refreshed.dispatchEvent({ type: "change" });
+  const resetButton = harness.element("content").querySelector(".timezone-reset");
+  assert.ok(resetButton, "the reset-to-default button is missing");
+  resetButton.click();
   const reset = harness.requests.find((request) => request.path === "/api/settings/timezone");
+  assert.ok(reset, "the reset did not reach the API");
   assert.equal(reset.options.body, JSON.stringify({ timezone: "" }));
   assert.equal(storage.value, "Asia/Yekaterinburg");
+  assert.equal(refreshed.value, "Pacific/Chatham", "the input still renders the current value before re-render");
 });
 
 test("task and reminder cards render human times in the chat zone and never raw ISO or nanoseconds", async () => {
@@ -1718,6 +1817,13 @@ test("task cards render the shared usage footer for live, planning and terminal 
           tokens_in: 10, tokens_out: 5, cost_usd: 0,
           elapsed_seconds: 65, eta_seconds: null, steps_completed: 1, steps_total: 3,
         },
+        {
+          id: 5, goal: "unpriced goal", status: "completed", next_step: 1, attempts: 1, has_plan: true,
+          created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T01:00:00Z",
+          finished_at: "2026-01-01T01:00:00Z", duration_ms: 60000,
+          tokens_in: 10, tokens_out: 5, cost_usd: 0, priced: false,
+          elapsed_seconds: 60, eta_seconds: null, steps_completed: 1, steps_total: 1,
+        },
       ] });
     }
     return fallback();
@@ -1744,6 +1850,10 @@ test("task cards render the shared usage footer for live, planning and terminal 
   const noEta = findArticle(content, "no eta goal").textContent;
   assert.match(noEta, /идёт 1:05/, `running footer is missing elapsed time: ${noEta}`);
   assert.doesNotMatch(noEta, /осталось/, `a missing ETA must be omitted, not invented: ${noEta}`);
+
+  const unpriced = findArticle(content, "unpriced goal").textContent;
+  assert.match(unpriced, /стоимость —/, `an unpriced task must show an em dash, not $0.00: ${unpriced}`);
+  assert.doesNotMatch(unpriced, /\$0\.00/, "an unpriced task was rendered as a measured zero");
 
   const all = content.textContent;
   assert.doesNotMatch(all, /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/, `a task card still renders a raw ISO timestamp: ${all}`);
@@ -1892,6 +2002,34 @@ test("admin provider budget renders today's spend and is sent only when it chang
     models: ["kimi-k3", "kimi-k2"], default_model: "kimi-k3", enabled: true, daily_budget_usd: 12.5,
   });
   assert.ok(harness.element("notice").textContent.includes("Настройки провайдера сохранены."));
+});
+
+test("usage tab shows an em dash instead of $0.00 when no price is configured", async () => {
+  const harness = await createHarness();
+  enableSvg(harness);
+  harness.setHandler((request, fallback) => {
+    if (request.path.startsWith("/api/usage")) {
+      const payload = usagePayload("day");
+      payload.priced = false;
+      payload.totals.priced = false;
+      for (const model of [...payload.models, ...payload.totals.models]) model.priced = false;
+      for (const bucket of payload.series) bucket.priced = false;
+      payload.provider_costs = [
+        { provider: "kimi", cost_usd: 0, budget_usd: 2, remaining_usd: 2, priced: false, warning: false },
+      ];
+      return jsonResponse(payload);
+    }
+    return fallback();
+  });
+  await openTab(harness, "usage");
+  const content = harness.element("content");
+  const text = content.textContent;
+  assert.ok(text.includes("MODEL_PRICES не настроен"), "the cost chart does not explain the missing prices");
+  assert.equal(content.querySelectorAll(".usage-chart-cost").length, 0, "an unpriced cost chart was still drawn");
+  assert.match(text, /kimi: — из \$2\.00 · осталось —/);
+  assert.ok(text.includes("Стоимость: —"), "an unpriced model row still shows a dollar amount");
+  assert.equal(text.includes("$1.23"), false, "an unknown total was rendered as a dollar amount");
+  assert.equal(text.includes("$0.00"), false, "an unknown cost was rendered as a measured zero");
 });
 
 test("usage tab shows provider costs against their daily budgets", async () => {

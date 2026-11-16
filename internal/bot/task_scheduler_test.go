@@ -359,6 +359,16 @@ func TestTaskBudgetsAreIndependentFromTheChatDeadline(t *testing.T) {
 	}
 }
 
+// TestWorstCaseModelCallsMatchesTheConfig — the budget formula is documented in config (the startup warning
+// quotes config.TaskModelCallsPerStep × TASK_MODEL_TIMEOUT_SECONDS), while the tool loop owns the real number
+// of calls: every tool round plus the final answer. A change to either constant without the other would make
+// the recommendation wrong, so the two are pinned together here.
+func TestWorstCaseModelCallsMatchesTheConfig(t *testing.T) {
+	if got, want := int64(toolRoundLimit+1), config.TaskModelCallsPerStep; got != want {
+		t.Fatalf("toolRoundLimit+1 = %d, config.TaskModelCallsPerStep = %d: update both together", got, want)
+	}
+}
+
 func TestTaskStepResultTruncationFitsTheStoreLimit(t *testing.T) {
 	var long = strings.Repeat("данные ", 2000)
 	var cut = taskStepResultWithinLimit(long)

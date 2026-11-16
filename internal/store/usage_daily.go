@@ -17,6 +17,9 @@ type DailyModelUsage struct {
 	TokensOut int64
 	// CostUSD is the six-decimal cost of this model's tokens today, zero when the model has no price.
 	CostUSD float64
+	// Priced distinguishes a configured price row (even one with zero rates) from a model whose price is
+	// simply unknown. CostUSD is zero in both cases.
+	Priced bool
 }
 
 type DailyToolUsage struct {
@@ -30,6 +33,9 @@ type DailyUsage struct {
 	Models  []DailyModelUsage
 	Tools   DailyToolUsage
 	CostUSD float64
+	// Priced follows the Telegram footer rule: a deployment with no positive MODEL_PRICES row reports
+	// "unknown" (—), while a configured table reports a genuine $0.00 when the day has no spend.
+	Priced bool
 }
 
 // ApplyPrices fills the cost of every model and the total of the day from the MODEL_PRICES table. It is a
@@ -39,10 +45,12 @@ func (usage *DailyUsage) ApplyPrices(prices config.PriceTable) {
 		return
 	}
 	usage.CostUSD = 0
+	usage.Priced = prices.HasPrices()
 	for index := range usage.Models {
 		cost := prices.CostMicros(usage.Models[index].Model,
 			usage.Models[index].TokensIn, usage.Models[index].TokensOut)
 		usage.Models[index].CostUSD = float64(cost) / 1_000_000
+		usage.Models[index].Priced = prices.Priced(usage.Models[index].Model)
 		usage.CostUSD += usage.Models[index].CostUSD
 	}
 }

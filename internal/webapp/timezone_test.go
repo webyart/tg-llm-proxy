@@ -124,6 +124,35 @@ func TestTimezoneSettingsAPIRejectsInvalidInputAndUnauthenticatedCalls(t *testin
 	}
 }
 
+func TestTimezoneSettingsAPIAcceptsArbitraryIANAAndRejectsInvalid(t *testing.T) {
+	app, server := newTestApp(t)
+	bearer := launchSession(t, app, server)
+	for _, zone := range []string{"Pacific/Chatham", "America/Argentina/Buenos_Aires", "Etc/GMT+12", "Africa/Cairo"} {
+		status, body := putSettings(t, server.URL, "/api/settings/timezone", bearer, `{"timezone":"`+zone+`"}`)
+		if status != http.StatusOK {
+			t.Fatalf("PUT %s status=%d body=%s", zone, status, body)
+		}
+		stored, found, err := store.GetChatTimezone(context.Background(), app.db, testChatID)
+		if err != nil || !found || stored != zone {
+			t.Fatalf("stored timezone after %s = %q found=%v err=%v", zone, stored, found, err)
+		}
+	}
+	before, found, err := store.GetChatTimezone(context.Background(), app.db, testChatID)
+	if err != nil || !found {
+		t.Fatalf("read before invalid writes: %q found=%v err=%v", before, found, err)
+	}
+	for _, zone := range []string{"Mars/Olympus_Mons", "GMT+3", "../etc/passwd", strings.Repeat("a", 65)} {
+		status, body := putSettings(t, server.URL, "/api/settings/timezone", bearer, `{"timezone":"`+zone+`"}`)
+		if status != http.StatusBadRequest || !strings.Contains(string(body), "invalid_timezone") {
+			t.Errorf("PUT %q status=%d body=%s, want 400 invalid_timezone", zone, status, body)
+		}
+	}
+	after, found, err := store.GetChatTimezone(context.Background(), app.db, testChatID)
+	if err != nil || !found || after != before {
+		t.Fatalf("an invalid zone changed the stored value: before=%q after=%q found=%v err=%v", before, after, found, err)
+	}
+}
+
 func TestTimezoneWritePermissionFollowsOwnerAndAdmin(t *testing.T) {
 	app, _ := newTestApp(t)
 	if !app.canManageTimezone(context.Background(), testUserID, testChatID) {

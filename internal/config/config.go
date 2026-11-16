@@ -137,13 +137,40 @@ const DefaultTimeoutSeconds = int64(60)
 const DefaultDeadlineSeconds = int64(90)
 
 // A task step may include a web search and a long local generation, so it gets its own budgets instead of the
-// chat reply deadline. The step budget must hold one full model call AND its single retry, so it defaults to
-// twice the per-call budget. A fully slow step that spends every tool round at the full per-call timeout needs
-// more: the worst case is five calls (four tool rounds plus the final answer), and the startup summary warns
-// when the step budget cannot cover it. Raising TASK_STEP_DEADLINE_SECONDS is the operator's decision, because
-// it also raises the task lease.
+// chat reply deadline. The step budget must hold one full model call AND its single retry, so the loader also
+// rejects a step shorter than twice the per-call budget. A fully slow step that spends every tool round at the
+// full per-call timeout needs more: the worst case is TaskModelCallsPerStep calls (four tool rounds plus the
+// final answer), and the startup summary warns when the step budget cannot cover it. Raising
+// TASK_STEP_DEADLINE_SECONDS is the operator's decision, because it also raises the task lease.
 const DefaultTaskModelTimeoutSeconds = int64(240)
-const DefaultTaskStepDeadlineSeconds = int64(600)
+
+// TaskModelCallsPerStep is the worst case of one research step for the budget formula: every tool round plus
+// the final answer (toolRoundLimit+1 in the task loop). The step deadline is the hard ceiling of a step, so a
+// fully slow step needs TaskModelCallsPerStep × the per-call budget. TestWorstCaseModelCallsMatchesTheConfig in
+// internal/bot and TestDefaultTaskStepDeadlineCoversTheWorstCase here keep the formula and the defaults from
+// drifting apart.
+const TaskModelCallsPerStep = int64(5)
+
+// TaskStepDeadlineCoversWorstCase reports whether a step budget can hold every model call of a fully slow
+// research step. A false answer is not a startup error: most calls are far faster than their timeout, and
+// raising the step budget also lengthens the task lease (deadline + 30 s). It is the single formula the
+// configuration loader documents and the startup warning uses, so the recommendation can never contradict the
+// default.
+func TaskStepDeadlineCoversWorstCase(stepDeadlineSeconds, modelTimeoutSeconds int64) bool {
+	return stepDeadlineSeconds >= TaskModelCallsPerStep*modelTimeoutSeconds
+}
+
+// TaskLeaseMarginSeconds is the part of a running task's lease that exceeds the step deadline. The claim has to
+// outlive the step it protects, so the lease is TASK_STEP_DEADLINE_SECONDS + this margin; the startup warning
+// and the README quote the same number. It lives here because the warning cannot import the scheduler.
+const TaskLeaseMarginSeconds = int64(30)
+
+// DefaultTaskStepDeadlineSeconds covers the worst case of the DEFAULT per-call budget with headroom:
+// 5 × 240 s = 1200 s for the model calls alone, rounded up to 1500 s so a step also has room for the tool
+// execution between the calls and for the one retry of a transiently failed call. The task lease is this
+// deadline + 30 s, and a task may run up to TaskMaxSteps (3) such steps plus one synthesis, so the worst-case
+// task lifetime is minutes, not seconds: an operator who lowers this row accepts a smaller step ceiling.
+const DefaultTaskStepDeadlineSeconds = int64(1500)
 const DefaultRecoveryMaxAgeHours = int64(24)
 const DefaultContextMessages = int64(20)
 const DefaultMaxContextChars = int64(8000)
@@ -753,7 +780,7 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	// leaves a half-configured provider that looks available.
 	cfg.ModelProviders = nil
 	if rawProviders := strings.TrimSpace(raw["MODEL_PROVIDERS"]); rawProviders != "" {
-		var providers, providerProblems = parseModelProviders(rawProviders)
+		var providers, providerProblems = parseModelProviders(rawProviders, readSecretFile)
 		if len(providerProblems) > 0 {
 			problems = append(problems, providerProblems...)
 		} else {
@@ -820,6 +847,12 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 	if taskStepDeadline < 2*taskModelTimeout {
 		problems = Push(problems, "ENV TASK_STEP_DEADLINE_SECONDS must be at least twice TASK_MODEL_TIMEOUT_SECONDS: one model call and its single retry have to fit inside the step budget ")
 	}
+	// The hard checks above only guard the retry envelope. Covering a FULLY slow step is a different, advisory
+	// budget: the worst case is TaskModelCallsPerStep calls (four tool rounds plus the final answer), see
+	// TaskStepDeadlineCoversWorstCase. It is not a startup error because most calls are far faster than their
+	// timeout and because raising the step also raises the task lease; startupSummary warns instead, with the
+	// exact recommendation TaskModelCallsPerStep×TASK_MODEL_TIMEOUT_SECONDS. The shipped defaults and
+	// .env.example cover that worst case, so a fresh deployment starts without the warning.
 
 	recoveryMaxAge, badRecoveryMaxAge := Num(raw, "RECOVERY_MAX_AGE_HOURS", DefaultRecoveryMaxAgeHours, 0, 8760)
 	cfg.RecoveryMaxAgeHours = recoveryMaxAge

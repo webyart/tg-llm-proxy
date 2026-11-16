@@ -43,6 +43,16 @@ class FakeElement {
     this._text = "";
     this.classList = {
       contains: (name) => this.className.split(/\s+/).includes(name),
+      add: (...names) => {
+        const current = new Set(this.className.split(/\s+/).filter(Boolean));
+        for (const name of names) current.add(name);
+        this.className = Array.from(current).join(" ");
+      },
+      remove: (...names) => {
+        const current = new Set(this.className.split(/\s+/).filter(Boolean));
+        for (const name of names) current.delete(name);
+        this.className = Array.from(current).join(" ");
+      },
       toggle: (name, force) => {
         const names = new Set(this.className.split(/\s+/).filter(Boolean));
         if (force) names.add(name);
@@ -203,6 +213,13 @@ function staticElement(document, tag, options = {}) {
 function initialDocument() {
   const document = new FakeDocument();
   const body = document.body;
+  for (const [content, media] of [["#faf4ea", "(prefers-color-scheme: light)"], ["#1a1d25", "(prefers-color-scheme: dark)"]]) {
+    const meta = staticElement(document, "meta");
+    meta.setAttribute("name", "theme-color");
+    meta.setAttribute("content", content);
+    meta.setAttribute("media", media);
+    document.documentElement.appendChild(meta);
+  }
   const header = staticElement(document, "header");
   header.appendChild(staticElement(document, "h1", { i18n: "headerTitle" }));
   header.appendChild(staticElement(document, "p", { i18n: "headerSubtitle" }));

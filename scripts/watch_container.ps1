@@ -53,6 +53,38 @@ foreach ($pathName in @('StatePath', 'BackupDirectory', 'BackupVerificationPath'
 }
 $BackupDirectory = [System.IO.Path]::GetFullPath($BackupDirectory)
 
+function Restore-MiniAppTailscaleRoute {
+    # T3 Code (Beta) owns Tailscale Serve for its own UI and resets the table to `/` -> 3773 on restart. The
+    # Mini App lives on the same Funnel host, so re-assert only its path; T3's root and /voice stay untouched.
+    $tailscale = 'C:\Program Files\Tailscale\tailscale.exe'
+    if (-not (Test-Path -LiteralPath $tailscale -PathType Leaf)) { return }
+    $wanted = 'http://127.0.0.1:8086/miniapp'
+    try {
+        $status = & $tailscale serve status --json 2>$null | ConvertFrom-Json -ErrorAction Stop
+        $current = $null
+        if ($status.Web) {
+            foreach ($site in $status.Web.PSObject.Properties) {
+                if ($site.Value.Handlers -and $site.Value.Handlers.PSObject.Properties.Name -contains '/miniapp') {
+                    $current = $site.Value.Handlers.'/miniapp'.Proxy
+                    break
+                }
+            }
+        }
+        if ($current -eq $wanted) { return }
+        & $tailscale serve --bg --set-path /miniapp $wanted 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Output 'watch_container: restored Tailscale /miniapp route to edge-gateway (T3 had reset it)'
+        }
+        else {
+            Write-Output "watch_container: Tailscale /miniapp route restore failed with exit $LASTEXITCODE"
+        }
+    }
+    catch {
+        Write-Output "watch_container: Tailscale /miniapp route check skipped: $($_.Exception.Message)"
+    }
+}
+
+if (-not $NoNotify -and -not $ContainerId) { Restore-MiniAppTailscaleRoute }
 function ConvertTo-Utc([object]$Value) {
     if ($Value -is [DateTime]) { return $Value.ToUniversalTime() }
     return [DateTime]::Parse([string]$Value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()

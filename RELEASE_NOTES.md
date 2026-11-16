@@ -2,7 +2,17 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.77.0
+## Новейший выпуск: v1.77.1
+
+# tg-llm-proxy v1.77.1
+
+## Mini App route survives T3 Code taking over Tailscale
+
+- T3 Code (Beta) resets Tailscale Serve to `/` -> `127.0.0.1:3773` (and `/voice` -> 8773) when it restarts, which made `/miniapp` serve the T3 UI instead of the bot.
+- Restored the route with target `http://127.0.0.1:8086/miniapp` (the path target makes Tailscale forward the full Mini App path) and added a check to the existing 5-minute `watch_container.ps1`: if `/miniapp` is missing or points elsewhere, it re-asserts it without touching T3's `/` or `/voice`.
+- Verified: public `/miniapp/` returns the bot title, `/miniapp/app.js` and `/miniapp/style.css` return 200.
+
+## Предыдущий выпуск: v1.77.0
 
 # tg-llm-proxy v1.77.0
 

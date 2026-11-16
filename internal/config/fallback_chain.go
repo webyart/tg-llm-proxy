@@ -12,6 +12,7 @@ type FallbackProvider struct {
 	Model          string `json:"model"`
 	BaseURL        string `json:"base_url,omitempty"`
 	APIKey         string `json:"api_key,omitempty"`
+	APIKeyFile     string `json:"api_key_file,omitempty"`
 	TimeoutSeconds int64  `json:"timeout_seconds,omitempty"`
 
 	ChatURL   string `json:"-"`
@@ -20,7 +21,7 @@ type FallbackProvider struct {
 
 // parseFallbackChain validates STRATA_FALLBACKS: a JSON array of at most eight reserves. It is a separate
 // function so the Config loader stays readable and every error names the entry index.
-func parseFallbackChain(raw string, cfg Config, target *[]FallbackProvider) []string {
+func parseFallbackChain(raw string, cfg Config, target *[]FallbackProvider, readFile func(string) ([]byte, error)) []string {
 	var providers []FallbackProvider
 	if err := json.Unmarshal([]byte(raw), &providers); err != nil {
 		return []string{"ENV STRATA_FALLBACKS must be a JSON array of {model, base_url?, api_key?, timeout_seconds?}: " + err.Error()}
@@ -37,6 +38,19 @@ func parseFallbackChain(raw string, cfg Config, target *[]FallbackProvider) []st
 		provider.Model = strings.TrimSpace(provider.Model)
 		provider.BaseURL = strings.TrimSpace(provider.BaseURL)
 		provider.APIKey = strings.TrimSpace(provider.APIKey)
+		provider.APIKeyFile = strings.TrimSpace(provider.APIKeyFile)
+		if provider.APIKey != "" && provider.APIKeyFile != "" {
+			problems = append(problems, fmt.Sprintf("ENV STRATA_FALLBACKS entry %d sets both api_key and api_key_file", index))
+			continue
+		}
+		if provider.APIKeyFile != "" {
+			key, problem := readProviderAPIKey(provider.APIKeyFile, readFile)
+			if problem != "" {
+				problems = append(problems, fmt.Sprintf("ENV STRATA_FALLBACKS entry %d: %s", index, strings.TrimSpace(problem)))
+				continue
+			}
+			provider.APIKey = key
+		}
 		if provider.Model == "" {
 			problems = append(problems, fmt.Sprintf("ENV STRATA_FALLBACKS entry %d has no model", index))
 			continue

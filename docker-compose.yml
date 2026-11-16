@@ -42,6 +42,9 @@ services:
       # from .env (that row keeps plain api_key for local runs and back-compat). The list mirrors .env; when a
       # provider or its models change, update both places — the container never reads the .env catalogue.
       # `docker compose config` shows these paths, never the key values.
+      # The fallback chain is pinned here as well: env_file would otherwise keep the plain Kimi key visible in
+      # docker inspect. The key is read from the same secret as the named provider.
+      STRATA_FALLBACKS: '[{"model":"kimi-k3.1-pro","base_url":"https://api.moonshot.ai/v1","api_key_file":"/run/secrets/kimi_api_key","timeout_seconds":120},{"model":"qwen/qwen3.8-27b","base_url":"http://host.docker.internal:1234/v1","timeout_seconds":120}]'
       MODEL_PROVIDERS: '[{"name":"kimi","base_url":"https://api.moonshot.ai/v1","api_key_file":"/run/secrets/kimi_api_key","models":["kimi-k3.1-pro","kimi-k2.6","kimi-k3"],"default_model":"kimi-k3.1-pro","timeout_seconds":120},{"name":"deepseek","base_url":"https://api.deepseek.com/v1","api_key_file":"/run/secrets/deepseek_api_key","models":["deepseek-flash","deepseek-v4-pro"],"default_model":"deepseek-flash","timeout_seconds":120}]'
       # §7/§8.1: inside the container 127.0.0.1 is the container's OWN loopback, so the .env value that is
       # right for scripts/run.ps1 on Windows (http://127.0.0.1:8080/v1) would make the bot call its own

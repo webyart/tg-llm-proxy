@@ -755,7 +755,7 @@ func LoadFrom(raw map[string]string) (Config, []string) {
 		if cfg.StrataFallbackModel != "" {
 			problems = Push(problems, "ENV STRATA_FALLBACKS and STRATA_FALLBACK_MODEL are both set: use the chain or the single reserve, not both ")
 		} else {
-			problems = append(problems, parseFallbackChain(rawChain, cfg, &cfg.FallbackProviders)...)
+			problems = append(problems, parseFallbackChain(rawChain, cfg, &cfg.FallbackProviders, readSecretFile)...)
 		}
 	}
 	if cfg.StrataFallbackModel != "" {

@@ -6,6 +6,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -535,5 +537,25 @@ func TestDefaultTaskStepDeadlineCoversTheWorstCase(t *testing.T) {
 	}
 	if TaskStepDeadlineCoversWorstCase(5*300, 300) != true || TaskStepDeadlineCoversWorstCase(5*300-1, 300) != false {
 		t.Fatal("TaskStepDeadlineCoversWorstCase boundary is not TaskModelCallsPerStep × the per-call budget")
+	}
+}
+
+func TestFallbackChainReadsAPIKeyFromFile(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "kimi.key")
+	if err := os.WriteFile(keyPath, []byte("sk-from-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	jsonKeyPath := filepath.ToSlash(keyPath)
+	cfg, problems := LoadFrom(map[string]string{
+		"TELEGRAM_BOT_TOKEN": "123456:abcdefghijklmnopqrstuvwxyz",
+		"STRATA_BASE_URL":    "http://127.0.0.1:8080/v1",
+		"STRATA_FALLBACKS":   `[{"model":"kimi-k3.1-pro","base_url":"https://api.moonshot.ai/v1","api_key_file":"` + jsonKeyPath + `"}]`,
+	})
+	if len(problems) > 0 {
+		t.Fatalf("problems: %v", problems)
+	}
+	if len(cfg.FallbackProviders) != 1 || cfg.FallbackProviders[0].APIKey != "sk-from-file" {
+		t.Fatalf("fallback key not read: %+v", cfg.FallbackProviders)
 	}
 }

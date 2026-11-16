@@ -2,7 +2,18 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.76.0
+## Новейший выпуск: v1.77.0
+
+# tg-llm-proxy v1.77.0
+
+## Group mode and prompt/task latency
+
+- Groups: replies now carry `reply_parameters` and the message thread, so forum topics answer in-place; group `/model` changes are admin-only; admission/allowlist, negative chat ids, limits/timezone/approvals/reminders/tasks and admin group listing are covered by e2e tests. Production keeps `GROUPS_ENABLED=false`; README documents the privacy/allowlist/admin requirements.
+- Prompts: native tool instruction 725→527 runes and schemas 930→858 B (~68 tokens/call), stable prefix sent once, stored system rows no longer duplicated into history, RAG duplicate/inline-document dedupe, opt-in `PROMPT_CACHE_FRIENDLY`.
+- Task synthesis: extractive digest ≤4000 runes/step (≤12000) preserves headings/numbers/tail and marks truncation; stored results stay intact. For 3×12000+goal the synthesis prompt drops from ~36.7k to ~12.1k runes (~31k→~10k tokens, −67%).
+- Metrics `bot_prompt_chars{scope}`, `bot_task_synthesis_truncated_total`; tests 17 packages, JS 80/80.
+
+## Предыдущий выпуск: v1.76.0
 
 # tg-llm-proxy v1.76.0
 

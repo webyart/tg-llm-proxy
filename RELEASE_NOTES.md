@@ -2,7 +2,19 @@
 
 Telegram-бот-прокси между пользователями и локальной OpenAI-compatible STRATA. Основной транспорт — long polling; Mini App и стриминг ответов — opt-in. Здесь хранятся заметки о выпусках: v1.0.0–v1.56.0 разложены по диапазонам в `CHANGELOG/`, новейший выпуск — ниже.
 
-## Новейший выпуск: v1.75.1
+## Новейший выпуск: v1.76.0
+
+# tg-llm-proxy v1.76.0
+
+## Reliability, secrets, restore and UX polish
+
+- Task step deadline now covers five model calls (1500 s default/lease 1530), stale model names in chats/tasks/approvals are normalized after discovery, and the admission flood test is stabilized.
+- Provider and fallback keys load from Docker secrets (`api_key_file` for both MODEL_PROVIDERS and STRATA_FALLBACKS); no secret in `docker inspect`. Added a real restore drill (48/48 counters, schema 28), temp-safe db_restore, and `cmd/dbclean` for historical tool-call markup.
+- Mini App: theme.js applies the saved theme/theme-color before paint, arbitrary IANA timezone input, `priced` distinguishes no-price from $0, provider costs are admin-only, and `/api/admin/providers/{name}/refresh` syncs `/v1/models` against the env allowlist.
+- Monitoring: planning queue/wait alerts and dashboard v8.
+- Scheduled maintenance now uses the version-independent PowerShell App Execution Alias; the previous versioned path broke after a Store update (this caused the second BackupStale).
+
+## Предыдущий выпуск: v1.75.1
 
 # tg-llm-proxy v1.75.1
 
